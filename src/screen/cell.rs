@@ -21,6 +21,9 @@ bitflags! {
         const STRIKE = 1 << 6;
         const WIDE = 1 << 7;
         const WIDE_CONTINUATION = 1 << 8;
+        const DIM = 1 << 9;
+        const DOUBLE_UNDERLINE = 1 << 10;
+        const CURLY_UNDERLINE = 1 << 11;
     }
 }
 

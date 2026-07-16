@@ -14,11 +14,19 @@ impl Scrollback {
         }
     }
 
-    pub fn push_line(&mut self, line: Vec<Cell>) {
-        if self.lines.len() >= self.max_lines {
-            self.lines.pop_front();
+    pub fn push_line(&mut self, cells: &[Cell]) {
+        if self.max_lines == 0 {
+            return;
         }
-        self.lines.push_back(line);
+        if self.lines.len() >= self.max_lines {
+            if let Some(mut reused) = self.lines.pop_front() {
+                reused.clear();
+                reused.extend_from_slice(cells);
+                self.lines.push_back(reused);
+                return;
+            }
+        }
+        self.lines.push_back(cells.to_vec());
     }
 
     pub fn get_line(&self, index: usize) -> Option<&[Cell]> {

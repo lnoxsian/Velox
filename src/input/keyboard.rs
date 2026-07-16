@@ -1,6 +1,6 @@
 use winit::keyboard::{Key, NamedKey, ModifiersState};
 
-pub fn translate_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
+pub fn translate_key(key: &Key, modifiers: ModifiersState, cursor_keys_mode: bool) -> Option<Vec<u8>> {
     // 1. Control key combinations
     if modifiers.control_key() {
         match key {
@@ -36,10 +36,10 @@ pub fn translate_key(key: &Key, modifiers: ModifiersState) -> Option<Vec<u8>> {
         Key::Named(NamedKey::Space) => Some(vec![32]),
         
         // Arrow Keys
-        Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
-        Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
-        Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
-        Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
+        Key::Named(NamedKey::ArrowUp) => Some(if cursor_keys_mode { b"\x1bOA".to_vec() } else { b"\x1b[A".to_vec() }),
+        Key::Named(NamedKey::ArrowDown) => Some(if cursor_keys_mode { b"\x1bOB".to_vec() } else { b"\x1b[B".to_vec() }),
+        Key::Named(NamedKey::ArrowRight) => Some(if cursor_keys_mode { b"\x1bOC".to_vec() } else { b"\x1b[C".to_vec() }),
+        Key::Named(NamedKey::ArrowLeft) => Some(if cursor_keys_mode { b"\x1bOD".to_vec() } else { b"\x1b[D".to_vec() }),
         
         // Navigation Keys
         Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),

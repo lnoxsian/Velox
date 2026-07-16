@@ -13,6 +13,9 @@ pub struct Terminal {
     pub current_bg: Color,
     pub current_flags: CellFlags,
     pub outgoing: Vec<u8>,
+    pub cursor_keys_mode: bool,
+    pub mouse_mode: u16,
+    pub mouse_sgr: bool,
 }
 
 impl Terminal {
@@ -31,10 +34,30 @@ impl Terminal {
                 theme.default_bg = c;
             }
         }
-        if let Some(colors) = &config.ansi_colors {
-            for (i, hex) in colors.iter().enumerate().take(16) {
-                if let Some(c) = crate::config::config::parse_hex_color(hex) {
-                    theme.ansi_colors[i] = c;
+        if let Some(colors) = &config.colors {
+            let fields = [
+                (&colors.black, 0),
+                (&colors.red, 1),
+                (&colors.green, 2),
+                (&colors.yellow, 3),
+                (&colors.blue, 4),
+                (&colors.magenta, 5),
+                (&colors.cyan, 6),
+                (&colors.white, 7),
+                (&colors.bright_black, 8),
+                (&colors.bright_red, 9),
+                (&colors.bright_green, 10),
+                (&colors.bright_yellow, 11),
+                (&colors.bright_blue, 12),
+                (&colors.bright_magenta, 13),
+                (&colors.bright_cyan, 14),
+                (&colors.bright_white, 15),
+            ];
+            for (opt, idx) in &fields {
+                if let Some(hex) = opt {
+                    if let Some(c) = crate::config::config::parse_hex_color(hex) {
+                        theme.ansi_colors[*idx] = c;
+                    }
                 }
             }
         }
@@ -42,9 +65,12 @@ impl Terminal {
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
 
+        let enable_nerdfont = config.enable_nerdfont.unwrap_or(true);
+        let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
+
         Self {
-            grid: Grid::new(width, height, default_fg, default_bg),
-            alt_grid: Grid::new(width, height, default_fg, default_bg),
+            grid: Grid::new(width, height, default_fg, default_bg, enable_nerdfont, scrollback_limit),
+            alt_grid: Grid::new(width, height, default_fg, default_bg, enable_nerdfont, 0),
             is_alt_screen: false,
             parser: AnsiParser::new(),
             theme,
@@ -52,10 +78,14 @@ impl Terminal {
             current_bg: default_bg,
             current_flags: CellFlags::empty(),
             outgoing: Vec::new(),
+            cursor_keys_mode: false,
+            mouse_mode: 0,
+            mouse_sgr: false,
         }
     }
 
     pub fn feed(&mut self, data: &[u8]) {
+        self.grid.scroll_offset = 0;
         // Feed bytes one by one. Note: We temporarily take ownership or borrow
         // to avoid duplicate mutable borrows on Self.
         let mut parser = std::mem::replace(&mut self.parser, AnsiParser::new());
@@ -65,36 +95,8 @@ impl Terminal {
         self.parser = parser;
     }
 
-    pub fn execute(&mut self) {
-        // stub
-    }
-
-    pub fn handle_input(&mut self) {
-        // stub
-    }
-
-    pub fn handle_mouse(&mut self) {
-        // stub
-    }
-
     pub fn send_to_shell(&mut self, data: &[u8]) {
         self.outgoing.extend_from_slice(data);
-    }
-
-    pub fn update_cursor(&mut self) {
-        // stub
-    }
-
-    pub fn paste(&mut self) {
-        // stub
-    }
-
-    pub fn copy(&mut self) {
-        // stub
-    }
-
-    pub fn select(&mut self) {
-        // stub
     }
 
     pub fn reset_attrs(&mut self) {
@@ -203,5 +205,44 @@ mod tests {
         let mut term = Terminal::new(80, 24);
         term.feed(b"\x1b[c");
         assert_eq!(term.outgoing, b"\x1b[?6c");
+    }
+
+    #[test]
+    fn test_emoji_double_width() {
+        let mut term = Terminal::new(80, 24);
+        term.feed("😀".as_bytes());
+        let grid = term.active_grid();
+        assert_eq!(grid.cursor.x, 2);
+        assert_eq!(grid.cells[0].character, '😀');
+        assert!(grid.cells[0].flags.contains(CellFlags::WIDE));
+        assert_eq!(grid.cells[1].character, ' ');
+        assert!(grid.cells[1].flags.contains(CellFlags::WIDE_CONTINUATION));
+    }
+
+    #[test]
+    fn test_sgr_sub_parameters() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"\x1b[4:1mA");
+        let grid = term.active_grid();
+        assert!(grid.cells[0].flags.contains(CellFlags::UNDERLINE));
+
+        let mut term2 = Terminal::new(80, 24);
+        term2.feed(b"\x1b[4:0mA");
+        let grid2 = term2.active_grid();
+        assert!(!grid2.cells[0].flags.contains(CellFlags::UNDERLINE));
+    }
+
+    #[test]
+    fn test_scrollback_history() {
+        let mut term = Terminal::new(80, 5); // 5 rows
+        for i in 0..10 {
+            term.feed(format!("line {}\r\n", i).as_bytes());
+        }
+        let grid = term.active_grid();
+        // Since height is 5, we have scrolled multiple lines off the screen
+        assert!(grid.scrollback.lines.len() > 0);
+        
+        // The first character of the oldest line in scrollback history should be 'l' from "line ..."
+        assert_eq!(grid.scrollback.lines[0][0].character, 'l');
     }
 }

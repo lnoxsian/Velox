@@ -11,10 +11,11 @@ pub struct Renderer {
     pub font_loader: FontLoader,
     viewport_width: u32,
     viewport_height: u32,
+    start_time: std::time::Instant,
 }
 
 impl Renderer {
-    pub fn new(gl: Arc<glow::Context>, font_family: &str, font_size: f32) -> Self {
+    pub fn new(gl: Arc<glow::Context>, font_family: &str, font_size: f32, enable_nerdfont: bool) -> Self {
         unsafe {
             // Compile Shaders
             let vertex_shader_source = r#"
@@ -43,8 +44,13 @@ impl Renderer {
                 out vec4 FragColor;
                 uniform sampler2D u_atlas;
                 void main() {
-                    float mask = texture(u_atlas, v_tex).r;
-                    FragColor = mix(v_bg, v_fg, mask);
+                    vec4 tex_color = texture(u_atlas, v_tex);
+                    if (v_fg.a < 0.5) {
+                        FragColor = mix(v_bg, tex_color, tex_color.a);
+                    } else {
+                        float mask = tex_color.r;
+                        FragColor = mix(v_bg, v_fg, mask);
+                    }
                 }
             "#;
 
@@ -90,7 +96,7 @@ impl Renderer {
             gl.vertex_attrib_pointer_f32(3, 4, glow::FLOAT, false, stride, 8 * std::mem::size_of::<f32>() as i32);
             gl.enable_vertex_attrib_array(3);
 
-            let font_loader = FontLoader::new(gl.clone(), font_family, font_size);
+            let font_loader = FontLoader::new(gl.clone(), font_family, font_size, enable_nerdfont);
 
             Self {
                 gl,
@@ -100,28 +106,9 @@ impl Renderer {
                 font_loader,
                 viewport_width: 800,
                 viewport_height: 600,
+                start_time: std::time::Instant::now(),
             }
         }
-    }
-
-    pub fn initialize() -> Self {
-        panic!("Use Renderer::new instead of initialize")
-    }
-
-    pub fn draw_frame(&mut self) {
-        // stub
-    }
-
-    pub fn draw_cursor(&mut self) {
-        // stub
-    }
-
-    pub fn draw_selection(&mut self) {
-        // stub
-    }
-
-    pub fn flush(&mut self) {
-        // stub
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -137,8 +124,12 @@ impl Renderer {
         let ch = self.font_loader.cell_height as f32;
         let mut vertices: Vec<f32> = Vec::with_capacity(cells.len() * 6 * 12);
 
-        let push_quad = |vertices: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, u_min: f32, v_min: f32, u_max: f32, v_max: f32, fg: Color, bg: Color| {
-            let fg_f = [fg.r as f32 / 255.0, fg.g as f32 / 255.0, fg.b as f32 / 255.0, 1.0];
+        let elapsed = self.start_time.elapsed().as_millis();
+        let blink_on = (elapsed / 500) % 2 == 0;
+
+        let push_quad = |vertices: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, u_min: f32, v_min: f32, u_max: f32, v_max: f32, fg: Color, bg: Color, is_color: bool| {
+            let fg_alpha = if is_color { 0.0 } else { 1.0 };
+            let fg_f = [fg.r as f32 / 255.0, fg.g as f32 / 255.0, fg.b as f32 / 255.0, fg_alpha];
             let bg_f = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0, 1.0];
             
             // Triangle 1
@@ -173,7 +164,7 @@ impl Renderer {
 
                 let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
                 
-                let (fg, bg) = if is_cursor {
+                let (mut fg, bg) = if is_cursor {
                     (cell.background, cell.foreground)
                 } else if cell.flags.contains(CellFlags::REVERSE) {
                     (cell.background, cell.foreground)
@@ -181,13 +172,39 @@ impl Renderer {
                     (cell.foreground, cell.background)
                 };
 
+                if cell.flags.contains(CellFlags::DIM) {
+                    fg.r = (fg.r as f32 * 0.6) as u8;
+                    fg.g = (fg.g as f32 * 0.6) as u8;
+                    fg.b = (fg.b as f32 * 0.6) as u8;
+                }
+
+                if cell.flags.contains(CellFlags::HIDDEN) || (cell.flags.contains(CellFlags::BLINK) && !blink_on) {
+                    fg = bg;
+                }
+
                 let is_wide = cell.flags.contains(CellFlags::WIDE);
                 let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
 
-                let uv = self.font_loader.get_glyph_uv(cell.character, is_wide);
+                let is_bold = cell.flags.contains(CellFlags::BOLD);
+                let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                let uv = self.font_loader.get_glyph_uv(cell.character, is_wide, is_bold, is_italic);
                 let px = x as f32 * cw;
                 let py = y as f32 * ch;
-                push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg);
+                push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg, uv.is_color);
+
+                if cell.flags.contains(CellFlags::UNDERLINE) {
+                    let thickness = 1.0f32.max((ch * 0.08).round());
+                    let line_y = py + ch - thickness - 1.0;
+                    let (u, v) = self.font_loader.white_pixel_uv();
+                    push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                }
+
+                if cell.flags.contains(CellFlags::STRIKE) {
+                    let thickness = 1.0f32.max((ch * 0.08).round());
+                    let line_y = py + (ch / 2.0).round() - (thickness / 2.0).round();
+                    let (u, v) = self.font_loader.white_pixel_uv();
+                    push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                }
 
                 x += if is_wide { 2 } else { 1 };
             }

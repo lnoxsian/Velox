@@ -4,6 +4,14 @@ use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
 use crate::screen::selection::Selection;
 use unicode_width::UnicodeWidthChar;
+use std::sync::{Mutex, OnceLock};
+
+static COMBINING_REGISTRY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+pub fn get_combining_registry() -> &'static Mutex<Vec<String>> {
+    COMBINING_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 
 pub struct Grid {
     pub width: usize,
@@ -16,10 +24,14 @@ pub struct Grid {
     pub selection: Selection,
     pub default_fg: Color,
     pub default_bg: Color,
+    pub enable_nerdfont: bool,
+    pub scroll_region_top: usize,
+    pub scroll_region_bottom: usize,
+    pub scroll_offset: usize,
 }
 
 impl Grid {
-    pub fn new(width: usize, height: usize, fg: Color, bg: Color) -> Self {
+    pub fn new(width: usize, height: usize, fg: Color, bg: Color, enable_nerdfont: bool, scrollback_limit: usize) -> Self {
         let default_cell = Cell {
             character: ' ',
             foreground: fg,
@@ -43,16 +55,56 @@ impl Grid {
                 visible: true,
             },
             damage: DamageTracker::new(height),
-            scrollback: Scrollback::new(1000),
+            scrollback: Scrollback::new(scrollback_limit),
             selection: Selection::new(),
             default_fg: fg,
             default_bg: bg,
+            enable_nerdfont,
+            scroll_region_top: 0,
+            scroll_region_bottom: height.saturating_sub(1),
+            scroll_offset: 0,
         }
     }
 
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, mut flags: CellFlags) {
-        // Nerd Font icons and emojis are treated as double-width (w = 2) for rendering size, CJK characters are also w = 2
-        let w = if (c >= '\u{e000}' && c <= '\u{f8ff}') || c >= '\u{1f000}' {
+        let is_combining = UnicodeWidthChar::width(c) == Some(0);
+        if is_combining && self.cursor.x > 0 {
+            let mut target_x = self.cursor.x - 1;
+            let mut idx = self.cursor.y * self.width + target_x;
+            if idx < self.cells.len() && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION) {
+                if target_x > 0 {
+                    target_x -= 1;
+                    idx = self.cursor.y * self.width + target_x;
+                }
+            }
+            if idx < self.cells.len() {
+                let base_char = self.cells[idx].character;
+                if base_char >= '\u{100000}' && base_char <= '\u{10ffff}' {
+                    let reg_idx = (base_char as u32 - 0x100000) as usize;
+                    if let Ok(mut registry) = get_combining_registry().lock() {
+                        if reg_idx < registry.len() {
+                            registry[reg_idx].push(c);
+                        }
+                    }
+                } else {
+                    let mut seq = String::new();
+                    seq.push(base_char);
+                    seq.push(c);
+                    let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
+                        let reg_idx = registry.len();
+                        registry.push(seq);
+                        char::from_u32(0x100000 + reg_idx as u32).unwrap_or(base_char)
+                    } else {
+                        base_char
+                    };
+                    self.cells[idx].character = new_char;
+                }
+            }
+            return;
+        }
+
+        // Nerd Font icons and emojis are treated as double-width (w = 2) for rendering size if enabled, CJK characters are also w = 2
+        let w = if (self.enable_nerdfont && c >= '\u{e000}' && c <= '\u{f8ff}') || c >= '\u{1f000}' {
             2
         } else {
             UnicodeWidthChar::width(c).unwrap_or(1).max(1) as usize
@@ -72,7 +124,7 @@ impl Grid {
                 }
             }
             self.cursor.x = 0;
-            self.scroll_or_move_down();
+            self.scroll_or_move_down(bg);
         }
 
         if w == 2 {
@@ -113,58 +165,117 @@ impl Grid {
         self.damage.mark_dirty(self.cursor.y);
     }
 
-    pub fn scroll_or_move_down(&mut self) {
-        if self.cursor.y + 1 < self.height {
+    pub fn scroll_or_move_down(&mut self, bg: Color) {
+        let bottom = self.scroll_region_bottom;
+        if self.cursor.y < bottom {
             self.cursor.y += 1;
+        } else if self.cursor.y == bottom {
+            self.scroll(1, bg);
         } else {
-            self.scroll(1);
+            if self.cursor.y + 1 < self.height {
+                self.cursor.y += 1;
+            }
         }
     }
 
-    pub fn scroll(&mut self, delta: i32) {
+    pub fn scroll(&mut self, delta: i32, bg: Color) {
         if delta <= 0 {
             return;
         }
-        let u_delta = delta as usize;
-
-        // Push lines scrolled off-screen to scrollback
-        for y in 0..u_delta.min(self.height) {
-            let start = y * self.width;
-            let end = start + self.width;
-            self.scrollback.push_line(self.cells[start..end].to_vec());
-        }
-
-        if u_delta >= self.height {
-            self.clear();
+        let top = self.scroll_region_top;
+        let bottom = self.scroll_region_bottom;
+        if top >= bottom || bottom >= self.height {
             return;
         }
+        let height_of_region = bottom - top + 1;
+        let u_delta = (delta as usize).min(height_of_region);
 
-        // Shift cells up
-        self.cells.copy_within((u_delta * self.width).., 0);
+        // Push lines scrolled off-screen to scrollback only if scrolling the entire screen
+        if top == 0 && bottom == self.height - 1 {
+            for y in 0..u_delta.min(self.height) {
+                let start = y * self.width;
+                let end = start + self.width;
+                self.scrollback.push_line(&self.cells[start..end]);
+            }
+        }
 
-        // Clear bottom lines
+        if u_delta < height_of_region {
+            let src = (top + u_delta) * self.width;
+            let dst = top * self.width;
+            let count = (height_of_region - u_delta) * self.width;
+            self.cells.copy_within(src..src + count, dst);
+        }
+
+        // Clear bottom lines of the scrolling region
         let default_cell = Cell {
             character: ' ',
             foreground: self.default_fg,
-            background: self.default_bg,
+            background: bg,
             flags: CellFlags::empty(),
         };
-        let start = (self.height - u_delta) * self.width;
-        for cell in &mut self.cells[start..] {
+        let clear_start = (bottom + 1 - u_delta) * self.width;
+        let clear_end = (bottom + 1) * self.width;
+        for cell in &mut self.cells[clear_start..clear_end] {
             *cell = default_cell;
         }
 
-        // Mark all rows as damaged
-        for y in 0..self.height {
+        // Mark rows in scrolling region as damaged
+        for y in top..=bottom {
             self.damage.mark_dirty(y);
         }
     }
 
-    pub fn erase_line(&mut self, mode: u8) {
+    pub fn scroll_down(&mut self, delta: usize, bg: Color) {
+        let top = self.scroll_region_top;
+        let bottom = self.scroll_region_bottom;
+        if top >= bottom || bottom >= self.height {
+            return;
+        }
+        let height_of_region = bottom - top + 1;
+        let u_delta = delta.min(height_of_region);
+
+        if u_delta < height_of_region {
+            let src = top * self.width;
+            let dst = (top + u_delta) * self.width;
+            let count = (height_of_region - u_delta) * self.width;
+            self.cells.copy_within(src..src + count, dst);
+        }
+
         let default_cell = Cell {
             character: ' ',
             foreground: self.default_fg,
-            background: self.default_bg,
+            background: bg,
+            flags: CellFlags::empty(),
+        };
+        let clear_start = top * self.width;
+        let clear_end = (top + u_delta) * self.width;
+        for cell in &mut self.cells[clear_start..clear_end] {
+            *cell = default_cell;
+        }
+
+        for y in top..=bottom {
+            self.damage.mark_dirty(y);
+        }
+    }
+
+    pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        let top_idx = if top == 0 { 0 } else { (top - 1).min(self.height - 1) };
+        let bottom_idx = if bottom == 0 { self.height - 1 } else { (bottom - 1).min(self.height - 1) };
+
+        if top_idx < bottom_idx {
+            self.scroll_region_top = top_idx;
+            self.scroll_region_bottom = bottom_idx;
+        }
+        // When scroll region is changed, standard terminal behavior is to home the cursor
+        self.cursor.x = 0;
+        self.cursor.y = 0;
+    }
+
+    pub fn erase_line(&mut self, mode: u8, fg: Color, bg: Color) {
+        let default_cell = Cell {
+            character: ' ',
+            foreground: fg,
+            background: bg,
             flags: CellFlags::empty(),
         };
         let row_start = self.cursor.y * self.width;
@@ -189,11 +300,11 @@ impl Grid {
         self.damage.mark_dirty(self.cursor.y);
     }
 
-    pub fn erase_display(&mut self, mode: u8) {
+    pub fn erase_display(&mut self, mode: u8, fg: Color, bg: Color) {
         let default_cell = Cell {
             character: ' ',
-            foreground: self.default_fg,
-            background: self.default_bg,
+            foreground: fg,
+            background: bg,
             flags: CellFlags::empty(),
         };
         match mode {
@@ -217,55 +328,18 @@ impl Grid {
                 }
             }
             2 | 3 => { // Entire screen
-                self.clear();
+                for cell in &mut self.cells {
+                    *cell = default_cell;
+                }
+                for y in 0..self.height {
+                    self.damage.mark_dirty(y);
+                }
             }
             _ => {}
         }
     }
-
-    pub fn erase(&mut self) {
-        self.clear();
-    }
-
-    pub fn clear(&mut self) {
-        let default_cell = Cell {
-            character: ' ',
-            foreground: self.default_fg,
-            background: self.default_bg,
-            flags: CellFlags::empty(),
-        };
-        for cell in &mut self.cells {
-            *cell = default_cell;
-        }
-        for y in 0..self.height {
-            self.damage.mark_dirty(y);
-        }
-    }
-
-    pub fn copy_region(&self) -> String {
-        let mut res = String::new();
-        for y in 0..self.height {
-            let row_start = y * self.width;
-            let mut line = String::new();
-            for x in 0..self.width {
-                line.push(self.cells[row_start + x].character);
-            }
-            res.push_str(line.trim_end());
-            res.push('\n');
-        }
-        res
-    }
-
     pub fn mark_dirty(&mut self, row: usize, _col: usize) {
         self.damage.mark_dirty(row);
-    }
-
-    pub fn swap_alternate(&mut self) {
-        // Handled in Terminal
-    }
-
-    pub fn restore_main(&mut self) {
-        // Handled in Terminal
     }
 
     pub fn resize(&mut self, cols: u32, rows: u32) {
@@ -286,6 +360,8 @@ impl Grid {
         self.cells = new_cells;
         self.width = new_w;
         self.height = new_h;
+        self.scroll_region_top = 0;
+        self.scroll_region_bottom = new_h.saturating_sub(1);
         self.damage.resize(new_h);
         for y in 0..new_h {
             self.damage.mark_dirty(y);
@@ -294,3 +370,20 @@ impl Grid {
         self.cursor.y = self.cursor.y.min(new_h - 1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grid_combining() {
+        let mut grid = Grid::new(80, 24, Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, false, 1000);
+        grid.put_char('a', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
+        grid.put_char('\u{0301}', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
+        
+        let cell_char = grid.cells[0].character;
+        println!("Cell character: {:?}", cell_char);
+        assert!(cell_char >= '\u{100000}');
+    }
+}
+

@@ -13,6 +13,8 @@ use crate::renderer::renderer::Renderer;
 use crate::pty::process::spawn_shell;
 use crate::pty::master::PtyMaster;
 
+use crate::screen::cell::{Cell, CellFlags};
+
 #[derive(Debug)]
 pub enum AppError {
     Initialization(String),
@@ -34,6 +36,9 @@ pub struct App {
     renderer: Option<Renderer>,
     terminal: Option<Terminal>,
     pty_master: Option<Arc<PtyMaster>>,
+    mouse_x: f64,
+    mouse_y: f64,
+    render_cells_buf: Vec<Cell>,
 }
 
 impl App {
@@ -49,6 +54,9 @@ impl App {
             renderer: None,
             terminal: None,
             pty_master: None,
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            render_cells_buf: Vec::new(),
         }
     }
 
@@ -127,7 +135,7 @@ impl ApplicationHandler<CustomEvent> for App {
         let config = crate::config::loader::load().unwrap_or_else(|_| {
             crate::config::defaults::default_config()
         });
-        let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size);
+        let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, config.enable_nerdfont.unwrap_or(true));
         let cols = (800 / renderer.font_loader.cell_width).max(20);
         let rows = (600 / renderer.font_loader.cell_height).max(10);
 
@@ -195,9 +203,89 @@ impl ApplicationHandler<CustomEvent> for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
+                    if self.modifiers.shift_key() {
+                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageUp) = event.logical_key {
+                            if let Some(terminal) = &mut self.terminal {
+                                let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
+                                let history_len = active_grid.scrollback.lines.len();
+                                active_grid.scroll_offset = (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                                return;
+                            }
+                        } else if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageDown) = event.logical_key {
+                            if let Some(terminal) = &mut self.terminal {
+                                let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
+                                active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(active_grid.height / 2);
+                                return;
+                            }
+                        }
+                    }
+
                     if let Some(pty_master) = &self.pty_master {
-                        if let Some(bytes) = crate::input::keyboard::translate_key(&event.logical_key, self.modifiers) {
+                        let cursor_keys_mode = self.terminal.as_ref().map(|t| t.cursor_keys_mode).unwrap_or(false);
+                        if let Some(bytes) = crate::input::keyboard::translate_key(&event.logical_key, self.modifiers, cursor_keys_mode) {
                             let _ = pty_master.write(&bytes);
+                        }
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_x = position.x;
+                self.mouse_y = position.y;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        y.round() as i32
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        (pos.y / 15.0).round() as i32
+                    }
+                };
+                if lines != 0 {
+                    if let Some(pty_master) = &self.pty_master {
+                        if let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
+                            let cw = renderer.font_loader.cell_width as f64;
+                            let ch = renderer.font_loader.cell_height as f64;
+                            let col = ((self.mouse_x / cw).floor() as i32 + 1).max(1);
+                            let row = ((self.mouse_y / ch).floor() as i32 + 1).max(1);
+
+                            if terminal.mouse_mode > 0 {
+                                let btn = if lines > 0 { 64 } else { 65 };
+                                for _ in 0..lines.abs() {
+                                    let seq = if terminal.mouse_sgr {
+                                        format!("\x1b[<{};{};{}M", btn, col, row)
+                                    } else {
+                                        let cb = 32 + btn;
+                                        let cx = 32 + col;
+                                        let cy = 32 + row;
+                                        if cx <= 255 && cy <= 255 {
+                                            format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
+                                        } else {
+                                            String::new()
+                                        }
+                                    };
+                                    if !seq.is_empty() {
+                                        let _ = pty_master.write(seq.as_bytes());
+                                    }
+                                }
+                            } else if terminal.is_alt_screen {
+                                let key_seq = if lines > 0 {
+                                    if terminal.cursor_keys_mode { b"\x1bOA" } else { b"\x1b[A" }
+                                } else {
+                                    if terminal.cursor_keys_mode { b"\x1bOB" } else { b"\x1b[B" }
+                                };
+                                for _ in 0..lines.abs() {
+                                    let _ = pty_master.write(key_seq);
+                                }
+                            } else {
+                                let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
+                                let history_len = active_grid.scrollback.lines.len();
+                                if lines > 0 {
+                                    active_grid.scroll_offset = (active_grid.scroll_offset + lines as usize).min(history_len);
+                                } else if lines < 0 {
+                                    active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(lines.abs() as usize);
+                                }
+                            }
                         }
                     }
                 }
@@ -207,13 +295,61 @@ impl ApplicationHandler<CustomEvent> for App {
                    (&self.window, &mut self.renderer, &self.terminal, &self.gl_surface, &self.gl_context) 
                 {
                     let active_grid = terminal.active_grid();
+                    let width = active_grid.width;
+                    let height = active_grid.height;
+                    let size = width * height;
+
+                    if self.render_cells_buf.len() != size {
+                        let default_cell = Cell {
+                            character: ' ',
+                            foreground: active_grid.default_fg,
+                            background: active_grid.default_bg,
+                            flags: CellFlags::empty(),
+                        };
+                        self.render_cells_buf.resize(size, default_cell);
+                    }
+
+                    let offset = active_grid.scroll_offset;
+                    let history_len = active_grid.scrollback.lines.len();
+
+                    if offset == 0 {
+                        self.render_cells_buf.copy_from_slice(&active_grid.cells);
+                    } else {
+                        for y in 0..height {
+                            let idx = y + history_len - offset;
+                            let dest_start = y * width;
+                            let dest_end = dest_start + width;
+                            if idx < history_len {
+                                let line_slice = &active_grid.scrollback.lines[idx];
+                                let copy_len = line_slice.len().min(width);
+                                self.render_cells_buf[dest_start..dest_start + copy_len].copy_from_slice(&line_slice[..copy_len]);
+                                if copy_len < width {
+                                    let default_cell = Cell {
+                                        character: ' ',
+                                        foreground: active_grid.default_fg,
+                                        background: active_grid.default_bg,
+                                        flags: CellFlags::empty(),
+                                    };
+                                    self.render_cells_buf[dest_start + copy_len..dest_end].fill(default_cell);
+                                }
+                            } else {
+                                let grid_y = idx - history_len;
+                                let src_start = grid_y * width;
+                                let src_end = src_start + width;
+                                self.render_cells_buf[dest_start..dest_end].copy_from_slice(&active_grid.cells[src_start..src_end]);
+                            }
+                        }
+                    }
+
+                    let cursor_visible = if offset > 0 { false } else { active_grid.cursor.visible };
+
                     renderer.draw(
-                        &active_grid.cells,
-                        active_grid.width,
-                        active_grid.height,
+                        &self.render_cells_buf,
+                        width,
+                        height,
                         active_grid.cursor.x,
                         active_grid.cursor.y,
-                        active_grid.cursor.visible,
+                        cursor_visible,
                         terminal.theme.default_bg,
                     );
                     gl_surface.swap_buffers(gl_context).unwrap();

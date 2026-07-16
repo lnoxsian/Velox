@@ -1,4 +1,4 @@
-use crate::config::config::Config;
+use crate::config::config::{Config, ConfigColors};
 
 pub fn default_config() -> Config {
     Config {
@@ -7,23 +7,25 @@ pub fn default_config() -> Config {
         shell: "/bin/sh".to_string(),
         default_fg: Some("#F8F8F2".to_string()),
         default_bg: Some("#272822".to_string()),
-        ansi_colors: Some(vec![
-            "#272822".to_string(), // Black
-            "#F92672".to_string(), // Red
-            "#A6E22E".to_string(), // Green
-            "#F4B575".to_string(), // Yellow
-            "#66D9EF".to_string(), // Blue
-            "#AE81FF".to_string(), // Magenta
-            "#A1EFE4".to_string(), // Cyan
-            "#F8F8F2".to_string(), // White
-            "#75715E".to_string(), // Bright Black
-            "#F92672".to_string(), // Bright Red
-            "#A6E22E".to_string(), // Bright Green
-            "#F4B575".to_string(), // Bright Yellow
-            "#66D9EF".to_string(), // Bright Blue
-            "#AE81FF".to_string(), // Bright Magenta
-            "#A1EFE4".to_string(), // Bright Cyan
-            "#F8F8F0".to_string(), // Bright White
-        ]),
+        colors: Some(ConfigColors {
+            black: Some("#272822".to_string()),
+            red: Some("#F92672".to_string()),
+            green: Some("#A6E22E".to_string()),
+            yellow: Some("#F4B575".to_string()),
+            blue: Some("#66D9EF".to_string()),
+            magenta: Some("#AE81FF".to_string()),
+            cyan: Some("#A1EFE4".to_string()),
+            white: Some("#F8F8F2".to_string()),
+            bright_black: Some("#75715E".to_string()),
+            bright_red: Some("#F92672".to_string()),
+            bright_green: Some("#A6E22E".to_string()),
+            bright_yellow: Some("#F4B575".to_string()),
+            bright_blue: Some("#66D9EF".to_string()),
+            bright_magenta: Some("#AE81FF".to_string()),
+            bright_cyan: Some("#A1EFE4".to_string()),
+            bright_white: Some("#F8F8F0".to_string()),
+        }),
+        enable_nerdfont: Some(true),
+        scrollback_limit: Some(1000),
     }
 }
