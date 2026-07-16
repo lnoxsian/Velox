@@ -10,4 +10,6 @@ pub enum ParserState {
     SOS,
     PM,
     APC,
+    EscapeDesignateG0,
+    EscapeDesignateG1,
 }

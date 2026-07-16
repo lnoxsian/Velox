@@ -28,7 +28,7 @@ impl AnsiParser {
                 if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
-                } else if byte == 0x0a || byte == 0x0d || byte == 0x08 || byte == 0x09 {
+                } else if byte == 0x0a || byte == 0x0d || byte == 0x08 || byte == 0x09 || byte == 0x0e || byte == 0x0f {
                     self.execute(byte, terminal);
                 } else if byte >= 0x20 {
                     self.handle_char_byte(byte, terminal);
@@ -46,10 +46,28 @@ impl AnsiParser {
                 } else if byte == b'\\' {
                     self.dispatch_osc(terminal);
                     self.state = ParserState::Ground;
+                } else if byte == b'(' {
+                    self.state = ParserState::EscapeDesignateG0;
+                } else if byte == b')' {
+                    self.state = ParserState::EscapeDesignateG1;
                 } else {
                     crate::ansi::esc::handle_escape(byte, terminal);
                     self.state = ParserState::Ground;
                 }
+            }
+            ParserState::EscapeDesignateG0 => {
+                terminal.g0_charset = match byte {
+                    b'0' => 1, // DEC Line Drawing
+                    _ => 0,    // USASCII or other
+                };
+                self.state = ParserState::Ground;
+            }
+            ParserState::EscapeDesignateG1 => {
+                terminal.g1_charset = match byte {
+                    b'0' => 1, // DEC Line Drawing
+                    _ => 0,    // USASCII or other
+                };
+                self.state = ParserState::Ground;
             }
             ParserState::CSI => {
                 if byte == b'?' {
@@ -101,6 +119,12 @@ impl AnsiParser {
                 let next_tab = (active.cursor.x + 8) & !7;
                 active.cursor.x = next_tab.min(active.width - 1);
             }
+            0x0e => {
+                terminal.active_charset = 1;
+            }
+            0x0f => {
+                terminal.active_charset = 0;
+            }
             _ => {}
         }
     }
@@ -108,7 +132,13 @@ impl AnsiParser {
     fn handle_char_byte(&mut self, byte: u8, terminal: &mut crate::terminal::terminal::Terminal) {
         self.utf8_buf.push(byte);
         if let Ok(s) = std::str::from_utf8(&self.utf8_buf) {
-            if let Some(c) = s.chars().next() {
+            if let Some(mut c) = s.chars().next() {
+                let active_charset = terminal.active_charset;
+                let charset = if active_charset == 0 { terminal.g0_charset } else { terminal.g1_charset };
+                if charset == 1 {
+                    c = Self::translate_dec_line_drawing(c);
+                }
+
                 let fg = terminal.current_fg;
                 let bg = terminal.current_bg;
                 let flags = terminal.current_flags;
@@ -119,6 +149,41 @@ impl AnsiParser {
             self.utf8_buf.clear();
         }
     }
+
+fn translate_dec_line_drawing(c: char) -> char {
+    match c {
+        '_' => ' ',
+        'q' => '─',
+        'x' => '│',
+        'm' => '└',
+        'j' => '┘',
+        'l' => '┌',
+        'k' => '┐',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'r' => '⎼',
+        's' => '⎽',
+        '`' => '◆',
+        'a' => '▒',
+        'f' => '°',
+        'g' => '±',
+        'h' => '␤',
+        'i' => '␋',
+        '~' => '·',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        _ => c,
+    }
+}
+
 
     fn parse_params(&mut self) {
         self.params.clear();

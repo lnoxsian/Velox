@@ -16,6 +16,9 @@ pub struct Terminal {
     pub cursor_keys_mode: bool,
     pub mouse_mode: u16,
     pub mouse_sgr: bool,
+    pub g0_charset: u8,
+    pub g1_charset: u8,
+    pub active_charset: u8,
 }
 
 impl Terminal {
@@ -81,6 +84,9 @@ impl Terminal {
             cursor_keys_mode: false,
             mouse_mode: 0,
             mouse_sgr: false,
+            g0_charset: 0,
+            g1_charset: 0,
+            active_charset: 0,
         }
     }
 
@@ -244,5 +250,30 @@ mod tests {
         
         // The first character of the oldest line in scrollback history should be 'l' from "line ..."
         assert_eq!(grid.scrollback.lines[0][0].character, 'l');
+    }
+
+    #[test]
+    fn test_charset_designation_and_translation() {
+        let mut term = Terminal::new(80, 24);
+        
+        // Designate G1 as DEC line drawing (\x1b)0)
+        term.feed(b"\x1b)0");
+        // Shift Out (\x0e) to activate G1
+        term.feed(b"\x0e");
+        // Feed 'q' and 'x' which should translate to '─' and '│'
+        term.feed(b"qx");
+        
+        let grid = term.active_grid();
+        assert_eq!(grid.cells[0].character, '─');
+        assert_eq!(grid.cells[1].character, '│');
+        
+        // Shift In (\x0f) to activate G0 (which defaults to USASCII)
+        term.feed(b"\x0f");
+        // Feed 'qx' again, which should not translate
+        term.feed(b"qx");
+        
+        let grid = term.active_grid();
+        assert_eq!(grid.cells[2].character, 'q');
+        assert_eq!(grid.cells[3].character, 'x');
     }
 }
