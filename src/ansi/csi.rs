@@ -23,14 +23,36 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                         4 => {
                             if i + 1 < params.len() && (params[i+1] & 0x8000) != 0 {
                                 let sub = params[i+1] & 0x7fff;
-                                if sub == 0 {
-                                    terminal.current_flags.remove(CellFlags::UNDERLINE);
-                                } else {
-                                    terminal.current_flags.insert(CellFlags::UNDERLINE);
+                                match sub {
+                                    0 => {
+                                        terminal.current_flags.remove(CellFlags::UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
+                                    }
+                                    1 => {
+                                        terminal.current_flags.insert(CellFlags::UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
+                                    }
+                                    2 => {
+                                        terminal.current_flags.remove(CellFlags::UNDERLINE);
+                                        terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
+                                    }
+                                    3..=5 => {
+                                        terminal.current_flags.remove(CellFlags::UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
+                                        terminal.current_flags.insert(CellFlags::CURLY_UNDERLINE);
+                                    }
+                                    _ => {
+                                        terminal.current_flags.insert(CellFlags::UNDERLINE);
+                                    }
                                 }
                                 i += 1;
                             } else {
                                 terminal.current_flags.insert(CellFlags::UNDERLINE);
+                                terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
+                                terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
                             }
                         }
                         5 => terminal.current_flags.insert(CellFlags::BLINK),
@@ -42,30 +64,104 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                             terminal.current_flags.remove(CellFlags::DIM);
                         }
                         23 => terminal.current_flags.remove(CellFlags::ITALIC),
-                        24 => terminal.current_flags.remove(CellFlags::UNDERLINE),
+                        24 => {
+                            terminal.current_flags.remove(CellFlags::UNDERLINE);
+                            terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
+                            terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
+                        }
                         25 => terminal.current_flags.remove(CellFlags::BLINK),
                         27 => terminal.current_flags.remove(CellFlags::REVERSE),
                         28 => terminal.current_flags.remove(CellFlags::HIDDEN),
                         29 => terminal.current_flags.remove(CellFlags::STRIKE),
                         30..=37 => terminal.current_fg = terminal.theme.get_ansi_color(code - 30, false),
                         38 => {
-                            if i + 2 < params.len() && (params[i+1] & 0x7fff) == 5 {
-                                terminal.current_fg = terminal.theme.get_256_color((params[i+2] & 0x7fff) as u8);
-                                i += 2;
-                            } else if i + 4 < params.len() && (params[i+1] & 0x7fff) == 2 {
-                                terminal.current_fg = Color { r: (params[i+2] & 0x7fff) as u8, g: (params[i+3] & 0x7fff) as u8, b: (params[i+4] & 0x7fff) as u8, a: 255 };
-                                i += 4;
+                            let mut j = i + 1;
+                            while j < params.len() && (params[j] & 0x8000) != 0 {
+                                j += 1;
+                            }
+                            let num_subs = j - (i + 1);
+
+                            if num_subs > 0 {
+                                let type_param = params[i+1] & 0x7fff;
+                                if type_param == 5 && num_subs >= 2 {
+                                    terminal.current_fg = terminal.theme.get_256_color((params[i+2] & 0x7fff) as u8);
+                                } else if type_param == 2 {
+                                    if num_subs == 4 {
+                                        terminal.current_fg = Color {
+                                            r: (params[i+2] & 0x7fff) as u8,
+                                            g: (params[i+3] & 0x7fff) as u8,
+                                            b: (params[i+4] & 0x7fff) as u8,
+                                            a: 255,
+                                        };
+                                    } else if num_subs >= 5 {
+                                        terminal.current_fg = Color {
+                                            r: (params[i+3] & 0x7fff) as u8,
+                                            g: (params[i+4] & 0x7fff) as u8,
+                                            b: (params[i+5] & 0x7fff) as u8,
+                                            a: 255,
+                                        };
+                                    }
+                                }
+                                i += num_subs;
+                            } else {
+                                if i + 2 < params.len() && params[i+1] == 5 {
+                                    terminal.current_fg = terminal.theme.get_256_color(params[i+2] as u8);
+                                    i += 2;
+                                } else if i + 4 < params.len() && params[i+1] == 2 {
+                                    terminal.current_fg = Color {
+                                        r: params[i+2] as u8,
+                                        g: params[i+3] as u8,
+                                        b: params[i+4] as u8,
+                                        a: 255,
+                                    };
+                                    i += 4;
+                                }
                             }
                         }
                         39 => terminal.current_fg = terminal.theme.default_fg,
                         40..=47 => terminal.current_bg = terminal.theme.get_ansi_color(code - 40, true),
                         48 => {
-                            if i + 2 < params.len() && (params[i+1] & 0x7fff) == 5 {
-                                terminal.current_bg = terminal.theme.get_256_color((params[i+2] & 0x7fff) as u8);
-                                i += 2;
-                            } else if i + 4 < params.len() && (params[i+1] & 0x7fff) == 2 {
-                                terminal.current_bg = Color { r: (params[i+2] & 0x7fff) as u8, g: (params[i+3] & 0x7fff) as u8, b: (params[i+4] & 0x7fff) as u8, a: 255 };
-                                i += 4;
+                            let mut j = i + 1;
+                            while j < params.len() && (params[j] & 0x8000) != 0 {
+                                j += 1;
+                            }
+                            let num_subs = j - (i + 1);
+
+                            if num_subs > 0 {
+                                let type_param = params[i+1] & 0x7fff;
+                                if type_param == 5 && num_subs >= 2 {
+                                    terminal.current_bg = terminal.theme.get_256_color((params[i+2] & 0x7fff) as u8);
+                                } else if type_param == 2 {
+                                    if num_subs == 4 {
+                                        terminal.current_bg = Color {
+                                            r: (params[i+2] & 0x7fff) as u8,
+                                            g: (params[i+3] & 0x7fff) as u8,
+                                            b: (params[i+4] & 0x7fff) as u8,
+                                            a: 255,
+                                        };
+                                    } else if num_subs >= 5 {
+                                        terminal.current_bg = Color {
+                                            r: (params[i+3] & 0x7fff) as u8,
+                                            g: (params[i+4] & 0x7fff) as u8,
+                                            b: (params[i+5] & 0x7fff) as u8,
+                                            a: 255,
+                                        };
+                                    }
+                                }
+                                i += num_subs;
+                            } else {
+                                if i + 2 < params.len() && params[i+1] == 5 {
+                                    terminal.current_bg = terminal.theme.get_256_color(params[i+2] as u8);
+                                    i += 2;
+                                } else if i + 4 < params.len() && params[i+1] == 2 {
+                                    terminal.current_bg = Color {
+                                        r: params[i+2] as u8,
+                                        g: params[i+3] as u8,
+                                        b: params[i+4] as u8,
+                                        a: 255,
+                                    };
+                                    i += 4;
+                                }
                             }
                         }
                         49 => terminal.current_bg = terminal.theme.default_bg,

@@ -16,7 +16,7 @@ pub struct GlyphUv {
 
 pub struct FallbackFont {
     pub font: FontArc,
-    pub owned_face: owned_ttf_parser::OwnedFace,
+    pub owned_face: Option<owned_ttf_parser::OwnedFace>,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
@@ -33,7 +33,9 @@ pub struct FontLoader {
     font_bold: Option<FontArc>,
     font_italic: Option<FontArc>,
     font_bold_italic: Option<FontArc>,
-    fallbacks: Vec<FallbackFont>,
+    extra_paths: Vec<String>,
+    loaded_paths: std::collections::HashSet<std::path::PathBuf>,
+    pub fallbacks: Vec<FallbackFont>,
     pub cell_width: u32,
     pub cell_height: u32,
     pub font_size: f32,
@@ -121,96 +123,52 @@ impl FontLoader {
         };
         let font_bold_italic = load_font_face(&db, &query_bold_italic);
 
-        // Load fallback fonts for symbols, Nerd Font icons, and emojis
-        let mut fallbacks = Vec::new();
-        let mut fallback_families = vec![
-            "Noto Color Emoji",
-            "DejaVu Sans",
-            "Noto Sans Symbols",
-            "Noto Sans Symbols2",
-            "Noto Emoji",
-            // CJK Monospace and Fallbacks
-            "Noto Sans Mono CJK JP",
-            "Noto Sans Mono CJK KR",
-            "Noto Sans Mono CJK SC",
-            "Noto Sans Mono CJK TC",
-            "Noto Sans Mono CJK HK",
-            "Noto Sans CJK JP",
-            "Noto Sans CJK KR",
-            "Noto Sans CJK SC",
-            "Noto Sans CJK TC",
-            "Noto Sans CJK HK",
-            "Droid Sans Fallback",
-            // Flags and Regional Indicator Symbols
-            "FreeSans",
-            "FreeMono",
-            "FreeSerif",
-            // Vector Emoji Fallback (requires fonts-symbola)
-            "Symbola",
+        let mut extra_paths = vec![
+            // Noto Color Emoji
+            "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf".to_string(),
+            "/usr/share/fonts/opentype/noto/NotoColorEmoji.otf".to_string(),
+            "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf".to_string(),
+            
+            // DejaVu Sans (symbols and wide ranges)
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
+            
+            // Noto Symbols
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf".to_string(),
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf".to_string(),
+            
+            // Noto CJK (Chinese, Japanese, Korean)
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string(),
+            "/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
+            "/usr/share/fonts/truetype/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
+            "/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc".to_string(),
+            "/usr/share/fonts/truetype/noto-cjk/NotoSansMonoCJK-Regular.ttc".to_string(),
+            
+            // Droid Sans Fallback
+            "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf".to_string(),
+            "/usr/share/fonts/truetype/droid-fallback/DroidSansFallback.ttf".to_string(),
+            
+            // GNU FreeFont
+            "/usr/share/fonts/truetype/freefont/FreeSans.ttf".to_string(),
+            "/usr/share/fonts/truetype/freefont/FreeMono.ttf".to_string(),
+            "/usr/share/fonts/truetype/freefont/FreeSerif.ttf".to_string(),
+            
+            // Symbola
+            "/usr/share/fonts/truetype/symbola/Symbola.ttf".to_string(),
         ];
+
+        // Nerd Fonts candidates
         if enable_nerdfont {
-            fallback_families.insert(0, "Symbols Nerd Font");
-            fallback_families.insert(1, "Hack Nerd Font");
-            fallback_families.insert(2, "FiraCode Nerd Font");
-        }
-        
-        for family in &fallback_families {
-            let query = fontdb::Query {
-                families: &[fontdb::Family::Name(family)],
-                weight: fontdb::Weight::NORMAL,
-                stretch: fontdb::Stretch::Normal,
-                style: fontdb::Style::Normal,
-            };
-            if let Some(id) = db.query(&query) {
-                if let Some(face) = db.face(id) {
-                    match &face.source {
-                        fontdb::Source::File(path) => {
-                            if let Ok(data) = std::fs::read(path) {
-                                if let Ok(f) = FontArc::try_from_vec(data.clone()) {
-                                    if let Ok(owned_face) = owned_ttf_parser::OwnedFace::from_vec(data, 0) {
-                                        fallbacks.push(FallbackFont { font: f, owned_face });
-                                    }
-                                }
-                            }
-                        }
-                        fontdb::Source::Binary(data) => {
-                            let bytes = data.as_ref().as_ref().to_vec();
-                            if let Ok(f) = FontArc::try_from_vec(bytes.clone()) {
-                                if let Ok(owned_face) = owned_ttf_parser::OwnedFace::from_vec(bytes, 0) {
-                                    fallbacks.push(FallbackFont { font: f, owned_face });
-                                }
-                            }
-                        }
-                        fontdb::Source::SharedFile(_, data) => {
-                            let bytes = data.as_ref().as_ref().to_vec();
-                            if let Ok(f) = FontArc::try_from_vec(bytes.clone()) {
-                                if let Ok(owned_face) = owned_ttf_parser::OwnedFace::from_vec(bytes, 0) {
-                                    fallbacks.push(FallbackFont { font: f, owned_face });
-                                }
-                            }
-                        }
-                    }
-                }
+            let home = std::env::var("HOME").unwrap_or_default();
+            extra_paths.insert(0, "/usr/share/fonts/truetype/nerdfonts/SymbolsNerdFont-Regular.ttf".to_string());
+            extra_paths.insert(1, "/usr/share/fonts/truetype/nerdfonts/SymbolsNerdFontMono-Regular.ttf".to_string());
+            if !home.is_empty() {
+                extra_paths.insert(2, format!("{}/.local/share/fonts/SymbolsNerdFont-Regular.ttf", home));
+                extra_paths.insert(3, format!("{}/.local/share/fonts/SymbolsNerdFontMono-Regular.ttf", home));
+                extra_paths.insert(4, format!("{}/.local/share/fonts/NerdFonts/SymbolsNerdFont-Regular.ttf", home));
+                extra_paths.insert(5, format!("{}/.local/share/fonts/NerdFonts/SymbolsNerdFontMono-Regular.ttf", home));
             }
         }
 
-        // Add additional common filesystem fallback paths for robustness
-        let extra_paths = [
-            "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-            "/usr/share/fonts/opentype/noto/NotoColorEmoji.otf",
-            "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ];
-        for path in &extra_paths {
-            if let Ok(data) = std::fs::read(path) {
-                if let Ok(f) = FontArc::try_from_vec(data.clone()) {
-                    if let Ok(owned_face) = owned_ttf_parser::OwnedFace::from_vec(data, 0) {
-                        fallbacks.push(FallbackFont { font: f, owned_face });
-                    }
-                }
-            }
-        }
-        
         // Measure monospace glyph dimensions
         let scale = PxScale::from(font_size);
         let scaled_font = font.as_scaled(scale);
@@ -260,7 +218,9 @@ impl FontLoader {
             font_bold,
             font_italic,
             font_bold_italic,
-            fallbacks,
+            extra_paths,
+            loaded_paths: std::collections::HashSet::new(),
+            fallbacks: Vec::new(),
             cell_width,
             cell_height,
             font_size,
@@ -310,23 +270,24 @@ impl FontLoader {
         let mut color_pixels = None;
 
         if active_font.glyph_id(base_c).0 == 0 {
+            self.load_fallback_for_char(base_c);
             for fallback in &self.fallbacks {
                 let id = fallback.font.glyph_id(base_c);
                 if id.0 != 0 {
-                    // Try to get raster image first (for color emojis)
-                    let face = fallback.owned_face.as_face_ref();
-                    let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
-                    if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16) {
-                        if img.format == owned_ttf_parser::RasterImageFormat::PNG {
-                            let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
-                            decoder.set_transformations(png::Transformations::EXPAND);
-                            if let Ok(mut reader) = decoder.read_info() {
-                                let mut buf = vec![0; reader.output_buffer_size()];
-                                if let Ok(info) = reader.next_frame(&mut buf) {
-                                    let (output_color, _) = reader.output_color_type();
-                                    if output_color == png::ColorType::Rgba {
-                                        color_pixels = Some((buf, info.width, info.height));
-                                        break;
+                    if let Some(ref face) = fallback.owned_face {
+                        let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
+                        if let Some(img) = face.as_face_ref().glyph_raster_image(ttf_glyph_id, self.cell_height as u16) {
+                            if img.format == owned_ttf_parser::RasterImageFormat::PNG {
+                                let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
+                                decoder.set_transformations(png::Transformations::EXPAND);
+                                if let Ok(mut reader) = decoder.read_info() {
+                                    let mut buf = vec![0; reader.output_buffer_size()];
+                                    if let Ok(info) = reader.next_frame(&mut buf) {
+                                        let (output_color, _) = reader.output_color_type();
+                                        if output_color == png::ColorType::Rgba {
+                                            color_pixels = Some((buf, info.width, info.height));
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -545,6 +506,41 @@ impl FontLoader {
 
         self.cache.insert(key, uv);
         uv
+    }
+
+    fn load_fallback_for_char(&mut self, c: char) {
+        for fallback in &self.fallbacks {
+            if fallback.font.glyph_id(c).0 != 0 {
+                return;
+            }
+        }
+
+        let load_fallback_helper = |path: &std::path::Path, is_emoji: bool| -> Option<FallbackFont> {
+            let data = std::fs::read(path).ok()?;
+            if is_emoji {
+                let f = FontArc::try_from_vec(data.clone()).ok()?;
+                let owned_face = owned_ttf_parser::OwnedFace::from_vec(data, 0).ok()?;
+                Some(FallbackFont { font: f, owned_face: Some(owned_face) })
+            } else {
+                let f = FontArc::try_from_vec(data).ok()?;
+                Some(FallbackFont { font: f, owned_face: None })
+            }
+        };
+
+
+        for path_str in &self.extra_paths {
+            let path = std::path::PathBuf::from(path_str);
+            if path.exists() && self.loaded_paths.insert(path.clone()) {
+                let is_emoji = path_str.to_lowercase().contains("emoji");
+                if let Some(fallback) = load_fallback_helper(&path, is_emoji) {
+                    let supports = fallback.font.glyph_id(c).0 != 0;
+                    self.fallbacks.push(fallback);
+                    if supports {
+                        return;
+                    }
+                }
+            }
+        }
     }
 }
 

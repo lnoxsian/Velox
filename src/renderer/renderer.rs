@@ -12,6 +12,7 @@ pub struct Renderer {
     viewport_width: u32,
     viewport_height: u32,
     start_time: std::time::Instant,
+    vertices: Vec<f32>,
 }
 
 impl Renderer {
@@ -107,6 +108,7 @@ impl Renderer {
                 viewport_width: 800,
                 viewport_height: 600,
                 start_time: std::time::Instant::now(),
+                vertices: Vec::with_capacity(80 * 24 * 6 * 12),
             }
         }
     }
@@ -122,7 +124,13 @@ impl Renderer {
     pub fn draw(&mut self, cells: &[Cell], cols: usize, rows: usize, cursor_x: usize, cursor_y: usize, cursor_visible: bool, default_bg: Color) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
-        let mut vertices: Vec<f32> = Vec::with_capacity(cells.len() * 6 * 12);
+        
+        let mut vertices = std::mem::take(&mut self.vertices);
+        vertices.clear();
+        let reserve_cap = cells.len() * 6 * 12;
+        if vertices.capacity() < reserve_cap {
+            vertices.reserve(reserve_cap - vertices.capacity());
+        }
 
         let elapsed = self.start_time.elapsed().as_millis();
         let blink_on = (elapsed / 500) % 2 == 0;
@@ -199,6 +207,31 @@ impl Renderer {
                     push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
                 }
 
+                if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                    let thickness = 1.0f32.max((ch * 0.08).round());
+                    let line_y2 = py + ch - thickness - 1.0;
+                    let line_y1 = line_y2 - thickness - 1.5;
+                    let (u, v) = self.font_loader.white_pixel_uv();
+                    push_quad(&mut vertices, px, line_y1, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                    push_quad(&mut vertices, px, line_y2, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                }
+
+                if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                    let thickness = 1.0f32.max((ch * 0.08).round());
+                    let line_y = py + ch - thickness - 1.5;
+                    let (u, v) = self.font_loader.white_pixel_uv();
+                    let cell_w = cw * cell_w_mult;
+                    let step = 4.0f32;
+                    let seg_w = 2.0f32;
+                    let mut sx = 0.0f32;
+                    while sx < cell_w {
+                        let draw_w = seg_w.min(cell_w - sx);
+                        let wave_offset = if ((sx / step) as i32) % 2 == 0 { 0.0 } else { -1.0 };
+                        push_quad(&mut vertices, px + sx, line_y + wave_offset, draw_w, thickness, u, v, u, v, fg, bg, false);
+                        sx += step;
+                    }
+                }
+
                 if cell.flags.contains(CellFlags::STRIKE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());
                     let line_y = py + (ch / 2.0).round() - (thickness / 2.0).round();
@@ -242,6 +275,7 @@ impl Renderer {
 
             self.gl.draw_arrays(glow::TRIANGLES, 0, (vertices.len() / 12) as i32);
         }
+        self.vertices = vertices;
     }
 }
 

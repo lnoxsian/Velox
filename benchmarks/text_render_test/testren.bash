@@ -185,6 +185,124 @@ fi
 
 #################################################
 echo
+echo "14. PROGRESS BARS & SPINNERS"
+echo
+
+spinner=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+spinner_len=${#spinner[@]}
+
+tput civis
+
+for i in {0..100..4}; do
+    filled=$((i / 4))
+    empty=$((25 - filled))
+    
+    bar=""
+    for ((k=0; k<filled; k++)); do bar="${bar}█"; done
+    for ((k=0; k<empty; k++)); do bar="${bar}░"; done
+    
+    sp_frame=${spinner[$(( (i/4) % spinner_len ))]}
+    
+    r_val=$((255 - i * 2))
+    g_val=$((i * 2))
+    b_val=$((i * 255 / 100))
+    
+    printf "\r %s \e[1mLoading:\e[0m \e[38;2;%s;%s;%sm%s\e[0m %3d%% " "$sp_frame" "$r_val" "$g_val" "$b_val" "$bar" "$i"
+    sleep 0.04
+done
+
+tput cnorm
+echo
+echo
+
+# APT-GET Install Style Progress Bar
+echo "APT-GET Install Style Progress Bar:"
+echo "Selecting previously unselected package velox-terminal..."
+echo "Preparing to unpack .../velox-terminal_0.1.0_amd64.deb ..."
+echo "Unpacking velox-terminal (0.1.0) ..."
+echo "Setting up velox-terminal (0.1.0) ..."
+
+tput civis
+for i in {0..100..5}; do
+    filled=$((i / 2))
+    empty=$((50 - filled))
+    
+    bar=""
+    for ((k=0; k<filled; k++)); do bar="${bar}#"; done
+    for ((k=0; k<empty; k++)); do bar="${bar}."; done
+    
+    printf "\rProgress: [\e[32m%3d%%\e[0m] [\e[32m%s\e[0m%s]" "$i" "$bar" ""
+    sleep 0.04
+done
+tput cnorm
+echo
+echo
+
+# DNF Install Style Progress Bar
+echo "DNF Install Style Progress Bar:"
+echo "Downloading Packages:"
+echo "velox-terminal-0.1.0-1.fc40.x86_64.rpm           |  12 MB/s |  15 MB     00:01"
+echo "Installing:"
+
+tput civis
+for i in {0..100..5}; do
+    filled=$((i / 4))
+    empty=$((25 - filled))
+    
+    bar=""
+    for ((k=0; k<filled; k++)); do bar="${bar}="; done
+    if [ $filled -lt 25 ]; then
+        bar="${bar}>"
+        empty=$((empty - 1))
+    fi
+    for ((k=0; k<empty; k++)); do bar="${bar} "; done
+    
+    printf "\rvelox-terminal-0.1.0-1.fc40.x86_64               [\e[36m%s\e[0m] %3d%%" "$bar" "$i"
+    sleep 0.04
+done
+tput cnorm
+echo
+echo
+
+# Pacman Style Eating-Pacman Progress Bar
+echo "Pacman (Arch) Style Progress Bar:"
+tput civis
+for i in {0..100..4}; do
+    filled=$((i / 4))
+    empty=$((25 - filled))
+    
+    bar=""
+    for ((k=0; k<filled; k++)); do bar="${bar}#"; done
+    
+    pacman_char="C"
+    if [ $(( (i/4) % 2 )) -eq 0 ]; then
+        pacman_char="c"
+    fi
+    
+    if [ $filled -lt 25 ]; then
+        bar="${bar}\e[33m${pacman_char}\e[0m"
+        
+        food=""
+        for ((k=0; k<empty-1; k++)); do
+            if [ $(( k % 2 )) -eq 0 ]; then
+                food="${food}-"
+            else
+                food="${food} "
+            fi
+        done
+        bar="${bar}${food}"
+    fi
+    
+    printf "\rvelox-terminal-0.1.0-1-x86_64      14.3 MiB  12.4 MiB/s 00:01 [\e[34m%b\e[0m] %3d%%" "$bar" "$i"
+    sleep 0.04
+done
+tput cnorm
+echo
+echo "Done!"
+sleep 0.5
+
+#################################################
+echo
 echo "12. CURSOR TOGGLING"
 echo
 

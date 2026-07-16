@@ -184,6 +184,156 @@ end
 
 #################################################
 echo
+echo "14. PROGRESS BARS & SPINNERS"
+echo
+
+set spinner "⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"
+set spinner_len (count $spinner)
+
+tput civis
+
+for i in (seq 0 4 100)
+    set filled (math "floor($i / 4)")
+    set empty (math "25 - $filled")
+    
+    set bar ""
+    if test $filled -gt 0
+        for k in (seq 1 $filled)
+            set bar "$bar""█"
+        end
+    end
+    if test $empty -gt 0
+        for k in (seq 1 $empty)
+            set bar "$bar""░"
+        end
+    end
+    
+    set sp_idx (math "($i / 4) % $spinner_len + 1")
+    set sp_frame $spinner[$sp_idx]
+    
+    set r_val (math "255 - $i * 2")
+    set g_val (math "$i * 2")
+    set b_val (math "floor($i * 255 / 100)")
+    
+    printf "\r %s \e[1mLoading:\e[0m \e[38;2;%s;%s;%sm%s\e[0m %3d%% " $sp_frame $r_val $g_val $b_val $bar $i
+    sleep 0.04
+end
+
+tput cnorm
+echo
+echo
+
+# APT-GET Install Style Progress Bar
+echo "APT-GET Install Style Progress Bar:"
+echo "Selecting previously unselected package velox-terminal..."
+echo "Preparing to unpack .../velox-terminal_0.1.0_amd64.deb ..."
+echo "Unpacking velox-terminal (0.1.0) ..."
+echo "Setting up velox-terminal (0.1.0) ..."
+
+tput civis
+for i in (seq 0 5 100)
+    set filled (math "floor($i / 2)")
+    set empty (math "50 - $filled")
+    
+    set bar ""
+    if test $filled -gt 0
+        for k in (seq 1 $filled)
+            set bar "$bar""#"
+        end
+    end
+    if test $empty -gt 0
+        for k in (seq 1 $empty)
+            set bar "$bar""."
+        end
+    end
+    
+    printf "\rProgress: [\e[32m%3d%%\e[0m] [\e[32m%s\e[0m%s]" $i $bar ""
+    sleep 0.04
+end
+tput cnorm
+echo
+echo
+
+# DNF Install Style Progress Bar
+echo "DNF Install Style Progress Bar:"
+echo "Downloading Packages:"
+echo "velox-terminal-0.1.0-1.fc40.x86_64.rpm           |  12 MB/s |  15 MB     00:01"
+echo "Installing:"
+
+tput civis
+for i in (seq 0 5 100)
+    set filled (math "floor($i / 4)")
+    set empty (math "25 - $filled")
+    
+    set bar ""
+    if test $filled -gt 0
+        for k in (seq 1 $filled)
+            set bar "$bar""="
+        end
+    end
+    if test $filled -lt 25
+        set bar "$bar"">"
+        set empty (math "$empty - 1")
+    end
+    if test $empty -gt 0
+        for k in (seq 1 $empty)
+            set bar "$bar"" "
+        end
+    end
+    
+    printf "\rvelox-terminal-0.1.0-1.fc40.x86_64               [\e[36m%s\e[0m] %3d%%" $bar $i
+    sleep 0.04
+end
+tput cnorm
+echo
+echo
+
+# Pacman Style Eating-Pacman Progress Bar
+echo "Pacman (Arch) Style Progress Bar:"
+tput civis
+for i in (seq 0 4 100)
+    set filled (math "floor($i / 4)")
+    set empty (math "25 - $filled")
+    
+    set bar ""
+    if test $filled -gt 0
+        for k in (seq 1 $filled)
+            set bar "$bar""#"
+        end
+    end
+    
+    set pacman_char "C"
+    if test (math "($i / 4) % 2") -eq 0
+        set pacman_char "c"
+    end
+    
+    if test $filled -lt 25
+        set bar "$bar""\e[33m$pacman_char\e[0m"
+        
+        set food ""
+        set empty_food (math "$empty - 1")
+        if test $empty_food -gt 0
+            for k in (seq 1 $empty_food)
+                if test (math "$k % 2") -eq 0
+                    set food "$food""-"
+                else
+                    set food "$food"" "
+                end
+            end
+        end
+        set bar "$bar""$food"
+    end
+    
+    printf "\rvelox-terminal-0.1.0-1-x86_64      14.3 MiB  12.4 MiB/s 00:01 [\e[34m%b\e[0m] %3d%%" $bar $i
+    sleep 0.04
+end
+tput cnorm
+echo
+echo "Done!"
+sleep 0.5
+
+#################################################
+echo
 echo "13. CURSOR TOGGLING"
 echo
 
