@@ -16,6 +16,12 @@ pub struct Config {
     pub enable_nerdfont: Option<bool>,
     #[serde(default)]
     pub scrollback_limit: Option<usize>,
+    #[serde(default)]
+    pub gpu_acceleration: Option<bool>,
+    #[serde(default)]
+    pub scroll_multiplier: Option<f64>,
+    #[serde(default)]
+    pub fps_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,5 +84,21 @@ mod tests {
         "#;
         let config_no_limit: Config = toml::from_str(toml_str_no_limit).unwrap();
         assert_eq!(config_no_limit.scrollback_limit, None);
+        assert_eq!(config_no_limit.gpu_acceleration, None);
+        assert_eq!(config_no_limit.scroll_multiplier, None);
+        assert_eq!(config_no_limit.fps_limit, None);
+
+        let toml_str_gpu = r#"
+            font_family = "monospace"
+            font_size = 14.0
+            shell = "/bin/sh"
+            gpu_acceleration = false
+            scroll_multiplier = 2.5
+            fps_limit = 60
+        "#;
+        let config_gpu: Config = toml::from_str(toml_str_gpu).unwrap();
+        assert_eq!(config_gpu.gpu_acceleration, Some(false));
+        assert_eq!(config_gpu.scroll_multiplier, Some(2.5));
+        assert_eq!(config_gpu.fps_limit, Some(60));
     }
 }

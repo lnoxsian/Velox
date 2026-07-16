@@ -80,24 +80,7 @@ impl FontLoader {
             style: fontdb::Style::Normal,
         };
 
-        let font = load_font_face(&db, &query).or_else(|| {
-            // Hardcoded fallback list if fontdb fails or returns an invalid face
-            let paths = [
-                "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-                "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-                "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
-                "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-            ];
-            for path in &paths {
-                if let Ok(data) = std::fs::read(path) {
-                    if let Ok(f) = FontArc::try_from_vec(data) {
-                        return Some(f);
-                    }
-                }
-            }
-            None
-        }).expect("Could not load any system monospace font");
+        let font = load_font_face(&db, &query).expect("Could not load any system monospace font");
 
         let query_bold = fontdb::Query {
             families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
@@ -123,49 +106,67 @@ impl FontLoader {
         };
         let font_bold_italic = load_font_face(&db, &query_bold_italic);
 
-        let mut extra_paths = vec![
-            // Noto Color Emoji
-            "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf".to_string(),
-            "/usr/share/fonts/opentype/noto/NotoColorEmoji.otf".to_string(),
-            "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf".to_string(),
-            
-            // DejaVu Sans (symbols and wide ranges)
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".to_string(),
-            
-            // Noto Symbols
-            "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf".to_string(),
-            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf".to_string(),
-            
-            // Noto CJK (Chinese, Japanese, Korean)
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".to_string(),
-            "/usr/share/fonts/opentype/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
-            "/usr/share/fonts/truetype/noto-cjk/NotoSansCJK-Regular.ttc".to_string(),
-            "/usr/share/fonts/opentype/noto/NotoSansMonoCJK-Regular.ttc".to_string(),
-            "/usr/share/fonts/truetype/noto-cjk/NotoSansMonoCJK-Regular.ttc".to_string(),
-            
-            // Droid Sans Fallback
-            "/usr/share/fonts/truetype/droid/DroidSansFallback.ttf".to_string(),
-            "/usr/share/fonts/truetype/droid-fallback/DroidSansFallback.ttf".to_string(),
-            
-            // GNU FreeFont
-            "/usr/share/fonts/truetype/freefont/FreeSans.ttf".to_string(),
-            "/usr/share/fonts/truetype/freefont/FreeMono.ttf".to_string(),
-            "/usr/share/fonts/truetype/freefont/FreeSerif.ttf".to_string(),
-            
-            // Symbola
-            "/usr/share/fonts/truetype/symbola/Symbola.ttf".to_string(),
+        let fallback_families = [
+            "Noto Color Emoji",
+            "Noto Emoji",
+            "DejaVu Sans",
+            "Noto Sans Symbols",
+            "Noto Sans Symbols2",
+            "Noto Sans CJK Regular",
+            "Noto Sans CJK JP",
+            "Noto Sans CJK KR",
+            "Noto Sans CJK SC",
+            "Noto Sans CJK TC",
+            "Noto Sans CJK HK",
+            "Droid Sans Fallback",
+            "FreeSans",
+            "FreeMono",
+            "FreeSerif",
+            "Symbola",
         ];
 
-        // Nerd Fonts candidates
+        let mut extra_paths = Vec::new();
+        for family in &fallback_families {
+            let query = fontdb::Query {
+                families: &[fontdb::Family::Name(family)],
+                weight: fontdb::Weight::NORMAL,
+                stretch: fontdb::Stretch::Normal,
+                style: fontdb::Style::Normal,
+            };
+            if let Some(id) = db.query(&query) {
+                if let Some(face) = db.face(id) {
+                    if let fontdb::Source::File(path) = &face.source {
+                        let path_str = path.to_string_lossy().to_string();
+                        if !extra_paths.contains(&path_str) {
+                            extra_paths.push(path_str);
+                        }
+                    }
+                }
+            }
+        }
+
         if enable_nerdfont {
-            let home = std::env::var("HOME").unwrap_or_default();
-            extra_paths.insert(0, "/usr/share/fonts/truetype/nerdfonts/SymbolsNerdFont-Regular.ttf".to_string());
-            extra_paths.insert(1, "/usr/share/fonts/truetype/nerdfonts/SymbolsNerdFontMono-Regular.ttf".to_string());
-            if !home.is_empty() {
-                extra_paths.insert(2, format!("{}/.local/share/fonts/SymbolsNerdFont-Regular.ttf", home));
-                extra_paths.insert(3, format!("{}/.local/share/fonts/SymbolsNerdFontMono-Regular.ttf", home));
-                extra_paths.insert(4, format!("{}/.local/share/fonts/NerdFonts/SymbolsNerdFont-Regular.ttf", home));
-                extra_paths.insert(5, format!("{}/.local/share/fonts/NerdFonts/SymbolsNerdFontMono-Regular.ttf", home));
+            let nerd_families = [
+                "Symbols Nerd Font",
+                "Symbols Nerd Font Mono",
+            ];
+            for family in &nerd_families {
+                let query = fontdb::Query {
+                    families: &[fontdb::Family::Name(family)],
+                    weight: fontdb::Weight::NORMAL,
+                    stretch: fontdb::Stretch::Normal,
+                    style: fontdb::Style::Normal,
+                };
+                if let Some(id) = db.query(&query) {
+                    if let Some(face) = db.face(id) {
+                        if let fontdb::Source::File(path) = &face.source {
+                            let path_str = path.to_string_lossy().to_string();
+                            if !extra_paths.contains(&path_str) {
+                                extra_paths.insert(0, path_str);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -534,8 +535,8 @@ impl FontLoader {
                 let is_emoji = path_str.to_lowercase().contains("emoji");
                 if let Some(fallback) = load_fallback_helper(&path, is_emoji) {
                     let supports = fallback.font.glyph_id(c).0 != 0;
-                    self.fallbacks.push(fallback);
                     if supports {
+                        self.fallbacks.push(fallback);
                         return;
                     }
                 }

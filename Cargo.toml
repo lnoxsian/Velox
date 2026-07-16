@@ -7,10 +7,8 @@ edition = "2024"
 winit = "0.30"
 glow = "0.16"
 nix = { version = "0.30", features = ["fs", "process", "term"] }
-rustix = "1"
 bytemuck = "1"
 unicode-width = "0.2"
-unicode-segmentation = "1"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
@@ -22,7 +20,6 @@ glutin-winit = "0.5"
 ab_glyph = "0.2"
 libc = "0.2"
 fontdb = "0.23"
-ttf-parser = "0.21"
 png = "0.17"
 owned_ttf_parser = "0.25"
 

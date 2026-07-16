@@ -27,5 +27,8 @@ pub fn default_config() -> Config {
         }),
         enable_nerdfont: Some(true),
         scrollback_limit: Some(1000),
+        gpu_acceleration: Some(true),
+        scroll_multiplier: Some(1.0),
+        fps_limit: Some(120),
     }
 }

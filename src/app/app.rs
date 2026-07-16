@@ -39,6 +39,9 @@ pub struct App {
     mouse_x: f64,
     mouse_y: f64,
     render_cells_buf: Vec<Cell>,
+    scroll_multiplier: f64,
+    fps_limit: Option<u32>,
+    last_frame_instant: std::time::Instant,
 }
 
 impl App {
@@ -57,6 +60,9 @@ impl App {
             mouse_x: 0.0,
             mouse_y: 0.0,
             render_cells_buf: Vec::new(),
+            scroll_multiplier: 1.0,
+            fps_limit: None,
+            last_frame_instant: std::time::Instant::now(),
         }
     }
 
@@ -135,6 +141,8 @@ impl ApplicationHandler<CustomEvent> for App {
         let config = crate::config::loader::load().unwrap_or_else(|_| {
             crate::config::defaults::default_config()
         });
+        self.scroll_multiplier = config.scroll_multiplier.unwrap_or(1.0);
+        self.fps_limit = config.fps_limit;
         let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, config.enable_nerdfont.unwrap_or(true));
         let cols = (800 / renderer.font_loader.cell_width).max(20);
         let rows = (600 / renderer.font_loader.cell_height).max(10);
@@ -233,14 +241,15 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.mouse_y = position.y;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
+                let lines_f = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => {
-                        y.round() as i32
+                        y as f64
                     }
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        (pos.y / 15.0).round() as i32
+                        pos.y / 15.0
                     }
                 };
+                let lines = (lines_f * self.scroll_multiplier).round() as i32;
                 if lines != 0 {
                     if let Some(pty_master) = &self.pty_master {
                         if let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
@@ -294,6 +303,17 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let (Some(window), Some(renderer), Some(terminal), Some(gl_surface), Some(gl_context)) = 
                    (&self.window, &mut self.renderer, &self.terminal, &self.gl_surface, &self.gl_context) 
                 {
+                    if let Some(limit) = self.fps_limit {
+                        if limit > 0 {
+                            let min_duration = std::time::Duration::from_secs_f64(1.0 / limit as f64);
+                            let elapsed = self.last_frame_instant.elapsed();
+                            if elapsed < min_duration {
+                                std::thread::sleep(min_duration - elapsed);
+                            }
+                        }
+                    }
+                    self.last_frame_instant = std::time::Instant::now();
+
                     let active_grid = terminal.active_grid();
                     let width = active_grid.width;
                     let height = active_grid.height;

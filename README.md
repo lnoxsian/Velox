@@ -72,6 +72,24 @@ cargo build --release
 
 Velox reads configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HOME/velox/config.toml`).
 
+Example configuration:
+
+```toml
+font_family = "monospace"
+font_size = 14.0
+shell = "/bin/sh"
+scrollback_limit = 1000
+
+# Enable/Disable GPU acceleration (setting to false enables software rendering)
+gpu_acceleration = true
+
+# Scroll sensitivity multiplier for mouse scrolling (e.g. 2.0 for faster scroll, 0.5 for slower)
+scroll_multiplier = 1.0
+
+# Frame rate limit (e.g. 60, 120, 144, 240, or 0 for uncapped)
+fps_limit = 120
+```
+
 ## Performance Targets
 
 - **Startup Time**: <15ms
