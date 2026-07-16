@@ -1,24 +1,26 @@
-pub mod app;
-pub mod config;
-pub mod platform;
-pub mod window;
-pub mod pty;
+#![allow(clippy::module_inception)]
+
 pub mod ansi;
-pub mod screen;
-pub mod terminal;
-pub mod parser;
-pub mod input;
-pub mod clipboard;
-pub mod selection;
-pub mod renderer;
-pub mod font;
-pub mod search;
-pub mod hyperlink;
-pub mod theme;
-pub mod cursor;
-pub mod utils;
+pub mod app;
 pub mod benchmark;
+pub mod clipboard;
+pub mod config;
+pub mod cursor;
+pub mod font;
+pub mod hyperlink;
+pub mod input;
+pub mod parser;
+pub mod platform;
 pub mod profiler;
+pub mod pty;
+pub mod renderer;
+pub mod screen;
+pub mod search;
+pub mod selection;
+pub mod terminal;
+pub mod theme;
+pub mod utils;
+pub mod window;
 
 fn main() {
     println!("Hello, Velox!");
