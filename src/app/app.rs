@@ -299,6 +299,52 @@ impl ApplicationHandler<CustomEvent> for App {
                     }
                 }
             }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if state.is_pressed() && button == winit::event::MouseButton::Left {
+                    if let (Some(renderer), Some(terminal)) = (&self.renderer, &self.terminal) {
+                        let cw = renderer.font_loader.cell_width as f64;
+                        let ch = renderer.font_loader.cell_height as f64;
+                        let col_idx = (self.mouse_x / cw).floor() as usize;
+                        let row_idx = (self.mouse_y / ch).floor() as usize;
+
+                        let active_grid = terminal.active_grid();
+                        let offset = active_grid.scroll_offset;
+                        let history_len = active_grid.scrollback.lines.len();
+
+                        if row_idx < active_grid.height && col_idx < active_grid.width {
+                            // Reconstruct the text line that was clicked, accounting for scroll offset
+                            let line_text: Option<String> = if offset == 0 {
+                                Some((0..active_grid.width)
+                                    .map(|x| active_grid.cells[row_idx * active_grid.width + x].character)
+                                    .collect())
+                            } else {
+                                let idx = row_idx + history_len - offset;
+                                if idx < history_len {
+                                    let line_slice = &active_grid.scrollback.lines[idx];
+                                    Some((0..active_grid.width)
+                                        .map(|x| line_slice.get(x).map(|c| c.character).unwrap_or(' '))
+                                        .collect())
+                                } else {
+                                    let grid_y = idx - history_len;
+                                    Some((0..active_grid.width)
+                                        .map(|x| active_grid.cells[grid_y * active_grid.width + x].character)
+                                        .collect())
+                                }
+                            };
+
+                            if let Some(line) = &line_text {
+                                let urls = crate::hyperlink::detector::highlight(line);
+                                for (start, end, url) in urls {
+                                    if col_idx >= start && col_idx < end {
+                                        let _ = crate::hyperlink::detector::open(&url);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(renderer), Some(terminal), Some(gl_surface), Some(gl_context)) = 
                    (&self.window, &mut self.renderer, &self.terminal, &self.gl_surface, &self.gl_context) 
@@ -357,6 +403,24 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let src_start = grid_y * width;
                                 let src_end = src_start + width;
                                 self.render_cells_buf[dest_start..dest_end].copy_from_slice(&active_grid.cells[src_start..src_end]);
+                            }
+                        }
+                    }
+
+                    // Auto-underline detected links in the render buffer
+                    for y in 0..height {
+                        let start_idx = y * width;
+                        let line_chars: Vec<char> = (0..width)
+                            .map(|x| self.render_cells_buf[start_idx + x].character)
+                            .collect();
+                        let line_text: String = line_chars.iter().collect();
+                        
+                        let urls = crate::hyperlink::detector::highlight(&line_text);
+                        for (start, end, _) in urls {
+                            for x in start..end {
+                                if start_idx + x < self.render_cells_buf.len() {
+                                    self.render_cells_buf[start_idx + x].flags.insert(CellFlags::UNDERLINE);
+                                }
                             }
                         }
                     }
