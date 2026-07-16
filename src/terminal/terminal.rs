@@ -114,11 +114,23 @@ impl Terminal {
     pub fn save_cursor(&mut self) {
         let active_grid = if self.is_alt_screen { &mut self.alt_grid } else { &mut self.grid };
         active_grid.saved_cursor = active_grid.cursor;
+        active_grid.saved_fg = self.current_fg;
+        active_grid.saved_bg = self.current_bg;
+        active_grid.saved_flags = self.current_flags;
+        active_grid.saved_g0_charset = self.g0_charset;
+        active_grid.saved_g1_charset = self.g1_charset;
+        active_grid.saved_active_charset = self.active_charset;
     }
 
     pub fn restore_cursor(&mut self) {
         let active_grid = if self.is_alt_screen { &mut self.alt_grid } else { &mut self.grid };
         active_grid.cursor = active_grid.saved_cursor;
+        self.current_fg = active_grid.saved_fg;
+        self.current_bg = active_grid.saved_bg;
+        self.current_flags = active_grid.saved_flags;
+        self.g0_charset = active_grid.saved_g0_charset;
+        self.g1_charset = active_grid.saved_g1_charset;
+        self.active_charset = active_grid.saved_active_charset;
     }
 
     pub fn set_alt_screen(&mut self, active: bool) {
@@ -275,5 +287,103 @@ mod tests {
         let grid = term.active_grid();
         assert_eq!(grid.cells[2].character, 'q');
         assert_eq!(grid.cells[3].character, 'x');
+    }
+
+    #[test]
+    fn test_interrupted_charset_designation() {
+        let mut term = Terminal::new(80, 24);
+        // Start a G0 designation sequence: ESC (
+        // But then interrupt it with another ESC sequence: ESC [ H (moves cursor to 1,1)
+        term.feed(b"\x1b(\x1b[1;1HA");
+        let grid = term.active_grid();
+        // The character 'A' should be printed at (0, 0)
+        assert_eq!(grid.cells[0].character, 'A');
+        assert_eq!(grid.cursor.x, 1);
+        assert_eq!(grid.cursor.y, 0);
+    }
+
+    #[test]
+    fn test_csi_save_restore_cursor() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"Hello");
+        assert_eq!(term.active_grid().cursor.x, 5);
+        assert_eq!(term.active_grid().cursor.y, 0);
+
+        // Save cursor position via CSI s
+        term.feed(b"\x1b[s");
+
+        term.feed(b" World");
+        assert_eq!(term.active_grid().cursor.x, 11);
+        assert_eq!(term.active_grid().cursor.y, 0);
+
+        // Restore cursor position via CSI u
+        term.feed(b"\x1b[u");
+        assert_eq!(term.active_grid().cursor.x, 5);
+        assert_eq!(term.active_grid().cursor.y, 0);
+    }
+
+    #[test]
+    fn test_cursor_attributes_preservation() {
+        let mut term = Terminal::new(80, 24);
+        use crate::screen::cell::CellFlags;
+        
+        // 1. Set bold and designate/activate G1 line-drawing
+        term.feed(b"\x1b[1m\x1b)0\x0e");
+        assert!(term.current_flags.contains(CellFlags::BOLD));
+        assert_eq!(term.active_charset, 1);
+        
+        // 2. Save cursor and attributes (via ESC 7)
+        term.feed(b"\x1b7");
+        
+        // 3. Clear bold, reset to G0
+        term.feed(b"\x1b[0m\x0f");
+        assert!(!term.current_flags.contains(CellFlags::BOLD));
+        assert_eq!(term.active_charset, 0);
+        
+        // 4. Restore cursor and attributes (via ESC 8)
+        term.feed(b"\x1b8");
+        assert!(term.current_flags.contains(CellFlags::BOLD));
+        assert_eq!(term.active_charset, 1);
+    }
+
+    #[test]
+    fn test_csi_line_char_editing() {
+        let mut term = Terminal::new(80, 24);
+        
+        // 1. Test CHA (CSI G) and VPA (CSI d)
+        term.feed(b"\x1b[5G\x1b[3d");
+        assert_eq!(term.active_grid().cursor.x, 4);
+        assert_eq!(term.active_grid().cursor.y, 2);
+        
+        // 2. Test ECH (CSI X)
+        term.feed(b"\x1b[1;1Hhello");
+        term.feed(b"\x1b[1;2H\x1b[3X");
+        let grid = term.active_grid();
+        assert_eq!(grid.cells[0].character, 'h');
+        assert_eq!(grid.cells[1].character, ' ');
+        assert_eq!(grid.cells[2].character, ' ');
+        assert_eq!(grid.cells[3].character, ' ');
+        assert_eq!(grid.cells[4].character, 'o');
+        
+        // 3. Test DCH (CSI P)
+        let mut term2 = Terminal::new(80, 24);
+        term2.feed(b"hello");
+        term2.feed(b"\x1b[1;2H\x1b[2P");
+        let grid2 = term2.active_grid();
+        assert_eq!(grid2.cells[0].character, 'h');
+        assert_eq!(grid2.cells[1].character, 'l');
+        assert_eq!(grid2.cells[2].character, 'o');
+        assert_eq!(grid2.cells[3].character, ' ');
+        
+        // 4. Test ICH (CSI @)
+        let mut term3 = Terminal::new(80, 24);
+        term3.feed(b"hello");
+        term3.feed(b"\x1b[1;2H\x1b[2@");
+        let grid3 = term3.active_grid();
+        assert_eq!(grid3.cells[0].character, 'h');
+        assert_eq!(grid3.cells[1].character, ' ');
+        assert_eq!(grid3.cells[2].character, ' ');
+        assert_eq!(grid3.cells[3].character, 'e');
+        assert_eq!(grid3.cells[4].character, 'l');
     }
 }

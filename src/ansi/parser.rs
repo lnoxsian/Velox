@@ -28,7 +28,7 @@ impl AnsiParser {
                 if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
-                } else if byte == 0x0a || byte == 0x0d || byte == 0x08 || byte == 0x09 || byte == 0x0e || byte == 0x0f {
+                } else if matches!(byte, 0x08 | 0x09 | 0x0a | 0x0d | 0x0e | 0x0f) {
                     self.execute(byte, terminal);
                 } else if byte >= 0x20 {
                     self.handle_char_byte(byte, terminal);
@@ -56,18 +56,28 @@ impl AnsiParser {
                 }
             }
             ParserState::EscapeDesignateG0 => {
-                terminal.g0_charset = match byte {
-                    b'0' => 1, // DEC Line Drawing
-                    _ => 0,    // USASCII or other
-                };
-                self.state = ParserState::Ground;
+                if byte == 0x1b {
+                    self.state = ParserState::Escape;
+                    self.is_private = false;
+                } else {
+                    terminal.g0_charset = match byte {
+                        b'0' => 1, // DEC Line Drawing
+                        _ => 0,    // USASCII or other
+                    };
+                    self.state = ParserState::Ground;
+                }
             }
             ParserState::EscapeDesignateG1 => {
-                terminal.g1_charset = match byte {
-                    b'0' => 1, // DEC Line Drawing
-                    _ => 0,    // USASCII or other
-                };
-                self.state = ParserState::Ground;
+                if byte == 0x1b {
+                    self.state = ParserState::Escape;
+                    self.is_private = false;
+                } else {
+                    terminal.g1_charset = match byte {
+                        b'0' => 1, // DEC Line Drawing
+                        _ => 0,    // USASCII or other
+                    };
+                    self.state = ParserState::Ground;
+                }
             }
             ParserState::CSI => {
                 if byte == b'?' {
@@ -95,7 +105,6 @@ impl AnsiParser {
                     self.osc_buf.push(byte);
                 }
             }
-            _ => { self.state = ParserState::Ground; }
         }
     }
 
@@ -130,6 +139,21 @@ impl AnsiParser {
     }
 
     fn handle_char_byte(&mut self, byte: u8, terminal: &mut crate::terminal::terminal::Terminal) {
+        if self.utf8_buf.is_empty() && byte < 0x80 {
+            let mut c = byte as char;
+            let active_charset = terminal.active_charset;
+            let charset = if active_charset == 0 { terminal.g0_charset } else { terminal.g1_charset };
+            if charset == 1 {
+                c = Self::translate_dec_line_drawing(c);
+            }
+
+            let fg = terminal.current_fg;
+            let bg = terminal.current_bg;
+            let flags = terminal.current_flags;
+            terminal.active_grid_mut().put_char(c, fg, bg, flags);
+            return;
+        }
+
         self.utf8_buf.push(byte);
         if let Ok(s) = std::str::from_utf8(&self.utf8_buf) {
             if let Some(mut c) = s.chars().next() {
@@ -170,6 +194,10 @@ fn translate_dec_line_drawing(c: char) -> char {
         's' => '⎽',
         '`' => '◆',
         'a' => '▒',
+        'b' => '␉',
+        'c' => '␌',
+        'd' => '␍',
+        'e' => '␊',
         'f' => '°',
         'g' => '±',
         'h' => '␤',
@@ -191,31 +219,47 @@ fn translate_dec_line_drawing(c: char) -> char {
             return;
         }
 
-        for part in self.param_buf.split(|&b| b == b';') {
-            if part.is_empty() {
-                self.params.push(0);
-                continue;
-            }
+        let mut current_val: Option<u16> = None;
+        let mut is_sub = false;
 
-            let mut sub_parts = part.split(|&b| b == b':');
-            if let Some(first) = sub_parts.next() {
-                let primary = std::str::from_utf8(first).ok()
-                    .and_then(|s| s.parse::<u16>().ok())
-                    .unwrap_or(0);
-                self.params.push(primary);
-
-                for sub in sub_parts {
-                    let sub_val = if sub.is_empty() {
-                        0
+        for &b in &self.param_buf {
+            match b {
+                b';' => {
+                    let val = current_val.unwrap_or(0);
+                    if is_sub {
+                        self.params.push(val | 0x8000);
                     } else {
-                        std::str::from_utf8(sub).ok()
-                            .and_then(|s| s.parse::<u16>().ok())
-                            .unwrap_or(0)
-                    };
-                    self.params.push(sub_val | 0x8000);
+                        self.params.push(val);
+                    }
+                    current_val = None;
+                    is_sub = false;
                 }
+                b':' => {
+                    let val = current_val.unwrap_or(0);
+                    if is_sub {
+                        self.params.push(val | 0x8000);
+                    } else {
+                        self.params.push(val);
+                    }
+                    current_val = None;
+                    is_sub = true;
+                }
+                b'0'..=b'9' => {
+                    let digit = (b - b'0') as u16;
+                    current_val = Some(current_val.unwrap_or(0).saturating_mul(10).saturating_add(digit));
+                }
+                _ => {}
             }
         }
+
+        // Push the final parameter
+        let val = current_val.unwrap_or(0);
+        if is_sub {
+            self.params.push(val | 0x8000);
+        } else {
+            self.params.push(val);
+        }
+
         self.param_buf.clear();
     }
 

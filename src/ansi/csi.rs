@@ -75,93 +75,15 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                         29 => terminal.current_flags.remove(CellFlags::STRIKE),
                         30..=37 => terminal.current_fg = terminal.theme.get_ansi_color(code - 30, false),
                         38 => {
-                            let mut j = i + 1;
-                            while j < params.len() && (params[j] & 0x8000) != 0 {
-                                j += 1;
-                            }
-                            let num_subs = j - (i + 1);
-
-                            if num_subs > 0 {
-                                let type_param = params[i+1] & 0x7fff;
-                                if type_param == 5 && num_subs >= 2 {
-                                    terminal.current_fg = terminal.theme.get_256_color((params[i+2] & 0x7fff) as u8);
-                                } else if type_param == 2 {
-                                    if num_subs == 4 {
-                                        terminal.current_fg = Color {
-                                            r: (params[i+2] & 0x7fff) as u8,
-                                            g: (params[i+3] & 0x7fff) as u8,
-                                            b: (params[i+4] & 0x7fff) as u8,
-                                            a: 255,
-                                        };
-                                    } else if num_subs >= 5 {
-                                        terminal.current_fg = Color {
-                                            r: (params[i+3] & 0x7fff) as u8,
-                                            g: (params[i+4] & 0x7fff) as u8,
-                                            b: (params[i+5] & 0x7fff) as u8,
-                                            a: 255,
-                                        };
-                                    }
-                                }
-                                i += num_subs;
-                            } else {
-                                if i + 2 < params.len() && params[i+1] == 5 {
-                                    terminal.current_fg = terminal.theme.get_256_color(params[i+2] as u8);
-                                    i += 2;
-                                } else if i + 4 < params.len() && params[i+1] == 2 {
-                                    terminal.current_fg = Color {
-                                        r: params[i+2] as u8,
-                                        g: params[i+3] as u8,
-                                        b: params[i+4] as u8,
-                                        a: 255,
-                                    };
-                                    i += 4;
-                                }
+                            if let Some(color) = parse_sgr_color(params, &mut i, &terminal.theme) {
+                                terminal.current_fg = color;
                             }
                         }
                         39 => terminal.current_fg = terminal.theme.default_fg,
                         40..=47 => terminal.current_bg = terminal.theme.get_ansi_color(code - 40, true),
                         48 => {
-                            let mut j = i + 1;
-                            while j < params.len() && (params[j] & 0x8000) != 0 {
-                                j += 1;
-                            }
-                            let num_subs = j - (i + 1);
-
-                            if num_subs > 0 {
-                                let type_param = params[i+1] & 0x7fff;
-                                if type_param == 5 && num_subs >= 2 {
-                                    terminal.current_bg = terminal.theme.get_256_color((params[i+2] & 0x7fff) as u8);
-                                } else if type_param == 2 {
-                                    if num_subs == 4 {
-                                        terminal.current_bg = Color {
-                                            r: (params[i+2] & 0x7fff) as u8,
-                                            g: (params[i+3] & 0x7fff) as u8,
-                                            b: (params[i+4] & 0x7fff) as u8,
-                                            a: 255,
-                                        };
-                                    } else if num_subs >= 5 {
-                                        terminal.current_bg = Color {
-                                            r: (params[i+3] & 0x7fff) as u8,
-                                            g: (params[i+4] & 0x7fff) as u8,
-                                            b: (params[i+5] & 0x7fff) as u8,
-                                            a: 255,
-                                        };
-                                    }
-                                }
-                                i += num_subs;
-                            } else {
-                                if i + 2 < params.len() && params[i+1] == 5 {
-                                    terminal.current_bg = terminal.theme.get_256_color(params[i+2] as u8);
-                                    i += 2;
-                                } else if i + 4 < params.len() && params[i+1] == 2 {
-                                    terminal.current_bg = Color {
-                                        r: params[i+2] as u8,
-                                        g: params[i+3] as u8,
-                                        b: params[i+4] as u8,
-                                        a: 255,
-                                    };
-                                    i += 4;
-                                }
+                            if let Some(color) = parse_sgr_color(params, &mut i, &terminal.theme) {
+                                terminal.current_bg = color;
                             }
                         }
                         49 => terminal.current_bg = terminal.theme.default_bg,
@@ -222,7 +144,28 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                         1000 => { terminal.mouse_mode = if active { 1000 } else { 0 }; }
                         1002 => { terminal.mouse_mode = if active { 1002 } else { 0 }; }
                         1006 => { terminal.mouse_sgr = active; }
-                        1049 => { terminal.set_alt_screen(active); }
+                        47 | 1047 => {
+                            terminal.set_alt_screen(active);
+                        }
+                        1048 => {
+                            if active {
+                                terminal.save_cursor();
+                            } else {
+                                terminal.restore_cursor();
+                            }
+                        }
+                        1049 => {
+                            if active {
+                                terminal.save_cursor();
+                                terminal.set_alt_screen(true);
+                                let fg = terminal.current_fg;
+                                let bg = terminal.current_bg;
+                                terminal.active_grid_mut().erase_display(2, fg, bg);
+                            } else {
+                                terminal.set_alt_screen(false);
+                                terminal.restore_cursor();
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -255,7 +198,119 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
         b'c' => { // Device Attributes (DA)
             terminal.send_to_shell(b"\x1b[?6c");
         }
+        b's' => { // Save Cursor
+            terminal.save_cursor();
+        }
+        b'u' => { // Restore Cursor
+            terminal.restore_cursor();
+        }
+        b'G' => { // Cursor Horizontal Absolute (CHA)
+            let col = params.first().copied().unwrap_or(1).saturating_sub(1) as usize;
+            let active = terminal.active_grid_mut();
+            active.cursor.x = col.min(active.width - 1);
+        }
+        b'd' => { // Vertical Line Position Absolute (VPA)
+            let row = params.first().copied().unwrap_or(1).saturating_sub(1) as usize;
+            let active = terminal.active_grid_mut();
+            active.cursor.y = row.min(active.height - 1);
+        }
+        b'E' => { // Cursor Next Line (CNL)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let active = terminal.active_grid_mut();
+            active.cursor.y = (active.cursor.y + n).min(active.height - 1);
+            active.cursor.x = 0;
+        }
+        b'F' => { // Cursor Previous Line (CPL)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let active = terminal.active_grid_mut();
+            active.cursor.y = active.cursor.y.saturating_sub(n);
+            active.cursor.x = 0;
+        }
+        b'X' => { // Erase Character (ECH)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let fg = terminal.current_fg;
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().erase_characters(n, fg, bg);
+        }
+        b'P' => { // Delete Character (DCH)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let fg = terminal.current_fg;
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().delete_characters(n, fg, bg);
+        }
+        b'@' => { // Insert Character (ICH)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let fg = terminal.current_fg;
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().insert_characters(n, fg, bg);
+        }
+        b'L' => { // Insert Line (IL)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let fg = terminal.current_fg;
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().insert_lines(n, fg, bg);
+        }
+        b'M' => { // Delete Line (DL)
+            let n = params.first().copied().unwrap_or(1) as usize;
+            let fg = terminal.current_fg;
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().delete_lines(n, fg, bg);
+        }
         _ => {}
+    }
+}
+
+fn parse_sgr_color(params: &[u16], i: &mut usize, theme: &crate::theme::theme::Theme) -> Option<Color> {
+    let mut j = *i + 1;
+    while j < params.len() && (params[j] & 0x8000) != 0 {
+        j += 1;
+    }
+    let num_subs = j - (*i + 1);
+
+    if num_subs > 0 {
+        let type_param = params[*i+1] & 0x7fff;
+        let color = if type_param == 5 && num_subs >= 2 {
+            Some(theme.get_256_color((params[*i+2] & 0x7fff) as u8))
+        } else if type_param == 2 {
+            if num_subs == 4 {
+                Some(Color {
+                    r: (params[*i+2] & 0x7fff) as u8,
+                    g: (params[*i+3] & 0x7fff) as u8,
+                    b: (params[*i+4] & 0x7fff) as u8,
+                    a: 255,
+                })
+            } else if num_subs >= 5 {
+                Some(Color {
+                    r: (params[*i+3] & 0x7fff) as u8,
+                    g: (params[*i+4] & 0x7fff) as u8,
+                    b: (params[*i+5] & 0x7fff) as u8,
+                    a: 255,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        *i += num_subs;
+        color
+    } else {
+        if *i + 2 < params.len() && params[*i+1] == 5 {
+            let color = Some(theme.get_256_color(params[*i+2] as u8));
+            *i += 2;
+            color
+        } else if *i + 4 < params.len() && params[*i+1] == 2 {
+            let color = Some(Color {
+                r: params[*i+2] as u8,
+                g: params[*i+3] as u8,
+                b: params[*i+4] as u8,
+                a: 255,
+            });
+            *i += 4;
+            color
+        } else {
+            None
+        }
     }
 }
 

@@ -19,6 +19,12 @@ pub struct Grid {
     pub cells: Vec<Cell>,
     pub cursor: Cursor,
     pub saved_cursor: Cursor,
+    pub saved_fg: Color,
+    pub saved_bg: Color,
+    pub saved_flags: CellFlags,
+    pub saved_g0_charset: u8,
+    pub saved_g1_charset: u8,
+    pub saved_active_charset: u8,
     pub damage: DamageTracker,
     pub scrollback: Scrollback,
     pub selection: Selection,
@@ -54,6 +60,12 @@ impl Grid {
                 shape: crate::screen::cursor::CursorShape::Block,
                 visible: true,
             },
+            saved_fg: fg,
+            saved_bg: bg,
+            saved_flags: CellFlags::empty(),
+            saved_g0_charset: 0,
+            saved_g1_charset: 0,
+            saved_active_charset: 0,
             damage: DamageTracker::new(height),
             scrollback: Scrollback::new(scrollback_limit),
             selection: Selection::new(),
@@ -269,6 +281,135 @@ impl Grid {
         // When scroll region is changed, standard terminal behavior is to home the cursor
         self.cursor.x = 0;
         self.cursor.y = 0;
+    }
+
+    pub fn erase_characters(&mut self, n: usize, fg: Color, bg: Color) {
+        let cursor_y = self.cursor.y;
+        let cursor_x = self.cursor.x;
+        if cursor_y >= self.height || cursor_x >= self.width {
+            return;
+        }
+        let start = cursor_y * self.width + cursor_x;
+        let end = (start + n).min(cursor_y * self.width + self.width);
+        let default_cell = Cell {
+            character: ' ',
+            foreground: fg,
+            background: bg,
+            flags: CellFlags::empty(),
+        };
+        for cell in &mut self.cells[start..end] {
+            *cell = default_cell;
+        }
+        self.damage.mark_dirty(cursor_y);
+    }
+
+    pub fn delete_characters(&mut self, n: usize, fg: Color, bg: Color) {
+        let cursor_y = self.cursor.y;
+        let cursor_x = self.cursor.x;
+        if cursor_y >= self.height || cursor_x >= self.width {
+            return;
+        }
+        let row_start = cursor_y * self.width;
+        let n = n.min(self.width - cursor_x);
+        let move_start = row_start + cursor_x + n;
+        let move_end = row_start + self.width;
+        let dest = row_start + cursor_x;
+        self.cells.copy_within(move_start..move_end, dest);
+
+        let default_cell = Cell {
+            character: ' ',
+            foreground: fg,
+            background: bg,
+            flags: CellFlags::empty(),
+        };
+        let fill_start = row_start + self.width - n;
+        for cell in &mut self.cells[fill_start..row_start + self.width] {
+            *cell = default_cell;
+        }
+        self.damage.mark_dirty(cursor_y);
+    }
+
+    pub fn insert_characters(&mut self, n: usize, fg: Color, bg: Color) {
+        let cursor_y = self.cursor.y;
+        let cursor_x = self.cursor.x;
+        if cursor_y >= self.height || cursor_x >= self.width {
+            return;
+        }
+        let row_start = cursor_y * self.width;
+        let n = n.min(self.width - cursor_x);
+        let move_start = row_start + cursor_x;
+        let move_end = row_start + self.width - n;
+        let dest = row_start + cursor_x + n;
+        self.cells.copy_within(move_start..move_end, dest);
+
+        let default_cell = Cell {
+            character: ' ',
+            foreground: fg,
+            background: bg,
+            flags: CellFlags::empty(),
+        };
+        for cell in &mut self.cells[move_start..move_start + n] {
+            *cell = default_cell;
+        }
+        self.damage.mark_dirty(cursor_y);
+    }
+
+    pub fn insert_lines(&mut self, n: usize, fg: Color, bg: Color) {
+        let top = self.cursor.y;
+        let bottom = self.scroll_region_bottom;
+        if top <= bottom && bottom < self.height {
+            let height_of_region = bottom - top + 1;
+            let u_delta = n.min(height_of_region);
+            if u_delta < height_of_region {
+                let src = top * self.width;
+                let dst = (top + u_delta) * self.width;
+                let count = (height_of_region - u_delta) * self.width;
+                self.cells.copy_within(src..src + count, dst);
+            }
+            let default_cell = Cell {
+                character: ' ',
+                foreground: fg,
+                background: bg,
+                flags: CellFlags::empty(),
+            };
+            let clear_start = top * self.width;
+            let clear_end = (top + u_delta) * self.width;
+            for cell in &mut self.cells[clear_start..clear_end] {
+                *cell = default_cell;
+            }
+            for y in top..=bottom {
+                self.damage.mark_dirty(y);
+            }
+        }
+    }
+
+    pub fn delete_lines(&mut self, n: usize, fg: Color, bg: Color) {
+        let top = self.cursor.y;
+        let bottom = self.scroll_region_bottom;
+        if top <= bottom && bottom < self.height {
+            let height_of_region = bottom - top + 1;
+            let u_delta = n.min(height_of_region);
+            if u_delta < height_of_region {
+                let src = (top + u_delta) * self.width;
+                let dst = top * self.width;
+                let count = (height_of_region - u_delta) * self.width;
+                self.cells.copy_within(src..src + count, dst);
+            }
+            let default_cell = Cell {
+                character: ' ',
+                foreground: fg,
+                background: bg,
+                flags: CellFlags::empty(),
+            };
+            let clear_start = (bottom + 1 - u_delta) * self.width;
+            let clear_end = (bottom + 1) * self.width;
+            for cell in &mut self.cells[clear_start..clear_end] {
+                *cell = default_cell;
+            }
+            for y in top..=bottom {
+                self.damage.mark_dirty(y);
+            }
+        }
     }
 
     pub fn erase_line(&mut self, mode: u8, fg: Color, bg: Color) {

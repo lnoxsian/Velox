@@ -4,12 +4,6 @@ pub enum ParserState {
     Escape,
     CSI,
     OSC,
-    DCS,
-    UTF8,
-    Ignore,
-    SOS,
-    PM,
-    APC,
     EscapeDesignateG0,
     EscapeDesignateG1,
 }
