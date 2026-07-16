@@ -1,4 +1,4 @@
-use crate::screen::cell::Cell;
+use crate::screen::cell::{Cell, Color, CellFlags};
 use crate::screen::cursor::Cursor;
 use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
@@ -9,6 +9,7 @@ pub struct Grid {
     pub height: usize,
     pub cells: Vec<Cell>,
     pub cursor: Cursor,
+    pub saved_cursor: Cursor,
     pub damage: DamageTracker,
     pub scrollback: Scrollback,
     pub selection: Selection,
@@ -16,55 +17,230 @@ pub struct Grid {
 
 impl Grid {
     pub fn new(width: usize, height: usize) -> Self {
+        let default_cell = Cell {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
         Self {
             width,
             height,
-            cells: Vec::new(),
+            cells: vec![default_cell; width * height],
             cursor: Cursor {
                 x: 0,
                 y: 0,
                 shape: crate::screen::cursor::CursorShape::Block,
                 visible: true,
             },
-            damage: DamageTracker::new(),
-            scrollback: Scrollback::new(),
+            saved_cursor: Cursor {
+                x: 0,
+                y: 0,
+                shape: crate::screen::cursor::CursorShape::Block,
+                visible: true,
+            },
+            damage: DamageTracker::new(height),
+            scrollback: Scrollback::new(1000),
             selection: Selection::new(),
         }
     }
 
-    pub fn put_char(&mut self, _c: char) {
-        // stub
+    pub fn put_char(&mut self, c: char, fg: Color, bg: Color, flags: CellFlags) {
+        if self.cursor.x >= self.width {
+            self.cursor.x = 0;
+            self.scroll_or_move_down();
+        }
+        let idx = self.cursor.y * self.width + self.cursor.x;
+        if idx < self.cells.len() {
+            self.cells[idx] = Cell {
+                character: c,
+                foreground: fg,
+                background: bg,
+                flags,
+            };
+            self.damage.mark_dirty(self.cursor.y);
+        }
+        self.cursor.x += 1;
+    }
+
+    pub fn scroll_or_move_down(&mut self) {
+        if self.cursor.y + 1 < self.height {
+            self.cursor.y += 1;
+        } else {
+            self.scroll(1);
+        }
+    }
+
+    pub fn scroll(&mut self, delta: i32) {
+        if delta <= 0 {
+            return;
+        }
+        let u_delta = delta as usize;
+
+        // Push lines scrolled off-screen to scrollback
+        for y in 0..u_delta.min(self.height) {
+            let start = y * self.width;
+            let end = start + self.width;
+            self.scrollback.push_line(self.cells[start..end].to_vec());
+        }
+
+        if u_delta >= self.height {
+            self.clear();
+            return;
+        }
+
+        // Shift cells up
+        self.cells.copy_within((u_delta * self.width).., 0);
+
+        // Clear bottom lines
+        let default_cell = Cell {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
+        let start = (self.height - u_delta) * self.width;
+        for cell in &mut self.cells[start..] {
+            *cell = default_cell;
+        }
+
+        // Mark all rows as damaged
+        for y in 0..self.height {
+            self.damage.mark_dirty(y);
+        }
+    }
+
+    pub fn erase_line(&mut self, mode: u8) {
+        let default_cell = Cell {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
+        let row_start = self.cursor.y * self.width;
+        match mode {
+            0 => { // Cursor to end of line
+                for x in self.cursor.x..self.width {
+                    self.cells[row_start + x] = default_cell;
+                }
+            }
+            1 => { // Start of line to cursor
+                for x in 0..=self.cursor.x.min(self.width - 1) {
+                    self.cells[row_start + x] = default_cell;
+                }
+            }
+            2 => { // Entire line
+                for x in 0..self.width {
+                    self.cells[row_start + x] = default_cell;
+                }
+            }
+            _ => {}
+        }
+        self.damage.mark_dirty(self.cursor.y);
+    }
+
+    pub fn erase_display(&mut self, mode: u8) {
+        let default_cell = Cell {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
+        match mode {
+            0 => { // Cursor to end of display
+                let start = self.cursor.y * self.width + self.cursor.x;
+                for cell in &mut self.cells[start..] {
+                    *cell = default_cell;
+                }
+                for y in self.cursor.y..self.height {
+                    self.damage.mark_dirty(y);
+                }
+            }
+            1 => { // Start of display to cursor
+                let len = self.cells.len();
+                let end = (self.cursor.y * self.width + self.cursor.x).min(len - 1);
+                for cell in &mut self.cells[0..=end] {
+                    *cell = default_cell;
+                }
+                for y in 0..=self.cursor.y {
+                    self.damage.mark_dirty(y);
+                }
+            }
+            2 | 3 => { // Entire screen
+                self.clear();
+            }
+            _ => {}
+        }
     }
 
     pub fn erase(&mut self) {
-        // stub
-    }
-
-    pub fn scroll(&mut self, _delta: i32) {
-        // stub
-    }
-
-    pub fn resize(&mut self, _cols: u32, _rows: u32) {
-        // stub
+        self.clear();
     }
 
     pub fn clear(&mut self) {
-        // stub
+        let default_cell = Cell {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
+        for cell in &mut self.cells {
+            *cell = default_cell;
+        }
+        for y in 0..self.height {
+            self.damage.mark_dirty(y);
+        }
     }
 
     pub fn copy_region(&self) -> String {
-        String::new()
+        let mut res = String::new();
+        for y in 0..self.height {
+            let row_start = y * self.width;
+            let mut line = String::new();
+            for x in 0..self.width {
+                line.push(self.cells[row_start + x].character);
+            }
+            res.push_str(line.trim_end());
+            res.push('\n');
+        }
+        res
     }
 
-    pub fn mark_dirty(&mut self, _row: usize, _col: usize) {
-        // stub
+    pub fn mark_dirty(&mut self, row: usize, _col: usize) {
+        self.damage.mark_dirty(row);
     }
 
     pub fn swap_alternate(&mut self) {
-        // stub
+        // Handled in Terminal
     }
 
     pub fn restore_main(&mut self) {
-        // stub
+        // Handled in Terminal
+    }
+
+    pub fn resize(&mut self, cols: u32, rows: u32) {
+        let new_w = cols as usize;
+        let new_h = rows as usize;
+        let default_cell = Cell {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
+        let mut new_cells = vec![default_cell; new_w * new_h];
+        for y in 0..self.height.min(new_h) {
+            for x in 0..self.width.min(new_w) {
+                new_cells[y * new_w + x] = self.cells[y * self.width + x];
+            }
+        }
+        self.cells = new_cells;
+        self.width = new_w;
+        self.height = new_h;
+        self.damage.resize(new_h);
+        for y in 0..new_h {
+            self.damage.mark_dirty(y);
+        }
+        self.cursor.x = self.cursor.x.min(new_w - 1);
+        self.cursor.y = self.cursor.y.min(new_h - 1);
     }
 }

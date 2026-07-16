@@ -1,17 +1,54 @@
+use std::os::fd::RawFd;
+
 pub struct PtyMaster {
-    // master fd
+    pub fd: RawFd,
 }
 
 impl PtyMaster {
-    pub fn read(&self, _buf: &mut [u8]) -> std::io::Result<usize> {
-        Ok(0)
+    pub fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let res = unsafe {
+            libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+        };
+        if res < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(res as usize)
+        }
     }
 
-    pub fn write(&self, _buf: &[u8]) -> std::io::Result<usize> {
-        Ok(0)
+    pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+        let res = unsafe {
+            libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len())
+        };
+        if res < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(res as usize)
+        }
     }
 
-    pub fn resize(&self, _cols: u16, _rows: u16) -> std::io::Result<()> {
-        Ok(())
+    pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
+        let ws = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let res = unsafe {
+            libc::ioctl(self.fd, libc::TIOCSWINSZ, &ws)
+        };
+        if res < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for PtyMaster {
+    fn drop(&mut self) {
+        unsafe {
+            libc::close(self.fd);
+        }
     }
 }

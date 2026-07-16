@@ -1,23 +1,33 @@
 pub struct DamageTracker {
-    // damage tracking state
+    pub dirty_rows: Vec<bool>,
 }
 
 impl DamageTracker {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(rows: usize) -> Self {
+        Self {
+            dirty_rows: vec![true; rows],
+        }
     }
 
-    pub fn mark_dirty(&mut self, _row: usize, _col: usize) {
-        // stub
+    pub fn resize(&mut self, rows: usize) {
+        self.dirty_rows.resize(rows, true);
+    }
+
+    pub fn mark_dirty(&mut self, row: usize) {
+        if row < self.dirty_rows.len() {
+            self.dirty_rows[row] = true;
+        }
     }
 
     pub fn clear(&mut self) {
-        // stub
+        for val in &mut self.dirty_rows {
+            *val = false;
+        }
     }
 }
 
 impl Default for DamageTracker {
     fn default() -> Self {
-        Self::new()
+        Self::new(24)
     }
 }
