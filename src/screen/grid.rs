@@ -3,6 +3,7 @@ use crate::screen::cursor::Cursor;
 use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
 use crate::screen::selection::Selection;
+use unicode_width::UnicodeWidthChar;
 
 pub struct Grid {
     pub width: usize,
@@ -13,14 +14,16 @@ pub struct Grid {
     pub damage: DamageTracker,
     pub scrollback: Scrollback,
     pub selection: Selection,
+    pub default_fg: Color,
+    pub default_bg: Color,
 }
 
 impl Grid {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(width: usize, height: usize, fg: Color, bg: Color) -> Self {
         let default_cell = Cell {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: fg,
+            background: bg,
             flags: CellFlags::empty(),
         };
         Self {
@@ -42,25 +45,72 @@ impl Grid {
             damage: DamageTracker::new(height),
             scrollback: Scrollback::new(1000),
             selection: Selection::new(),
+            default_fg: fg,
+            default_bg: bg,
         }
     }
 
-    pub fn put_char(&mut self, c: char, fg: Color, bg: Color, flags: CellFlags) {
-        if self.cursor.x >= self.width {
+    pub fn put_char(&mut self, c: char, fg: Color, bg: Color, mut flags: CellFlags) {
+        // Nerd Font icons and emojis are treated as double-width (w = 2) for rendering size, CJK characters are also w = 2
+        let w = if (c >= '\u{e000}' && c <= '\u{f8ff}') || c >= '\u{1f000}' {
+            2
+        } else {
+            UnicodeWidthChar::width(c).unwrap_or(1).max(1) as usize
+        };
+
+        if self.cursor.x + w > self.width {
+            // Fill rest of the row with spaces, then wrap
+            for x in self.cursor.x..self.width {
+                let idx = self.cursor.y * self.width + x;
+                if idx < self.cells.len() {
+                    self.cells[idx] = Cell {
+                        character: ' ',
+                        foreground: fg,
+                        background: bg,
+                        flags: CellFlags::empty(),
+                    };
+                }
+            }
             self.cursor.x = 0;
             self.scroll_or_move_down();
         }
-        let idx = self.cursor.y * self.width + self.cursor.x;
-        if idx < self.cells.len() {
-            self.cells[idx] = Cell {
-                character: c,
-                foreground: fg,
-                background: bg,
-                flags,
-            };
-            self.damage.mark_dirty(self.cursor.y);
+
+        if w == 2 {
+            flags.insert(CellFlags::WIDE);
+            let idx = self.cursor.y * self.width + self.cursor.x;
+            if idx < self.cells.len() {
+                self.cells[idx] = Cell {
+                    character: c,
+                    foreground: fg,
+                    background: bg,
+                    flags,
+                };
+            }
+            self.cursor.x += 1;
+
+            let idx_next = self.cursor.y * self.width + self.cursor.x;
+            if idx_next < self.cells.len() {
+                self.cells[idx_next] = Cell {
+                    character: ' ',
+                    foreground: fg,
+                    background: bg,
+                    flags: CellFlags::WIDE_CONTINUATION,
+                };
+            }
+            self.cursor.x += 1;
+        } else {
+            let idx = self.cursor.y * self.width + self.cursor.x;
+            if idx < self.cells.len() {
+                self.cells[idx] = Cell {
+                    character: c,
+                    foreground: fg,
+                    background: bg,
+                    flags,
+                };
+            }
+            self.cursor.x += 1;
         }
-        self.cursor.x += 1;
+        self.damage.mark_dirty(self.cursor.y);
     }
 
     pub fn scroll_or_move_down(&mut self) {
@@ -95,8 +145,8 @@ impl Grid {
         // Clear bottom lines
         let default_cell = Cell {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: self.default_fg,
+            background: self.default_bg,
             flags: CellFlags::empty(),
         };
         let start = (self.height - u_delta) * self.width;
@@ -113,8 +163,8 @@ impl Grid {
     pub fn erase_line(&mut self, mode: u8) {
         let default_cell = Cell {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: self.default_fg,
+            background: self.default_bg,
             flags: CellFlags::empty(),
         };
         let row_start = self.cursor.y * self.width;
@@ -142,8 +192,8 @@ impl Grid {
     pub fn erase_display(&mut self, mode: u8) {
         let default_cell = Cell {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: self.default_fg,
+            background: self.default_bg,
             flags: CellFlags::empty(),
         };
         match mode {
@@ -180,8 +230,8 @@ impl Grid {
     pub fn clear(&mut self) {
         let default_cell = Cell {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: self.default_fg,
+            background: self.default_bg,
             flags: CellFlags::empty(),
         };
         for cell in &mut self.cells {
@@ -223,8 +273,8 @@ impl Grid {
         let new_h = rows as usize;
         let default_cell = Cell {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: self.default_fg,
+            background: self.default_bg,
             flags: CellFlags::empty(),
         };
         let mut new_cells = vec![default_cell; new_w * new_h];

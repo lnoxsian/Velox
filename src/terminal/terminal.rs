@@ -17,15 +17,39 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(width: usize, height: usize) -> Self {
-        let theme = Theme::new();
+        let config = crate::config::loader::load().unwrap_or_else(|_| {
+            crate::config::defaults::default_config()
+        });
+        let mut theme = Theme::new();
+        if let Some(fg) = &config.default_fg {
+            if let Some(c) = crate::config::config::parse_hex_color(fg) {
+                theme.default_fg = c;
+            }
+        }
+        if let Some(bg) = &config.default_bg {
+            if let Some(c) = crate::config::config::parse_hex_color(bg) {
+                theme.default_bg = c;
+            }
+        }
+        if let Some(colors) = &config.ansi_colors {
+            for (i, hex) in colors.iter().enumerate().take(16) {
+                if let Some(c) = crate::config::config::parse_hex_color(hex) {
+                    theme.ansi_colors[i] = c;
+                }
+            }
+        }
+
+        let default_fg = theme.default_fg;
+        let default_bg = theme.default_bg;
+
         Self {
-            grid: Grid::new(width, height),
-            alt_grid: Grid::new(width, height),
+            grid: Grid::new(width, height, default_fg, default_bg),
+            alt_grid: Grid::new(width, height, default_fg, default_bg),
             is_alt_screen: false,
             parser: AnsiParser::new(),
             theme,
-            current_fg: Color { r: 255, g: 255, b: 255, a: 255 },
-            current_bg: Color { r: 0, g: 0, b: 0, a: 255 },
+            current_fg: default_fg,
+            current_bg: default_bg,
             current_flags: CellFlags::empty(),
             outgoing: Vec::new(),
         }

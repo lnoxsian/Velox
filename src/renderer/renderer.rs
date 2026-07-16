@@ -132,7 +132,7 @@ impl Renderer {
         }
     }
 
-    pub fn draw(&mut self, cells: &[Cell], cols: usize, rows: usize, cursor_x: usize, cursor_y: usize, cursor_visible: bool) {
+    pub fn draw(&mut self, cells: &[Cell], cols: usize, rows: usize, cursor_x: usize, cursor_y: usize, cursor_visible: bool, default_bg: Color) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
         let mut vertices: Vec<f32> = Vec::with_capacity(cells.len() * 6 * 12);
@@ -163,8 +163,14 @@ impl Renderer {
         };
 
         for y in 0..rows {
-            for x in 0..cols {
+            let mut x = 0;
+            while x < cols {
                 let cell = cells[y * cols + x];
+                if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                    x += 1;
+                    continue;
+                }
+
                 let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
                 
                 let (fg, bg) = if is_cursor {
@@ -175,15 +181,25 @@ impl Renderer {
                     (cell.foreground, cell.background)
                 };
 
-                let uv = self.font_loader.get_glyph_uv(cell.character);
+                let is_wide = cell.flags.contains(CellFlags::WIDE);
+                let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
+
+                let uv = self.font_loader.get_glyph_uv(cell.character, is_wide);
                 let px = x as f32 * cw;
                 let py = y as f32 * ch;
-                push_quad(&mut vertices, px, py, cw, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg);
+                push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg);
+
+                x += if is_wide { 2 } else { 1 };
             }
         }
 
         unsafe {
-            self.gl.clear_color(0.15, 0.15, 0.15, 1.0);
+            self.gl.clear_color(
+                default_bg.r as f32 / 255.0,
+                default_bg.g as f32 / 255.0,
+                default_bg.b as f32 / 255.0,
+                1.0,
+            );
             self.gl.clear(glow::COLOR_BUFFER_BIT);
 
             self.gl.use_program(Some(self.program));

@@ -214,6 +214,7 @@ impl ApplicationHandler<CustomEvent> for App {
                         active_grid.cursor.x,
                         active_grid.cursor.y,
                         active_grid.cursor.visible,
+                        terminal.theme.default_bg,
                     );
                     gl_surface.swap_buffers(gl_context).unwrap();
                     window.request_redraw();
