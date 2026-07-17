@@ -6,12 +6,44 @@ version := `cat VERSION | tr -d '\n\r'`
 build:
     cargo build
 
+# Build the project in release mode
+release:
+    cargo build --release
+
+# Check the project for compilation errors
+check:
+    cargo check
+
+# Run the project
+run:
+    cargo run
+
+# Run the project in release mode
+run-release:
+    cargo run --release
+
+# Run the tests
+test:
+    cargo test
+
+# Run the benchmarks
+bench:
+    cargo bench
+
 # Run linters (clippy and formatter)
 lint:
     cargo clippy --all-targets -- -D warnings
     cargo fmt --all -- --check
 
-# Update the crate version in Cargo.toml from the VERSION file
+# Update the crate version using update-version script
 update-version:
-    sed -i 's/^version = "[^"]*"/version = "{{version}}"/' Cargo.toml
+    bash scripts/update-version.sh
     cargo check
+
+# Update dependencies in Cargo.lock
+update:
+    cargo update
+
+# Clean build artifacts
+clean:
+    cargo clean
