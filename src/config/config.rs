@@ -22,6 +22,10 @@ pub struct Config {
     pub scroll_multiplier: Option<f64>,
     #[serde(default)]
     pub fps_limit: Option<u32>,
+    #[serde(default)]
+    pub bold_is_bright: Option<bool>,
+    #[serde(default)]
+    pub app_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,9 +77,13 @@ mod tests {
             font_size = 14.0
             shell = "/bin/sh"
             scrollback_limit = 30000
+            bold_is_bright = true
+            app_title = "{program} - Velox"
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.scrollback_limit, Some(30000));
+        assert_eq!(config.bold_is_bright, Some(true));
+        assert_eq!(config.app_title, Some("{program} - Velox".to_string()));
 
         let toml_str_no_limit = r#"
             font_family = "monospace"
@@ -87,6 +95,8 @@ mod tests {
         assert_eq!(config_no_limit.gpu_acceleration, None);
         assert_eq!(config_no_limit.scroll_multiplier, None);
         assert_eq!(config_no_limit.fps_limit, None);
+        assert_eq!(config_no_limit.bold_is_bright, None);
+        assert_eq!(config_no_limit.app_title, None);
 
         let toml_str_gpu = r#"
             font_family = "monospace"
@@ -95,10 +105,14 @@ mod tests {
             gpu_acceleration = false
             scroll_multiplier = 2.5
             fps_limit = 60
+            bold_is_bright = false
+            app_title = "Velox Terminal"
         "#;
         let config_gpu: Config = toml::from_str(toml_str_gpu).unwrap();
         assert_eq!(config_gpu.gpu_acceleration, Some(false));
         assert_eq!(config_gpu.scroll_multiplier, Some(2.5));
         assert_eq!(config_gpu.fps_limit, Some(60));
+        assert_eq!(config_gpu.bold_is_bright, Some(false));
+        assert_eq!(config_gpu.app_title, Some("Velox Terminal".to_string()));
     }
 }

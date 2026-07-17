@@ -42,6 +42,7 @@ pub struct App {
     scroll_multiplier: f64,
     fps_limit: Option<u32>,
     last_frame_instant: std::time::Instant,
+    current_title: String,
 }
 
 impl App {
@@ -63,6 +64,7 @@ impl App {
             scroll_multiplier: 1.0,
             fps_limit: None,
             last_frame_instant: std::time::Instant::now(),
+            current_title: String::new(),
         }
     }
 
@@ -85,8 +87,18 @@ impl App {
 
 impl ApplicationHandler<CustomEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let config = crate::config::loader::load().unwrap_or_else(|_| {
+            crate::config::defaults::default_config()
+        });
+
+        let initial_title = match &config.app_title {
+            Some(tpl) => tpl.replace("{program}", "velox"),
+            None => "velox".to_string(),
+        };
+        self.current_title = initial_title.clone();
+
         let window_attributes = Window::default_attributes()
-            .with_title("Velox Terminal")
+            .with_title(&initial_title)
             .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
 
         let template = glutin::config::ConfigTemplateBuilder::new()
@@ -138,9 +150,6 @@ impl ApplicationHandler<CustomEvent> for App {
         };
         let gl = Arc::new(gl);
 
-        let config = crate::config::loader::load().unwrap_or_else(|_| {
-            crate::config::defaults::default_config()
-        });
         self.scroll_multiplier = config.scroll_multiplier.unwrap_or(1.0);
         self.fps_limit = config.fps_limit;
         let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, config.enable_nerdfont.unwrap_or(true));
@@ -427,6 +436,20 @@ impl ApplicationHandler<CustomEvent> for App {
 
                     let cursor_visible = if offset > 0 { false } else { active_grid.cursor.visible };
 
+                    // Update window title dynamically if it changed
+                    let program = self.pty_master
+                        .as_ref()
+                        .and_then(|pty| pty.get_foreground_process_name())
+                        .unwrap_or_else(|| "velox".to_string());
+                    let title = match &terminal.app_title {
+                        Some(tpl) => tpl.replace("{program}", &program),
+                        None => program,
+                    };
+                    if self.current_title != title {
+                        window.set_title(&title);
+                        self.current_title = title;
+                    }
+
                     renderer.draw(
                         &self.render_cells_buf,
                         width,
@@ -434,7 +457,8 @@ impl ApplicationHandler<CustomEvent> for App {
                         active_grid.cursor.x,
                         active_grid.cursor.y,
                         cursor_visible,
-                        terminal.theme.default_bg,
+                        &terminal.theme,
+                        terminal.bold_is_bright,
                     );
                     gl_surface.swap_buffers(gl_context).unwrap();
                     window.request_redraw();

@@ -19,6 +19,8 @@ pub struct Terminal {
     pub g0_charset: u8,
     pub g1_charset: u8,
     pub active_charset: u8,
+    pub bold_is_bright: bool,
+    pub app_title: Option<String>,
 }
 
 impl Terminal {
@@ -70,6 +72,8 @@ impl Terminal {
 
         let enable_nerdfont = config.enable_nerdfont.unwrap_or(true);
         let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
+        let bold_is_bright = config.bold_is_bright.unwrap_or(true);
+        let app_title = config.app_title.clone();
 
         Self {
             grid: Grid::new(width, height, default_fg, default_bg, enable_nerdfont, scrollback_limit),
@@ -87,6 +91,8 @@ impl Terminal {
             g0_charset: 0,
             g1_charset: 0,
             active_charset: 0,
+            bold_is_bright,
+            app_title,
         }
     }
 

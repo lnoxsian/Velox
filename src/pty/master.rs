@@ -5,6 +5,17 @@ pub struct PtyMaster {
 }
 
 impl PtyMaster {
+    pub fn get_foreground_process_name(&self) -> Option<String> {
+        let pgid = unsafe { libc::tcgetpgrp(self.fd) };
+        if pgid < 0 {
+            return None;
+        }
+        let comm_path = format!("/proc/{}/comm", pgid);
+        std::fs::read_to_string(comm_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
     pub fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         let res = unsafe {
             libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())

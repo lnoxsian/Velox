@@ -121,7 +121,17 @@ impl Renderer {
         }
     }
 
-    pub fn draw(&mut self, cells: &[Cell], cols: usize, rows: usize, cursor_x: usize, cursor_y: usize, cursor_visible: bool, default_bg: Color) {
+    pub fn draw(
+        &mut self,
+        cells: &[Cell],
+        cols: usize,
+        rows: usize,
+        cursor_x: usize,
+        cursor_y: usize,
+        cursor_visible: bool,
+        theme: &crate::theme::theme::Theme,
+        bold_is_bright: bool,
+    ) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
         
@@ -172,12 +182,22 @@ impl Renderer {
 
                 let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
                 
+                let mut cell_fg = cell.foreground;
+                if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                    for i in 0..8 {
+                        if cell_fg == theme.ansi_colors[i] {
+                            cell_fg = theme.ansi_colors[i + 8];
+                            break;
+                        }
+                    }
+                }
+
                 let (mut fg, bg) = if is_cursor {
-                    (cell.background, cell.foreground)
+                    (cell.background, cell_fg)
                 } else if cell.flags.contains(CellFlags::REVERSE) {
-                    (cell.background, cell.foreground)
+                    (cell.background, cell_fg)
                 } else {
-                    (cell.foreground, cell.background)
+                    (cell_fg, cell.background)
                 };
 
                 if cell.flags.contains(CellFlags::DIM) {
@@ -218,15 +238,15 @@ impl Renderer {
 
                 if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());
-                    let line_y = py + ch - thickness - 1.5;
+                    let line_y = py + ch - thickness - 1.0;
                     let (u, v) = self.font_loader.white_pixel_uv();
-                    let cell_w = cw * cell_w_mult;
-                    let step = 4.0f32;
-                    let seg_w = 2.0f32;
+                    let wave_w = cw * cell_w_mult;
+                    let step = 2.0f32;
                     let mut sx = 0.0f32;
-                    while sx < cell_w {
-                        let draw_w = seg_w.min(cell_w - sx);
-                        let wave_offset = if ((sx / step) as i32) % 2 == 0 { 0.0 } else { -1.0 };
+                    while sx < wave_w {
+                        let angle = (sx / wave_w) * std::f32::consts::PI * 4.0;
+                        let wave_offset = angle.sin() * thickness * 0.5;
+                        let draw_w = step.min(wave_w - sx);
                         push_quad(&mut vertices, px + sx, line_y + wave_offset, draw_w, thickness, u, v, u, v, fg, bg, false);
                         sx += step;
                     }
@@ -245,9 +265,9 @@ impl Renderer {
 
         unsafe {
             self.gl.clear_color(
-                default_bg.r as f32 / 255.0,
-                default_bg.g as f32 / 255.0,
-                default_bg.b as f32 / 255.0,
+                theme.default_bg.r as f32 / 255.0,
+                theme.default_bg.g as f32 / 255.0,
+                theme.default_bg.b as f32 / 255.0,
                 1.0,
             );
             self.gl.clear(glow::COLOR_BUFFER_BIT);

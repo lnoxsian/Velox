@@ -30,5 +30,7 @@ pub fn default_config() -> Config {
         gpu_acceleration: Some(true),
         scroll_multiplier: Some(1.0),
         fps_limit: Some(120),
+        bold_is_bright: Some(true),
+        app_title: None,
     }
 }
