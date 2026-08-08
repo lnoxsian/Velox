@@ -60,13 +60,10 @@ pub fn paste() -> String {
     if let Ok(output) = Command::new("wl-paste")
         .arg("--no-newline")
         .output()
-    {
-        if output.status.success() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
+        && output.status.success()
+            && let Ok(text) = String::from_utf8(output.stdout) {
                 return text;
             }
-        }
-    }
 
     // 2. Try xclip
     if let Ok(output) = Command::new("xclip")
@@ -74,26 +71,20 @@ pub fn paste() -> String {
         .arg("clipboard")
         .arg("-o")
         .output()
-    {
-        if output.status.success() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
+        && output.status.success()
+            && let Ok(text) = String::from_utf8(output.stdout) {
                 return text;
             }
-        }
-    }
 
     // 3. Try xsel
     if let Ok(output) = Command::new("xsel")
         .arg("--clipboard")
         .arg("--output")
         .output()
-    {
-        if output.status.success() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
+        && output.status.success()
+            && let Ok(text) = String::from_utf8(output.stdout) {
                 return text;
             }
-        }
-    }
 
     String::new()
 }
@@ -104,13 +95,10 @@ pub fn primary_selection() -> String {
         .arg("--primary")
         .arg("--no-newline")
         .output()
-    {
-        if output.status.success() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
+        && output.status.success()
+            && let Ok(text) = String::from_utf8(output.stdout) {
                 return text;
             }
-        }
-    }
 
     // 2. Try xclip -selection primary
     if let Ok(output) = Command::new("xclip")
@@ -118,13 +106,10 @@ pub fn primary_selection() -> String {
         .arg("primary")
         .arg("-o")
         .output()
-    {
-        if output.status.success() {
-            if let Ok(text) = String::from_utf8(output.stdout) {
+        && output.status.success()
+            && let Ok(text) = String::from_utf8(output.stdout) {
                 return text;
             }
-        }
-    }
 
     String::new()
 }
@@ -133,7 +118,7 @@ pub fn primary_selection() -> String {
 const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub fn base64_encode(data: &[u8]) -> String {
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     let mut i = 0;
     while i < data.len() {
         let b0 = data[i] as u32;

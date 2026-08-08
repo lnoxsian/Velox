@@ -14,11 +14,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
     match cmd {
         // OSC 0 / OSC 2: Set window title
         "0" | "2" => {
-            if params.len() >= 2 {
-                if let Ok(title) = std::str::from_utf8(params[1]) {
+            if params.len() >= 2
+                && let Ok(title) = std::str::from_utf8(params[1]) {
                     terminal.app_title = Some(title.to_string());
                 }
-            }
         }
 
         // OSC 4: Query or set ANSI palette colors
@@ -41,11 +40,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                             idx, c.r, c.r, c.g, c.g, c.b, c.b
                         );
                         terminal.send_to_shell(resp.as_bytes());
-                    } else if let Some(c) = parse_color_spec(color_str) {
-                        if idx < 16 {
+                    } else if let Some(c) = parse_color_spec(color_str)
+                        && idx < 16 {
                             terminal.theme.ansi_colors[idx] = c;
                         }
-                    }
                 }
                 i += 2;
             }
@@ -91,8 +89,8 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
 
         // OSC 52: Clipboard read / write
         // Format: OSC 52 ; target ; data
-        "52" => {
-            if params.len() >= 2 {
+        "52"
+            if params.len() >= 2 => {
                 let (target_str, data_bytes) = if params.len() >= 3 {
                     (
                         std::str::from_utf8(params[1]).unwrap_or("c"),
@@ -116,14 +114,12 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                     terminal.send_to_shell(resp.as_bytes());
                 } else {
                     // Write decoded data to system clipboard
-                    if let Some(decoded) = crate::clipboard::clipboard::base64_decode(data_str) {
-                        if let Ok(text) = String::from_utf8(decoded) {
+                    if let Some(decoded) = crate::clipboard::clipboard::base64_decode(data_str)
+                        && let Ok(text) = String::from_utf8(decoded) {
                             crate::clipboard::clipboard::copy(&text);
                         }
-                    }
                 }
             }
-        }
 
         _ => {}
     }
@@ -131,8 +127,8 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
 
 fn parse_color_spec(s: &str) -> Option<Color> {
     let s = s.trim();
-    if s.starts_with("rgb:") {
-        let parts: Vec<&str> = s[4..].split('/').collect();
+    if let Some(rest) = s.strip_prefix("rgb:") {
+        let parts: Vec<&str> = rest.split('/').collect();
         if parts.len() == 3 {
             let parse_channel = |c_str: &str| -> Option<u8> {
                 if c_str.len() >= 4 {

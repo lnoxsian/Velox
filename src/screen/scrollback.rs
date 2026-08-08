@@ -18,14 +18,13 @@ impl Scrollback {
         if self.max_lines == 0 {
             return;
         }
-        if self.lines.len() >= self.max_lines {
-            if let Some(mut reused) = self.lines.pop_front() {
+        if self.lines.len() >= self.max_lines
+            && let Some(mut reused) = self.lines.pop_front() {
                 reused.clear();
                 reused.extend_from_slice(cells);
                 self.lines.push_back(reused);
                 return;
             }
-        }
         self.lines.push_back(cells.to_vec());
     }
 

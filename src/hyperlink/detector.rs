@@ -24,7 +24,7 @@ pub fn open(url: &str) -> std::io::Result<()> {
 ///
 /// Returns a vector of tuples containing:
 /// `(start_index, end_index, url_string)`
-pub fn highlight(text: &str) -> Vec<(usize, usize, String)> {
+pub fn detect(text: &str) -> Vec<(usize, usize, String)> {
     let mut results = Vec::new();
     let schemes = ["http://", "https://", "mailto:", "file://"];
     
@@ -70,11 +70,10 @@ pub fn highlight(text: &str) -> Vec<(usize, usize, String)> {
                 }
             }
             
-            if end_idx > abs_start + scheme.len() {
-                if let Ok(url) = std::str::from_utf8(&bytes[abs_start..end_idx]) {
+            if end_idx > abs_start + scheme.len()
+                && let Ok(url) = std::str::from_utf8(&bytes[abs_start..end_idx]) {
                     results.push((abs_start, end_idx, url.to_string()));
                 }
-            }
             
             start_search = end_idx;
         }
@@ -92,7 +91,7 @@ mod tests {
     #[test]
     fn test_highlight_urls() {
         let text = "Check out https://github.com/rust-lang/rust for more info, or email mailto:test@example.com.";
-        let urls = highlight(text);
+        let urls = detect(text);
         
         assert_eq!(urls.len(), 2);
         
@@ -106,7 +105,7 @@ mod tests {
     #[test]
     fn test_highlight_invalid_trailing() {
         let text = "Click here: https://example.com/page?ref=xyz. The page is cool.";
-        let urls = highlight(text);
+        let urls = detect(text);
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].2, "https://example.com/page?ref=xyz");
     }

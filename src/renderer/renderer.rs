@@ -136,6 +136,7 @@ impl Renderer {
         cursor_shape: crate::screen::cursor::CursorShape,
         theme: &crate::theme::theme::Theme,
         bold_is_bright: bool,
+        selection: &crate::screen::selection::Selection,
     ) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
@@ -148,7 +149,7 @@ impl Renderer {
         }
 
         let elapsed = self.start_time.elapsed().as_millis();
-        let blink_on = (elapsed / 500) % 2 == 0;
+        let blink_on = (elapsed / 500).is_multiple_of(2);
 
         let push_quad = |vertices: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, u_min: f32, v_min: f32, u_max: f32, v_max: f32, fg: Color, bg: Color, is_color: bool| {
             let fg_alpha = if is_color { 0.0 } else { 1.0 };
@@ -176,6 +177,13 @@ impl Renderer {
             vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
         };
 
+        let selection_active = selection.active;
+        let ((sel_min_x, sel_min_y), (sel_max_x, sel_max_y)) = if selection_active {
+            selection.normalized_bounds()
+        } else {
+            ((0, 0), (0, 0))
+        };
+
         for y in 0..rows {
             let mut x = 0;
             while x < cols {
@@ -186,6 +194,7 @@ impl Renderer {
                 }
 
                 let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
+                let is_selected = selection_active && selection.contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, x, y);
                 
                 let mut cell_fg = cell.foreground;
                 if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
@@ -197,9 +206,11 @@ impl Renderer {
                     }
                 }
 
-                let (mut fg, bg) = if is_cursor && cursor_shape == crate::screen::cursor::CursorShape::Block {
-                    (cell.background, cell_fg)
-                } else if cell.flags.contains(CellFlags::REVERSE) {
+                let is_inverted = (is_cursor && cursor_shape == crate::screen::cursor::CursorShape::Block)
+                    || is_selected
+                    || cell.flags.contains(CellFlags::REVERSE);
+
+                let (mut fg, bg) = if is_inverted {
                     (cell.background, cell_fg)
                 } else {
                     (cell_fg, cell.background)

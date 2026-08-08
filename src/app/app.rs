@@ -45,6 +45,11 @@ pub struct App {
     current_title: String,
     default_font_size: f32,
     current_font_size: f32,
+    is_mouse_down: bool,
+    last_click_instant: Option<std::time::Instant>,
+    last_click_pos: (usize, usize),
+    click_count: u8,
+    last_mouse_cell: (usize, usize),
 }
 
 impl App {
@@ -69,6 +74,11 @@ impl App {
             current_title: String::new(),
             default_font_size: 14.0,
             current_font_size: 14.0,
+            is_mouse_down: false,
+            last_click_instant: None,
+            last_click_pos: (0, 0),
+            click_count: 0,
+            last_mouse_cell: (usize::MAX, usize::MAX),
         }
     }
 
@@ -226,6 +236,17 @@ impl ApplicationHandler<CustomEvent> for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
+                    // Clear active text selection on any keyboard input
+                    if let Some(terminal) = &mut self.terminal {
+                        let active_grid = terminal.active_grid_mut();
+                        if active_grid.selection.active {
+                            active_grid.selection.clear();
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
+                        }
+                    }
+
                     // 1. Copy (Ctrl+Shift+C) and Paste (Ctrl+Shift+V)
                     if self.modifiers.control_key() && self.modifiers.shift_key() {
                         let key_ch = match &event.logical_key {
@@ -251,11 +272,10 @@ impl ApplicationHandler<CustomEvent> for App {
                                 return;
                             } else if ch == "v" {
                                 let text = crate::clipboard::clipboard::paste();
-                                if !text.is_empty() {
-                                    if let Some(pty_master) = &self.pty_master {
+                                if !text.is_empty()
+                                    && let Some(pty_master) = &self.pty_master {
                                         let _ = pty_master.write(text.as_bytes());
                                     }
-                                }
                                 return;
                             }
                         }
@@ -305,13 +325,12 @@ impl ApplicationHandler<CustomEvent> for App {
                                 active_grid.scroll_offset = (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
                                 return;
                             }
-                        } else if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageDown) = event.logical_key {
-                            if let Some(terminal) = &mut self.terminal {
+                        } else if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageDown) = event.logical_key
+                            && let Some(terminal) = &mut self.terminal {
                                 let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
                                 active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(active_grid.height / 2);
                                 return;
                             }
-                        }
                     }
 
                     if let Some(pty_master) = &self.pty_master {
@@ -325,6 +344,46 @@ impl ApplicationHandler<CustomEvent> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_x = position.x;
                 self.mouse_y = position.y;
+
+                if self.is_mouse_down
+                    && let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
+                        let cw = renderer.font_loader.cell_width as f64;
+                        let ch = renderer.font_loader.cell_height as f64;
+                        let col_idx = ((self.mouse_x / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
+                        let row_idx = ((self.mouse_y / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
+
+                        if (col_idx, row_idx) != self.last_mouse_cell {
+                            self.last_mouse_cell = (col_idx, row_idx);
+
+                            if terminal.mouse_mode > 0 && !self.modifiers.shift_key() {
+                                if let Some(pty_master) = &self.pty_master {
+                                    let seq = if terminal.mouse_sgr {
+                                        format!("\x1b[<32;{};{}M", col_idx + 1, row_idx + 1)
+                                    } else {
+                                        let cb = 32 + 32;
+                                        let cx = 32 + col_idx + 1;
+                                        let cy = 32 + row_idx + 1;
+                                        if cx <= 255 && cy <= 255 {
+                                            format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
+                                        } else {
+                                            String::new()
+                                        }
+                                    };
+                                    if !seq.is_empty() {
+                                        let _ = pty_master.write(seq.as_bytes());
+                                    }
+                                }
+                            } else {
+                                let active_grid = terminal.active_grid_mut();
+                                if active_grid.selection.active {
+                                    active_grid.selection.update_selection(col_idx, row_idx);
+                                    if let Some(window) = &self.window {
+                                        window.request_redraw();
+                                    }
+                                }
+                            }
+                        }
+                    }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines_f = match delta {
@@ -336,9 +395,9 @@ impl ApplicationHandler<CustomEvent> for App {
                     }
                 };
                 let lines = (lines_f * self.scroll_multiplier).round() as i32;
-                if lines != 0 {
-                    if let Some(pty_master) = &self.pty_master {
-                        if let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
+                if lines != 0
+                    && let Some(pty_master) = &self.pty_master
+                        && let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
                             let cw = renderer.font_loader.cell_width as f64;
                             let ch = renderer.font_loader.cell_height as f64;
                             let col = ((self.mouse_x / cw).floor() as i32 + 1).max(1);
@@ -348,7 +407,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let btn = if lines > 0 { 64 } else { 65 };
                                 for _ in 0..lines.abs() {
                                     let seq = if terminal.mouse_sgr {
-                                        format!("\x1b[<{};{};{}M", btn, col, row)
+                                        format!("\x1b[<32;{};{}M", col, row)
                                     } else {
                                         let cb = 32 + btn;
                                         let cx = 32 + col;
@@ -378,52 +437,162 @@ impl ApplicationHandler<CustomEvent> for App {
                                 if lines > 0 {
                                     active_grid.scroll_offset = (active_grid.scroll_offset + lines as usize).min(history_len);
                                 } else if lines < 0 {
-                                    active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(lines.abs() as usize);
+                                    active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(lines.unsigned_abs() as usize);
                                 }
                             }
                         }
-                    }
-                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if state.is_pressed() && button == winit::event::MouseButton::Left {
-                    if let (Some(renderer), Some(terminal)) = (&self.renderer, &self.terminal) {
-                        let cw = renderer.font_loader.cell_width as f64;
-                        let ch = renderer.font_loader.cell_height as f64;
-                        let col_idx = (self.mouse_x / cw).floor() as usize;
-                        let row_idx = (self.mouse_y / ch).floor() as usize;
+                if button == winit::event::MouseButton::Left {
+                    if state.is_pressed() {
+                        self.is_mouse_down = true;
+                        if let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
+                            let cw = renderer.font_loader.cell_width as f64;
+                            let ch = renderer.font_loader.cell_height as f64;
+                            let col_idx = (self.mouse_x / cw).floor() as usize;
+                            let row_idx = (self.mouse_y / ch).floor() as usize;
 
-                        let active_grid = terminal.active_grid();
-                        let offset = active_grid.scroll_offset;
-                        let history_len = active_grid.scrollback.lines.len();
+                            let mouse_mode = terminal.mouse_mode;
+                            let mouse_sgr = terminal.mouse_sgr;
+                            let active_grid = terminal.active_grid_mut();
+                            let grid_width = active_grid.width;
+                            let grid_height = active_grid.height;
 
-                        if row_idx < active_grid.height && col_idx < active_grid.width {
-                            // Reconstruct the text line that was clicked, accounting for scroll offset
-                            let line_text: Option<String> = if offset == 0 {
-                                Some((0..active_grid.width)
-                                    .map(|x| active_grid.cells[row_idx * active_grid.width + x].character)
-                                    .collect())
-                            } else {
-                                let idx = row_idx + history_len - offset;
-                                if idx < history_len {
-                                    let line_slice = &active_grid.scrollback.lines[idx];
-                                    Some((0..active_grid.width)
-                                        .map(|x| line_slice.get(x).map(|c| c.character).unwrap_or(' '))
-                                        .collect())
+                            if col_idx < grid_width && row_idx < grid_height {
+                                let now = std::time::Instant::now();
+                                let is_double_click = if let Some(last_time) = self.last_click_instant {
+                                    self.last_click_pos == (col_idx, row_idx) && last_time.elapsed().as_millis() < 400
                                 } else {
-                                    let grid_y = idx - history_len;
-                                    Some((0..active_grid.width)
-                                        .map(|x| active_grid.cells[grid_y * active_grid.width + x].character)
-                                        .collect())
-                                }
-                            };
+                                    false
+                                };
 
-                            if let Some(line) = &line_text {
-                                let urls = crate::hyperlink::detector::highlight(line);
-                                for (start, end, url) in urls {
-                                    if col_idx >= start && col_idx < end {
-                                        let _ = crate::hyperlink::detector::open(&url);
-                                        break;
+                                if is_double_click {
+                                    self.click_count = (self.click_count % 3) + 1;
+                                } else {
+                                    self.click_count = 1;
+                                }
+                                self.last_click_instant = Some(now);
+                                self.last_click_pos = (col_idx, row_idx);
+
+                                if mouse_mode > 0 && !self.modifiers.shift_key() {
+                                    if let Some(pty_master) = &self.pty_master {
+                                        let seq = if mouse_sgr {
+                                            format!("\x1b[<0;{};{}M", col_idx + 1, row_idx + 1)
+                                        } else {
+                                            let cb = 32;
+                                            let cx = 32 + col_idx + 1;
+                                            let cy = 32 + row_idx + 1;
+                                            if cx <= 255 && cy <= 255 {
+                                                format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
+                                            } else {
+                                                String::new()
+                                            }
+                                        };
+                                        if !seq.is_empty() {
+                                            let _ = pty_master.write(seq.as_bytes());
+                                        }
+                                    }
+                                } else {
+                                    let mut url_opened = false;
+                                    let line_text: String = (0..grid_width)
+                                        .map(|x| active_grid.cells[row_idx * grid_width + x].character)
+                                        .collect();
+                                    let urls = crate::hyperlink::detector::detect(&line_text);
+                                    for (start, end, url) in urls {
+                                        if col_idx >= start && col_idx < end {
+                                            let _ = crate::hyperlink::detector::open(&url);
+                                            url_opened = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if !url_opened {
+                                        match self.click_count {
+                                            1 => {
+                                                if self.modifiers.shift_key() && active_grid.selection.active {
+                                                    active_grid.selection.update_selection(col_idx, row_idx);
+                                                } else {
+                                                    active_grid.selection.start_selection(col_idx, row_idx);
+                                                }
+                                            }
+                                            2 => {
+                                                active_grid.selection.select_word(grid_width, grid_height, &active_grid.cells, col_idx, row_idx);
+                                                let text = active_grid.selection.extract_text(grid_width, grid_height, &active_grid.cells);
+                                                if !text.is_empty() {
+                                                    crate::clipboard::clipboard::copy(&text);
+                                                }
+                                            }
+                                            3 => {
+                                                active_grid.selection.select_line(grid_width, grid_height, row_idx);
+                                                let text = active_grid.selection.extract_text(grid_width, grid_height, &active_grid.cells);
+                                                if !text.is_empty() {
+                                                    crate::clipboard::clipboard::copy(&text);
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+
+                                        if self.click_count == 1 && row_idx == active_grid.cursor.y {
+                                            let cursor_x = active_grid.cursor.x;
+                                            if let Some(pty_master) = &self.pty_master {
+                                                if col_idx < cursor_x {
+                                                    let diff = cursor_x - col_idx;
+                                                    let seq = b"\x1b[D".repeat(diff);
+                                                    let _ = pty_master.write(&seq);
+                                                } else if col_idx > cursor_x {
+                                                    let diff = col_idx - cursor_x;
+                                                    let seq = b"\x1b[C".repeat(diff);
+                                                    let _ = pty_master.write(&seq);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(window) = &self.window {
+                                        window.request_redraw();
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        self.is_mouse_down = false;
+                        if let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
+                            let cw = renderer.font_loader.cell_width as f64;
+                            let ch = renderer.font_loader.cell_height as f64;
+                            let col_idx = (self.mouse_x / cw).floor() as usize;
+                            let row_idx = (self.mouse_y / ch).floor() as usize;
+
+                            let mouse_mode = terminal.mouse_mode;
+                            let mouse_sgr = terminal.mouse_sgr;
+                            if mouse_mode > 0 && !self.modifiers.shift_key() {
+                                if let Some(pty_master) = &self.pty_master {
+                                    let seq = if mouse_sgr {
+                                        format!("\x1b[<0;{};{}m", col_idx + 1, row_idx + 1)
+                                    } else {
+                                        let cb = 32 + 3;
+                                        let cx = 32 + col_idx + 1;
+                                        let cy = 32 + row_idx + 1;
+                                        if cx <= 255 && cy <= 255 {
+                                            format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
+                                        } else {
+                                            String::new()
+                                        }
+                                    };
+                                    if !seq.is_empty() {
+                                        let _ = pty_master.write(seq.as_bytes());
+                                    }
+                                }
+                            } else {
+                                let active_grid = terminal.active_grid_mut();
+                                if active_grid.selection.active {
+                                    let text = active_grid.selection.extract_text(active_grid.width, active_grid.height, &active_grid.cells);
+                                    if !text.is_empty() && (active_grid.selection.start_x != active_grid.selection.end_x || active_grid.selection.start_y != active_grid.selection.end_y) {
+                                        crate::clipboard::clipboard::copy(&text);
+                                    } else if active_grid.selection.start_x == active_grid.selection.end_x && active_grid.selection.start_y == active_grid.selection.end_y {
+                                        active_grid.selection.clear();
+                                        if let Some(window) = &self.window {
+                                            window.request_redraw();
+                                        }
                                     }
                                 }
                             }
@@ -435,15 +604,14 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let (Some(window), Some(renderer), Some(terminal), Some(gl_surface), Some(gl_context)) = 
                    (&self.window, &mut self.renderer, &self.terminal, &self.gl_surface, &self.gl_context) 
                 {
-                    if let Some(limit) = self.fps_limit {
-                        if limit > 0 {
+                    if let Some(limit) = self.fps_limit
+                        && limit > 0 {
                             let min_duration = std::time::Duration::from_secs_f64(1.0 / limit as f64);
                             let elapsed = self.last_frame_instant.elapsed();
                             if elapsed < min_duration {
                                 std::thread::sleep(min_duration - elapsed);
                             }
                         }
-                    }
                     self.last_frame_instant = std::time::Instant::now();
 
                     let active_grid = terminal.active_grid();
@@ -488,25 +656,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let grid_y = idx - history_len;
                                 let src_start = grid_y * width;
                                 let src_end = src_start + width;
-                                self.render_cells_buf[dest_start..dest_end].copy_from_slice(&active_grid.cells[src_start..src_end]);
-                            }
-                        }
-                    }
-
-                    // Auto-underline detected links in the render buffer
-                    for y in 0..height {
-                        let start_idx = y * width;
-                        let line_chars: Vec<char> = (0..width)
-                            .map(|x| self.render_cells_buf[start_idx + x].character)
-                            .collect();
-                        let line_text: String = line_chars.iter().collect();
-                        
-                        let urls = crate::hyperlink::detector::highlight(&line_text);
-                        for (start, end, _) in urls {
-                            for x in start..end {
-                                if start_idx + x < self.render_cells_buf.len() {
-                                    self.render_cells_buf[start_idx + x].flags.insert(CellFlags::UNDERLINE);
-                                }
+                                 self.render_cells_buf[dest_start..dest_end].copy_from_slice(&active_grid.cells[src_start..src_end]);
                             }
                         }
                     }
@@ -537,6 +687,7 @@ impl ApplicationHandler<CustomEvent> for App {
                         active_grid.cursor.shape,
                         &terminal.theme,
                         terminal.bold_is_bright,
+                        &active_grid.selection,
                     );
                     gl_surface.swap_buffers(gl_context).unwrap();
                     window.request_redraw();

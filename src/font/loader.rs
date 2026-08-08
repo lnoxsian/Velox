@@ -126,7 +126,7 @@ impl FontLoader {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             
-            let white_pixels = vec![255u8; 2 * 2 * 4];
+            let white_pixels = [255u8; 2 * 2 * 4];
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -156,7 +156,7 @@ impl FontLoader {
             atlas_width,
             atlas_height,
             cache: HashMap::new(),
-            next_x: 2,
+            next_x: 4,
             next_y: 0,
         }
     }
@@ -173,11 +173,11 @@ impl FontLoader {
         self.cell_height = (scaled_font.ascent() - scaled_font.descent() + scaled_font.line_gap()).round() as u32;
 
         self.cache.clear();
-        self.next_x = 2;
+        self.next_x = 4;
         self.next_y = 0;
 
         unsafe {
-            let white_square = vec![255u8; 2 * 2 * 4];
+            let white_square = [255u8; 2 * 2 * 4];
             self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
             self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.tex_image_2d(
@@ -211,7 +211,7 @@ impl FontLoader {
             return *uv;
         }
         
-        let seq = if c >= '\u{100000}' && c <= '\u{10ffff}' {
+        let seq = if ('\u{100000}'..='\u{10ffff}').contains(&c) {
             let reg_idx = (c as u32 - 0x100000) as usize;
             if let Ok(registry) = crate::screen::grid::get_combining_registry().lock() {
                 if reg_idx < registry.len() {
@@ -235,15 +235,15 @@ impl FontLoader {
         };
         let mut color_pixels = None;
 
-        if active_font.glyph_id(base_c).0 == 0 {
-            if let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c, self.enable_nerdfont) {
+        if active_font.glyph_id(base_c).0 == 0
+            && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c, self.enable_nerdfont) {
                 let fallback = &self.fallback_manager.fallbacks[idx];
                 let id = fallback.font.glyph_id(base_c);
-                if id.0 != 0 {
-                    if let Some(ref face) = fallback.owned_face {
+                if id.0 != 0
+                    && let Some(ref face) = fallback.owned_face {
                         let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
-                        if let Some(img) = face.as_face_ref().glyph_raster_image(ttf_glyph_id, self.cell_height as u16) {
-                            if img.format == owned_ttf_parser::RasterImageFormat::PNG {
+                        if let Some(img) = face.as_face_ref().glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
+                            && img.format == owned_ttf_parser::RasterImageFormat::PNG {
                                 let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
                                 decoder.set_transformations(png::Transformations::EXPAND);
                                 if let Ok(mut reader) = decoder.read_info() {
@@ -256,11 +256,8 @@ impl FontLoader {
                                     }
                                 }
                             }
-                        }
                     }
-                }
             }
-        }
 
         let target_width = if is_wide { self.cell_width * 2 } else { self.cell_width };
         let mut rgba_pixels = vec![0u8; (target_width * self.cell_height * 4) as usize];
@@ -310,8 +307,8 @@ impl FontLoader {
                 };
                 let mut char_glyph_id = char_font.glyph_id(ch);
                 
-                if char_glyph_id.0 == 0 {
-                    if let Some(idx) = self.fallback_manager.find_fallback_for_char(ch, self.enable_nerdfont) {
+                if char_glyph_id.0 == 0
+                    && let Some(idx) = self.fallback_manager.find_fallback_for_char(ch, self.enable_nerdfont) {
                         let fallback = &self.fallback_manager.fallbacks[idx];
                         let id = fallback.font.glyph_id(ch);
                         if id.0 != 0 {
@@ -319,7 +316,6 @@ impl FontLoader {
                             char_glyph_id = id;
                         }
                     }
-                }
                 
                 if char_glyph_id.0 != 0 {
                     let scale = PxScale::from(self.font_size);
@@ -332,11 +328,10 @@ impl FontLoader {
                         let mut x_offset = bounds.min.x;
                         let y_offset = ascent + bounds.min.y;
 
-                        if ch_idx > 0 && unicode_width::UnicodeWidthChar::width(ch) == Some(0) {
-                            if bounds.max.x <= 1.0 {
+                        if ch_idx > 0 && unicode_width::UnicodeWidthChar::width(ch) == Some(0)
+                            && bounds.max.x <= 1.0 {
                                 x_offset += target_width as f32;
                             }
-                        }
 
                         outlined.draw(|gx, gy, alpha| {
                             let px = (x_offset + gx as f32).round() as i32;
@@ -363,14 +358,15 @@ impl FontLoader {
             }
         }
         
-        if self.next_x + target_width > self.atlas_width {
+        let pad = 2;
+        if self.next_x + target_width + pad > self.atlas_width {
             self.next_x = 0;
-            self.next_y += self.cell_height;
+            self.next_y += self.cell_height + pad;
         }
         
-        if self.next_y + self.cell_height > self.atlas_height {
+        if self.next_y + self.cell_height + pad > self.atlas_height {
             self.cache.clear();
-            self.next_x = 2;
+            self.next_x = 4;
             self.next_y = 0;
             unsafe {
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
@@ -386,7 +382,7 @@ impl FontLoader {
                     glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(None),
                 );
-                let white_pixels = vec![255u8; 2 * 2 * 4];
+                let white_pixels = [255u8; 2 * 2 * 4];
                 self.gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
                     0,
@@ -420,7 +416,7 @@ impl FontLoader {
             );
         }
         
-        self.next_x += target_width;
+        self.next_x += target_width + pad;
 
         let uv = GlyphUv {
             u_min: ox as f32 / self.atlas_width as f32,

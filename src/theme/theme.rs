@@ -42,9 +42,9 @@ impl Theme {
             self.ansi_colors[idx as usize]
         } else if idx < 232 {
             let val = idx - 16;
-            let r = ((val / 36) * 51).min(255);
-            let g = (((val % 36) / 6) * 51).min(255);
-            let b = ((val % 6) * 51).min(255);
+            let r = (val / 36) * 51;
+            let g = ((val % 36) / 6) * 51;
+            let b = (val % 6) * 51;
             Color { r, g, b, a: 255 }
         } else {
             let gray = 8 + (idx - 232) * 10;

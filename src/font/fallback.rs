@@ -15,6 +15,12 @@ pub struct FallbackManager {
     missing_chars: HashSet<char>,
 }
 
+impl Default for FallbackManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FallbackManager {
     pub fn new() -> Self {
         let mut db = Database::new();
@@ -42,9 +48,9 @@ impl FallbackManager {
 
         // 3. Check popular Nerd Font & Symbol families directly
         let is_symbol_or_pua = enable_nerdfont
-            || (c >= '\u{e000}' && c <= '\u{f8ff}')
-            || (c >= '\u{f0000}' && c <= '\u{ffffd}')
-            || (c >= '\u{2300}' && c <= '\u{2bff}');
+            || ('\u{e000}'..='\u{f8ff}').contains(&c)
+            || ('\u{f0000}'..='\u{ffffd}').contains(&c)
+            || ('\u{2300}'..='\u{2bff}').contains(&c);
 
         if is_symbol_or_pua {
             let nerd_families = [
@@ -65,33 +71,27 @@ impl FallbackManager {
                     stretch: fontdb::Stretch::Normal,
                     style: fontdb::Style::Normal,
                 };
-                if let Some(id) = self.db.query(&query) {
-                    if let Some(face) = self.db.face(id) {
-                        if let fontdb::Source::File(path) = &face.source {
-                            if !self.loaded_paths.contains(path) {
-                                if let Ok(data) = std::fs::read(path) {
-                                    if let Ok(font) = FontArc::try_from_vec(data) {
-                                        if font.glyph_id(c).0 != 0 {
+                if let Some(id) = self.db.query(&query)
+                    && let Some(face) = self.db.face(id)
+                        && let fontdb::Source::File(path) = &face.source
+                            && !self.loaded_paths.contains(path)
+                                && let Ok(data) = std::fs::read(path)
+                                    && let Ok(font) = FontArc::try_from_vec(data)
+                                        && font.glyph_id(c).0 != 0 {
                                             self.loaded_paths.insert(path.clone());
                                             self.fallbacks.push(FallbackFont { font, owned_face: None });
                                             return Some(self.fallbacks.len() - 1);
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
 
         // 4. Scan system font faces in fontdb
         for face in self.db.faces() {
-            if let fontdb::Source::File(path) = &face.source {
-                if !self.loaded_paths.contains(path) {
-                    if let Ok(data) = std::fs::read(path) {
-                        if let Ok(font) = FontArc::try_from_vec(data.clone()) {
-                            if font.glyph_id(c).0 != 0 {
+            if let fontdb::Source::File(path) = &face.source
+                && !self.loaded_paths.contains(path)
+                    && let Ok(data) = std::fs::read(path)
+                        && let Ok(font) = FontArc::try_from_vec(data.clone())
+                            && font.glyph_id(c).0 != 0 {
                                 self.loaded_paths.insert(path.clone());
                                 let path_str = path.to_string_lossy().to_lowercase();
                                 let is_emoji = path_str.contains("emoji");
@@ -103,10 +103,6 @@ impl FallbackManager {
                                 self.fallbacks.push(FallbackFont { font, owned_face });
                                 return Some(self.fallbacks.len() - 1);
                             }
-                        }
-                    }
-                }
-            }
         }
 
         // Mark as missing to optimize future lookups

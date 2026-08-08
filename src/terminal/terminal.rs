@@ -31,16 +31,14 @@ impl Terminal {
             crate::config::defaults::default_config()
         });
         let mut theme = Theme::new();
-        if let Some(fg) = &config.default_fg {
-            if let Some(c) = crate::config::config::parse_hex_color(fg) {
+        if let Some(fg) = &config.default_fg
+            && let Some(c) = crate::config::config::parse_hex_color(fg) {
                 theme.default_fg = c;
             }
-        }
-        if let Some(bg) = &config.default_bg {
-            if let Some(c) = crate::config::config::parse_hex_color(bg) {
+        if let Some(bg) = &config.default_bg
+            && let Some(c) = crate::config::config::parse_hex_color(bg) {
                 theme.default_bg = c;
             }
-        }
         if let Some(colors) = &config.colors {
             let fields = [
                 (&colors.black, 0),
@@ -61,11 +59,10 @@ impl Terminal {
                 (&colors.bright_white, 15),
             ];
             for (opt, idx) in &fields {
-                if let Some(hex) = opt {
-                    if let Some(c) = crate::config::config::parse_hex_color(hex) {
+                if let Some(hex) = opt
+                    && let Some(c) = crate::config::config::parse_hex_color(hex) {
                         theme.ansi_colors[*idx] = c;
                     }
-                }
             }
         }
 
@@ -104,7 +101,7 @@ impl Terminal {
         self.grid.scroll_offset = 0;
         // Feed bytes one by one. Note: We temporarily take ownership or borrow
         // to avoid duplicate mutable borrows on Self.
-        let mut parser = std::mem::replace(&mut self.parser, AnsiParser::new());
+        let mut parser = std::mem::take(&mut self.parser);
         for &byte in data {
             parser.feed(byte, self);
         }

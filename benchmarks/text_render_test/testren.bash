@@ -10,14 +10,14 @@ done
 clear
 
 echo "==========================================="
-echo "VELOX FONT RENDERING & TEXT ATTRIBUTE BENCHMARK"
+echo "VELOX TERMINAL & FONT COMPATIBILITY BENCHMARK"
 echo "==========================================="
 
 sleep 1
 
 #################################################
 echo
-echo "1. ASCII"
+echo "1. ASCII & BASE PRINTABLE CHARS"
 echo
 
 for i in {32..126}; do
@@ -29,7 +29,7 @@ sleep 0.5
 
 #################################################
 echo
-echo "2. TEXT ATTRIBUTES & STYLES"
+echo "2. TEXT ATTRIBUTES & ANSI SGR STYLES"
 echo
 
 printf "Normal:          Hello Velox Terminal\n"
@@ -37,8 +37,11 @@ printf "\e[1mBold:\e[0m            Hello Velox Terminal\n"
 printf "\e[2mDim:\e[0m             Hello Velox Terminal\n"
 printf "\e[3mItalic:\e[0m          Hello Velox Terminal\n"
 printf "\e[4mUnderline:\e[0m       Hello Velox Terminal\n"
+printf "\e[21mDouble Under:\e[0m   Hello Velox Terminal\n"
+printf "\e[4:3mCurly Under:\e[0m    Hello Velox Terminal\n"
 printf "\e[5mBlink:\e[0m           Hello Velox Terminal\n"
 printf "\e[7mReverse:\e[0m         Hello Velox Terminal\n"
+printf "\e[8mHidden (Invisible):\e[0m [ \e[8mHIDDEN TEXT\e[0m ]\n"
 printf "\e[9mStrikethrough:\e[0m   Hello Velox Terminal\n"
 printf "\e[1;3;4;9mCombined (Bold+Italic+Underline+Strikethrough):\e[0m Hello Velox\n"
 
@@ -46,7 +49,35 @@ sleep 0.5
 
 #################################################
 echo
-echo "3. BOX DRAWING ALIGNMENT GRID"
+echo "3. DECSCUSR CURSOR SHAPES (BLOCK, UNDERLINE, BEAM)"
+echo
+
+printf "Testing Cursor Shape: Blinking Block (CSI 1 q)... "
+printf "\e[1 q"
+sleep 0.4
+printf "\e[2 q"
+printf "Steady Block (CSI 2 q)... "
+sleep 0.4
+printf "\e[3 q"
+printf "Blinking Underline (CSI 3 q)... "
+sleep 0.4
+printf "\e[4 q"
+printf "Steady Underline (CSI 4 q)... "
+sleep 0.4
+printf "\e[5 q"
+printf "Blinking Beam (CSI 5 q)... "
+sleep 0.4
+printf "\e[6 q"
+printf "Steady Beam (CSI 6 q)... "
+sleep 0.4
+printf "\e[0 q"
+printf "Default Block restored.\n"
+
+sleep 0.5
+
+#################################################
+echo
+echo "4. BOX DRAWING & GRID ALIGNMENT"
 echo
 
 printf "┌───┬───┬───┐  ╔═══╦═══╦═══╗  ╭───┬───┬───╮\n"
@@ -61,80 +92,65 @@ sleep 0.5
 
 #################################################
 echo
-echo "4. BLOCK ELEMENTS"
+echo "5. BLOCK ELEMENTS & BRAILLE PATTERNS"
 echo
 
-echo "█▓▒░ ░▒▓█"
-echo "▁▂▃▄▅▆▇█"
-echo "█▇▆▅▄▃▂▁"
+echo "Blocks:  █ ▓ ▒ ░   ░ ▒ ▓ █"
+echo "Ramp:    ▁ ▂ ▃ ▄ ▅ ▆ ▇ █"
+echo "Braille: ⠁ ⠃ ⠇ ⠏ ⠟ ⠿ ⡿ ⣿   ⣿ ⡿ ⠿ ⠟ ⠏ ⠇ ⠃ ⠁"
 
 sleep 0.5
 
 #################################################
 echo
-echo "5. BRAILLE"
+echo "6. POWERLINE SYMBOLS & NERD FONTS"
 echo
 
-echo "⠁⠃⠇⠏⠟⠿⡿⣿ ⣿⡿⠿⠟⠏⠇⠃⠁"
+echo "Powerline Separators:               "
+echo "Nerd Dev Icons:       󰣇 Arch  󰆍 Term  󰙯 Discord  󰈔 File  󰘚 Rust  󰊠 Git  󰊢 Commit  󰏗 Pkg  󰀵 Docker  󰌠 Python"
 
 sleep 0.5
 
 #################################################
 echo
-echo "6. POWERLINE & NERD FONTS"
+echo "7. OSC 8 HYPERLINKS & AUTO DETECTED URLS"
 echo
 
-echo "Powerline:         "
-echo "Nerd Icons: 󰣇 󰆍 󰙯 󰈔 󰘚 󰊠"
+printf "Explicit OSC 8 Link: \e]8;;https://github.com/lnoxsian/Velox\a[Velox GitHub Repository]\e]8;;\a\n"
+echo "Auto-detected URL:   https://github.com/lnoxsian/Velox"
 
 sleep 0.5
 
 #################################################
 echo
-echo "7. EMOJIS & FLAGS"
+echo "8. EMOJIS, FLAGS & MIXED WIDTH CHARACTERS"
 echo
 
 echo "Emojis: 😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😍 🥳 🤖 🚀 🎈 🎉 🦄 🦊"
 echo "Flags:  🇺🇸 🇯🇵 🇮🇳 🇫🇷 🇬🇧 🇩🇪 🇨🇦 🇦🇺 🇧🇷 🇪🇸 🇮🇹 🇨🇳"
+echo "Mixed Width: A中B文C国D語E (Double width CJK spacing check)"
+echo "Mixed Emojis: Hello 🚀 World! 🤖 Hello 🇨🇳 CJK: 日本語"
 
 sleep 0.5
 
 #################################################
 echo
-echo "8. MIXED WIDTH LAYOUT"
+echo "9. COMBINING CHARACTERS & INTERNATIONAL ALPHABETS"
 echo
 
-echo "Alternating: A中B文C国D語E"
-echo "Emojis mixed: Hello 🚀 World! 🤖 Hello 🇨🇳 CJK: 日本語"
-
-sleep 0.5
-
-#################################################
-echo
-echo "9. COMBINING CHARACTERS"
-echo
-
-echo "Standard: á é í ó ú"
+echo "Accents:   á é í ó ú"
 echo "Zalgotext: Z͑̄͆ͭ̒̅"
+echo "CJK:       日本語 漢字 한국어 中文"
+echo "Cyrillic:  Привет, как дела? (Russian)"
+echo "Greek:     Καλημέρα, τι κάνετε; (Greek)"
+echo "Hindi:     नमस्ते दुनिया (Devanagari)"
+echo "Arabic:    السلام عليكم (Arabic)"
 
 sleep 0.5
 
 #################################################
 echo
-echo "10. INTERNATIONAL ALPHABETS"
-echo
-
-echo "CJK:      日本語 漢字 한국어 中文"
-echo "Cyrillic: Привет, как дела? (Russian)"
-echo "Greek:    Καλημέρα, τι κάνετε; (Greek)"
-echo "Hindi:    नमस्ते दुनिया (Devanagari)"
-echo "Arabic:   السلام عليكم (Arabic)"
-
-sleep 0.5
-
-#################################################
-echo
-echo "11. TRUECOLOR GRADIENTS"
+echo "10. TRUECOLOR GRADIENTS & ANSI PALETTES"
 echo
 echo "256 Color Ramp:"
 
@@ -146,18 +162,17 @@ printf "\e[0m\n\n"
 echo "24-bit True Color RGB Gradient:"
 for r in {0..255..16}; do
     for g in {0..255..16}; do
-        # Mix Red and Green, Blue constant
         printf "\e[48;2;%s;%s;64m " "$r" "$g"
     done
     printf "\e[0m\n"
 done
 printf "\e[0m\n"
 
-sleep 1
+sleep 0.5
 
 #################################################
 echo
-echo "13. SGR COLON SUB-PARAMETERS & SCROLLBACK STRESS"
+echo "11. SGR COLON SUB-PARAMETERS & OSC 52 CLIPBOARD"
 echo
 
 printf "\e[4:1mUnderline Style 1 (Single) via Colons\e[0m\n"
@@ -166,26 +181,15 @@ printf "\e[4:3mUnderline Style 3 (Curly/Underline) via Colons\e[0m\n"
 printf "\e[38:2::255:128:0mTruecolor Foreground (Orange) via Colons\e[0m\n"
 printf "\e[48:2::0:128:255mTruecolor Background (Blue) via Colons\e[0m\n"
 
-if [ "$SCROLLBACK_TEST" = true ]; then
-    sleep 0.5
-    echo
-    echo "Generating 1,500 lines to stress test scrollback buffer..."
-    sleep 0.5
+# Test OSC 52 Clipboard payload write
+printf "\e]52;c;VmVsb3ggVGVybWluYWwgT1NDIDUyIENsaXBib2FyZCBUZXN0\a"
+printf "OSC 52 Payload sent ('Velox Terminal OSC 52 Clipboard Test' copied to clipboard)\n"
 
-    for i in {1..1500}; do
-        echo "Scrollback line #$i - testing scrollback memory and limits"
-    done
-
-    echo "Scrollback buffer populated! You can scroll up to view the history."
-    sleep 1
-else
-    echo "(Scrollback stress test skipped. Run with --scroll-back to test.)"
-    sleep 0.5
-fi
+sleep 0.5
 
 #################################################
 echo
-echo "14. PROGRESS BARS & SPINNERS"
+echo "12. PROGRESS BARS & ANIMATED SPINNERS"
 echo
 
 spinner=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
@@ -208,115 +212,28 @@ for i in {0..100..4}; do
     b_val=$((i * 255 / 100))
     
     printf "\r %s \e[1mLoading:\e[0m \e[38;2;%s;%s;%sm%s\e[0m %3d%% " "$sp_frame" "$r_val" "$g_val" "$b_val" "$bar" "$i"
-    sleep 0.04
+    sleep 0.03
 done
 
 tput cnorm
 echo
 echo
 
-# APT-GET Install Style Progress Bar
-echo "APT-GET Install Style Progress Bar:"
-echo "Selecting previously unselected package velox-terminal..."
-echo "Preparing to unpack .../velox-terminal_0.1.0_amd64.deb ..."
-echo "Unpacking velox-terminal (0.1.0) ..."
-echo "Setting up velox-terminal (0.1.0) ..."
+if [ "$SCROLLBACK_TEST" = true ]; then
+    echo "13. SCROLLBACK BUFFER STRESS TEST"
+    echo "Generating 1,500 lines to stress test scrollback buffer..."
+    sleep 0.5
 
-tput civis
-for i in {0..100..5}; do
-    filled=$((i / 2))
-    empty=$((50 - filled))
-    
-    bar=""
-    for ((k=0; k<filled; k++)); do bar="${bar}#"; done
-    for ((k=0; k<empty; k++)); do bar="${bar}."; done
-    
-    printf "\rProgress: [\e[32m%3d%%\e[0m] [\e[32m%s\e[0m%s]" "$i" "$bar" ""
-    sleep 0.04
-done
-tput cnorm
-echo
-echo
+    for i in {1..1500}; do
+        echo "Scrollback line #$i - testing scrollback memory and limits"
+    done
 
-# DNF Install Style Progress Bar
-echo "DNF Install Style Progress Bar:"
-echo "Downloading Packages:"
-echo "velox-terminal-0.1.0-1.fc40.x86_64.rpm           |  12 MB/s |  15 MB     00:01"
-echo "Installing:"
-
-tput civis
-for i in {0..100..5}; do
-    filled=$((i / 4))
-    empty=$((25 - filled))
-    
-    bar=""
-    for ((k=0; k<filled; k++)); do bar="${bar}="; done
-    if [ $filled -lt 25 ]; then
-        bar="${bar}>"
-        empty=$((empty - 1))
-    fi
-    for ((k=0; k<empty; k++)); do bar="${bar} "; done
-    
-    printf "\rvelox-terminal-0.1.0-1.fc40.x86_64               [\e[36m%s\e[0m] %3d%%" "$bar" "$i"
-    sleep 0.04
-done
-tput cnorm
-echo
-echo
-
-# Pacman Style Eating-Pacman Progress Bar
-echo "Pacman (Arch) Style Progress Bar:"
-tput civis
-for i in {0..100..4}; do
-    filled=$((i / 4))
-    empty=$((25 - filled))
-    
-    bar=""
-    for ((k=0; k<filled; k++)); do bar="${bar}#"; done
-    
-    pacman_char="C"
-    if [ $(( (i/4) % 2 )) -eq 0 ]; then
-        pacman_char="c"
-    fi
-    
-    if [ $filled -lt 25 ]; then
-        bar="${bar}\e[33m${pacman_char}\e[0m"
-        
-        food=""
-        for ((k=0; k<empty-1; k++)); do
-            if [ $(( k % 2 )) -eq 0 ]; then
-                food="${food}-"
-            else
-                food="${food} "
-            fi
-        done
-        bar="${bar}${food}"
-    fi
-    
-    printf "\rvelox-terminal-0.1.0-1-x86_64      14.3 MiB  12.4 MiB/s 00:01 [\e[34m%b\e[0m] %3d%%" "$bar" "$i"
-    sleep 0.04
-done
-tput cnorm
-echo
-echo "Done!"
-sleep 0.5
-
-#################################################
-echo
-echo "12. CURSOR TOGGLING"
-echo
-
-tput civis
-
-for i in {1..20}; do
-    printf "\rUpdating frame %d/20..." "$i"
-    sleep 0.05
-done
-
-tput cnorm
+    echo "Scrollback buffer populated! You can scroll up to view the history."
+    sleep 1
+fi
 
 echo
 echo "==========================================="
-echo "BENCHMARK COMPLETED"
+echo "COMPATIBILITY & TEXT RENDERING BENCHMARK COMPLETE"
 echo "==========================================="
 echo

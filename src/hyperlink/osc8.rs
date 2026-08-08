@@ -11,8 +11,8 @@ pub fn parse(params: &[&[u8]]) -> Option<(String, String)> {
         // Extract the "id" parameter (e.g. "id=123" or "id=foo") if it exists
         let mut id = String::new();
         for part in id_param.split(':') {
-            if part.starts_with("id=") {
-                id = part[3..].to_string();
+            if let Some(rest) = part.strip_prefix("id=") {
+                id = rest.to_string();
             }
         }
         

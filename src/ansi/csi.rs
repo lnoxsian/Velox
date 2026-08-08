@@ -186,17 +186,17 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
             }
         }
         b'r' => { // Set Scroll Margins (DECSTBM)
-            let top = params.get(0).copied().unwrap_or(0) as usize;
+            let top = params.first().copied().unwrap_or(0) as usize;
             let bottom = params.get(1).copied().unwrap_or(0) as usize;
             terminal.active_grid_mut().set_scroll_region(top, bottom);
         }
         b'S' => { // Scroll Up (Pan Up)
-            let delta = params.get(0).copied().unwrap_or(1).max(1);
+            let delta = params.first().copied().unwrap_or(1).max(1);
             let bg = terminal.current_bg;
             terminal.active_grid_mut().scroll(delta as i32, bg);
         }
         b'T' => { // Scroll Down (Pan Down)
-            let delta = params.get(0).copied().unwrap_or(1).max(1);
+            let delta = params.first().copied().unwrap_or(1).max(1);
             let bg = terminal.current_bg;
             terminal.active_grid_mut().scroll_down(delta as usize, bg);
         }
@@ -265,7 +265,7 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
             let param = params.first().copied().unwrap_or(0);
             let active = terminal.active_grid_mut();
             match param {
-                0 | 1 | 2 => {
+                0..=2 => {
                     active.cursor.shape = crate::screen::cursor::CursorShape::Block;
                     active.cursor.visible = true;
                 }

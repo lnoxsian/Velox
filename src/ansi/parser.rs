@@ -103,9 +103,9 @@ impl AnsiParser {
                 if byte == b'?' || byte == b'>' || byte == b'<' || byte == b'=' {
                     self.is_private = true;
                     self.param_buf.push(byte);
-                } else if byte >= 0x20 && byte <= 0x3f {
+                } else if (0x20..=0x3f).contains(&byte) {
                     self.param_buf.push(byte);
-                } else if byte >= 0x40 && byte <= 0x7e {
+                } else if (0x40..=0x7e).contains(&byte) {
                     self.parse_params();
                     crate::ansi::csi::handle_csi(byte, &self.params, self.is_private, terminal);
                     self.state = ParserState::Ground;

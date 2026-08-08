@@ -83,21 +83,19 @@ impl Grid {
         if is_combining && self.cursor.x > 0 {
             let mut target_x = self.cursor.x - 1;
             let mut idx = self.cursor.y * self.width + target_x;
-            if idx < self.cells.len() && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION) {
-                if target_x > 0 {
+            if idx < self.cells.len() && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION)
+                && target_x > 0 {
                     target_x -= 1;
                     idx = self.cursor.y * self.width + target_x;
                 }
-            }
             if idx < self.cells.len() {
                 let base_char = self.cells[idx].character;
-                if base_char >= '\u{100000}' && base_char <= '\u{10ffff}' {
+                if ('\u{100000}'..='\u{10ffff}').contains(&base_char) {
                     let reg_idx = (base_char as u32 - 0x100000) as usize;
-                    if let Ok(mut registry) = get_combining_registry().lock() {
-                        if reg_idx < registry.len() {
+                    if let Ok(mut registry) = get_combining_registry().lock()
+                        && reg_idx < registry.len() {
                             registry[reg_idx].push(c);
                         }
-                    }
                 } else {
                     let mut seq = String::new();
                     seq.push(base_char);
@@ -116,10 +114,10 @@ impl Grid {
         }
 
         // Nerd Font icons and emojis are treated as double-width (w = 2) for rendering size if enabled, CJK characters are also w = 2
-        let w = if (self.enable_nerdfont && c >= '\u{e000}' && c <= '\u{f8ff}') || c >= '\u{1f000}' {
+        let w = if (self.enable_nerdfont && ('\u{e000}'..='\u{f8ff}').contains(&c)) || c >= '\u{1f000}' {
             2
         } else {
-            UnicodeWidthChar::width(c).unwrap_or(1).max(1) as usize
+            UnicodeWidthChar::width(c).unwrap_or(1).max(1)
         };
 
         if self.cursor.x + w > self.width {
