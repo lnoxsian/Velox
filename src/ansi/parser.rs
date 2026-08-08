@@ -6,6 +6,7 @@ pub struct AnsiParser {
     pub params: SmallVec<[u16; 8]>,
     pub param_buf: SmallVec<[u8; 16]>,
     pub osc_buf: SmallVec<[u8; 64]>,
+    pub dcs_buf: SmallVec<[u8; 64]>,
     pub utf8_buf: SmallVec<[u8; 4]>,
     pub is_private: bool,
 }
@@ -17,6 +18,7 @@ impl AnsiParser {
             params: SmallVec::new(),
             param_buf: SmallVec::new(),
             osc_buf: SmallVec::new(),
+            dcs_buf: SmallVec::new(),
             utf8_buf: SmallVec::new(),
             is_private: false,
         }
@@ -43,8 +45,15 @@ impl AnsiParser {
                 } else if byte == b']' {
                     self.state = ParserState::OSC;
                     self.osc_buf.clear();
+                } else if byte == b'P' {
+                    self.state = ParserState::DCS;
+                    self.dcs_buf.clear();
                 } else if byte == b'\\' {
-                    self.dispatch_osc(terminal);
+                    if !self.dcs_buf.is_empty() {
+                        self.dispatch_dcs(terminal);
+                    } else {
+                        self.dispatch_osc(terminal);
+                    }
                     self.state = ParserState::Ground;
                 } else if byte == b'(' {
                     self.state = ParserState::EscapeDesignateG0;
@@ -124,6 +133,16 @@ impl AnsiParser {
                     self.state = ParserState::Escape;
                 } else {
                     self.osc_buf.push(byte);
+                }
+            }
+            ParserState::DCS => {
+                if byte == 0x07 {
+                    self.dispatch_dcs(terminal);
+                    self.state = ParserState::Ground;
+                } else if byte == 0x1b {
+                    self.state = ParserState::Escape;
+                } else {
+                    self.dcs_buf.push(byte);
                 }
             }
         }
@@ -291,6 +310,17 @@ fn translate_dec_line_drawing(c: char) -> char {
         let params: Vec<&[u8]> = self.osc_buf.split(|&b| b == b';').collect();
         crate::ansi::osc::handle_osc(&params, terminal);
         self.osc_buf.clear();
+    }
+
+    fn dispatch_dcs(&mut self, terminal: &mut crate::terminal::terminal::Terminal) {
+        if self.dcs_buf.is_empty() {
+            return;
+        }
+        if self.dcs_buf.starts_with(b"+q") {
+            let resp = b"\x1bP0+q\x1b\\";
+            terminal.send_to_shell(resp);
+        }
+        self.dcs_buf.clear();
     }
 }
 

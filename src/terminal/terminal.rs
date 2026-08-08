@@ -452,5 +452,38 @@ mod tests {
         let resp = String::from_utf8(term.outgoing.clone()).unwrap();
         assert!(resp.starts_with("\x1b]52;c;"));
     }
-}
 
+    #[test]
+    fn test_sgr_underline_color_fallthrough() {
+        let mut term = Terminal::new(80, 24);
+        // SGR 58;5;4 (Set Underline color) should not trigger CellFlags::UNDERLINE
+        term.feed(b"\x1b[58;5;4mA");
+        let cell = term.active_grid().cells[0];
+        assert_eq!(cell.character, 'A');
+        assert!(!cell.flags.contains(CellFlags::UNDERLINE));
+    }
+
+    #[test]
+    fn test_dcs_xtgettcap_not_leaked() {
+        let mut term = Terminal::new(80, 24);
+        // Feeding DCS sequence \x1bP+q4D73\x1b\ (Neovim termcap query) should NOT leak "+q4D73" onto grid
+        term.feed(b"\x1bP+q4D73\x1b\\");
+        assert_eq!(term.active_grid().cells[0].character, ' ');
+        assert_eq!(term.active_grid().cells[1].character, ' ');
+        assert_eq!(term.active_grid().cursor.x, 0);
+    }
+
+    #[test]
+    fn test_xtmodkeys_not_treated_as_sgr() {
+        let mut term = Terminal::new(80, 24);
+        // Fish shell sends CSI > 4;1 m (XTMODKEYS) which must not be treated as SGR
+        term.feed(b"\x1b[>4;1m");
+        assert!(!term.current_flags.contains(CellFlags::UNDERLINE));
+        assert!(!term.current_flags.contains(CellFlags::BOLD));
+
+        term.feed(b"Hello");
+        for x in 0..5 {
+            assert!(!term.active_grid().cells[x].flags.contains(CellFlags::UNDERLINE));
+        }
+    }
+}

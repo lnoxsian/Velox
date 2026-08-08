@@ -4,6 +4,7 @@ use crate::screen::cell::{Color, CellFlags};
 pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut Terminal) {
     match action {
         b'm' => { // Select Graphic Rendition
+            if is_private { return; } // Private sequences (e.g. XTMODKEYS) are not SGR
             if params.is_empty() {
                 terminal.reset_attrs();
             } else {
@@ -46,6 +47,8 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                                     }
                                     _ => {
                                         terminal.current_flags.insert(CellFlags::UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
+                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
                                     }
                                 }
                                 i += 1;
@@ -92,6 +95,10 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                             }
                         }
                         49 => terminal.current_bg = terminal.theme.default_bg,
+                        58 => {
+                            let _ = parse_sgr_color(params, &mut i, &terminal.theme);
+                        }
+                        59 => {}
                         90..=97 => terminal.current_fg = terminal.theme.get_ansi_color(code - 90 + 8, false),
                         100..=107 => terminal.current_bg = terminal.theme.get_ansi_color(code - 100 + 8, true),
                         _ => {}
@@ -318,23 +325,37 @@ fn parse_sgr_color(params: &[u16], i: &mut usize, theme: &crate::theme::theme::T
         };
         *i += num_subs;
         color
-    } else {
-        if *i + 2 < params.len() && params[*i+1] == 5 {
-            let color = Some(theme.get_256_color(params[*i+2] as u8));
-            *i += 2;
-            color
-        } else if *i + 4 < params.len() && params[*i+1] == 2 {
-            let color = Some(Color {
-                r: params[*i+2] as u8,
-                g: params[*i+3] as u8,
-                b: params[*i+4] as u8,
-                a: 255,
-            });
-            *i += 4;
-            color
+    } else if *i + 1 < params.len() {
+        let mode = params[*i + 1];
+        if mode == 5 {
+            if *i + 2 < params.len() {
+                let color = theme.get_256_color(params[*i + 2] as u8);
+                *i += 2;
+                Some(color)
+            } else {
+                *i += 1;
+                None
+            }
+        } else if mode == 2 {
+            if *i + 4 < params.len() {
+                let color = Color {
+                    r: params[*i + 2] as u8,
+                    g: params[*i + 3] as u8,
+                    b: params[*i + 4] as u8,
+                    a: 255,
+                };
+                *i += 4;
+                Some(color)
+            } else {
+                let rem = params.len() - 1 - *i;
+                *i += rem;
+                None
+            }
         } else {
             None
         }
+    } else {
+        None
     }
 }
 

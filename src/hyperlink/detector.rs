@@ -27,7 +27,7 @@ pub fn open(url: &str) -> std::io::Result<()> {
 pub fn detect(text: &str) -> Vec<(usize, usize, String)> {
     let mut results = Vec::new();
     let schemes = ["http://", "https://", "mailto:", "file://"];
-    
+
     for scheme in &schemes {
         let mut start_search = 0;
         while let Some(start_idx) = text[start_search..].find(scheme) {
