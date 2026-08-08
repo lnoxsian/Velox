@@ -59,6 +59,11 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                         7 => terminal.current_flags.insert(CellFlags::REVERSE),
                         8 => terminal.current_flags.insert(CellFlags::HIDDEN),
                         9 => terminal.current_flags.insert(CellFlags::STRIKE),
+                        21 => {
+                            terminal.current_flags.remove(CellFlags::UNDERLINE);
+                            terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE);
+                            terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
+                        }
                         22 => {
                             terminal.current_flags.remove(CellFlags::BOLD);
                             terminal.current_flags.remove(CellFlags::DIM);
@@ -255,6 +260,25 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
             let fg = terminal.current_fg;
             let bg = terminal.current_bg;
             terminal.active_grid_mut().delete_lines(n, fg, bg);
+        }
+        b'q' => { // Set Cursor Style (DECSCUSR)
+            let param = params.first().copied().unwrap_or(0);
+            let active = terminal.active_grid_mut();
+            match param {
+                0 | 1 | 2 => {
+                    active.cursor.shape = crate::screen::cursor::CursorShape::Block;
+                    active.cursor.visible = true;
+                }
+                3 | 4 => {
+                    active.cursor.shape = crate::screen::cursor::CursorShape::Underline;
+                    active.cursor.visible = true;
+                }
+                5 | 6 => {
+                    active.cursor.shape = crate::screen::cursor::CursorShape::Beam;
+                    active.cursor.visible = true;
+                }
+                _ => {}
+            }
         }
         _ => {}
     }

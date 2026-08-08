@@ -457,6 +457,7 @@ impl ApplicationHandler<CustomEvent> for App {
                         active_grid.cursor.x,
                         active_grid.cursor.y,
                         cursor_visible,
+                        active_grid.cursor.shape,
                         &terminal.theme,
                         terminal.bold_is_bright,
                     );

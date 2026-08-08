@@ -129,6 +129,7 @@ impl Renderer {
         cursor_x: usize,
         cursor_y: usize,
         cursor_visible: bool,
+        cursor_shape: crate::screen::cursor::CursorShape,
         theme: &crate::theme::theme::Theme,
         bold_is_bright: bool,
     ) {
@@ -192,7 +193,7 @@ impl Renderer {
                     }
                 }
 
-                let (mut fg, bg) = if is_cursor {
+                let (mut fg, bg) = if is_cursor && cursor_shape == crate::screen::cursor::CursorShape::Block {
                     (cell.background, cell_fg)
                 } else if cell.flags.contains(CellFlags::REVERSE) {
                     (cell.background, cell_fg)
@@ -219,6 +220,22 @@ impl Renderer {
                 let px = x as f32 * cw;
                 let py = y as f32 * ch;
                 push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg, uv.is_color);
+
+                if is_cursor {
+                    let (u, v) = self.font_loader.white_pixel_uv();
+                    let cursor_color = cell_fg;
+                    match cursor_shape {
+                        crate::screen::cursor::CursorShape::Beam => {
+                            let beam_w = (cw * 0.15).max(2.0);
+                            push_quad(&mut vertices, px, py, beam_w, ch, u, v, u, v, cursor_color, cursor_color, false);
+                        }
+                        crate::screen::cursor::CursorShape::Underline => {
+                            let thick = (ch * 0.2).max(3.0);
+                            push_quad(&mut vertices, px, py + ch - thick, cw * cell_w_mult, thick, u, v, u, v, cursor_color, cursor_color, false);
+                        }
+                        crate::screen::cursor::CursorShape::Block => {}
+                    }
+                }
 
                 if cell.flags.contains(CellFlags::UNDERLINE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());

@@ -48,8 +48,12 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 } else if byte == b'(' {
                     self.state = ParserState::EscapeDesignateG0;
-                } else if byte == b')' {
+                } else if byte == b')' || byte == b'-' {
                     self.state = ParserState::EscapeDesignateG1;
+                } else if byte == b'*' || byte == b'.' {
+                    self.state = ParserState::EscapeDesignateG2;
+                } else if byte == b'+' || byte == b'/' {
+                    self.state = ParserState::EscapeDesignateG3;
                 } else {
                     crate::ansi::esc::handle_escape(byte, terminal);
                     self.state = ParserState::Ground;
@@ -79,10 +83,27 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 }
             }
+            ParserState::EscapeDesignateG2 => {
+                if byte == 0x1b {
+                    self.state = ParserState::Escape;
+                    self.is_private = false;
+                } else {
+                    self.state = ParserState::Ground;
+                }
+            }
+            ParserState::EscapeDesignateG3 => {
+                if byte == 0x1b {
+                    self.state = ParserState::Escape;
+                    self.is_private = false;
+                } else {
+                    self.state = ParserState::Ground;
+                }
+            }
             ParserState::CSI => {
-                if byte == b'?' {
+                if byte == b'?' || byte == b'>' || byte == b'<' || byte == b'=' {
                     self.is_private = true;
-                } else if byte >= 0x30 && byte <= 0x3f {
+                    self.param_buf.push(byte);
+                } else if byte >= 0x20 && byte <= 0x3f {
                     self.param_buf.push(byte);
                 } else if byte >= 0x40 && byte <= 0x7e {
                     self.parse_params();

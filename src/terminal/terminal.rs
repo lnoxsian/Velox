@@ -18,6 +18,8 @@ pub struct Terminal {
     pub mouse_sgr: bool,
     pub g0_charset: u8,
     pub g1_charset: u8,
+    pub g2_charset: u8,
+    pub g3_charset: u8,
     pub active_charset: u8,
     pub bold_is_bright: bool,
     pub app_title: Option<String>,
@@ -90,6 +92,8 @@ impl Terminal {
             mouse_sgr: false,
             g0_charset: 0,
             g1_charset: 0,
+            g2_charset: 0,
+            g3_charset: 0,
             active_charset: 0,
             bold_is_bright,
             app_title,
@@ -392,4 +396,64 @@ mod tests {
         assert_eq!(grid3.cells[3].character, 'e');
         assert_eq!(grid3.cells[4].character, 'l');
     }
+
+    #[test]
+    fn test_intermediate_bytes_and_dec_line_drawing() {
+        let mut term = Terminal::new(80, 24);
+        // Test 1: CSI sequences with intermediate bytes like \x1b[+q and \x1b[6q should NOT leak '+' or 'q' into grid
+        term.feed(b"\x1b[+q\x1b[6q");
+        let grid = term.active_grid();
+        assert_eq!(grid.cells[0].character, ' ');
+        assert_eq!(grid.cells[1].character, ' ');
+        assert_eq!(grid.cursor.x, 0);
+
+        // Test 2: DEC line drawing designation \x1b(0 followed by 'q' should draw horizontal line '─'
+        term.feed(b"\x1b(0q");
+        assert_eq!(term.active_grid().cells[0].character, '─');
+    }
+
+    #[test]
+    fn test_decscusr_cursor_shapes() {
+        let mut term = Terminal::new(80, 24);
+        use crate::screen::cursor::CursorShape;
+
+        term.feed(b"\x1b[5q"); // Beam
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Beam);
+
+        term.feed(b"\x1b[3q"); // Underline
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Underline);
+
+        term.feed(b"\x1b[2q"); // Block
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+    }
+
+    #[test]
+    fn test_osc_color_queries_and_sets() {
+        let mut term = Terminal::new(80, 24);
+        // OSC 10 query
+        term.feed(b"\x1b]10;?\x07");
+        assert!(!term.outgoing.is_empty());
+        let resp = String::from_utf8(term.outgoing.clone()).unwrap();
+        assert!(resp.starts_with("\x1b]10;rgb:"));
+        term.outgoing.clear();
+
+        // OSC 11 set background
+        term.feed(b"\x1b]11;#123456\x07");
+        assert_eq!(term.theme.default_bg.r, 0x12);
+        assert_eq!(term.theme.default_bg.g, 0x34);
+        assert_eq!(term.theme.default_bg.b, 0x56);
+    }
+
+    #[test]
+    fn test_osc52_clipboard() {
+        let mut term = Terminal::new(80, 24);
+        // OSC 52 write "SGVsbG8=" ("Hello")
+        term.feed(b"\x1b]52;c;SGVsbG8=\x07");
+        // OSC 52 query
+        term.feed(b"\x1b]52;c;?\x07");
+        assert!(!term.outgoing.is_empty());
+        let resp = String::from_utf8(term.outgoing.clone()).unwrap();
+        assert!(resp.starts_with("\x1b]52;c;"));
+    }
 }
+

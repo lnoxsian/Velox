@@ -6,4 +6,7 @@ pub enum ParserState {
     OSC,
     EscapeDesignateG0,
     EscapeDesignateG1,
+    EscapeDesignateG2,
+    EscapeDesignateG3,
 }
+
