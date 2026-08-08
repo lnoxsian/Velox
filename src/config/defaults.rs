@@ -32,5 +32,7 @@ pub fn default_config() -> Config {
         fps_limit: Some(120),
         bold_is_bright: Some(true),
         app_title: None,
+        padding_x: Some(8.0),
+        padding_y: Some(4.0),
     }
 }

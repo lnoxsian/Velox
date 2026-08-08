@@ -137,6 +137,8 @@ impl Renderer {
         theme: &crate::theme::theme::Theme,
         bold_is_bright: bool,
         selection: &crate::screen::selection::Selection,
+        padding_x: f32,
+        padding_y: f32,
     ) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
@@ -232,8 +234,8 @@ impl Renderer {
                 let is_bold = cell.flags.contains(CellFlags::BOLD);
                 let is_italic = cell.flags.contains(CellFlags::ITALIC);
                 let uv = self.font_loader.get_glyph_uv(cell.character, is_wide, is_bold, is_italic);
-                let px = x as f32 * cw;
-                let py = y as f32 * ch;
+                let px = padding_x + x as f32 * cw;
+                let py = padding_y + y as f32 * ch;
                 push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg, uv.is_color);
 
                 if is_cursor {

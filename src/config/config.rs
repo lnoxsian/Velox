@@ -26,6 +26,10 @@ pub struct Config {
     pub bold_is_bright: Option<bool>,
     #[serde(default)]
     pub app_title: Option<String>,
+    #[serde(default)]
+    pub padding_x: Option<f32>,
+    #[serde(default)]
+    pub padding_y: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

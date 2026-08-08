@@ -45,6 +45,8 @@ pub struct App {
     current_title: String,
     default_font_size: f32,
     current_font_size: f32,
+    padding_x: f32,
+    padding_y: f32,
     is_mouse_down: bool,
     last_click_instant: Option<std::time::Instant>,
     last_click_pos: (usize, usize),
@@ -74,6 +76,8 @@ impl App {
             current_title: String::new(),
             default_font_size: 14.0,
             current_font_size: 14.0,
+            padding_x: 8.0,
+            padding_y: 4.0,
             is_mouse_down: false,
             last_click_instant: None,
             last_click_pos: (0, 0),
@@ -168,9 +172,14 @@ impl ApplicationHandler<CustomEvent> for App {
         self.fps_limit = config.fps_limit;
         self.default_font_size = config.font_size;
         self.current_font_size = config.font_size;
+        self.padding_x = config.padding_x.unwrap_or(8.0);
+        self.padding_y = config.padding_y.unwrap_or(4.0);
         let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, config.enable_nerdfont.unwrap_or(true));
-        let cols = (800 / renderer.font_loader.cell_width).max(20);
-        let rows = (600 / renderer.font_loader.cell_height).max(10);
+        
+        let avail_w = (800.0 - self.padding_x * 2.0).max(10.0);
+        let avail_h = (600.0 - self.padding_y * 2.0).max(10.0);
+        let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
+        let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
         
@@ -228,8 +237,10 @@ impl ApplicationHandler<CustomEvent> for App {
                     window.resize_surface(gl_surface, gl_context);
                     renderer.resize(size.width, size.height);
                     
-                    let cols = (size.width / renderer.font_loader.cell_width).max(20);
-                    let rows = (size.height / renderer.font_loader.cell_height).max(10);
+                    let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
+                    let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
+                    let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
+                    let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
                     terminal.resize(cols, rows);
                     let _ = pty_master.resize(cols as u16, rows as u16);
                 }
@@ -307,8 +318,10 @@ impl ApplicationHandler<CustomEvent> for App {
                                 {
                                     renderer.set_font_size(new_size);
                                     let size = window.inner_size();
-                                    let cols = (size.width / renderer.font_loader.cell_width).max(20);
-                                    let rows = (size.height / renderer.font_loader.cell_height).max(10);
+                                    let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
+                                    let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
+                                    let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
+                                    let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
                                     terminal.resize(cols, rows);
                                     let _ = pty_master.resize(cols as u16, rows as u16);
                                     window.request_redraw();
@@ -347,10 +360,12 @@ impl ApplicationHandler<CustomEvent> for App {
 
                 if self.is_mouse_down
                     && let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
+                        let px = self.padding_x as f64;
+                        let py = self.padding_y as f64;
                         let cw = renderer.font_loader.cell_width as f64;
                         let ch = renderer.font_loader.cell_height as f64;
-                        let col_idx = ((self.mouse_x / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                        let row_idx = ((self.mouse_y / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
+                        let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
+                        let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
 
                         if (col_idx, row_idx) != self.last_mouse_cell {
                             self.last_mouse_cell = (col_idx, row_idx);
@@ -398,10 +413,12 @@ impl ApplicationHandler<CustomEvent> for App {
                 if lines != 0
                     && let Some(pty_master) = &self.pty_master
                         && let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
+                            let px = self.padding_x as f64;
+                            let py = self.padding_y as f64;
                             let cw = renderer.font_loader.cell_width as f64;
                             let ch = renderer.font_loader.cell_height as f64;
-                            let col = ((self.mouse_x / cw).floor() as i32 + 1).max(1);
-                            let row = ((self.mouse_y / ch).floor() as i32 + 1).max(1);
+                            let col = ((((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1)).max(1);
+                            let row = ((((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1)).max(1);
 
                             if terminal.mouse_mode > 0 {
                                 let btn = if lines > 0 { 64 } else { 65 };
@@ -447,10 +464,12 @@ impl ApplicationHandler<CustomEvent> for App {
                     if state.is_pressed() {
                         self.is_mouse_down = true;
                         if let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
+                            let px = self.padding_x as f64;
+                            let py = self.padding_y as f64;
                             let cw = renderer.font_loader.cell_width as f64;
                             let ch = renderer.font_loader.cell_height as f64;
-                            let col_idx = (self.mouse_x / cw).floor() as usize;
-                            let row_idx = (self.mouse_y / ch).floor() as usize;
+                            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
+                            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
 
                             let mouse_mode = terminal.mouse_mode;
                             let mouse_sgr = terminal.mouse_sgr;
@@ -557,10 +576,12 @@ impl ApplicationHandler<CustomEvent> for App {
                     } else {
                         self.is_mouse_down = false;
                         if let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
+                            let px = self.padding_x as f64;
+                            let py = self.padding_y as f64;
                             let cw = renderer.font_loader.cell_width as f64;
                             let ch = renderer.font_loader.cell_height as f64;
-                            let col_idx = (self.mouse_x / cw).floor() as usize;
-                            let row_idx = (self.mouse_y / ch).floor() as usize;
+                            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
+                            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
 
                             let mouse_mode = terminal.mouse_mode;
                             let mouse_sgr = terminal.mouse_sgr;
@@ -688,6 +709,8 @@ impl ApplicationHandler<CustomEvent> for App {
                         &terminal.theme,
                         terminal.bold_is_bright,
                         &active_grid.selection,
+                        self.padding_x,
+                        self.padding_y,
                     );
                     gl_surface.swap_buffers(gl_context).unwrap();
                     window.request_redraw();
