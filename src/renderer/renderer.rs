@@ -121,6 +121,10 @@ impl Renderer {
         }
     }
 
+    pub fn set_font_size(&mut self, font_size: f32) {
+        self.font_loader.update_font_size(font_size);
+    }
+
     pub fn draw(
         &mut self,
         cells: &[Cell],

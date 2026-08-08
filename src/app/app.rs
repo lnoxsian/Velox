@@ -43,6 +43,8 @@ pub struct App {
     fps_limit: Option<u32>,
     last_frame_instant: std::time::Instant,
     current_title: String,
+    default_font_size: f32,
+    current_font_size: f32,
 }
 
 impl App {
@@ -65,6 +67,8 @@ impl App {
             fps_limit: None,
             last_frame_instant: std::time::Instant::now(),
             current_title: String::new(),
+            default_font_size: 14.0,
+            current_font_size: 14.0,
         }
     }
 
@@ -152,6 +156,8 @@ impl ApplicationHandler<CustomEvent> for App {
 
         self.scroll_multiplier = config.scroll_multiplier.unwrap_or(1.0);
         self.fps_limit = config.fps_limit;
+        self.default_font_size = config.font_size;
+        self.current_font_size = config.font_size;
         let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, config.enable_nerdfont.unwrap_or(true));
         let cols = (800 / renderer.font_loader.cell_width).max(20);
         let rows = (600 / renderer.font_loader.cell_height).max(10);
@@ -220,6 +226,77 @@ impl ApplicationHandler<CustomEvent> for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
+                    // 1. Copy (Ctrl+Shift+C) and Paste (Ctrl+Shift+V)
+                    if self.modifiers.control_key() && self.modifiers.shift_key() {
+                        let key_ch = match &event.logical_key {
+                            winit::keyboard::Key::Character(s) => Some(s.to_lowercase()),
+                            _ => None,
+                        };
+                        if let Some(ch) = key_ch {
+                            if ch == "c" {
+                                if let Some(terminal) = &self.terminal {
+                                    let active_grid = terminal.active_grid();
+                                    let text: String = (0..active_grid.height)
+                                        .map(|y| {
+                                            (0..active_grid.width)
+                                                .map(|x| active_grid.cells[y * active_grid.width + x].character)
+                                                .collect::<String>()
+                                                .trim_end()
+                                                .to_string()
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    crate::clipboard::clipboard::copy(&text);
+                                }
+                                return;
+                            } else if ch == "v" {
+                                let text = crate::clipboard::clipboard::paste();
+                                if !text.is_empty() {
+                                    if let Some(pty_master) = &self.pty_master {
+                                        let _ = pty_master.write(text.as_bytes());
+                                    }
+                                }
+                                return;
+                            }
+                        }
+                    }
+
+                    // 2. Font Zoom In (Ctrl+Shift++ / Ctrl+Shift+=), Zoom Out (Ctrl+-), Reset (Ctrl+0)
+                    let is_zoom_in = self.modifiers.control_key() && self.modifiers.shift_key() &&
+                        matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "+" || s == "=");
+
+                    let is_zoom_out = self.modifiers.control_key() && !self.modifiers.shift_key() && !self.modifiers.alt_key() &&
+                        matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "-");
+
+                    let is_zoom_reset = self.modifiers.control_key() && !self.modifiers.shift_key() && !self.modifiers.alt_key() &&
+                        matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "0");
+
+                    if is_zoom_in || is_zoom_out || is_zoom_reset {
+                            let new_size = if is_zoom_in {
+                                (self.current_font_size + 1.0).min(72.0)
+                            } else if is_zoom_out {
+                                (self.current_font_size - 1.0).max(4.0)
+                            } else {
+                                self.default_font_size
+                            };
+
+                            if (new_size - self.current_font_size).abs() > 0.01 {
+                                self.current_font_size = new_size;
+                                if let (Some(window), Some(renderer), Some(terminal), Some(pty_master)) = 
+                                   (&self.window, &mut self.renderer, &mut self.terminal, &self.pty_master) 
+                                {
+                                    renderer.set_font_size(new_size);
+                                    let size = window.inner_size();
+                                    let cols = (size.width / renderer.font_loader.cell_width).max(20);
+                                    let rows = (size.height / renderer.font_loader.cell_height).max(10);
+                                    terminal.resize(cols, rows);
+                                    let _ = pty_master.resize(cols as u16, rows as u16);
+                                    window.request_redraw();
+                                }
+                            }
+                            return;
+                        }
+
                     if self.modifiers.shift_key() {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageUp) = event.logical_key {
                             if let Some(terminal) = &mut self.terminal {

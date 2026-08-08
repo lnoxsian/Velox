@@ -3,7 +3,7 @@ use std::sync::Arc;
 use glow::HasContext;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use owned_ttf_parser::AsFaceRef;
-
+use crate::font::fallback::FallbackManager;
 
 #[derive(Clone, Copy)]
 pub struct GlyphUv {
@@ -12,11 +12,6 @@ pub struct GlyphUv {
     pub u_max: f32,
     pub v_max: f32,
     pub is_color: bool,
-}
-
-pub struct FallbackFont {
-    pub font: FontArc,
-    pub owned_face: Option<owned_ttf_parser::OwnedFace>,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
@@ -33,9 +28,7 @@ pub struct FontLoader {
     font_bold: Option<FontArc>,
     font_italic: Option<FontArc>,
     font_bold_italic: Option<FontArc>,
-    extra_paths: Vec<String>,
-    loaded_paths: std::collections::HashSet<std::path::PathBuf>,
-    pub fallbacks: Vec<FallbackFont>,
+    pub fallback_manager: FallbackManager,
     pub cell_width: u32,
     pub cell_height: u32,
     pub font_size: f32,
@@ -69,7 +62,6 @@ fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontAr
 
 impl FontLoader {
     pub fn new(gl: Arc<glow::Context>, font_family: &str, font_size: f32, enable_nerdfont: bool) -> Self {
-        // Try querying the system fonts database for the user's chosen family
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
         
@@ -106,71 +98,8 @@ impl FontLoader {
         };
         let font_bold_italic = load_font_face(&db, &query_bold_italic);
 
-        let fallback_families = [
-            "Noto Color Emoji",
-            "Noto Emoji",
-            "DejaVu Sans",
-            "Noto Sans Symbols",
-            "Noto Sans Symbols2",
-            "Noto Sans CJK Regular",
-            "Noto Sans CJK JP",
-            "Noto Sans CJK KR",
-            "Noto Sans CJK SC",
-            "Noto Sans CJK TC",
-            "Noto Sans CJK HK",
-            "Droid Sans Fallback",
-            "FreeSans",
-            "FreeMono",
-            "FreeSerif",
-            "Symbola",
-        ];
+        let fallback_manager = FallbackManager::new();
 
-        let mut extra_paths = Vec::new();
-        for family in &fallback_families {
-            let query = fontdb::Query {
-                families: &[fontdb::Family::Name(family)],
-                weight: fontdb::Weight::NORMAL,
-                stretch: fontdb::Stretch::Normal,
-                style: fontdb::Style::Normal,
-            };
-            if let Some(id) = db.query(&query) {
-                if let Some(face) = db.face(id) {
-                    if let fontdb::Source::File(path) = &face.source {
-                        let path_str = path.to_string_lossy().to_string();
-                        if !extra_paths.contains(&path_str) {
-                            extra_paths.push(path_str);
-                        }
-                    }
-                }
-            }
-        }
-
-        if enable_nerdfont {
-            let nerd_families = [
-                "Symbols Nerd Font",
-                "Symbols Nerd Font Mono",
-            ];
-            for family in &nerd_families {
-                let query = fontdb::Query {
-                    families: &[fontdb::Family::Name(family)],
-                    weight: fontdb::Weight::NORMAL,
-                    stretch: fontdb::Stretch::Normal,
-                    style: fontdb::Style::Normal,
-                };
-                if let Some(id) = db.query(&query) {
-                    if let Some(face) = db.face(id) {
-                        if let fontdb::Source::File(path) = &face.source {
-                            let path_str = path.to_string_lossy().to_string();
-                            if !extra_paths.contains(&path_str) {
-                                extra_paths.insert(0, path_str);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Measure monospace glyph dimensions
         let scale = PxScale::from(font_size);
         let scaled_font = font.as_scaled(scale);
         let cell_width = scaled_font.h_advance(font.glyph_id('A')).round() as u32;
@@ -197,7 +126,6 @@ impl FontLoader {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             
-            // Upload 2x2 white square at (0, 0)
             let white_pixels = vec![255u8; 2 * 2 * 4];
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
@@ -219,9 +147,7 @@ impl FontLoader {
             font_bold,
             font_italic,
             font_bold_italic,
-            extra_paths,
-            loaded_paths: std::collections::HashSet::new(),
-            fallbacks: Vec::new(),
+            fallback_manager,
             cell_width,
             cell_height,
             font_size,
@@ -230,13 +156,53 @@ impl FontLoader {
             atlas_width,
             atlas_height,
             cache: HashMap::new(),
-            next_x: 2, // Start past the 2x2 white pixel
+            next_x: 2,
             next_y: 0,
         }
     }
 
     pub fn white_pixel_uv(&self) -> (f32, f32) {
         (1.0 / self.atlas_width as f32, 1.0 / self.atlas_height as f32)
+    }
+
+    pub fn update_font_size(&mut self, font_size: f32) {
+        self.font_size = font_size;
+        let scale = PxScale::from(font_size);
+        let scaled_font = self.font.as_scaled(scale);
+        self.cell_width = scaled_font.h_advance(self.font.glyph_id('A')).round() as u32;
+        self.cell_height = (scaled_font.ascent() - scaled_font.descent() + scaled_font.line_gap()).round() as u32;
+
+        self.cache.clear();
+        self.next_x = 2;
+        self.next_y = 0;
+
+        unsafe {
+            let white_square = vec![255u8; 2 * 2 * 4];
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                self.atlas_width as i32,
+                self.atlas_height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            self.gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                2,
+                2,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&white_square[..])),
+            );
+        }
     }
 
     pub fn get_glyph_uv(&mut self, c: char, is_wide: bool, is_bold: bool, is_italic: bool) -> GlyphUv {
@@ -261,7 +227,6 @@ impl FontLoader {
         };
         let base_c = seq.chars().next().unwrap_or(c);
 
-        // Select either the main font or check fallback fonts for glyph support
         let active_font = match (is_bold, is_italic) {
             (true, true) => self.font_bold_italic.as_ref().or(self.font_bold.as_ref()).or(self.font_italic.as_ref()).unwrap_or(&self.font),
             (true, false) => self.font_bold.as_ref().unwrap_or(&self.font),
@@ -271,8 +236,8 @@ impl FontLoader {
         let mut color_pixels = None;
 
         if active_font.glyph_id(base_c).0 == 0 {
-            self.load_fallback_for_char(base_c);
-            for fallback in &self.fallbacks {
+            if let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c, self.enable_nerdfont) {
+                let fallback = &self.fallback_manager.fallbacks[idx];
                 let id = fallback.font.glyph_id(base_c);
                 if id.0 != 0 {
                     if let Some(ref face) = fallback.owned_face {
@@ -287,7 +252,6 @@ impl FontLoader {
                                         let (output_color, _) = reader.output_color_type();
                                         if output_color == png::ColorType::Rgba {
                                             color_pixels = Some((buf, info.width, info.height));
-                                            break;
                                         }
                                     }
                                 }
@@ -347,66 +311,28 @@ impl FontLoader {
                 let mut char_glyph_id = char_font.glyph_id(ch);
                 
                 if char_glyph_id.0 == 0 {
-                    for fallback in &self.fallbacks {
+                    if let Some(idx) = self.fallback_manager.find_fallback_for_char(ch, self.enable_nerdfont) {
+                        let fallback = &self.fallback_manager.fallbacks[idx];
                         let id = fallback.font.glyph_id(ch);
                         if id.0 != 0 {
                             char_font = &fallback.font;
                             char_glyph_id = id;
-                            break;
                         }
                     }
                 }
                 
                 if char_glyph_id.0 != 0 {
-                    let mut scale = PxScale::from(self.font_size);
-                    let mut glyph = char_glyph_id.with_scale(scale);
-                    let mut scaled_font = char_font.as_scaled(scale);
-                    let mut ascent = scaled_font.ascent();
-
-                    let is_emoji = ch >= '\u{1f000}' || (ch >= '\u{2600}' && ch <= '\u{27bf}');
-                    let is_nerd_icon = self.enable_nerdfont && (ch >= '\u{e000}' && ch <= '\u{f8ff}');
-                    let is_icon_or_emoji = is_emoji || is_nerd_icon;
-
-                    if is_icon_or_emoji {
-                        let temp_scale = PxScale::from(self.cell_height as f32);
-                        let temp_glyph = char_glyph_id.with_scale(temp_scale);
-                        if let Some(outlined) = char_font.outline_glyph(temp_glyph) {
-                            let bounds = outlined.px_bounds();
-                            let glyph_w = bounds.max.x - bounds.min.x;
-                            let glyph_h = bounds.max.y - bounds.min.y;
-                            if glyph_w > 0.0 && glyph_h > 0.0 {
-                                let scale_factor_x = (target_width as f32) / glyph_w;
-                                let scale_factor_y = (self.cell_height as f32) / glyph_h;
-                                let scale_mult = if is_wide { 1.0 } else { 1.5 };
-                                let scale_factor = (scale_factor_x * scale_mult).min(scale_factor_y).min(0.95);
-                                
-                                let fit_scale = self.cell_height as f32 * scale_factor;
-                                scale = PxScale::from(fit_scale);
-                                glyph = char_glyph_id.with_scale(scale);
-                                scaled_font = char_font.as_scaled(scale);
-                                ascent = scaled_font.ascent();
-                            }
-                        }
-                    }
+                    let scale = PxScale::from(self.font_size);
+                    let glyph = char_glyph_id.with_scale(scale);
+                    let scaled_font = char_font.as_scaled(scale);
+                    let ascent = scaled_font.ascent();
 
                     if let Some(outlined) = char_font.outline_glyph(glyph) {
                         let bounds = outlined.px_bounds();
-                        
-                        let mut x_offset = if is_icon_or_emoji {
-                            (target_width as f32 - (bounds.max.x - bounds.min.x)) / 2.0
-                        } else {
-                            bounds.min.x
-                        };
+                        let mut x_offset = bounds.min.x;
+                        let y_offset = ascent + bounds.min.y;
 
-                        let y_offset = if is_icon_or_emoji {
-                            (self.cell_height as f32 - (bounds.max.y - bounds.min.y)) / 2.0
-                        } else {
-                            ascent + bounds.min.y
-                        };
-
-                        if !is_icon_or_emoji && ch_idx > 0 && unicode_width::UnicodeWidthChar::width(ch) == Some(0) {
-                            // If the combining character outline is centered to the left of the origin (e.g. proportional fallback fonts),
-                            // shift it to the right so it aligns on top of the base glyph.
+                        if ch_idx > 0 && unicode_width::UnicodeWidthChar::width(ch) == Some(0) {
                             if bounds.max.x <= 1.0 {
                                 x_offset += target_width as f32;
                             }
@@ -444,7 +370,7 @@ impl FontLoader {
         
         if self.next_y + self.cell_height > self.atlas_height {
             self.cache.clear();
-            self.next_x = 2; // Reserve (0,0)-(2,2) for white pixel
+            self.next_x = 2;
             self.next_y = 0;
             unsafe {
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
@@ -460,7 +386,6 @@ impl FontLoader {
                     glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(None),
                 );
-                // Re-write the white square
                 let white_pixels = vec![255u8; 2 * 2 * 4];
                 self.gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
@@ -508,45 +433,4 @@ impl FontLoader {
         self.cache.insert(key, uv);
         uv
     }
-
-    fn load_fallback_for_char(&mut self, c: char) {
-        for fallback in &self.fallbacks {
-            if fallback.font.glyph_id(c).0 != 0 {
-                return;
-            }
-        }
-
-        let load_fallback_helper = |path: &std::path::Path, is_emoji: bool| -> Option<FallbackFont> {
-            let data = std::fs::read(path).ok()?;
-            if is_emoji {
-                let f = FontArc::try_from_vec(data.clone()).ok()?;
-                let owned_face = owned_ttf_parser::OwnedFace::from_vec(data, 0).ok()?;
-                Some(FallbackFont { font: f, owned_face: Some(owned_face) })
-            } else {
-                let f = FontArc::try_from_vec(data).ok()?;
-                Some(FallbackFont { font: f, owned_face: None })
-            }
-        };
-
-
-        for path_str in &self.extra_paths {
-            let path = std::path::PathBuf::from(path_str);
-            if path.exists() && self.loaded_paths.insert(path.clone()) {
-                let is_emoji = path_str.to_lowercase().contains("emoji");
-                if let Some(fallback) = load_fallback_helper(&path, is_emoji) {
-                    let supports = fallback.font.glyph_id(c).0 != 0;
-                    if supports {
-                        self.fallbacks.push(fallback);
-                        return;
-                    }
-                }
-            }
-        }
-    }
 }
-
-
-
-
-
-
