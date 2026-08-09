@@ -28,7 +28,7 @@ test:
 
 # Run the benchmarks
 bench:
-    cargo bench
+    bash benchmarks/text_render_test/testren.bash
 
 # Run linters (clippy and formatter)
 lint:

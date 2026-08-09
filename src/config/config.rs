@@ -30,6 +30,8 @@ pub struct Config {
     pub padding_y: Option<f32>,
     #[serde(default)]
     pub font_scale_multiplier: Option<f32>,
+    #[serde(default)]
+    pub cursor_shape: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

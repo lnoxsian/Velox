@@ -23,6 +23,7 @@ pub struct Terminal {
     pub active_charset: u8,
     pub bold_is_bright: bool,
     pub app_title: Option<String>,
+    pub configured_cursor_shape: crate::screen::cursor::CursorShape,
 }
 
 impl Terminal {
@@ -73,9 +74,22 @@ impl Terminal {
         let bold_is_bright = config.bold_is_bright.unwrap_or(true);
         let app_title = config.app_title.clone();
 
+        let initial_shape = match config.cursor_shape.as_deref().unwrap_or("block").to_lowercase().as_str() {
+            "hollow_block" | "hollowblock" | "hollow" => crate::screen::cursor::CursorShape::HollowBlock,
+            "beam" | "i" | "ibar" | "bar" => crate::screen::cursor::CursorShape::Beam,
+            "underline" => crate::screen::cursor::CursorShape::Underline,
+            _ => crate::screen::cursor::CursorShape::Block,
+        };
+
+        let mut grid = Grid::new(width, height, default_fg, default_bg, scrollback_limit);
+        grid.cursor.shape = initial_shape;
+
+        let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0);
+        alt_grid.cursor.shape = initial_shape;
+
         Self {
-            grid: Grid::new(width, height, default_fg, default_bg, scrollback_limit),
-            alt_grid: Grid::new(width, height, default_fg, default_bg, 0),
+            grid,
+            alt_grid,
             is_alt_screen: false,
             parser: AnsiParser::new(),
             theme,
@@ -93,6 +107,7 @@ impl Terminal {
             active_charset: 0,
             bold_is_bright,
             app_title,
+            configured_cursor_shape: initial_shape,
         }
     }
 

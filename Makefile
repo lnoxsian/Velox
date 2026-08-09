@@ -1,4 +1,4 @@
-.PHONY: build lint update-version
+.PHONY: build lint update-version bench
 
 VERSION_FILE := VERSION
 VERSION := $(shell cat $(VERSION_FILE) | tr -d '\n\r')
@@ -6,6 +6,10 @@ VERSION := $(shell cat $(VERSION_FILE) | tr -d '\n\r')
 # Build the project
 build:
 	cargo build
+
+# Run the benchmark test script
+bench:
+	bash benchmarks/text_render_test/testren.bash
 
 # Run linters (clippy and formatter)
 lint:

@@ -270,9 +270,14 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
         }
         b'q' => { // Set Cursor Style (DECSCUSR)
             let param = params.first().copied().unwrap_or(0);
+            let default_shape = terminal.configured_cursor_shape;
             let active = terminal.active_grid_mut();
             match param {
-                0..=2 => {
+                0 => {
+                    active.cursor.shape = default_shape;
+                    active.cursor.visible = true;
+                }
+                1 | 2 => {
                     active.cursor.shape = crate::screen::cursor::CursorShape::Block;
                     active.cursor.visible = true;
                 }

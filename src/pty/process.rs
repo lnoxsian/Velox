@@ -1,5 +1,4 @@
 use crate::pty::master::PtyMaster;
-use crate::pty::slave::PtySlave;
 use nix::pty::openpty;
 use std::os::fd::IntoRawFd;
 use std::os::unix::process::CommandExt;
@@ -50,18 +49,3 @@ pub fn spawn_shell(shell_path: &str) -> Result<PtyMaster, PtyError> {
     }
 }
 
-pub fn fork_pty() -> Result<(PtyMaster, PtySlave), PtyError> {
-    let pty = openpty(None, None).map_err(|e| PtyError::Fork(e.to_string()))?;
-    Ok((
-        PtyMaster { fd: pty.master.into_raw_fd() },
-        PtySlave {}
-    ))
-}
-
-pub fn kill(_pid: i32) {
-    // stub
-}
-
-pub fn wait_exit(_pid: i32) -> Result<i32, PtyError> {
-    Ok(0)
-}

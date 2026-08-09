@@ -52,6 +52,7 @@ pub struct App {
     last_click_pos: (usize, usize),
     click_count: u8,
     last_mouse_cell: (usize, usize),
+    is_focused: bool,
 }
 
 impl App {
@@ -83,6 +84,7 @@ impl App {
             last_click_pos: (0, 0),
             click_count: 0,
             last_mouse_cell: (usize::MAX, usize::MAX),
+            is_focused: true,
         }
     }
 
@@ -225,6 +227,12 @@ impl ApplicationHandler<CustomEvent> for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
         match event {
+            WindowEvent::Focused(focused) => {
+                self.is_focused = focused;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
@@ -248,17 +256,6 @@ impl ApplicationHandler<CustomEvent> for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
-                    // Clear active text selection on any keyboard input
-                    if let Some(terminal) = &mut self.terminal {
-                        let active_grid = terminal.active_grid_mut();
-                        if active_grid.selection.active {
-                            active_grid.selection.clear();
-                            if let Some(window) = &self.window {
-                                window.request_redraw();
-                            }
-                        }
-                    }
-
                     // 1. Copy (Ctrl+Shift+C) and Paste (Ctrl+Shift+V)
                     if self.modifiers.control_key() && self.modifiers.shift_key() {
                         let key_ch = match &event.logical_key {
@@ -269,17 +266,23 @@ impl ApplicationHandler<CustomEvent> for App {
                             if ch == "c" {
                                 if let Some(terminal) = &self.terminal {
                                     let active_grid = terminal.active_grid();
-                                    let text: String = (0..active_grid.height)
-                                        .map(|y| {
-                                            (0..active_grid.width)
-                                                .map(|x| active_grid.cells[y * active_grid.width + x].character)
-                                                .collect::<String>()
-                                                .trim_end()
-                                                .to_string()
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    crate::clipboard::clipboard::copy(&text);
+                                    let text = if active_grid.selection.active {
+                                        active_grid.selection.extract_text(active_grid.width, active_grid.height, &active_grid.cells)
+                                    } else {
+                                        (0..active_grid.height)
+                                            .map(|y| {
+                                                (0..active_grid.width)
+                                                    .map(|x| active_grid.cells[y * active_grid.width + x].character)
+                                                    .collect::<String>()
+                                                    .trim_end()
+                                                    .to_string()
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\n")
+                                    };
+                                    if !text.is_empty() {
+                                        crate::clipboard::clipboard::copy(&text);
+                                    }
                                 }
                                 return;
                             } else if ch == "v" {
@@ -304,32 +307,32 @@ impl ApplicationHandler<CustomEvent> for App {
                         matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "0");
 
                     if is_zoom_in || is_zoom_out || is_zoom_reset {
-                            let new_size = if is_zoom_in {
-                                (self.current_font_size + 1.0).min(72.0)
-                            } else if is_zoom_out {
-                                (self.current_font_size - 1.0).max(4.0)
-                            } else {
-                                self.default_font_size
-                            };
+                        let new_size = if is_zoom_in {
+                            (self.current_font_size + 1.0).min(72.0)
+                        } else if is_zoom_out {
+                            (self.current_font_size - 1.0).max(4.0)
+                        } else {
+                            self.default_font_size
+                        };
 
-                            if (new_size - self.current_font_size).abs() > 0.01 {
-                                self.current_font_size = new_size;
-                                if let (Some(window), Some(renderer), Some(terminal), Some(pty_master)) = 
-                                   (&self.window, &mut self.renderer, &mut self.terminal, &self.pty_master) 
-                                {
-                                    renderer.set_font_size(new_size);
-                                    let size = window.inner_size();
-                                    let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
-                                    let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
-                                    let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
-                                    let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
-                                    terminal.resize(cols, rows);
-                                    let _ = pty_master.resize(cols as u16, rows as u16);
-                                    window.request_redraw();
-                                }
+                        if (new_size - self.current_font_size).abs() > 0.01 {
+                            self.current_font_size = new_size;
+                            if let (Some(window), Some(renderer), Some(terminal), Some(pty_master)) = 
+                               (&self.window, &mut self.renderer, &mut self.terminal, &self.pty_master) 
+                            {
+                                renderer.set_font_size(new_size);
+                                let size = window.inner_size();
+                                let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
+                                let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
+                                let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
+                                let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
+                                terminal.resize(cols, rows);
+                                let _ = pty_master.resize(cols as u16, rows as u16);
+                                window.request_redraw();
                             }
-                            return;
                         }
+                        return;
+                    }
 
                     if self.modifiers.shift_key() {
                         if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageUp) = event.logical_key {
@@ -347,9 +350,19 @@ impl ApplicationHandler<CustomEvent> for App {
                             }
                     }
 
+                    // Clear active text selection when typing input into the PTY
                     if let Some(pty_master) = &self.pty_master {
                         let cursor_keys_mode = self.terminal.as_ref().map(|t| t.cursor_keys_mode).unwrap_or(false);
                         if let Some(bytes) = crate::input::keyboard::translate_key(&event.logical_key, self.modifiers, cursor_keys_mode) {
+                            if let Some(terminal) = &mut self.terminal {
+                                let active_grid = terminal.active_grid_mut();
+                                if active_grid.selection.active {
+                                    active_grid.selection.clear();
+                                    if let Some(window) = &self.window {
+                                        window.request_redraw();
+                                    }
+                                }
+                            }
                             let _ = pty_master.write(&bytes);
                         }
                     }
@@ -698,6 +711,20 @@ impl ApplicationHandler<CustomEvent> for App {
                         }
                     }
 
+                    // Auto-detect URLs in visible rows and apply UNDERLINE styling
+                    for y in 0..height {
+                        let row_start = y * width;
+                        let line_text: String = (0..width)
+                            .map(|x| self.render_cells_buf[row_start + x].character)
+                            .collect();
+                        let urls = crate::hyperlink::detector::detect(&line_text);
+                        for (start_col, end_col, _) in urls {
+                            for col in start_col..end_col.min(width) {
+                                self.render_cells_buf[row_start + col].flags.insert(CellFlags::UNDERLINE);
+                            }
+                        }
+                    }
+
                     let cursor_visible = if offset > 0 { false } else { active_grid.cursor.visible };
 
                     // Update window title dynamically if it changed
@@ -714,6 +741,12 @@ impl ApplicationHandler<CustomEvent> for App {
                         self.current_title = title;
                     }
 
+                    let cursor_shape = if !self.is_focused && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block {
+                        crate::screen::cursor::CursorShape::HollowBlock
+                    } else {
+                        active_grid.cursor.shape
+                    };
+
                     renderer.draw(
                         &self.render_cells_buf,
                         width,
@@ -721,7 +754,7 @@ impl ApplicationHandler<CustomEvent> for App {
                         active_grid.cursor.x,
                         active_grid.cursor.y,
                         cursor_visible,
-                        active_grid.cursor.shape,
+                        cursor_shape,
                         &terminal.theme,
                         terminal.bold_is_bright,
                         &active_grid.selection,

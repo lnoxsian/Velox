@@ -283,6 +283,81 @@ for i in {0..100..5}; do
     sleep 0.03
 done
 
+echo -e "\n"
+echo "--- Style E: Package Installer Loading Bars (APT, Cargo, Pacman, Npm, Pip) ---"
+
+# 1. APT Package Manager
+printf "\e[1;34mGet:1\e[0m http://archive.ubuntu.com/ubuntu jammy/main amd64 velox-core 0.1.5 [1,248 kB]\n"
+for i in {0..100..5}; do
+    filled=$((i * 35 / 100))
+    empty=$((35 - filled))
+    bar_fill=""
+    for ((k=0; k<filled; k++)); do bar_fill="${bar_fill}#"; done
+    bar_empty=""
+    for ((k=0; k<empty; k++)); do bar_empty="${bar_empty}."; done
+    printf "\rReading database ... %3d%% [ \e[1;32m%s\e[0m\e[1;30m%s\e[0m ] (%d/35 packages)" "$i" "$bar_fill" "$bar_empty" "$((i * 35 / 100))"
+    sleep 0.015
+done
+echo -e "\n"
+
+# 2. Cargo (Rust) Package Build
+pkgs=("serde_json v1.0.114" "tokio v1.36.0" "glam v0.27.0" "glow v0.16.0" "velox v0.1.5")
+for p in "${!pkgs[@]}"; do
+    pkg_name="${pkgs[$p]}"
+    step=$(( (p + 1) * 20 ))
+    filled=$(( (p + 1) * 6 ))
+    empty=$(( 30 - filled ))
+    bar_fill=""
+    for ((k=0; k<filled; k++)); do bar_fill="${bar_fill}="; done
+    bar_empty=""
+    for ((k=0; k<empty; k++)); do bar_empty="${bar_empty} "; done
+    printf "\r  \e[1;32mCompiling\e[0m %-20s [\e[1;36m%s>%s\e[0m] %d/5 (%d%%)" "$pkg_name" "$bar_fill" "$bar_empty" "$((p + 1))" "$step"
+    sleep 0.04
+done
+echo -e "\n"
+
+# 3. Arch Pacman Package Manager
+for i in {0..100..4}; do
+    filled=$((i * 30 / 100))
+    empty=$((30 - filled))
+    bar_fill=""
+    for ((k=0; k<filled; k++)); do bar_fill="${bar_fill}#"; done
+    bar_empty=""
+    for ((k=0; k<empty; k++)); do bar_empty="${bar_empty}-"; done
+    printf "\r\e[1;36m(1/1) upgrading velox-terminal       \e[0m[\e[1;33m%s\e[0m\e[1;30m%s\e[0m] %3d%%" "$bar_fill" "$bar_empty" "$i"
+    sleep 0.015
+done
+echo -e "\n"
+
+# 4. NPM / Node Package Manager
+npm_spin=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+for i in {0..100..5}; do
+    filled=$((i * 25 / 100))
+    empty=$((25 - filled))
+    bar_fill=""
+    for ((k=0; k<filled; k++)); do bar_fill="${bar_fill}█"; done
+    bar_empty=""
+    for ((k=0; k<empty; k++)); do bar_empty="${bar_empty}░"; done
+    sp=${npm_spin[$(( (i/5) % 10 ))]}
+    printf "\r \e[38;2;203;56;55m%s npm\e[0m \e[1;37mreify:velox:\e[0m \e[38;2;80;250;123mtree:\e[0m[\e[38;2;139;233;253m%s\e[38;2;90;90;90m%s\e[0m] \e[1mhttp fetch GET 200\e[0m %3d%%" "$sp" "$bar_fill" "$bar_empty" "$i"
+    sleep 0.02
+done
+echo -e "\n"
+
+# 5. Pip (Python) Package Downloader
+for i in {0..100..5}; do
+    filled=$((i * 30 / 100))
+    empty=$((30 - filled))
+    bar_fill=""
+    for ((k=0; k<filled; k++)); do bar_fill="${bar_fill}━"; done
+    bar_empty=""
+    for ((k=0; k<empty; k++)); do bar_empty="${bar_empty}╸"; done
+    mb=$((i * 142 / 100))
+    printf "\rDownloading velox_gui-0.1.5-py3-none-any.whl (%d.2/14.2 MB)\n \e[38;2;255;121;198m━━━━━━━━━━━━━━━━━━━━\e[0m [\e[38;2;80;250;123m%s\e[38;2;90;90;90m%s\e[0m] %3d%% 2.4 MB/s eta 0:00:01\e[1A" "$mb" "$bar_fill" "$bar_empty" "$i"
+    sleep 0.02
+done
+echo -e "\n"
+
 tput cnorm
 echo
 echo

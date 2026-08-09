@@ -311,6 +311,18 @@ impl Renderer {
                             let thick = (ch * 0.2).max(3.0);
                             push_quad(&mut vertices, px, py + ch - thick, cw * cell_w_mult, thick, wu, wv, wu, wv, cell_fg, false);
                         }
+                        CursorShape::HollowBlock => {
+                            let thick = 1.5f32;
+                            let block_w = cw * cell_w_mult;
+                            // Top border
+                            push_quad(&mut vertices, px, py, block_w, thick, wu, wv, wu, wv, cell_fg, false);
+                            // Bottom border
+                            push_quad(&mut vertices, px, py + ch - thick, block_w, thick, wu, wv, wu, wv, cell_fg, false);
+                            // Left border
+                            push_quad(&mut vertices, px, py + thick, thick, ch - 2.0 * thick, wu, wv, wu, wv, cell_fg, false);
+                            // Right border
+                            push_quad(&mut vertices, px + block_w - thick, py + thick, thick, ch - 2.0 * thick, wu, wv, wu, wv, cell_fg, false);
+                        }
                         CursorShape::Block => {} // handled as background inversion in Pass 1
                     }
                 }
