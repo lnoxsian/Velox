@@ -53,6 +53,12 @@ pub struct App {
     click_count: u8,
     last_mouse_cell: (usize, usize),
     is_focused: bool,
+    // ── CPU-optimization state ───────────────────────────────────────────
+    needs_redraw: bool,
+    content_dirty: bool,
+    last_title_check: std::time::Instant,
+    cursor_blink_on: bool,
+    last_cursor_blink: std::time::Instant,
 }
 
 impl App {
@@ -85,6 +91,11 @@ impl App {
             click_count: 0,
             last_mouse_cell: (usize::MAX, usize::MAX),
             is_focused: true,
+            needs_redraw: true,
+            content_dirty: true,
+            last_title_check: std::time::Instant::now(),
+            cursor_blink_on: true,
+            last_cursor_blink: std::time::Instant::now(),
         }
     }
 
@@ -171,7 +182,12 @@ impl ApplicationHandler<CustomEvent> for App {
         let gl = Arc::new(gl);
 
         self.scroll_multiplier = config.scroll_multiplier.unwrap_or(1.0);
-        self.fps_limit = config.fps_limit;
+        // When software rendering, default to 60 fps to conserve CPU
+        let gpu = config.gpu_acceleration.unwrap_or(true);
+        self.fps_limit = match config.fps_limit {
+            Some(limit) => Some(limit),
+            None => if gpu { Some(120) } else { Some(60) },
+        };
         self.default_font_size = config.font_size;
         self.current_font_size = config.font_size;
         self.padding_x = config.padding_x.unwrap_or(8.0);
@@ -229,9 +245,7 @@ impl ApplicationHandler<CustomEvent> for App {
         match event {
             WindowEvent::Focused(focused) => {
                 self.is_focused = focused;
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.needs_redraw = true;
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -253,6 +267,8 @@ impl ApplicationHandler<CustomEvent> for App {
                     terminal.resize(cols, rows);
                     let _ = pty_master.resize(cols as u16, rows as u16);
                 }
+                self.needs_redraw = true;
+                self.content_dirty = true;
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state.is_pressed() {
@@ -328,7 +344,8 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
                                 terminal.resize(cols, rows);
                                 let _ = pty_master.resize(cols as u16, rows as u16);
-                                window.request_redraw();
+                                self.needs_redraw = true;
+                                self.content_dirty = true;
                             }
                         }
                         return;
@@ -340,12 +357,14 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
                                 let history_len = active_grid.scrollback.lines.len();
                                 active_grid.scroll_offset = (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                                self.needs_redraw = true;
                                 return;
                             }
                         } else if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageDown) = event.logical_key
                             && let Some(terminal) = &mut self.terminal {
                                 let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
                                 active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(active_grid.height / 2);
+                                self.needs_redraw = true;
                                 return;
                             }
                     }
@@ -358,9 +377,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let active_grid = terminal.active_grid_mut();
                                 if active_grid.selection.active {
                                     active_grid.selection.clear();
-                                    if let Some(window) = &self.window {
-                                        window.request_redraw();
-                                    }
+                                    self.needs_redraw = true;
                                 }
                             }
                             let _ = pty_master.write(&bytes);
@@ -406,9 +423,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let active_grid = terminal.active_grid_mut();
                                 if active_grid.selection.active {
                                     active_grid.selection.update_selection(col_idx, row_idx);
-                                    if let Some(window) = &self.window {
-                                        window.request_redraw();
-                                    }
+                                    self.needs_redraw = true;
                                 }
                             }
                         }
@@ -470,6 +485,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                 } else if lines < 0 {
                                     active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(lines.unsigned_abs() as usize);
                                 }
+                                self.needs_redraw = true;
                             }
                         }
             }
@@ -581,9 +597,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                         }
                                     }
 
-                                    if let Some(window) = &self.window {
-                                        window.request_redraw();
-                                    }
+                                    self.needs_redraw = true;
                                 }
                             }
                         }
@@ -625,9 +639,7 @@ impl ApplicationHandler<CustomEvent> for App {
                                         crate::clipboard::clipboard::copy(&text);
                                     } else if active_grid.selection.start_x == active_grid.selection.end_x && active_grid.selection.start_y == active_grid.selection.end_y {
                                         active_grid.selection.clear();
-                                        if let Some(window) = &self.window {
-                                            window.request_redraw();
-                                        }
+                                        self.needs_redraw = true;
                                     }
                                 }
                             }
@@ -639,14 +651,6 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let (Some(window), Some(renderer), Some(terminal), Some(gl_surface), Some(gl_context)) = 
                    (&self.window, &mut self.renderer, &self.terminal, &self.gl_surface, &self.gl_context) 
                 {
-                    if let Some(limit) = self.fps_limit
-                        && limit > 0 {
-                            let min_duration = std::time::Duration::from_secs_f64(1.0 / limit as f64);
-                            let elapsed = self.last_frame_instant.elapsed();
-                            if elapsed < min_duration {
-                                std::thread::sleep(min_duration - elapsed);
-                            }
-                        }
                     self.last_frame_instant = std::time::Instant::now();
 
                     let active_grid = terminal.active_grid();
@@ -725,20 +729,23 @@ impl ApplicationHandler<CustomEvent> for App {
                         }
                     }
 
-                    let cursor_visible = if offset > 0 { false } else { active_grid.cursor.visible };
+                    let cursor_visible = if offset > 0 { false } else { active_grid.cursor.visible && self.cursor_blink_on };
 
-                    // Update window title dynamically if it changed
-                    let program = self.pty_master
-                        .as_ref()
-                        .and_then(|pty| pty.get_foreground_process_name())
-                        .unwrap_or_else(|| "velox".to_string());
-                    let title = match &terminal.app_title {
-                        Some(tpl) => tpl.replace("{program}", &program),
-                        None => program,
-                    };
-                    if self.current_title != title {
-                        window.set_title(&title);
-                        self.current_title = title;
+                    // Throttle title-bar updates to at most once per second
+                    if self.last_title_check.elapsed() >= std::time::Duration::from_secs(1) {
+                        self.last_title_check = std::time::Instant::now();
+                        let program = self.pty_master
+                            .as_ref()
+                            .and_then(|pty| pty.get_foreground_process_name())
+                            .unwrap_or_else(|| "velox".to_string());
+                        let title = match &terminal.app_title {
+                            Some(tpl) => tpl.replace("{program}", &program),
+                            None => program,
+                        };
+                        if self.current_title != title {
+                            window.set_title(&title);
+                            self.current_title = title;
+                        }
                     }
 
                     let cursor_shape = if !self.is_focused && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block {
@@ -762,7 +769,6 @@ impl ApplicationHandler<CustomEvent> for App {
                         self.padding_y,
                     );
                     gl_surface.swap_buffers(gl_context).unwrap();
-                    window.request_redraw();
                 }
             }
             _ => {}
@@ -781,13 +787,51 @@ impl ApplicationHandler<CustomEvent> for App {
                         terminal.outgoing.clear();
                     }
                 }
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
+                self.needs_redraw = true;
+                self.content_dirty = true;
             }
             CustomEvent::PtyExit => {
                 event_loop.exit();
             }
         }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = std::time::Instant::now();
+
+        // ── Cursor blink: toggle every 500 ms ────────────────────────────────
+        if now.duration_since(self.last_cursor_blink) >= std::time::Duration::from_millis(500) {
+            self.cursor_blink_on = !self.cursor_blink_on;
+            self.last_cursor_blink = now;
+            self.needs_redraw = true;
+        }
+
+        // ── Schedule pending redraw with non-blocking FPS limiting ───────────
+        if self.needs_redraw {
+            let frame_duration = self.fps_limit
+                .filter(|&l| l > 0)
+                .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
+                .unwrap_or(std::time::Duration::from_millis(8));
+
+            let next_frame = self.last_frame_instant + frame_duration;
+            if now >= next_frame {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                self.needs_redraw = false;
+            } else {
+                // Defer until the FPS budget allows — no thread::sleep blocking
+                event_loop.set_control_flow(
+                    winit::event_loop::ControlFlow::WaitUntil(next_frame),
+                );
+                return;
+            }
+        }
+
+        // ── Idle: sleep until the next cursor-blink toggle ───────────────────
+        let next_blink = self.last_cursor_blink + std::time::Duration::from_millis(500);
+        event_loop.set_control_flow(
+            winit::event_loop::ControlFlow::WaitUntil(next_blink),
+        );
     }
 }
