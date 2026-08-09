@@ -657,28 +657,43 @@ impl ApplicationHandler<CustomEvent> for App {
                     if offset == 0 {
                         self.render_cells_buf.copy_from_slice(&active_grid.cells);
                     } else {
+                        let default_cell = Cell {
+                            character: ' ',
+                            foreground: active_grid.default_fg,
+                            background: active_grid.default_bg,
+                            flags: CellFlags::empty(),
+                        };
                         for y in 0..height {
-                            let idx = y + history_len - offset;
                             let dest_start = y * width;
                             let dest_end = dest_start + width;
-                            if idx < history_len {
+
+                            // Guard against usize underflow when offset > history_len + y.
+                            // That means we're trying to show rows before the scrollback buffer exists;
+                            // fill them with blank cells.
+                            let idx = (y + history_len).saturating_sub(offset);
+                            if y + history_len < offset {
+                                // Row is before the start of scrollback — fill blank
+                                self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                            } else if idx < history_len {
+                                // Row comes from the scrollback buffer
                                 let line_slice = &active_grid.scrollback.lines[idx];
                                 let copy_len = line_slice.len().min(width);
-                                self.render_cells_buf[dest_start..dest_start + copy_len].copy_from_slice(&line_slice[..copy_len]);
+                                self.render_cells_buf[dest_start..dest_start + copy_len]
+                                    .copy_from_slice(&line_slice[..copy_len]);
                                 if copy_len < width {
-                                    let default_cell = Cell {
-                                        character: ' ',
-                                        foreground: active_grid.default_fg,
-                                        background: active_grid.default_bg,
-                                        flags: CellFlags::empty(),
-                                    };
                                     self.render_cells_buf[dest_start + copy_len..dest_end].fill(default_cell);
                                 }
                             } else {
+                                // Row comes from the live grid
                                 let grid_y = idx - history_len;
                                 let src_start = grid_y * width;
                                 let src_end = src_start + width;
-                                 self.render_cells_buf[dest_start..dest_end].copy_from_slice(&active_grid.cells[src_start..src_end]);
+                                if src_end <= active_grid.cells.len() {
+                                    self.render_cells_buf[dest_start..dest_end]
+                                        .copy_from_slice(&active_grid.cells[src_start..src_end]);
+                                } else {
+                                    self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                                }
                             }
                         }
                     }
