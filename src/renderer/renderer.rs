@@ -16,41 +16,36 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(gl: Arc<glow::Context>, font_family: &str, font_size: f32, enable_nerdfont: bool) -> Self {
+    pub fn new(gl: Arc<glow::Context>, font_family: &str, font_size: f32, font_scale_multiplier: f32) -> Self {
         unsafe {
             // Compile Shaders
             let vertex_shader_source = r#"
                 #version 330 core
                 layout (location = 0) in vec2 a_pos;
                 layout (location = 1) in vec2 a_tex;
-                layout (location = 2) in vec4 a_fg;
-                layout (location = 3) in vec4 a_bg;
+                layout (location = 2) in vec4 a_color;
                 out vec2 v_tex;
-                out vec4 v_fg;
-                out vec4 v_bg;
+                out vec4 v_color;
                 uniform mat4 u_projection;
                 void main() {
                     gl_Position = u_projection * vec4(a_pos, 0.0, 1.0);
                     v_tex = a_tex;
-                    v_fg = a_fg;
-                    v_bg = a_bg;
+                    v_color = a_color;
                 }
             "#;
 
             let fragment_shader_source = r#"
                 #version 330 core
                 in vec2 v_tex;
-                in vec4 v_fg;
-                in vec4 v_bg;
+                in vec4 v_color;
                 out vec4 FragColor;
                 uniform sampler2D u_atlas;
                 void main() {
                     vec4 tex_color = texture(u_atlas, v_tex);
-                    if (v_fg.a < 0.5) {
-                        FragColor = mix(v_bg, tex_color, tex_color.a);
+                    if (v_color.a < 0.5) {
+                        FragColor = tex_color;
                     } else {
-                        float mask = tex_color.r;
-                        FragColor = mix(v_bg, v_fg, mask);
+                        FragColor = vec4(v_color.rgb, tex_color.r);
                     }
                 }
             "#;
@@ -87,17 +82,18 @@ impl Renderer {
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
 
-            let stride = (2 + 2 + 4 + 4) * std::mem::size_of::<f32>() as i32;
+            let stride = (2 + 2 + 4) * std::mem::size_of::<f32>() as i32;
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, stride, 0);
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, 2 * std::mem::size_of::<f32>() as i32);
             gl.enable_vertex_attrib_array(1);
             gl.vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, stride, 4 * std::mem::size_of::<f32>() as i32);
             gl.enable_vertex_attrib_array(2);
-            gl.vertex_attrib_pointer_f32(3, 4, glow::FLOAT, false, stride, 8 * std::mem::size_of::<f32>() as i32);
-            gl.enable_vertex_attrib_array(3);
+            
+            gl.enable(glow::BLEND);
+            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
-            let font_loader = FontLoader::new(gl.clone(), font_family, font_size, enable_nerdfont);
+            let font_loader = FontLoader::new(gl.clone(), font_family, font_size, font_scale_multiplier);
 
             Self {
                 gl,
@@ -153,30 +149,29 @@ impl Renderer {
         let elapsed = self.start_time.elapsed().as_millis();
         let blink_on = (elapsed / 500).is_multiple_of(2);
 
-        let push_quad = |vertices: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, u_min: f32, v_min: f32, u_max: f32, v_max: f32, fg: Color, bg: Color, is_color: bool| {
-            let fg_alpha = if is_color { 0.0 } else { 1.0 };
-            let fg_f = [fg.r as f32 / 255.0, fg.g as f32 / 255.0, fg.b as f32 / 255.0, fg_alpha];
-            let bg_f = [bg.r as f32 / 255.0, bg.g as f32 / 255.0, bg.b as f32 / 255.0, 1.0];
+        let push_quad = |vertices: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, u_min: f32, v_min: f32, u_max: f32, v_max: f32, color: Color, is_color: bool| {
+            let alpha = if is_color { 0.0 } else { 1.0 };
+            let color_f = [color.r as f32 / 255.0, color.g as f32 / 255.0, color.b as f32 / 255.0, alpha];
             
             // Triangle 1
             vertices.extend_from_slice(&[x, y, u_min, v_min]);
-            vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
+            vertices.extend_from_slice(&color_f);
 
             vertices.extend_from_slice(&[x + w, y, u_max, v_min]);
-            vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
+            vertices.extend_from_slice(&color_f);
 
             vertices.extend_from_slice(&[x, y + h, u_min, v_max]);
-            vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
+            vertices.extend_from_slice(&color_f);
 
             // Triangle 2
             vertices.extend_from_slice(&[x, y + h, u_min, v_max]);
-            vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
+            vertices.extend_from_slice(&color_f);
 
             vertices.extend_from_slice(&[x + w, y, u_max, v_min]);
-            vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
+            vertices.extend_from_slice(&color_f);
 
             vertices.extend_from_slice(&[x + w, y + h, u_max, v_max]);
-            vertices.extend_from_slice(&fg_f); vertices.extend_from_slice(&bg_f);
+            vertices.extend_from_slice(&color_f);
         };
 
         let selection_active = selection.active;
@@ -186,6 +181,8 @@ impl Renderer {
             ((0, 0), (0, 0))
         };
 
+        // Pass 1: Backgrounds
+        let (wu, wv) = self.font_loader.white_pixel_uv();
         for y in 0..rows {
             let mut x = 0;
             while x < cols {
@@ -212,7 +209,46 @@ impl Renderer {
                     || is_selected
                     || cell.flags.contains(CellFlags::REVERSE);
 
-                let (mut fg, bg) = if is_inverted {
+                let bg = if is_inverted { cell_fg } else { cell.background };
+
+                let is_wide = cell.flags.contains(CellFlags::WIDE);
+                let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
+                let px = padding_x + x as f32 * cw;
+                let py = padding_y + y as f32 * ch;
+                
+                push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, wu, wv, wu, wv, bg, false);
+                x += if is_wide { 2 } else { 1 };
+            }
+        }
+        
+        // Pass 2: Foregrounds
+        for y in 0..rows {
+            let mut x = 0;
+            while x < cols {
+                let cell = cells[y * cols + x];
+                if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                    x += 1;
+                    continue;
+                }
+
+                let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
+                let is_selected = selection_active && selection.contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, x, y);
+                
+                let mut cell_fg = cell.foreground;
+                if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                    for i in 0..8 {
+                        if cell_fg == theme.ansi_colors[i] {
+                            cell_fg = theme.ansi_colors[i + 8];
+                            break;
+                        }
+                    }
+                }
+
+                let is_inverted = (is_cursor && cursor_shape == crate::screen::cursor::CursorShape::Block)
+                    || is_selected
+                    || cell.flags.contains(CellFlags::REVERSE);
+
+                let (mut fg, _bg) = if is_inverted {
                     (cell.background, cell_fg)
                 } else {
                     (cell_fg, cell.background)
@@ -224,31 +260,37 @@ impl Renderer {
                     fg.b = (fg.b as f32 * 0.6) as u8;
                 }
 
+                let mut skip_fg = false;
                 if cell.flags.contains(CellFlags::HIDDEN) || (cell.flags.contains(CellFlags::BLINK) && !blink_on) {
-                    fg = bg;
+                    skip_fg = true;
                 }
 
                 let is_wide = cell.flags.contains(CellFlags::WIDE);
-                let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
-
+                
                 let is_bold = cell.flags.contains(CellFlags::BOLD);
                 let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                let uv = self.font_loader.get_glyph_uv(cell.character, is_wide, is_bold, is_italic);
+                
                 let px = padding_x + x as f32 * cw;
                 let py = padding_y + y as f32 * ch;
-                push_quad(&mut vertices, px, py, cw * cell_w_mult, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, bg, uv.is_color);
+                
+                if !skip_fg && cell.character != ' ' {
+                    let uv = self.font_loader.get_glyph_uv(cell.character, is_wide, is_bold, is_italic);
+                    let quad_w = cw * uv.width_mult;
+                    push_quad(&mut vertices, px, py, quad_w, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, uv.is_color);
+                }
 
+                let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
+                
                 if is_cursor {
-                    let (u, v) = self.font_loader.white_pixel_uv();
                     let cursor_color = cell_fg;
                     match cursor_shape {
                         crate::screen::cursor::CursorShape::Beam => {
                             let beam_w = (cw * 0.15).max(2.0);
-                            push_quad(&mut vertices, px, py, beam_w, ch, u, v, u, v, cursor_color, cursor_color, false);
+                            push_quad(&mut vertices, px, py, beam_w, ch, wu, wv, wu, wv, cursor_color, false);
                         }
                         crate::screen::cursor::CursorShape::Underline => {
                             let thick = (ch * 0.2).max(3.0);
-                            push_quad(&mut vertices, px, py + ch - thick, cw * cell_w_mult, thick, u, v, u, v, cursor_color, cursor_color, false);
+                            push_quad(&mut vertices, px, py + ch - thick, cw * cell_w_mult, thick, wu, wv, wu, wv, cursor_color, false);
                         }
                         crate::screen::cursor::CursorShape::Block => {}
                     }
@@ -257,23 +299,20 @@ impl Renderer {
                 if cell.flags.contains(CellFlags::UNDERLINE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());
                     let line_y = py + ch - thickness - 1.0;
-                    let (u, v) = self.font_loader.white_pixel_uv();
-                    push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                    push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, wu, wv, wu, wv, fg, false);
                 }
 
                 if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());
                     let line_y2 = py + ch - thickness - 1.0;
                     let line_y1 = line_y2 - thickness - 1.5;
-                    let (u, v) = self.font_loader.white_pixel_uv();
-                    push_quad(&mut vertices, px, line_y1, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
-                    push_quad(&mut vertices, px, line_y2, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                    push_quad(&mut vertices, px, line_y1, cw * cell_w_mult, thickness, wu, wv, wu, wv, fg, false);
+                    push_quad(&mut vertices, px, line_y2, cw * cell_w_mult, thickness, wu, wv, wu, wv, fg, false);
                 }
 
                 if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());
                     let line_y = py + ch - thickness - 1.0;
-                    let (u, v) = self.font_loader.white_pixel_uv();
                     let wave_w = cw * cell_w_mult;
                     let step = 2.0f32;
                     let mut sx = 0.0f32;
@@ -281,7 +320,7 @@ impl Renderer {
                         let angle = (sx / wave_w) * std::f32::consts::PI * 4.0;
                         let wave_offset = angle.sin() * thickness * 0.5;
                         let draw_w = step.min(wave_w - sx);
-                        push_quad(&mut vertices, px + sx, line_y + wave_offset, draw_w, thickness, u, v, u, v, fg, bg, false);
+                        push_quad(&mut vertices, px + sx, line_y + wave_offset, draw_w, thickness, wu, wv, wu, wv, fg, false);
                         sx += step;
                     }
                 }
@@ -289,8 +328,7 @@ impl Renderer {
                 if cell.flags.contains(CellFlags::STRIKE) {
                     let thickness = 1.0f32.max((ch * 0.08).round());
                     let line_y = py + (ch / 2.0).round() - (thickness / 2.0).round();
-                    let (u, v) = self.font_loader.white_pixel_uv();
-                    push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, u, v, u, v, fg, bg, false);
+                    push_quad(&mut vertices, px, line_y, cw * cell_w_mult, thickness, wu, wv, wu, wv, fg, false);
                 }
 
                 x += if is_wide { 2 } else { 1 };
@@ -327,7 +365,7 @@ impl Renderer {
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
             self.gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytemuck::cast_slice(&vertices), glow::DYNAMIC_DRAW);
 
-            self.gl.draw_arrays(glow::TRIANGLES, 0, (vertices.len() / 12) as i32);
+            self.gl.draw_arrays(glow::TRIANGLES, 0, (vertices.len() / 8) as i32);
         }
         self.vertices = vertices;
     }

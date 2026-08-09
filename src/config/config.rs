@@ -13,8 +13,6 @@ pub struct Config {
     #[serde(default)]
     pub colors: Option<ConfigColors>,
     #[serde(default)]
-    pub enable_nerdfont: Option<bool>,
-    #[serde(default)]
     pub scrollback_limit: Option<usize>,
     #[serde(default)]
     pub gpu_acceleration: Option<bool>,
@@ -30,6 +28,8 @@ pub struct Config {
     pub padding_x: Option<f32>,
     #[serde(default)]
     pub padding_y: Option<f32>,
+    #[serde(default)]
+    pub font_scale_multiplier: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

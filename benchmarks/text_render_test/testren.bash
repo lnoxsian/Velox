@@ -197,21 +197,89 @@ spinner_len=${#spinner[@]}
 
 tput civis
 
-for i in {0..100..4}; do
-    filled=$((i / 4))
-    empty=$((25 - filled))
+echo "--- Style A: Smooth RGB Truecolor Block Bar ---"
+for i in {0..100..2}; do
+    filled=$((i / 2))
+    empty=$((50 - filled))
     
     bar=""
     for ((k=0; k<filled; k++)); do bar="${bar}█"; done
     for ((k=0; k<empty; k++)); do bar="${bar}░"; done
     
-    sp_frame=${spinner[$(( (i/4) % spinner_len ))]}
+    sp_frame=${spinner[$(( (i/2) % spinner_len ))]}
     
     r_val=$((255 - i * 2))
     g_val=$((i * 2))
     b_val=$((i * 255 / 100))
     
-    printf "\r %s \e[1mLoading:\e[0m \e[38;2;%s;%s;%sm%s\e[0m %3d%% " "$sp_frame" "$r_val" "$g_val" "$b_val" "$bar" "$i"
+    printf "\r %s \e[1m[Core Download]:\e[0m \e[38;2;%s;%s;%sm%s\e[0m %3d%% " "$sp_frame" "$r_val" "$g_val" "$b_val" "$bar" "$i"
+    sleep 0.015
+done
+echo -e "\n"
+
+echo "--- Style B: Rounded Powerline Pill Bar ---"
+for i in {0..100..4}; do
+    filled=$((i / 5))
+    empty=$((20 - filled))
+    
+    bar_fill=""
+    for ((k=0; k<filled; k++)); do bar_fill="${bar_fill}━"; done
+    bar_empty=""
+    for ((k=0; k<empty; k++)); do bar_empty="${bar_empty}─"; done
+    
+    printf "\r \e[38;2;102;217;239m\e[48;2;102;217;239;38;2;30;30;30m %3d%% \e[48;2;50;50;50;38;2;166;226;46m%s\e[38;2;100;100;100m%s\e[48;2;102;217;239;38;2;30;30;30m  Velox \e[0;38;2;102;217;239m\e[0m" "$i" "$bar_fill" "$bar_empty"
+    sleep 0.02
+done
+echo -e "\n"
+
+echo "--- Style C: Sub-Block Smooth Gradient Bar ---"
+sub_blocks=(" " "▏" "▎" "▍" "▌" "▋" "▊" "▉" "█")
+for i in {0..100..2}; do
+    total_eighths=$((i * 30 / 100 * 8 / 1))
+    full_blocks=$((total_eighths / 8))
+    rem_eighths=$((total_eighths % 8))
+    
+    bar=""
+    for ((k=0; k<full_blocks; k++)); do bar="${bar}█"; done
+    if [ $full_blocks -lt 30 ]; then
+        bar="${bar}${sub_blocks[$rem_eighths]}"
+        empty_count=$((29 - full_blocks))
+        for ((k=0; k<empty_count; k++)); do bar="${bar} "; done
+    fi
+    
+    printf "\r \e[1;33m⚡ Building:\e[0m [\e[38;2;255;184;108m%s\e[0m] \e[1;36m%3d%%\e[0m" "$bar" "$i"
+    sleep 0.015
+done
+echo -e "\n"
+
+echo "--- Style D: Multi-Task Concurrent Download Bars ---"
+printf " Task 1 (Kernel Assets):   [                            ]   0%%\n"
+printf " Task 2 (Font Atlas):      [                            ]   0%%\n"
+printf " Task 3 (Shader Pipeline): [                            ]   0%%"
+
+for i in {0..100..5}; do
+    p1=$i
+    p2=$(( i * 8 / 10 ))
+    if [ $p2 -gt 100 ]; then p2=100; fi
+    p3=$(( i * 12 / 10 ))
+    if [ $p3 -gt 100 ]; then p3=100; fi
+    
+    # Task 3
+    f3=$((p3 * 28 / 100)); e3=$((28 - f3))
+    b3=""; for ((k=0; k<f3; k++)); do b3="${b3}█"; done; for ((k=0; k<e3; k++)); do b3="${b3}░"; done
+    printf "\r Task 3 (Shader Pipeline): [\e[38;2;255;121;198m%s\e[0m] %3d%%" "$b3" "$p3"
+    
+    # Task 2
+    f2=$((p2 * 28 / 100)); e2=$((28 - f2))
+    b2=""; for ((k=0; k<f2; k++)); do b2="${b2}█"; done; for ((k=0; k<e2; k++)); do b2="${b2}░"; done
+    printf "\e[1A\r Task 2 (Font Atlas):      [\e[38;2;80;250;123m%s\e[0m] %3d%%" "$b2" "$p2"
+    
+    # Task 1
+    f1=$((p1 * 28 / 100)); e1=$((28 - f1))
+    b1=""; for ((k=0; k<f1; k++)); do b1="${b1}█"; done; for ((k=0; k<e1; k++)); do b1="${b1}░"; done
+    printf "\e[1A\r Task 1 (Kernel Assets):   [\e[38;2;139;233;253m%s\e[0m] %3d%%" "$b1" "$p1"
+    
+    printf "\e[2B"
     sleep 0.03
 done
 

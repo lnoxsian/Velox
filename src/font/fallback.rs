@@ -33,7 +33,7 @@ impl FallbackManager {
         }
     }
 
-    pub fn find_fallback_for_char(&mut self, c: char, enable_nerdfont: bool) -> Option<usize> {
+    pub fn find_fallback_for_char(&mut self, c: char) -> Option<usize> {
         // 1. Check existing loaded fallback fonts first
         for (idx, fallback) in self.fallbacks.iter().enumerate() {
             if fallback.font.glyph_id(c).0 != 0 {
@@ -47,8 +47,7 @@ impl FallbackManager {
         }
 
         // 3. Check popular Nerd Font & Symbol families directly
-        let is_symbol_or_pua = enable_nerdfont
-            || ('\u{e000}'..='\u{f8ff}').contains(&c)
+        let is_symbol_or_pua = ('\u{e000}'..='\u{f8ff}').contains(&c)
             || ('\u{f0000}'..='\u{ffffd}').contains(&c)
             || ('\u{2300}'..='\u{2bff}').contains(&c);
 
@@ -118,8 +117,8 @@ mod tests {
     #[test]
     fn test_fallback_manager_initialization() {
         let mut manager = FallbackManager::new();
-        let _ = manager.find_fallback_for_char('A', true);
-        let _ = manager.find_fallback_for_char('\u{1f600}', true); // 😀
-        let _ = manager.find_fallback_for_char('\u{e0b0}', true); // 
+        let _ = manager.find_fallback_for_char('A');
+        let _ = manager.find_fallback_for_char('\u{1f600}'); // 😀
+        let _ = manager.find_fallback_for_char('\u{e0b0}'); // 
     }
 }

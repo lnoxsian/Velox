@@ -88,6 +88,13 @@ scroll_multiplier = 1.0
 
 # Frame rate limit (e.g. 60, 120, 144, 240, or 0 for uncapped)
 fps_limit = 120
+
+# Window padding margins (in pixels)
+padding_x = 8.0
+padding_y = 4.0
+
+# Font size scaling multiplier
+font_scale_multiplier = 1.5
 ```
 
 ## Performance Targets

@@ -31,14 +31,13 @@ pub struct Grid {
     pub selection: Selection,
     pub default_fg: Color,
     pub default_bg: Color,
-    pub enable_nerdfont: bool,
     pub scroll_region_top: usize,
     pub scroll_region_bottom: usize,
     pub scroll_offset: usize,
 }
 
 impl Grid {
-    pub fn new(width: usize, height: usize, fg: Color, bg: Color, enable_nerdfont: bool, scrollback_limit: usize) -> Self {
+    pub fn new(width: usize, height: usize, fg: Color, bg: Color, scrollback_limit: usize) -> Self {
         let default_cell = Cell {
             character: ' ',
             foreground: fg,
@@ -73,7 +72,6 @@ impl Grid {
             selection: Selection::new(),
             default_fg: fg,
             default_bg: bg,
-            enable_nerdfont,
             scroll_region_top: 0,
             scroll_region_bottom: height.saturating_sub(1),
             scroll_offset: 0,
@@ -115,12 +113,7 @@ impl Grid {
             return;
         }
 
-        // Nerd Font icons and emojis are treated as double-width (w = 2) for rendering size if enabled, CJK characters are also w = 2
-        let w = if (self.enable_nerdfont && ('\u{e000}'..='\u{f8ff}').contains(&c)) || c >= '\u{1f000}' {
-            2
-        } else {
-            UnicodeWidthChar::width(c).unwrap_or(1).max(1)
-        };
+        let w = UnicodeWidthChar::width(c).unwrap_or(1).max(1);
 
         if self.cursor.x + w > self.width {
             // Fill rest of the row with spaces, then wrap
@@ -823,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_grid_combining() {
-        let mut grid = Grid::new(80, 24, Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, false, 1000);
+        let mut grid = Grid::new(80, 24, Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, 1000);
         grid.put_char('a', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
         grid.put_char('\u{0301}', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
         
@@ -836,7 +829,7 @@ mod tests {
     fn test_grid_reflow_narrow_and_expand() {
         let fg = Color { r: 255, g: 255, b: 255, a: 255 };
         let bg = Color { r: 0, g: 0, b: 0, a: 255 };
-        let mut grid = Grid::new(80, 10, fg, bg, false, 1000);
+        let mut grid = Grid::new(80, 10, fg, bg, 1000);
 
         // Write a 70-character line (fits on 80 cols without wrapping)
         for c in "0123456789012345678901234567890123456789012345678901234567890123456789".chars() {
@@ -867,7 +860,7 @@ mod tests {
     fn test_grid_reflow_cursor_tracking() {
         let fg = Color { r: 255, g: 255, b: 255, a: 255 };
         let bg = Color { r: 0, g: 0, b: 0, a: 255 };
-        let mut grid = Grid::new(80, 10, fg, bg, false, 1000);
+        let mut grid = Grid::new(80, 10, fg, bg, 1000);
 
         // Fill 50 characters, cursor will be at x=50, y=0
         for _ in 0..50 {

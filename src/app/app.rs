@@ -174,7 +174,8 @@ impl ApplicationHandler<CustomEvent> for App {
         self.current_font_size = config.font_size;
         self.padding_x = config.padding_x.unwrap_or(8.0);
         self.padding_y = config.padding_y.unwrap_or(4.0);
-        let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, config.enable_nerdfont.unwrap_or(true));
+        let font_scale_multiplier = config.font_scale_multiplier.unwrap_or(1.5);
+        let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, font_scale_multiplier);
         
         let avail_w = (800.0 - self.padding_x * 2.0).max(10.0);
         let avail_h = (600.0 - self.padding_y * 2.0).max(10.0);

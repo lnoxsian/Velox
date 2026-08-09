@@ -25,7 +25,6 @@ pub fn default_config() -> Config {
             bright_cyan: Some("#A1EFE4".to_string()),
             bright_white: Some("#F8F8F0".to_string()),
         }),
-        enable_nerdfont: Some(true),
         scrollback_limit: Some(1000),
         gpu_acceleration: Some(true),
         scroll_multiplier: Some(1.0),
@@ -34,5 +33,6 @@ pub fn default_config() -> Config {
         app_title: None,
         padding_x: Some(8.0),
         padding_y: Some(4.0),
+        font_scale_multiplier: Some(1.5),
     }
 }

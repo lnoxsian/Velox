@@ -69,14 +69,13 @@ impl Terminal {
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
 
-        let enable_nerdfont = config.enable_nerdfont.unwrap_or(true);
         let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
         let bold_is_bright = config.bold_is_bright.unwrap_or(true);
         let app_title = config.app_title.clone();
 
         Self {
-            grid: Grid::new(width, height, default_fg, default_bg, enable_nerdfont, scrollback_limit),
-            alt_grid: Grid::new(width, height, default_fg, default_bg, enable_nerdfont, 0),
+            grid: Grid::new(width, height, default_fg, default_bg, scrollback_limit),
+            alt_grid: Grid::new(width, height, default_fg, default_bg, 0),
             is_alt_screen: false,
             parser: AnsiParser::new(),
             theme,
