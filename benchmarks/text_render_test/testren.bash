@@ -1,13 +1,174 @@
 #!/usr/bin/env bash
 
-SCROLLBACK_TEST=false
+SCROLLBACK_ONLY=false
+GRID_ONLY=false
+
 for arg in "$@"; do
-    if [ "$arg" = "--scroll-back" ]; then
-        SCROLLBACK_TEST=true
+    if [ "$arg" = "--scroll-back" ] || [ "$arg" = "--scrollback" ]; then
+        SCROLLBACK_ONLY=true
+    fi
+    if [ "$arg" = "--grid" ] || [ "$arg" = "--full-grid" ]; then
+        GRID_ONLY=true
     fi
 done
 
 clear
+
+if [ "$GRID_ONLY" = true ]; then
+    echo "==========================================="
+    echo "VELOX TERMINAL GRID LAYOUT TEST"
+    echo "==========================================="
+    echo
+
+    cols=$(tput cols 2>/dev/null || echo 80)
+    lines=$(tput lines 2>/dev/null || echo 24)
+
+    echo "Detected Terminal Dimensions: ${cols} columns × ${lines} rows"
+    echo "Rendering explicit column numbers (1..${cols}) and row numbers (1..${lines}) matrix grid..."
+    echo
+
+    # 1. Column Tens & Units Header Rulers
+    tens_line="Col:  "
+    units_line="      "
+    for ((c=7; c<=cols; c++)); do
+        unit=$((c % 10))
+        if [ $((c % 10)) -eq 0 ]; then
+            ten_digit=$(( (c / 10) % 10 ))
+            tens_line="${tens_line}${ten_digit}"
+        else
+            tens_line="${tens_line} "
+        fi
+        units_line="${units_line}${unit}"
+    done
+
+    printf "\e[1;33m%s\e[0m\n" "$tens_line"
+    printf "\e[1;36m%s\e[0m\n" "$units_line"
+
+    # 2. Top Box Line
+    grid_width=$((cols - 8))
+    if [ $grid_width -lt 10 ]; then grid_width=10; fi
+
+    border_h=""
+    for ((k=0; k<grid_width; k++)); do border_h="${border_h}─"; done
+
+    printf "\e[1;35m┌──────┬%s┐\e[0m\n" "$border_h"
+
+    max_rows=$((lines - 10))
+    if [ $max_rows -lt 4 ]; then max_rows=4; fi
+
+    for ((r=1; r<=max_rows; r++)); do
+        row_tag=$(printf "R%02d" "$r")
+        cell_pattern=""
+        for ((c=1; c<=grid_width; c++)); do
+            if [ $((r % 2)) -eq 1 ]; then
+                cell_pattern="${cell_pattern}$((c % 10))"
+            else
+                if [ $((c % 5)) -eq 0 ]; then
+                    cell_pattern="${cell_pattern}+"
+                else
+                    cell_pattern="${cell_pattern}·"
+                fi
+            fi
+        done
+        printf "\e[1;35m│\e[1;32m %s \e[1;35m│\e[0m%s\e[1;35m│\e[0m\n" "$row_tag" "$cell_pattern"
+    done
+
+    printf "\e[1;35m└──────┴%s┘\e[0m\n" "$border_h"
+    echo
+
+    echo "Launching Full-Screen Alternate Buffer Corner-to-Corner Sweep..."
+    sleep 0.5
+
+    printf "\e[?1049h\e[?25l\e[2J\e[H"
+
+    # Row 1: Column Header Ruler
+    printf "\e[1;1H\e[1;44;37m"
+    for ((c=1; c<=cols; c++)); do
+        printf "%d" "$((c % 10))"
+    done
+    printf "\e[0m"
+
+    # Middle Rows: Row Index + Matrix Grid Cells
+    for ((r=2; r<lines; r++)); do
+        printf "\e[%d;1H\e[1;33m%02d:\e[0m" "$r" "$r"
+        grid_fill=""
+        for ((c=4; c<=cols; c++)); do
+            if [ $c -eq 4 ] || [ $c -eq $cols ]; then
+                grid_fill="${grid_fill}│"
+            elif [ $((c % 10)) -eq 0 ]; then
+                grid_fill="${grid_fill}┼"
+            elif [ $((r % 2)) -eq 0 ]; then
+                grid_fill="${grid_fill}$((c % 10))"
+            else
+                grid_fill="${grid_fill}·"
+            fi
+        done
+        printf "%s" "$grid_fill"
+    done
+
+    # Bottom Row: Corner Markers & Dimension Summary
+    printf "\e[%d;1H\e[1;44;37m" "$lines"
+    for ((c=1; c<=cols; c++)); do
+        printf "%d" "$((c % 10))"
+    done
+    printf "\e[0m"
+
+    # Overlay ESC Cancellation Hint & Corner Badges
+    printf "\e[2;5H\e[1;101;37m ↖ (1,1) TOP-LEFT \e[0m"
+    printf "\e[2;%dH\e[1;101;37m (1,%d) TOP-RIGHT ↗ \e[0m" "$((cols - 20))" "$cols"
+
+    mid_r=$((lines / 2))
+    mid_msg=" VELOX FULL MATRIX GRID [ %d ROWS x %d COLS ] " "$lines" "$cols"
+    mid_msg_str=$(printf "$mid_msg")
+    mid_c=$(( (cols - ${#mid_msg_str}) / 2 ))
+    if [ $mid_c -lt 1 ]; then mid_c=1; fi
+    printf "\e[%d;%dH\e[1;42;30m%s\e[0m" "$mid_r" "$mid_c" "$mid_msg_str"
+
+    hint_r=$((lines - 2))
+    hint_msg=" Press [ESC] or [q] to exit grid test "
+    hint_c=$(( (cols - ${#hint_msg}) / 2 ))
+    if [ $hint_c -lt 1 ]; then hint_c=1; fi
+    printf "\e[%d;%dH\e[1;43;30m%s\e[0m" "$hint_r" "$hint_c" "$hint_msg"
+
+    bot_r=$((lines - 1))
+    printf "\e[%d;5H\e[1;101;37m ↙ (%d,1) BOTTOM-LEFT \e[0m" "$bot_r" "$lines"
+    printf "\e[%d;%dH\e[1;40;37m (%d,%d) BOTTOM-RIGHT ↘ \e[0m" "$bot_r" "$((cols - 24))" "$lines" "$cols"
+
+    read -t 5 -n 1 -r -s key
+    if [[ "$key" == $'\e' ]] || [[ "$key" == "q" ]] || [[ "$key" == "Q" ]]; then
+        :
+    fi
+
+    printf "\e[?1049l\e[?25h"
+    echo
+    echo "==========================================="
+    echo "GRID TEST COMPLETE"
+    echo "==========================================="
+    echo
+    exit 0
+fi
+
+if [ "$SCROLLBACK_ONLY" = true ]; then
+    echo "==========================================="
+    echo "VELOX SCROLLBACK BUFFER STRESS TEST"
+    echo "==========================================="
+    echo
+    echo "Generating 1,500 lines to stress test scrollback buffer..."
+    sleep 0.5
+
+    for i in {1..1500}; do
+        echo "Scrollback line #$i - testing scrollback memory and limits"
+    done
+
+    echo
+    echo "Scrollback buffer populated! You can scroll up to view the history."
+    echo
+    echo "==========================================="
+    echo "SCROLLBACK TEST COMPLETE"
+    echo "==========================================="
+    echo
+    exit 0
+fi
 
 echo "==========================================="
 echo "VELOX TERMINAL & FONT COMPATIBILITY BENCHMARK"
@@ -362,8 +523,137 @@ tput cnorm
 echo
 echo
 
+#################################################
+echo "13. CORNER-TO-CORNER FULL GRID LAYOUT TEST"
+echo
+
+cols=$(tput cols 2>/dev/null || echo 80)
+lines=$(tput lines 2>/dev/null || echo 24)
+
+echo "Detected Terminal Dimensions: ${cols} columns × ${lines} rows"
+echo "Rendering explicit column numbers (1..${cols}) and row numbers (1..${lines}) matrix grid..."
+echo
+
+# 1. Column Tens & Units Header Rulers
+tens_line="Col:  "
+units_line="      "
+for ((c=7; c<=cols; c++)); do
+    unit=$((c % 10))
+    if [ $((c % 10)) -eq 0 ]; then
+        ten_digit=$(( (c / 10) % 10 ))
+        tens_line="${tens_line}${ten_digit}"
+    else
+        tens_line="${tens_line} "
+    fi
+    units_line="${units_line}${unit}"
+done
+
+printf "\e[1;33m%s\e[0m\n" "$tens_line"
+printf "\e[1;36m%s\e[0m\n" "$units_line"
+
+# 2. Top Box Line
+grid_width=$((cols - 8))
+if [ $grid_width -lt 10 ]; then grid_width=10; fi
+
+border_h=""
+for ((k=0; k<grid_width; k++)); do border_h="${border_h}─"; done
+
+printf "\e[1;35m┌──────┬%s┐\e[0m\n" "$border_h"
+
+# 3. Data Rows with Row Index & Column Unit Patterns
+max_rows=8
+if [ $((lines / 2)) -gt 8 ]; then max_rows=$((lines / 2)); fi
+
+for ((r=1; r<=max_rows; r++)); do
+    row_tag=$(printf "R%02d" "$r")
+    cell_pattern=""
+    for ((c=1; c<=grid_width; c++)); do
+        if [ $((r % 2)) -eq 1 ]; then
+            cell_pattern="${cell_pattern}$((c % 10))"
+        else
+            if [ $((c % 5)) -eq 0 ]; then
+                cell_pattern="${cell_pattern}+"
+            else
+                cell_pattern="${cell_pattern}·"
+            fi
+        fi
+    done
+    printf "\e[1;35m│\e[1;32m %s \e[1;35m│\e[0m%s\e[1;35m│\e[0m\n" "$row_tag" "$cell_pattern"
+done
+
+printf "\e[1;35m└──────┴%s┘\e[0m\n" "$border_h"
+echo
+
+if [ "$FULL_GRID_TEST" = true ]; then
+    echo "Launching Full-Screen Alternate Buffer Corner-to-Corner Sweep..."
+    sleep 0.8
+
+    printf "\e[?1049h\e[?25l\e[2J\e[H"
+
+    # Row 1: Column Header Ruler
+    printf "\e[1;1H\e[1;44;37m"
+    for ((c=1; c<=cols; c++)); do
+        printf "%d" "$((c % 10))"
+    done
+    printf "\e[0m"
+
+    # Middle Rows: Row Index + Matrix Grid Cells
+    for ((r=2; r<lines; r++)); do
+        printf "\e[%d;1H\e[1;33m%02d:\e[0m" "$r" "$r"
+        grid_fill=""
+        for ((c=4; c<=cols; c++)); do
+            if [ $c -eq 4 ] || [ $c -eq $cols ]; then
+                grid_fill="${grid_fill}│"
+            elif [ $((c % 10)) -eq 0 ]; then
+                grid_fill="${grid_fill}┼"
+            elif [ $((r % 2)) -eq 0 ]; then
+                grid_fill="${grid_fill}$((c % 10))"
+            else
+                grid_fill="${grid_fill}·"
+            fi
+        done
+        printf "%s" "$grid_fill"
+    done
+
+    # Bottom Row: Corner Markers & Dimension Summary
+    printf "\e[%d;1H\e[1;44;37m" "$lines"
+    for ((c=1; c<=cols; c++)); do
+        printf "%d" "$((c % 10))"
+    done
+    printf "\e[0m"
+
+    # Overlay ESC Cancellation Hint & Corner Badges
+    printf "\e[2;5H\e[1;101;37m ↖ (1,1) TOP-LEFT \e[0m"
+    printf "\e[2;%dH\e[1;101;37m (1,%d) TOP-RIGHT ↗ \e[0m" "$((cols - 20))" "$cols"
+
+    mid_r=$((lines / 2))
+    mid_msg=" VELOX FULL MATRIX GRID [ %d ROWS x %d COLS ] " "$lines" "$cols"
+    mid_msg_str=$(printf "$mid_msg")
+    mid_c=$(( (cols - ${#mid_msg_str}) / 2 ))
+    if [ $mid_c -lt 1 ]; then mid_c=1; fi
+    printf "\e[%d;%dH\e[1;42;30m%s\e[0m" "$mid_r" "$mid_c" "$mid_msg_str"
+
+    hint_r=$((lines - 2))
+    hint_msg=" Press [ESC] or [q] to exit grid test "
+    hint_c=$(( (cols - ${#hint_msg}) / 2 ))
+    if [ $hint_c -lt 1 ]; then hint_c=1; fi
+    printf "\e[%d;%dH\e[1;43;30m%s\e[0m" "$hint_r" "$hint_c" "$hint_msg"
+
+    bot_r=$((lines - 1))
+    printf "\e[%d;5H\e[1;101;37m ↙ (%d,1) BOTTOM-LEFT \e[0m" "$bot_r" "$lines"
+    printf "\e[%d;%dH\e[1;40;37m (%d,%d) BOTTOM-RIGHT ↘ \e[0m" "$bot_r" "$((cols - 24))" "$lines" "$cols"
+
+    # Wait up to 5 seconds or exit immediately if ESC ('\e') or 'q' is pressed
+    read -t 5 -n 1 -r -s key
+    if [[ "$key" == $'\e' ]] || [[ "$key" == "q" ]] || [[ "$key" == "Q" ]]; then
+        : # ESC pressed, cancel immediately
+    fi
+
+    printf "\e[?1049l\e[?25h"
+fi
+
 if [ "$SCROLLBACK_TEST" = true ]; then
-    echo "13. SCROLLBACK BUFFER STRESS TEST"
+    echo "14. SCROLLBACK BUFFER STRESS TEST"
     echo "Generating 1,500 lines to stress test scrollback buffer..."
     sleep 0.5
 

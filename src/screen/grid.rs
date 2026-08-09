@@ -78,7 +78,24 @@ impl Grid {
         }
     }
 
+    pub fn clamp_cursor(&mut self) {
+        if self.height > 0 {
+            self.cursor.y = self.cursor.y.min(self.height - 1);
+        } else {
+            self.cursor.y = 0;
+        }
+        if self.width > 0 {
+            self.cursor.x = self.cursor.x.min(self.width - 1);
+        } else {
+            self.cursor.x = 0;
+        }
+    }
+
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, mut flags: CellFlags) {
+        self.clamp_cursor();
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         let is_combining = UnicodeWidthChar::width(c) == Some(0);
         if is_combining && self.cursor.x > 0 {
             let mut target_x = self.cursor.x - 1;
@@ -174,7 +191,8 @@ impl Grid {
     }
 
     pub fn scroll_or_move_down(&mut self, bg: Color) {
-        let bottom = self.scroll_region_bottom;
+        self.clamp_cursor();
+        let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
         if self.cursor.y < bottom {
             self.cursor.y += 1;
         } else if self.cursor.y == bottom {
@@ -190,8 +208,8 @@ impl Grid {
         if delta <= 0 {
             return;
         }
-        let top = self.scroll_region_top;
-        let bottom = self.scroll_region_bottom;
+        let top = self.scroll_region_top.min(self.height.saturating_sub(1));
+        let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
         if top >= bottom || bottom >= self.height {
             return;
         }
@@ -247,8 +265,8 @@ impl Grid {
     }
 
     pub fn scroll_down(&mut self, delta: usize, bg: Color) {
-        let top = self.scroll_region_top;
-        let bottom = self.scroll_region_bottom;
+        let top = self.scroll_region_top.min(self.height.saturating_sub(1));
+        let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
         if top >= bottom || bottom >= self.height {
             return;
         }
@@ -304,6 +322,7 @@ impl Grid {
     }
 
     pub fn erase_characters(&mut self, n: usize, fg: Color, bg: Color) {
+        self.clamp_cursor();
         let cursor_y = self.cursor.y;
         let cursor_x = self.cursor.x;
         if cursor_y >= self.height || cursor_x >= self.width {
@@ -324,6 +343,7 @@ impl Grid {
     }
 
     pub fn delete_characters(&mut self, n: usize, fg: Color, bg: Color) {
+        self.clamp_cursor();
         let cursor_y = self.cursor.y;
         let cursor_x = self.cursor.x;
         if cursor_y >= self.height || cursor_x >= self.width {
@@ -350,6 +370,7 @@ impl Grid {
     }
 
     pub fn insert_characters(&mut self, n: usize, fg: Color, bg: Color) {
+        self.clamp_cursor();
         let cursor_y = self.cursor.y;
         let cursor_x = self.cursor.x;
         if cursor_y >= self.height || cursor_x >= self.width {
@@ -375,8 +396,9 @@ impl Grid {
     }
 
     pub fn insert_lines(&mut self, n: usize, fg: Color, bg: Color) {
+        self.clamp_cursor();
         let top = self.cursor.y;
-        let bottom = self.scroll_region_bottom;
+        let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
         if top <= bottom && bottom < self.height {
             let height_of_region = bottom - top + 1;
             let u_delta = n.min(height_of_region);
@@ -414,8 +436,9 @@ impl Grid {
     }
 
     pub fn delete_lines(&mut self, n: usize, fg: Color, bg: Color) {
+        self.clamp_cursor();
         let top = self.cursor.y;
-        let bottom = self.scroll_region_bottom;
+        let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
         if top <= bottom && bottom < self.height {
             let height_of_region = bottom - top + 1;
             let u_delta = n.min(height_of_region);
@@ -454,32 +477,49 @@ impl Grid {
     }
 
     pub fn erase_line(&mut self, mode: u8, fg: Color, bg: Color) {
+        self.clamp_cursor();
+        if self.height == 0 || self.width == 0 {
+            return;
+        }
         let default_cell = Cell {
             character: ' ',
             foreground: fg,
             background: bg,
             flags: CellFlags::empty(),
         };
+        let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         let row_start = self.cursor.y * self.width;
         match mode {
             0 => { // Cursor to end of line
-                for x in self.cursor.x..self.width {
-                    self.cells[row_start + x] = default_cell;
+                let start_idx = row_start + cur_x;
+                let end_idx = (row_start + self.width).min(self.cells.len());
+                if start_idx < end_idx {
+                    for cell in &mut self.cells[start_idx..end_idx] {
+                        *cell = default_cell;
+                    }
                 }
             }
             1 => { // Start of line to cursor
-                for x in 0..=self.cursor.x.min(self.width - 1) {
-                    self.cells[row_start + x] = default_cell;
+                let start_idx = row_start;
+                let end_idx = (row_start + cur_x + 1).min(self.cells.len());
+                if start_idx < end_idx {
+                    for cell in &mut self.cells[start_idx..end_idx] {
+                        *cell = default_cell;
+                    }
                 }
             }
             2 => { // Entire line
-                for x in 0..self.width {
-                    self.cells[row_start + x] = default_cell;
+                let start_idx = row_start;
+                let end_idx = (row_start + self.width).min(self.cells.len());
+                if start_idx < end_idx {
+                    for cell in &mut self.cells[start_idx..end_idx] {
+                        *cell = default_cell;
+                    }
                 }
             }
             _ => {}
         }
-        if mode == 2 || (mode == 0 && self.cursor.x == 0) {
+        if mode == 2 || (mode == 0 && cur_x == 0) {
             if self.cursor.y < self.row_wrapped.len() {
                 self.row_wrapped[self.cursor.y] = false;
             }
@@ -488,19 +528,22 @@ impl Grid {
     }
 
     pub fn erase_display(&mut self, mode: u8, fg: Color, bg: Color) {
+        self.clamp_cursor();
         let default_cell = Cell {
             character: ' ',
             foreground: fg,
             background: bg,
             flags: CellFlags::empty(),
         };
+        let cur_y = self.cursor.y.min(self.height.saturating_sub(1));
+        let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         match mode {
             0 => { // Cursor to end of display
-                let start = self.cursor.y * self.width + self.cursor.x;
+                let start = (cur_y * self.width + cur_x).min(self.cells.len());
                 for cell in &mut self.cells[start..] {
                     *cell = default_cell;
                 }
-                for y in self.cursor.y..self.height {
+                for y in cur_y..self.height {
                     self.damage.mark_dirty(y);
                     if y < self.row_wrapped.len() {
                         self.row_wrapped[y] = false;
@@ -509,14 +552,16 @@ impl Grid {
             }
             1 => { // Start of display to cursor
                 let len = self.cells.len();
-                let end = (self.cursor.y * self.width + self.cursor.x).min(len - 1);
-                for cell in &mut self.cells[0..=end] {
-                    *cell = default_cell;
-                }
-                for y in 0..=self.cursor.y {
-                    self.damage.mark_dirty(y);
-                    if y < self.row_wrapped.len() {
-                        self.row_wrapped[y] = false;
+                if len > 0 {
+                    let end = (cur_y * self.width + cur_x).min(len - 1);
+                    for cell in &mut self.cells[0..=end] {
+                        *cell = default_cell;
+                    }
+                    for y in 0..=cur_y {
+                        self.damage.mark_dirty(y);
+                        if y < self.row_wrapped.len() {
+                            self.row_wrapped[y] = false;
+                        }
                     }
                 }
             }
@@ -867,12 +912,29 @@ mod tests {
             grid.put_char('X', fg, bg, CellFlags::empty());
         }
         assert_eq!(grid.cursor.x, 50);
-        assert_eq!(grid.cursor.y, 0);
-
-        // Resize to 30 cols: 50 characters reflow into Row 0 (30 chars) + Row 1 (20 chars). Cursor at x=20, y=1
         grid.resize(30, 10);
         assert_eq!(grid.cursor.x, 20);
         assert_eq!(grid.cursor.y, 1);
+    }
+
+    #[test]
+    fn test_grid_resize_shrink_erase_bounds_safety() {
+        let fg = Color { r: 255, g: 255, b: 255, a: 255 };
+        let bg = Color { r: 0, g: 0, b: 0, a: 255 };
+        let mut grid = Grid::new(98, 58, fg, bg, 1000);
+        grid.cursor.y = 57;
+        grid.cursor.x = 50;
+
+        // Shrink grid size to 98x34 (len = 3332 cells)
+        grid.resize(98, 34);
+
+        // Erase operations should safely succeed without panic
+        grid.erase_line(0, fg, bg);
+        grid.erase_line(1, fg, bg);
+        grid.erase_line(2, fg, bg);
+        grid.erase_display(0, fg, bg);
+        grid.erase_display(1, fg, bg);
+        grid.erase_display(2, fg, bg);
     }
 }
 

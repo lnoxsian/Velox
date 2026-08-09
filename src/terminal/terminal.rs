@@ -146,6 +146,7 @@ impl Terminal {
     pub fn restore_cursor(&mut self) {
         let active_grid = if self.is_alt_screen { &mut self.alt_grid } else { &mut self.grid };
         active_grid.cursor = active_grid.saved_cursor;
+        active_grid.clamp_cursor();
         self.current_fg = active_grid.saved_fg;
         self.current_bg = active_grid.saved_bg;
         self.current_flags = active_grid.saved_flags;

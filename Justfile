@@ -30,6 +30,14 @@ test:
 bench:
     bash benchmarks/text_render_test/testren.bash
 
+# Run only the grid benchmark test
+bench-grid:
+    bash benchmarks/text_render_test/testren.bash --grid
+
+# Run only the scrollback benchmark test
+bench-scrollback:
+    bash benchmarks/text_render_test/testren.bash --scroll-back
+
 # Run linters (clippy and formatter)
 lint:
     cargo clippy --all-targets -- -D warnings

@@ -1,4 +1,4 @@
-.PHONY: build lint update-version bench
+.PHONY: build lint update-version bench bench-grid bench-scrollback
 
 VERSION_FILE := VERSION
 VERSION := $(shell cat $(VERSION_FILE) | tr -d '\n\r')
@@ -10,6 +10,12 @@ build:
 # Run the benchmark test script
 bench:
 	bash benchmarks/text_render_test/testren.bash
+
+bench-grid:
+	bash benchmarks/text_render_test/testren.bash --grid
+
+bench-scrollback:
+	bash benchmarks/text_render_test/testren.bash --scroll-back
 
 # Run linters (clippy and formatter)
 lint:
