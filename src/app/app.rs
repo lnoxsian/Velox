@@ -57,6 +57,7 @@ pub struct App {
     needs_redraw: bool,
     content_dirty: bool,
     last_title_check: std::time::Instant,
+    cursor_blink_enabled: bool,
     cursor_blink_on: bool,
     last_cursor_blink: std::time::Instant,
 }
@@ -94,6 +95,7 @@ impl App {
             needs_redraw: true,
             content_dirty: true,
             last_title_check: std::time::Instant::now(),
+            cursor_blink_enabled: true,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
         }
@@ -182,6 +184,7 @@ impl ApplicationHandler<CustomEvent> for App {
         let gl = Arc::new(gl);
 
         self.scroll_multiplier = config.scroll_multiplier.unwrap_or(1.0);
+        self.cursor_blink_enabled = config.cursor_blink.unwrap_or(true);
         // When software rendering, default to 60 fps to conserve CPU
         let gpu = config.gpu_acceleration.unwrap_or(true);
         self.fps_limit = match config.fps_limit {
@@ -729,7 +732,13 @@ impl ApplicationHandler<CustomEvent> for App {
                         }
                     }
 
-                    let cursor_visible = if offset > 0 { false } else { active_grid.cursor.visible && self.cursor_blink_on };
+                    let cursor_visible = if offset > 0 {
+                        false
+                    } else if self.cursor_blink_enabled {
+                        active_grid.cursor.visible && self.cursor_blink_on
+                    } else {
+                        active_grid.cursor.visible
+                    };
 
                     // Throttle title-bar updates to at most once per second
                     if self.last_title_check.elapsed() >= std::time::Duration::from_secs(1) {
@@ -800,7 +809,7 @@ impl ApplicationHandler<CustomEvent> for App {
         let now = std::time::Instant::now();
 
         // ── Cursor blink: toggle every 500 ms ────────────────────────────────
-        if now.duration_since(self.last_cursor_blink) >= std::time::Duration::from_millis(500) {
+        if self.cursor_blink_enabled && now.duration_since(self.last_cursor_blink) >= std::time::Duration::from_millis(500) {
             self.cursor_blink_on = !self.cursor_blink_on;
             self.last_cursor_blink = now;
             self.needs_redraw = true;
@@ -828,10 +837,14 @@ impl ApplicationHandler<CustomEvent> for App {
             }
         }
 
-        // ── Idle: sleep until the next cursor-blink toggle ───────────────────
-        let next_blink = self.last_cursor_blink + std::time::Duration::from_millis(500);
-        event_loop.set_control_flow(
-            winit::event_loop::ControlFlow::WaitUntil(next_blink),
-        );
+        // ── Idle: sleep until the next cursor-blink toggle or wait ───────────
+        if self.cursor_blink_enabled {
+            let next_blink = self.last_cursor_blink + std::time::Duration::from_millis(500);
+            event_loop.set_control_flow(
+                winit::event_loop::ControlFlow::WaitUntil(next_blink),
+            );
+        } else {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        }
     }
 }

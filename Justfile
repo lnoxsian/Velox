@@ -10,6 +10,14 @@ build:
 release:
     cargo build --release
 
+# Build the project in optimized release mode
+optimized-release:
+    cargo build --profile optimized-release
+
+# Run the project in optimized release mode
+run-optimized-release:
+    cargo run --profile optimized-release
+
 # Check the project for compilation errors
 check:
     cargo check

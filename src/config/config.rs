@@ -32,6 +32,8 @@ pub struct Config {
     pub font_scale_multiplier: Option<f32>,
     #[serde(default)]
     pub cursor_shape: Option<String>,
+    #[serde(default)]
+    pub cursor_blink: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +105,7 @@ mod tests {
         assert_eq!(config_no_limit.fps_limit, None);
         assert_eq!(config_no_limit.bold_is_bright, None);
         assert_eq!(config_no_limit.app_title, None);
+        assert_eq!(config_no_limit.cursor_blink, None);
 
         let toml_str_gpu = r#"
             font_family = "monospace"
@@ -113,6 +116,7 @@ mod tests {
             fps_limit = 60
             bold_is_bright = false
             app_title = "Velox Terminal"
+            cursor_blink = false
         "#;
         let config_gpu: Config = toml::from_str(toml_str_gpu).unwrap();
         assert_eq!(config_gpu.gpu_acceleration, Some(false));
@@ -120,5 +124,6 @@ mod tests {
         assert_eq!(config_gpu.fps_limit, Some(60));
         assert_eq!(config_gpu.bold_is_bright, Some(false));
         assert_eq!(config_gpu.app_title, Some("Velox Terminal".to_string()));
+        assert_eq!(config_gpu.cursor_blink, Some(false));
     }
 }

@@ -519,10 +519,8 @@ impl Grid {
             }
             _ => {}
         }
-        if mode == 2 || (mode == 0 && cur_x == 0) {
-            if self.cursor.y < self.row_wrapped.len() {
-                self.row_wrapped[self.cursor.y] = false;
-            }
+        if (mode == 2 || (mode == 0 && cur_x == 0)) && self.cursor.y < self.row_wrapped.len() {
+            self.row_wrapped[self.cursor.y] = false;
         }
         self.damage.mark_dirty(self.cursor.y);
     }
@@ -565,7 +563,7 @@ impl Grid {
                     }
                 }
             }
-            2 | 3 => { // Entire screen
+            2 | 3 => { // Entire screen + scrollback buffer
                 for cell in &mut self.cells {
                     *cell = default_cell;
                 }
@@ -575,6 +573,8 @@ impl Grid {
                         self.row_wrapped[y] = false;
                     }
                 }
+                self.scrollback.clear();
+                self.scroll_offset = 0;
             }
             _ => {}
         }
@@ -656,10 +656,15 @@ impl Grid {
         let mut cursor_logical_line_idx: usize = 0;
         let mut cursor_logical_cell_idx: usize = 0;
         let mut cursor_found = false;
+        let mut active_screen_start_log_idx: Option<usize> = None;
 
         let mut current_cells: Vec<Cell> = Vec::new();
 
         for (row_idx, row) in combined_rows.iter().enumerate() {
+            if active_screen_start_log_idx.is_none() && row_idx == scrollback_count {
+                active_screen_start_log_idx = Some(logical_lines.len());
+            }
+
             let start_len = current_cells.len();
 
             if row.wrapped {
@@ -694,6 +699,9 @@ impl Grid {
         }
 
         if !current_cells.is_empty() || logical_lines.is_empty() {
+            if active_screen_start_log_idx.is_none() && combined_rows.len() == scrollback_count {
+                active_screen_start_log_idx = Some(logical_lines.len());
+            }
             if !cursor_found {
                 cursor_logical_line_idx = logical_lines.len();
                 cursor_logical_cell_idx = current_cells.len() + old_cursor_col;
@@ -720,8 +728,17 @@ impl Grid {
         let mut new_cursor_row_idx: usize = 0;
         let mut new_cursor_col: usize = 0;
         let mut new_cursor_found = false;
+        let mut active_screen_start_reflowed_row_idx: usize = 0;
+        let mut active_reflowed_found = false;
+
+        let active_log_target = active_screen_start_log_idx.unwrap_or(0);
 
         for (log_idx, log_line) in logical_lines.iter().enumerate() {
+            if !active_reflowed_found && log_idx == active_log_target {
+                active_screen_start_reflowed_row_idx = reflowed_rows.len();
+                active_reflowed_found = true;
+            }
+
             let cells = &log_line.cells;
 
             if cells.is_empty() {
@@ -800,6 +817,10 @@ impl Grid {
             }
         }
 
+        if !active_reflowed_found {
+            active_screen_start_reflowed_row_idx = reflowed_rows.len();
+        }
+
         if !new_cursor_found {
             new_cursor_row_idx = reflowed_rows.len().saturating_sub(1);
             new_cursor_col = 0;
@@ -807,13 +828,14 @@ impl Grid {
 
         let total_rows = reflowed_rows.len();
 
-        let grid_start = if total_rows <= new_h {
+        let grid_start = if total_rows == 0 {
             0
         } else {
-            let max_start = total_rows - new_h;
-            let min_start = new_cursor_row_idx.saturating_sub(new_h - 1);
-            max_start.min(min_start)
+            active_screen_start_reflowed_row_idx
+                .min(total_rows - 1)
+                .max(new_cursor_row_idx.saturating_sub(new_h - 1))
         };
+
 
         self.scrollback.clear();
         for row in &reflowed_rows[..grid_start] {
@@ -829,7 +851,7 @@ impl Grid {
                 new_grid_cells.extend_from_slice(&reflowed_rows[row_idx].cells);
                 new_row_wrapped.push(reflowed_rows[row_idx].wrapped);
             } else {
-                new_grid_cells.extend(std::iter::repeat(default_cell).take(new_w));
+                new_grid_cells.extend(std::iter::repeat_n(default_cell, new_w));
                 new_row_wrapped.push(false);
             }
         }
@@ -935,6 +957,40 @@ mod tests {
         grid.erase_display(0, fg, bg);
         grid.erase_display(1, fg, bg);
         grid.erase_display(2, fg, bg);
+    }
+
+    #[test]
+    fn test_grid_resize_after_clear_keeps_cleared_screen() {
+        let fg = Color { r: 255, g: 255, b: 255, a: 255 };
+        let bg = Color { r: 0, g: 0, b: 0, a: 255 };
+        let mut grid = Grid::new(80, 5, fg, bg, 1000);
+
+        // Fill history so scrollback has lines
+        for i in 0..15 {
+            for c in format!("line {}", i).chars() {
+                grid.put_char(c, fg, bg, CellFlags::empty());
+            }
+            grid.scroll_or_move_down(bg);
+            grid.cursor.x = 0;
+        }
+
+        assert!(!grid.scrollback.lines.is_empty());
+
+        // User clears screen and homes cursor
+        grid.erase_display(2, fg, bg);
+        grid.cursor.x = 0;
+        grid.cursor.y = 0;
+
+        // Scrollback should be cleared and scroll offset should be 0
+        assert!(grid.scrollback.lines.is_empty());
+        assert_eq!(grid.scroll_offset, 0);
+
+        // Resize window to be larger (e.g. 80x20)
+        grid.resize(80, 20);
+
+        // Grid row 0 should still be cleared (' '), NOT pulled from scrollback
+        assert_eq!(grid.cells[0].character, ' ');
+        assert_eq!(grid.cursor.y, 0);
     }
 }
 

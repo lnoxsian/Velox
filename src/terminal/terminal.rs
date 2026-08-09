@@ -280,7 +280,7 @@ mod tests {
         }
         let grid = term.active_grid();
         // Since height is 5, we have scrolled multiple lines off the screen
-        assert!(grid.scrollback.lines.len() > 0);
+        assert!(!grid.scrollback.lines.is_empty());
         
         // The first character of the oldest line in scrollback history should be 'l' from "line ..."
         assert_eq!(grid.scrollback.lines[0][0].character, 'l');

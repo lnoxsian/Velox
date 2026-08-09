@@ -35,5 +35,6 @@ pub fn default_config() -> Config {
         padding_y: Some(4.0),
         font_scale_multiplier: Some(1.5),
         cursor_shape: Some("block".to_string()),
+        cursor_blink: Some(true),
     }
 }

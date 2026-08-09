@@ -62,10 +62,24 @@ Prefer stack allocation over heap allocation.
 cargo build --release
 ```
 
-### Run
+### Production Optimized Build
+
+For maximum performance, minimal binary size, and full production optimizations (Fat LTO, codegen-units=1, panic=abort, strip):
 
 ```bash
+cargo build --profile optimized-release
+```
+
+### Run
+
+Standard release:
+```bash
 ./target/release/velox
+```
+
+Optimized release:
+```bash
+./target/optimized-release/velox
 ```
 
 ## Configuration
@@ -95,6 +109,9 @@ padding_y = 4.0
 
 # Font size scaling multiplier
 font_scale_multiplier = 1.5
+
+# Enable or disable cursor blinking (default is true)
+cursor_blink = true
 ```
 
 ## Performance Targets

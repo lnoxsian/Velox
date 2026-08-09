@@ -1,4 +1,4 @@
-.PHONY: build lint update-version bench bench-grid bench-scrollback
+.PHONY: build release optimized-release lint update-version bench bench-grid bench-scrollback
 
 VERSION_FILE := VERSION
 VERSION := $(shell cat $(VERSION_FILE) | tr -d '\n\r')
@@ -6,6 +6,14 @@ VERSION := $(shell cat $(VERSION_FILE) | tr -d '\n\r')
 # Build the project
 build:
 	cargo build
+
+# Build the project in release mode
+release:
+	cargo build --release
+
+# Build the project in optimized release mode
+optimized-release:
+	cargo build --profile optimized-release
 
 # Run the benchmark test script
 bench:
