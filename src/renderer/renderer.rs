@@ -77,6 +77,77 @@ fn push_quad(
     vertices.extend_from_slice(&[x + w, y + h, u_max, v_max]); vertices.extend_from_slice(&c);
 }
 
+#[inline(always)]
+fn try_render_block_element(
+    c: char,
+    px: f32,
+    py: f32,
+    cell_w: f32,
+    cell_h: f32,
+    wu: f32,
+    wv: f32,
+    fg: Color,
+    vertices: &mut Vec<f32>,
+) -> bool {
+    match c {
+        '█' => {
+            push_quad(vertices, px, py, cell_w, cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{2581}'..='\u{2587}' => {
+            let frac = (c as u32 - 0x2580) as f32 / 8.0;
+            let h = cell_h * frac;
+            push_quad(vertices, px, py + cell_h - h, cell_w, h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{2589}' => {
+            push_quad(vertices, px, py, cell_w * (7.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{258A}' => {
+            push_quad(vertices, px, py, cell_w * (6.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{258B}' => {
+            push_quad(vertices, px, py, cell_w * (5.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '▌' => {
+            push_quad(vertices, px, py, cell_w * 0.5, cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{258D}' => {
+            push_quad(vertices, px, py, cell_w * (3.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{258E}' => {
+            push_quad(vertices, px, py, cell_w * (2.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{258F}' => {
+            push_quad(vertices, px, py, cell_w * (1.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '▀' => {
+            push_quad(vertices, px, py, cell_w, cell_h * 0.5, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{2594}' => {
+            push_quad(vertices, px, py, cell_w, cell_h * (1.0 / 8.0), wu, wv, wu, wv, fg, false);
+            true
+        }
+        '▐' => {
+            push_quad(vertices, px + cell_w * 0.5, py, cell_w * 0.5, cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        '\u{2595}' => {
+            push_quad(vertices, px + cell_w * (7.0 / 8.0), py, cell_w * (1.0 / 8.0), cell_h, wu, wv, wu, wv, fg, false);
+            true
+        }
+        _ => false,
+    }
+}
+
 // ─── Renderer ────────────────────────────────────────────────────────────────
 
 impl Renderer {
@@ -294,10 +365,12 @@ impl Renderer {
                     || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
 
                 if !skip_fg && cell.character != ' ' {
-                    let uv = self.font_loader.get_glyph_uv(cell.character, is_wide, is_bold, is_italic);
-                    // width_mult accounts for Nerd Font icons that may span more than one cell column
-                    let quad_w = cw * uv.width_mult;
-                    push_quad(&mut vertices, px, py, quad_w, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, uv.is_color);
+                    let quad_w = cw * cell_w_mult;
+                    if !try_render_block_element(cell.character, px, py, quad_w, ch, wu, wv, fg, &mut vertices) {
+                        let uv = self.font_loader.get_glyph_uv(cell.character, is_wide, is_bold, is_italic);
+                        let quad_w_glyph = cw * uv.width_mult;
+                        push_quad(&mut vertices, px, py, quad_w_glyph, ch, uv.u_min, uv.v_min, uv.u_max, uv.v_max, fg, uv.is_color);
+                    }
                 }
 
                 // ── Cursor (non-block shapes) ─────────────────────────────────
