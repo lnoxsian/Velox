@@ -61,6 +61,7 @@ impl Selection {
         true
     }
 
+    #[allow(dead_code)]
     pub fn contains(&self, x: usize, y: usize) -> bool {
         if !self.active {
             return false;

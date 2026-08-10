@@ -52,9 +52,6 @@ impl Scrollback {
         });
     }
 
-    pub fn get_line(&self, index: usize) -> Option<&[Cell]> {
-        self.lines.get(index).map(|v| v.cells.as_slice())
-    }
 
     pub fn clear(&mut self) {
         self.lines.clear();

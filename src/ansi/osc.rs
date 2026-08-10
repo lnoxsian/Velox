@@ -87,6 +87,59 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
             }
         }
 
+        // OSC 12: Query or set dynamic cursor color
+        "12" => {
+            if params.len() >= 2 {
+                let color_str = std::str::from_utf8(params[1]).unwrap_or("").trim();
+                if color_str == "?" {
+                    let c = terminal.theme.cursor_color.unwrap_or(terminal.theme.default_fg);
+                    let resp = format!(
+                        "\x1b]12;rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}\x07",
+                        c.r, c.r, c.g, c.g, c.b, c.b
+                    );
+                    terminal.send_to_shell(resp.as_bytes());
+                } else if let Some(c) = parse_color_spec(color_str) {
+                    terminal.theme.cursor_color = Some(c);
+                }
+            }
+        }
+
+        // OSC 104: Reset ANSI palette color(s)
+        "104" => {
+            if params.len() <= 1 || params[1].is_empty() {
+                terminal.theme.ansi_colors = terminal.theme.initial_ansi_colors;
+            } else {
+                for param in &params[1..] {
+                    if let Ok(idx_str) = std::str::from_utf8(param)
+                        && let Ok(idx) = idx_str.trim().parse::<usize>()
+                        && idx < 16 {
+                            terminal.theme.ansi_colors[idx] = terminal.theme.initial_ansi_colors[idx];
+                        }
+                }
+            }
+        }
+
+        // OSC 110: Reset default foreground color
+        "110" => {
+            let c = terminal.theme.initial_fg;
+            terminal.theme.default_fg = c;
+            terminal.current_fg = c;
+        }
+
+        // OSC 111: Reset default background color
+        "111" => {
+            let c = terminal.theme.initial_bg;
+            terminal.theme.default_bg = c;
+            terminal.grid.default_bg = c;
+            terminal.alt_grid.default_bg = c;
+            terminal.current_bg = c;
+        }
+
+        // OSC 112: Reset cursor color
+        "112" => {
+            terminal.theme.cursor_color = None;
+        }
+
         // OSC 52: Clipboard read / write
         // Format: OSC 52 ; target ; data
         "52"
@@ -121,8 +174,88 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                 }
             }
 
+        // OSC 7: Current Working Directory notification
+        "7" => {
+            if params.len() >= 2 {
+                let uri_bytes = params[1..].join(&b';');
+                if let Ok(uri) = std::str::from_utf8(&uri_bytes) {
+                    if let Some(path) = parse_osc7_cwd(uri.trim()) {
+                        terminal.current_dir = Some(path);
+                    }
+                }
+            }
+        }
+
+        // OSC 8: Hyperlinks
+        "8" => {
+            let _ = crate::hyperlink::osc8::parse(params);
+        }
+
+        // OSC 133: Shell Integration / Semantic Prompt Marking (FinalTerm / FTCS)
+        "133" => {
+            if params.len() >= 2 {
+                let sub_cmd = std::str::from_utf8(params[1]).unwrap_or("").trim();
+                match sub_cmd {
+                    "A" => {
+                        terminal.mark_semantic_zone(crate::terminal::terminal::SemanticZone::Prompt, None);
+                    }
+                    "B" => {
+                        terminal.mark_semantic_zone(crate::terminal::terminal::SemanticZone::Input, None);
+                    }
+                    "C" => {
+                        terminal.mark_semantic_zone(crate::terminal::terminal::SemanticZone::Output, None);
+                    }
+                    "D" => {
+                        let exit_code = if params.len() >= 3 {
+                            std::str::from_utf8(params[2]).unwrap_or("").trim().parse::<i32>().ok()
+                        } else {
+                            None
+                        };
+                        terminal.last_command_exit_code = exit_code;
+                        if let Some(mark) = terminal.prompt_marks.last_mut() {
+                            mark.exit_code = exit_code;
+                        }
+                        terminal.semantic_zone = crate::terminal::terminal::SemanticZone::Prompt;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         _ => {}
     }
+}
+
+fn parse_osc7_cwd(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let path = if let Some(slash_pos) = rest.find('/') {
+        &rest[slash_pos..]
+    } else {
+        rest
+    };
+    if path.is_empty() {
+        None
+    } else {
+        percent_decode_str(path)
+    }
+}
+
+fn percent_decode_str(s: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(s.len());
+    let mut chars = s.bytes().peekable();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next()?;
+            let h2 = chars.next()?;
+            let hex_buf = [h1, h2];
+            let hex_str = std::str::from_utf8(&hex_buf).ok()?;
+            let val = u8::from_str_radix(hex_str, 16).ok()?;
+            bytes.push(val);
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).ok()
 }
 
 fn parse_color_spec(s: &str) -> Option<Color> {

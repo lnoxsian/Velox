@@ -15,10 +15,6 @@ use crate::pty::master::PtyMaster;
 
 use crate::screen::cell::{Cell, CellFlags};
 
-#[derive(Debug)]
-pub enum AppError {
-    Initialization(String),
-}
 
 pub enum CustomEvent {
     PtyData(Vec<u8>),
@@ -101,21 +97,7 @@ impl App {
         }
     }
 
-    pub fn initialize(&mut self) -> Result<(), AppError> {
-        Ok(())
-    }
 
-    pub fn run(&mut self) -> Result<(), AppError> {
-        Ok(())
-    }
-
-    pub fn render(&mut self) {
-        // stub
-    }
-
-    pub fn shutdown(&mut self) {
-        // stub
-    }
 }
 
 impl ApplicationHandler<CustomEvent> for App {
@@ -248,6 +230,11 @@ impl ApplicationHandler<CustomEvent> for App {
         match event {
             WindowEvent::Focused(focused) => {
                 self.is_focused = focused;
+                if let (Some(terminal), Some(pty_master)) = (&mut self.terminal, &self.pty_master)
+                    && terminal.focus_tracking {
+                        let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
+                        let _ = pty_master.write(seq);
+                    }
                 self.needs_redraw = true;
             }
             WindowEvent::CloseRequested => {
@@ -308,7 +295,12 @@ impl ApplicationHandler<CustomEvent> for App {
                                 let text = crate::clipboard::clipboard::paste();
                                 if !text.is_empty()
                                     && let Some(pty_master) = &self.pty_master {
-                                        let _ = pty_master.write(text.as_bytes());
+                                        let formatted = if let Some(term) = &self.terminal {
+                                            term.format_paste(&text)
+                                        } else {
+                                            text
+                                        };
+                                        let _ = pty_master.write(formatted.as_bytes());
                                     }
                                 return;
                             }
@@ -404,12 +396,14 @@ impl ApplicationHandler<CustomEvent> for App {
                         if (col_idx, row_idx) != self.last_mouse_cell {
                             self.last_mouse_cell = (col_idx, row_idx);
 
-                            if terminal.mouse_mode > 0 && !self.modifiers.shift_key() {
+                            let should_report_motion = terminal.mouse_mode == 1003 || (terminal.mouse_mode == 1002 && self.is_mouse_down);
+                            if should_report_motion && !self.modifiers.shift_key() {
                                 if let Some(pty_master) = &self.pty_master {
+                                    let btn_code = if self.is_mouse_down { 32 } else { 35 };
                                     let seq = if terminal.mouse_sgr {
-                                        format!("\x1b[<32;{};{}M", col_idx + 1, row_idx + 1)
+                                        format!("\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1)
                                     } else {
-                                        let cb = 32 + 32;
+                                        let cb = 32 + btn_code;
                                         let cx = 32 + col_idx + 1;
                                         let cy = 32 + row_idx + 1;
                                         if cx <= 255 && cy <= 255 {
@@ -449,8 +443,8 @@ impl ApplicationHandler<CustomEvent> for App {
                             let py = self.padding_y as f64;
                             let cw = renderer.font_loader.cell_width as f64;
                             let ch = renderer.font_loader.cell_height as f64;
-                            let col = ((((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1)).max(1);
-                            let row = ((((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1)).max(1);
+                            let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
+                            let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
 
                             if terminal.mouse_mode > 0 {
                                 let btn = if lines > 0 { 64 } else { 65 };
@@ -817,6 +811,11 @@ impl ApplicationHandler<CustomEvent> for App {
 
         // ── Schedule pending redraw with non-blocking FPS limiting ───────────
         if self.needs_redraw {
+            if let Some(term) = &mut self.terminal
+                && term.is_synchronized_output_active() {
+                    return;
+                }
+
             let frame_duration = self.fps_limit
                 .filter(|&l| l > 0)
                 .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))

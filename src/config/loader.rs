@@ -9,6 +9,17 @@ pub enum ConfigError {
     Toml(String),
 }
 
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::Io(err) => write!(f, "I/O error: {}", err),
+            ConfigError::Toml(err) => write!(f, "TOML error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 fn config_path() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(|h| {
         PathBuf::from(h).join(".config").join("velox").join("config.toml")
@@ -49,13 +60,5 @@ pub fn save(config: &Config) -> Result<(), ConfigError> {
     let contents = toml::to_string_pretty(config)
         .map_err(|e| ConfigError::Toml(e.to_string()))?;
     fs::write(&path, contents).map_err(ConfigError::Io)?;
-    Ok(())
-}
-
-pub fn reload() -> Result<Config, ConfigError> {
-    load()
-}
-
-pub fn watch_config() -> Result<(), ConfigError> {
     Ok(())
 }

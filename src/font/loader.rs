@@ -5,8 +5,6 @@ use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use owned_ttf_parser::AsFaceRef;
 use crate::font::fallback::FallbackManager;
 
-pub const DEFAULT_FONT_SCALE_MULTIPLIER: f32 = 1.5;
-
 #[derive(Clone, Copy)]
 pub struct GlyphUv {
     pub u_min: f32,
@@ -45,15 +43,14 @@ pub struct FontLoader {
 }
 
 fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontArc> {
-    if let Some(id) = db.query(query) {
-        if let Some(face) = db.face(id) {
+    if let Some(id) = db.query(query)
+        && let Some(face) = db.face(id) {
             match &face.source {
                 fontdb::Source::File(path) => {
-                    if let Ok(data) = std::fs::read(path) {
-                        if let Ok(font) = FontArc::try_from_vec(data) {
+                    if let Ok(data) = std::fs::read(path)
+                        && let Ok(font) = FontArc::try_from_vec(data) {
                             return Some(font);
                         }
-                    }
                 }
                 fontdb::Source::Binary(data) => {
                     let bytes = data.as_ref().as_ref();
@@ -69,10 +66,9 @@ fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontAr
                 }
             }
         }
-    }
 
     if query.style == fontdb::Style::Italic {
-        let mut oblique_query = query.clone();
+        let mut oblique_query = *query;
         oblique_query.style = fontdb::Style::Oblique;
         return load_font_face(db, &oblique_query);
     }
@@ -531,8 +527,8 @@ impl FontLoader {
                     (xo, yo)
                 };
 
-                if let Some(ref cf) = char_font_arc {
-                    if let Some(outlined) = cf.outline_glyph(the_glyph) {
+                if let Some(ref cf) = char_font_arc
+                    && let Some(outlined) = cf.outline_glyph(the_glyph) {
                         outlined.draw(|gx, gy, alpha| {
                             let slant_shift = if is_synthetic_italic {
                                 // Pivot the shear around the baseline.
@@ -554,7 +550,6 @@ impl FontLoader {
                             }
                         });
                     }
-                }
 
                 // Also draw combining chars
                 for ch in seq.chars().skip(1) {
@@ -608,8 +603,7 @@ impl FontLoader {
                 }
             }
 
-            for i in 0..pixels.len() {
-                let mask = pixels[i];
+            for (i, &mask) in pixels.iter().enumerate() {
                 let dst_idx = i * 4;
                 rgba_pixels[dst_idx]     = mask;
                 rgba_pixels[dst_idx + 1] = mask;

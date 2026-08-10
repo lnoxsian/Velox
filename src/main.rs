@@ -1,15 +1,15 @@
-pub mod ansi;
-pub mod app;
-pub mod clipboard;
-pub mod config;
-pub mod font;
-pub mod hyperlink;
-pub mod input;
-pub mod pty;
-pub mod renderer;
-pub mod screen;
-pub mod terminal;
-pub mod theme;
+mod ansi;
+mod app;
+mod clipboard;
+mod config;
+mod font;
+mod hyperlink;
+mod input;
+mod pty;
+mod renderer;
+mod screen;
+mod terminal;
+mod theme;
 
 use winit::event_loop::EventLoop;
 use crate::app::app::{App, CustomEvent};

@@ -579,9 +579,6 @@ impl Grid {
             _ => {}
         }
     }
-    pub fn mark_dirty(&mut self, row: usize, _col: usize) {
-        self.damage.mark_dirty(row);
-    }
 
     pub fn resize(&mut self, cols: u32, rows: u32) {
         let new_w = cols as usize;
@@ -903,23 +900,23 @@ mod tests {
             grid.put_char(c, fg, bg, CellFlags::empty());
         }
 
-        assert_eq!(grid.row_wrapped[0], false);
+        assert!(!grid.row_wrapped[0]);
 
         // Resize to 40 cols: 70 chars should reflow into Row 0 (40 chars, wrapped=true) and Row 1 (30 chars, wrapped=false)
         grid.resize(40, 10);
 
-        assert_eq!(grid.row_wrapped[0], true);
-        assert_eq!(grid.row_wrapped[1], false);
+        assert!(grid.row_wrapped[0]);
+        assert!(!grid.row_wrapped[1]);
 
-        let row0_str: String = (0..40).map(|x| grid.cells[0 * 40 + x].character).collect();
-        let row1_str: String = (0..30).map(|x| grid.cells[1 * 40 + x].character).collect();
+        let row0_str: String = (0..40).map(|x| grid.cells[x].character).collect();
+        let row1_str: String = (0..30).map(|x| grid.cells[40 + x].character).collect();
         assert_eq!(row0_str, "0123456789012345678901234567890123456789");
         assert_eq!(row1_str, "012345678901234567890123456789");
 
         // Resize back to 80 cols: should un-wrap back into Row 0 (70 chars, wrapped=false)
         grid.resize(80, 10);
-        assert_eq!(grid.row_wrapped[0], false);
-        let restored_str: String = (0..70).map(|x| grid.cells[0 * 80 + x].character).collect();
+        assert!(!grid.row_wrapped[0]);
+        let restored_str: String = (0..70).map(|x| grid.cells[x].character).collect();
         assert_eq!(restored_str, "0123456789012345678901234567890123456789012345678901234567890123456789");
     }
 

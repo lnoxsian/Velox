@@ -3,6 +3,21 @@ use crate::screen::cell::{Color, CellFlags};
 use crate::theme::theme::Theme;
 use crate::ansi::parser::AnsiParser;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticZone {
+    Prompt,
+    Input,
+    Output,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptMark {
+    pub x: usize,
+    pub y: usize,
+    pub zone: SemanticZone,
+    pub exit_code: Option<i32>,
+}
+
 pub struct Terminal {
     pub grid: Grid,
     pub alt_grid: Grid,
@@ -18,12 +33,18 @@ pub struct Terminal {
     pub mouse_sgr: bool,
     pub g0_charset: u8,
     pub g1_charset: u8,
-    pub g2_charset: u8,
-    pub g3_charset: u8,
     pub active_charset: u8,
     pub bold_is_bright: bool,
     pub app_title: Option<String>,
     pub configured_cursor_shape: crate::screen::cursor::CursorShape,
+    pub bracketed_paste_mode: bool,
+    pub synchronized_output: bool,
+    pub sync_output_start: Option<std::time::Instant>,
+    pub focus_tracking: bool,
+    pub current_dir: Option<String>,
+    pub semantic_zone: SemanticZone,
+    pub prompt_marks: Vec<PromptMark>,
+    pub last_command_exit_code: Option<i32>,
 }
 
 impl Terminal {
@@ -67,6 +88,8 @@ impl Terminal {
             }
         }
 
+        theme.save_initial_colors();
+
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
 
@@ -102,12 +125,61 @@ impl Terminal {
             mouse_sgr: false,
             g0_charset: 0,
             g1_charset: 0,
-            g2_charset: 0,
-            g3_charset: 0,
             active_charset: 0,
             bold_is_bright,
             app_title,
             configured_cursor_shape: initial_shape,
+            bracketed_paste_mode: false,
+            synchronized_output: false,
+            sync_output_start: None,
+            focus_tracking: false,
+            current_dir: None,
+            semantic_zone: SemanticZone::Output,
+            prompt_marks: Vec::new(),
+            last_command_exit_code: None,
+        }
+    }
+
+    pub fn mark_semantic_zone(&mut self, zone: SemanticZone, exit_code: Option<i32>) {
+        self.semantic_zone = zone;
+        let cursor = self.active_grid().cursor;
+        self.prompt_marks.push(PromptMark {
+            x: cursor.x,
+            y: cursor.y,
+            zone,
+            exit_code,
+        });
+    }
+
+    pub fn set_synchronized_output(&mut self, enabled: bool) {
+        self.synchronized_output = enabled;
+        if enabled {
+            self.sync_output_start = Some(std::time::Instant::now());
+        } else {
+            self.sync_output_start = None;
+        }
+    }
+
+    pub fn is_synchronized_output_active(&mut self) -> bool {
+        if self.synchronized_output {
+            if let Some(start) = self.sync_output_start {
+                if start.elapsed() > std::time::Duration::from_millis(150) {
+                    self.synchronized_output = false;
+                    self.sync_output_start = None;
+                    return false;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn format_paste(&self, text: &str) -> String {
+        if self.bracketed_paste_mode {
+            format!("\x1b[200~{}\x1b[201~", text)
+        } else {
+            text.to_string()
         }
     }
 
@@ -500,5 +572,160 @@ mod tests {
         for x in 0..5 {
             assert!(!term.active_grid().cells[x].flags.contains(CellFlags::UNDERLINE));
         }
+    }
+
+    #[test]
+    fn test_bracketed_paste_mode() {
+        let mut term = Terminal::new(80, 24);
+        assert!(!term.bracketed_paste_mode);
+        assert_eq!(term.format_paste("echo hello"), "echo hello");
+
+        // Enable bracketed paste mode via CSI ? 2004 h
+        term.feed(b"\x1b[?2004h");
+        assert!(term.bracketed_paste_mode);
+        assert_eq!(term.format_paste("echo hello"), "\x1b[200~echo hello\x1b[201~");
+
+        // Disable bracketed paste mode via CSI ? 2004 l
+        term.feed(b"\x1b[?2004l");
+        assert!(!term.bracketed_paste_mode);
+        assert_eq!(term.format_paste("echo hello"), "echo hello");
+    }
+
+    #[test]
+    fn test_synchronized_output_mode() {
+        let mut term = Terminal::new(80, 24);
+        assert!(!term.synchronized_output);
+        assert!(!term.is_synchronized_output_active());
+
+        // Enable synchronized output via CSI ? 2026 h
+        term.feed(b"\x1b[?2026h");
+        assert!(term.synchronized_output);
+        assert!(term.is_synchronized_output_active());
+
+        // Query mode status via DECRPM: CSI ? 2026 $ p
+        term.outgoing.clear();
+        term.feed(b"\x1b[?2026$p");
+        assert_eq!(term.outgoing, b"\x1b[?2026;1$y");
+        term.outgoing.clear();
+
+        // Disable synchronized output via CSI ? 2026 l
+        term.feed(b"\x1b[?2026l");
+        assert!(!term.synchronized_output);
+        assert!(!term.is_synchronized_output_active());
+
+        // Query mode status via DECRPM after disabling
+        term.feed(b"\x1b[?2026$p");
+        assert_eq!(term.outgoing, b"\x1b[?2026;2$y");
+    }
+
+    #[test]
+    fn test_focus_tracking_mode() {
+        let mut term = Terminal::new(80, 24);
+        assert!(!term.focus_tracking);
+
+        // Enable focus tracking via CSI ? 1004 h
+        term.feed(b"\x1b[?1004h");
+        assert!(term.focus_tracking);
+
+        // Disable focus tracking via CSI ? 1004 l
+        term.feed(b"\x1b[?1004l");
+        assert!(!term.focus_tracking);
+    }
+
+    #[test]
+    fn test_any_event_mouse_tracking_mode() {
+        let mut term = Terminal::new(80, 24);
+        assert_eq!(term.mouse_mode, 0);
+
+        // Enable any-event mouse tracking via CSI ? 1003 h
+        term.feed(b"\x1b[?1003h");
+        assert_eq!(term.mouse_mode, 1003);
+
+        // Disable mouse tracking via CSI ? 1003 l
+        term.feed(b"\x1b[?1003l");
+        assert_eq!(term.mouse_mode, 0);
+    }
+
+    #[test]
+    fn test_osc7_current_working_directory() {
+        let mut term = Terminal::new(80, 24);
+        assert_eq!(term.current_dir, None);
+
+        // Feed OSC 7 sequence with hostname: OSC 7 ; file://localhost/home/user/project ST
+        term.feed(b"\x1b]7;file://localhost/home/user/project\x1b\\");
+        assert_eq!(term.current_dir.as_deref(), Some("/home/user/project"));
+
+        // Feed OSC 7 sequence with percent encoding and BEL termination
+        term.feed(b"\x1b]7;file:///home/user/my%20folder\x07");
+        assert_eq!(term.current_dir.as_deref(), Some("/home/user/my folder"));
+    }
+
+    #[test]
+    fn test_osc133_shell_integration() {
+        let mut term = Terminal::new(80, 24);
+        assert_eq!(term.semantic_zone, SemanticZone::Output);
+        assert!(term.prompt_marks.is_empty());
+
+        // Prompt Start: OSC 133 ; A
+        term.feed(b"\x1b]133;A\x07");
+        assert_eq!(term.semantic_zone, SemanticZone::Prompt);
+        assert_eq!(term.prompt_marks.len(), 1);
+        assert_eq!(term.prompt_marks[0].zone, SemanticZone::Prompt);
+
+        // Command Start: OSC 133 ; B
+        term.feed(b"\x1b]133;B\x07");
+        assert_eq!(term.semantic_zone, SemanticZone::Input);
+        assert_eq!(term.prompt_marks.len(), 2);
+        assert_eq!(term.prompt_marks[1].zone, SemanticZone::Input);
+
+        // Output Start: OSC 133 ; C
+        term.feed(b"\x1b]133;C\x07");
+        assert_eq!(term.semantic_zone, SemanticZone::Output);
+        assert_eq!(term.prompt_marks.len(), 3);
+        assert_eq!(term.prompt_marks[2].zone, SemanticZone::Output);
+
+        // Command Finished with Exit Code 0: OSC 133 ; D ; 0
+        term.feed(b"\x1b]133;D;0\x07");
+        assert_eq!(term.last_command_exit_code, Some(0));
+        assert_eq!(term.prompt_marks.last().unwrap().exit_code, Some(0));
+    }
+
+    #[test]
+    fn test_osc_color_resets_and_cursor_color() {
+        let mut term = Terminal::new(80, 24);
+
+        // 1. OSC 12: Set cursor color to red (#FF0000)
+        term.feed(b"\x1b]12;#FF0000\x07");
+        assert_eq!(term.theme.cursor_color.unwrap().r, 255);
+        assert_eq!(term.theme.cursor_color.unwrap().g, 0);
+
+        // OSC 12: Query cursor color
+        term.outgoing.clear();
+        term.feed(b"\x1b]12;?\x07");
+        assert!(String::from_utf8(term.outgoing.clone()).unwrap().starts_with("\x1b]12;rgb:ffff/0000/0000"));
+
+        // OSC 112: Reset cursor color
+        term.feed(b"\x1b]112\x07");
+        assert_eq!(term.theme.cursor_color, None);
+
+        // 2. OSC 4: Set palette color 1 (Red) to blue
+        term.feed(b"\x1b]4;1;#0000FF\x07");
+        assert_eq!(term.theme.ansi_colors[1].b, 255);
+
+        // OSC 104: Reset specific palette color index 1
+        term.feed(b"\x1b]104;1\x07");
+        assert_eq!(term.theme.ansi_colors[1], term.theme.initial_ansi_colors[1]);
+
+        // 3. OSC 10: Modify FG, OSC 110: Reset FG
+        term.feed(b"\x1b]10;#123456\x07");
+        assert_eq!(term.theme.default_fg.r, 0x12);
+        term.feed(b"\x1b]110\x07");
+        assert_eq!(term.theme.default_fg, term.theme.initial_fg);
+
+        // 4. OSC 11: Modify BG, OSC 111: Reset BG
+        term.feed(b"\x1b]11;#654321\x07");
+        assert_eq!(term.theme.default_bg.r, 0x65);
+        term.feed(b"\x1b]111\x07");
+        assert_eq!(term.theme.default_bg, term.theme.initial_bg);
     }
 }

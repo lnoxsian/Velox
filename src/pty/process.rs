@@ -8,6 +8,16 @@ pub enum PtyError {
     Fork(String),
 }
 
+impl std::fmt::Display for PtyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PtyError::Fork(msg) => write!(f, "PTY fork error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for PtyError {}
+
 pub fn spawn_shell(shell_path: &str) -> Result<PtyMaster, PtyError> {
     let pty = openpty(None, None).map_err(|e| PtyError::Fork(e.to_string()))?;
     let master_fd = pty.master.into_raw_fd();

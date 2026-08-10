@@ -19,11 +19,6 @@ impl DamageTracker {
         }
     }
 
-    pub fn clear(&mut self) {
-        for val in &mut self.dirty_rows {
-            *val = false;
-        }
-    }
 }
 
 impl Default for DamageTracker {

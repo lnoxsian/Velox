@@ -155,7 +155,11 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                         25 => { terminal.active_grid_mut().cursor.visible = active; }
                         1000 => { terminal.mouse_mode = if active { 1000 } else { 0 }; }
                         1002 => { terminal.mouse_mode = if active { 1002 } else { 0 }; }
+                        1003 => { terminal.mouse_mode = if active { 1003 } else { 0 }; }
                         1006 => { terminal.mouse_sgr = active; }
+                        1004 => { terminal.focus_tracking = active; }
+                        2004 => { terminal.bracketed_paste_mode = active; }
+                        2026 => { terminal.set_synchronized_output(active); }
                         47 | 1047 => {
                             terminal.set_alt_screen(active);
                         }
@@ -290,6 +294,13 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                     active.cursor.visible = true;
                 }
                 _ => {}
+            }
+        }
+        b'p' => { // DECRPM - DEC Private Mode Report
+            if is_private && params.first() == Some(&2026) {
+                let status = if terminal.synchronized_output { 1 } else { 2 };
+                let response = format!("\x1b[?2026;{}$y", status);
+                terminal.send_to_shell(response.as_bytes());
             }
         }
         _ => {}
