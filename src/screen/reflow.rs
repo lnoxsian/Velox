@@ -29,11 +29,14 @@ impl Grid {
 
         let mut combined_rows: Vec<CombinedRow> = Vec::new();
 
-        for row in &self.scrollback.lines {
-            combined_rows.push(CombinedRow {
-                cells: row.cells.clone(),
-                wrapped: row.wrapped,
-            });
+        let len = self.scrollback.len();
+        for i in 0..len {
+            if let Some(row) = self.scrollback.get_row(i) {
+                combined_rows.push(CombinedRow {
+                    cells: row.cells,
+                    wrapped: row.wrapped,
+                });
+            }
         }
 
         let scrollback_count = combined_rows.len();

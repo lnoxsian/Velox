@@ -92,7 +92,7 @@ impl App {
                 if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageUp) = event.logical_key {
                     if let Some(terminal) = &mut self.terminal {
                         let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
-                        let history_len = active_grid.scrollback.lines.len();
+                        let history_len = active_grid.scrollback.len();
                         active_grid.scroll_offset = (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
                         self.needs_redraw = true;
                         return;

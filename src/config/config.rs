@@ -5,7 +5,8 @@ use crate::screen::cell::Color;
 pub struct Config {
     pub font_family: String,
     pub font_size: f32,
-    pub shell: String,
+    #[serde(default)]
+    pub shell: Option<String>,
     #[serde(default)]
     pub default_fg: Option<String>,
     #[serde(default)]
@@ -14,6 +15,8 @@ pub struct Config {
     pub colors: Option<ConfigColors>,
     #[serde(default)]
     pub scrollback_limit: Option<usize>,
+    #[serde(default)]
+    pub infinite_scrollback: Option<bool>,
     #[serde(default)]
     pub gpu_acceleration: Option<bool>,
     #[serde(default)]
@@ -90,6 +93,7 @@ mod tests {
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.scrollback_limit, Some(30000));
+        assert_eq!(config.infinite_scrollback, None);
         assert_eq!(config.bold_is_bright, Some(true));
         assert_eq!(config.app_title, Some("{program} - Velox".to_string()));
 
@@ -100,6 +104,7 @@ mod tests {
         "#;
         let config_no_limit: Config = toml::from_str(toml_str_no_limit).unwrap();
         assert_eq!(config_no_limit.scrollback_limit, None);
+        assert_eq!(config_no_limit.infinite_scrollback, None);
         assert_eq!(config_no_limit.gpu_acceleration, None);
         assert_eq!(config_no_limit.scroll_multiplier, None);
         assert_eq!(config_no_limit.fps_limit, None);

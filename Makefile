@@ -1,10 +1,14 @@
-.PHONY: build release optimized-release lint update-version bench bench-grid bench-scrollback
+.PHONY: build release optimized-release lint update-version bench bench-grid bench-scrollback generate-icons
 
 VERSION_FILE := VERSION
 VERSION := $(shell cat $(VERSION_FILE) | tr -d '\n\r')
 
+# Generate multi-resolution icon assets
+generate-icons:
+	python3 scripts/generate_icons.py
+
 # Build the project
-build:
+build: generate-icons
 	cargo build
 
 # Build the project in release mode

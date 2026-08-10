@@ -17,24 +17,24 @@ impl App {
 
             let active_grid = if terminal.is_alt_screen { &terminal.alt_grid } else { &terminal.grid };
             let offset = active_grid.scroll_offset;
-            let history_len = active_grid.scrollback.lines.len();
+            let history_len = active_grid.scrollback.len();
 
             let mut is_link = false;
             let y_offset = (row_idx + history_len).saturating_sub(offset);
-            let line_cells = if y_offset < history_len {
-                &active_grid.scrollback.lines[y_offset][..]
+            let line_text: String = if y_offset < history_len {
+                active_grid.scrollback.get_row(y_offset).unwrap_or_else(|| crate::screen::scrollback::Row { cells: vec![], wrapped: false })
+                    .iter().map(|c| c.character).collect()
             } else {
                 let y = y_offset - history_len;
                 if y < active_grid.height {
                     let src_start = y * active_grid.width;
                     let src_end = src_start + active_grid.width;
-                    &active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
+                    active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
+                        .iter().map(|c| c.character).collect()
                 } else {
-                    &[]
+                    String::new()
                 }
             };
-
-            let line_text: String = line_cells.iter().map(|c| c.character).collect();
             let urls = crate::hyperlink::detector::detect(&line_text);
             for (start_col, end_col, _) in urls {
                 if col_idx >= start_col && col_idx < end_col {
@@ -141,7 +141,7 @@ impl App {
                         }
                     } else {
                         let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
-                        let history_len = active_grid.scrollback.lines.len();
+                        let history_len = active_grid.scrollback.len();
                         if lines > 0 {
                             active_grid.scroll_offset = (active_grid.scroll_offset + lines as usize).min(history_len);
                         } else if lines < 0 {
@@ -206,9 +206,24 @@ impl App {
                             }
                         } else {
                             let mut url_opened = false;
-                            let line_text: String = (0..grid_width)
-                                .map(|x| active_grid.cells[row_idx * grid_width + x].character)
-                                .collect();
+                            let offset = active_grid.scroll_offset;
+                            let history_len = active_grid.scrollback.len();
+                            let y_offset = (row_idx + history_len).saturating_sub(offset);
+                            
+                            let line_text: String = if y_offset < history_len {
+                                active_grid.scrollback.get_row(y_offset).unwrap_or_else(|| crate::screen::scrollback::Row { cells: vec![], wrapped: false })
+                                    .iter().map(|c| c.character).collect()
+                            } else {
+                                let y = y_offset - history_len;
+                                if y < active_grid.height {
+                                    let src_start = y * grid_width;
+                                    let src_end = src_start + grid_width;
+                                    active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
+                                        .iter().map(|c| c.character).collect()
+                                } else {
+                                    String::new()
+                                }
+                            };
                             let urls = crate::hyperlink::detector::detect(&line_text);
                             for (start, end, url) in urls {
                                 if col_idx >= start && col_idx < end {

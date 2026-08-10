@@ -4,7 +4,7 @@ pub fn default_config() -> Config {
     Config {
         font_family: "monospace".to_string(),
         font_size: 14.0,
-        shell: "/bin/sh".to_string(),
+        shell: None,
         default_fg: Some("#F8F8F2".to_string()),
         default_bg: Some("#272822".to_string()),
         colors: Some(ConfigColors {
@@ -26,6 +26,7 @@ pub fn default_config() -> Config {
             bright_white: Some("#F8F8F0".to_string()),
         }),
         scrollback_limit: Some(1000),
+        infinite_scrollback: Some(false),
         gpu_acceleration: Some(true),
         scroll_multiplier: Some(1.0),
         fps_limit: Some(120),

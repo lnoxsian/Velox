@@ -37,7 +37,7 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub fn new(width: usize, height: usize, fg: Color, bg: Color, scrollback_limit: usize) -> Self {
+    pub fn new(width: usize, height: usize, fg: Color, bg: Color, scrollback_limit: usize, infinite_scrollback: bool) -> Self {
         let default_cell = Cell {
             character: ' ',
             foreground: fg,
@@ -68,7 +68,7 @@ impl Grid {
             saved_g1_charset: 0,
             saved_active_charset: 0,
             damage: DamageTracker::new(height),
-            scrollback: Scrollback::new(scrollback_limit),
+            scrollback: Scrollback::new(scrollback_limit, infinite_scrollback),
             selection: Selection::new(),
             default_fg: fg,
             default_bg: bg,
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_grid_combining() {
-        let mut grid = Grid::new(80, 24, Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, 1000);
+        let mut grid = Grid::new(80, 24, Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, 1000, false);
         grid.put_char('a', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
         grid.put_char('\u{0301}', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
         
@@ -390,7 +390,7 @@ mod tests {
     fn test_grid_reflow_narrow_and_expand() {
         let fg = Color { r: 255, g: 255, b: 255, a: 255 };
         let bg = Color { r: 0, g: 0, b: 0, a: 255 };
-        let mut grid = Grid::new(80, 10, fg, bg, 1000);
+        let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
         // Write a 70-character line (fits on 80 cols without wrapping)
         for c in "0123456789012345678901234567890123456789012345678901234567890123456789".chars() {
@@ -421,7 +421,7 @@ mod tests {
     fn test_grid_reflow_cursor_tracking() {
         let fg = Color { r: 255, g: 255, b: 255, a: 255 };
         let bg = Color { r: 0, g: 0, b: 0, a: 255 };
-        let mut grid = Grid::new(80, 10, fg, bg, 1000);
+        let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
         // Fill 50 characters, cursor will be at x=50, y=0
         for _ in 0..50 {
@@ -437,7 +437,7 @@ mod tests {
     fn test_grid_resize_shrink_erase_bounds_safety() {
         let fg = Color { r: 255, g: 255, b: 255, a: 255 };
         let bg = Color { r: 0, g: 0, b: 0, a: 255 };
-        let mut grid = Grid::new(98, 58, fg, bg, 1000);
+        let mut grid = Grid::new(98, 58, fg, bg, 1000, false);
         grid.cursor.y = 57;
         grid.cursor.x = 50;
 
@@ -457,7 +457,7 @@ mod tests {
     fn test_grid_resize_after_clear_keeps_cleared_screen() {
         let fg = Color { r: 255, g: 255, b: 255, a: 255 };
         let bg = Color { r: 0, g: 0, b: 0, a: 255 };
-        let mut grid = Grid::new(80, 5, fg, bg, 1000);
+        let mut grid = Grid::new(80, 5, fg, bg, 1000, false);
 
         // Fill history so scrollback has lines
         for i in 0..15 {
@@ -468,7 +468,7 @@ mod tests {
             grid.cursor.x = 0;
         }
 
-        assert!(!grid.scrollback.lines.is_empty());
+        assert!(!grid.scrollback.is_empty());
 
         // User clears screen and homes cursor
         grid.erase_display(2, fg, bg);
@@ -476,7 +476,7 @@ mod tests {
         grid.cursor.y = 0;
 
         // Scrollback should be cleared and scroll offset should be 0
-        assert!(grid.scrollback.lines.is_empty());
+        assert!(grid.scrollback.is_empty());
         assert_eq!(grid.scroll_offset, 0);
 
         // Resize window to be larger (e.g. 80x20)

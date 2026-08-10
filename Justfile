@@ -2,9 +2,14 @@
 
 version := `cat VERSION | tr -d '\n\r'`
 
+# Generate multi-resolution icon assets
+generate-icons:
+    python3 scripts/generate_icons.py
+
 # Build the project
-build:
+build: generate-icons
     cargo build
+
 
 # Build the project in release mode
 release:

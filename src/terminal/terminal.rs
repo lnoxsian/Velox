@@ -92,8 +92,6 @@ impl Terminal {
 
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
-
-        let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
         let bold_is_bright = config.bold_is_bright.unwrap_or(true);
         let app_title = config.app_title.clone();
 
@@ -104,10 +102,13 @@ impl Terminal {
             _ => crate::screen::cursor::CursorShape::Block,
         };
 
-        let mut grid = Grid::new(width, height, default_fg, default_bg, scrollback_limit);
+        let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
+        let infinite_scrollback = config.infinite_scrollback.unwrap_or(false);
+
+        let mut grid = Grid::new(width, height, default_fg, default_bg, scrollback_limit, infinite_scrollback);
         grid.cursor.shape = initial_shape;
 
-        let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0);
+        let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0, false);
         alt_grid.cursor.shape = initial_shape;
 
         Self {
@@ -352,10 +353,10 @@ mod tests {
         }
         let grid = term.active_grid();
         // Since height is 5, we have scrolled multiple lines off the screen
-        assert!(!grid.scrollback.lines.is_empty());
+        assert!(!grid.scrollback.is_empty());
         
         // The first character of the oldest line in scrollback history should be 'l' from "line ..."
-        assert_eq!(grid.scrollback.lines[0][0].character, 'l');
+        assert_eq!(grid.scrollback.get_row(0).unwrap()[0].character, 'l');
     }
 
     #[test]

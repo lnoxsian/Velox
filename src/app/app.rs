@@ -100,6 +100,31 @@ impl App {
 
 }
 
+fn load_app_icon() -> Option<winit::window::Icon> {
+    let icon_bytes = include_bytes!("../../assets/generated_icons/icon_128x128.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(icon_bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let raw_bytes = &buf[..info.buffer_size()];
+
+    let rgba_bytes = match info.color_type {
+        png::ColorType::Rgba => raw_bytes.to_vec(),
+        png::ColorType::Rgb => {
+            let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
+            for chunk in raw_bytes.chunks(3) {
+                if chunk.len() == 3 {
+                    rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+                }
+            }
+            rgba
+        }
+        _ => return None,
+    };
+
+    winit::window::Icon::from_rgba(rgba_bytes, info.width, info.height).ok()
+}
+
 impl ApplicationHandler<CustomEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let config = crate::config::loader::load().unwrap_or_else(|_| {
@@ -112,9 +137,15 @@ impl ApplicationHandler<CustomEvent> for App {
         };
         self.current_title = initial_title.clone();
 
-        let window_attributes = Window::default_attributes()
+        let icon = load_app_icon();
+
+        let mut window_attributes = Window::default_attributes()
             .with_title(&initial_title)
             .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
+
+        if let Some(icon) = icon {
+            window_attributes = window_attributes.with_window_icon(Some(icon));
+        }
 
         let template = glutin::config::ConfigTemplateBuilder::new()
             .with_alpha_size(8);
@@ -188,9 +219,9 @@ impl ApplicationHandler<CustomEvent> for App {
         let terminal = Terminal::new(cols as usize, rows as usize);
         
         // Spawn PTY shell
-        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| {
-            config.shell.clone()
-        });
+        let shell_path = config.shell.clone()
+            .or_else(|| std::env::var("SHELL").ok())
+            .unwrap_or_else(|| "/bin/sh".to_string());
         let pty_master = Arc::new(spawn_shell(&shell_path).unwrap());
         pty_master.resize(cols as u16, rows as u16).unwrap();
 
@@ -294,7 +325,7 @@ impl ApplicationHandler<CustomEvent> for App {
                     }
 
                     let offset = active_grid.scroll_offset;
-                    let history_len = active_grid.scrollback.lines.len();
+                    let history_len = active_grid.scrollback.len();
 
                     if offset == 0 {
                         self.render_cells_buf.copy_from_slice(&active_grid.cells);
@@ -318,7 +349,8 @@ impl ApplicationHandler<CustomEvent> for App {
                                 self.render_cells_buf[dest_start..dest_end].fill(default_cell);
                             } else if idx < history_len {
                                 // Row comes from the scrollback buffer
-                                let line_slice = &active_grid.scrollback.lines[idx];
+                                let row_data = active_grid.scrollback.get_row(idx).unwrap_or_else(|| crate::screen::scrollback::Row { cells: vec![default_cell; width], wrapped: false });
+                                let line_slice = &row_data;
                                 let copy_len = line_slice.len().min(width);
                                 self.render_cells_buf[dest_start..dest_start + copy_len]
                                     .copy_from_slice(&line_slice[..copy_len]);

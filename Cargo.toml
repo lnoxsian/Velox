@@ -1,6 +1,6 @@
 [package]
 name = "velox"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 
 [dependencies]
@@ -11,6 +11,8 @@ bytemuck = "1"
 unicode-width = "0.2"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+bincode = "1"
 log = "0.4"
 env_logger = "0.11"
 smallvec = "1"
