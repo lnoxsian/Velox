@@ -23,10 +23,10 @@ fn main() {
     });
 
     if !config.gpu_acceleration.unwrap_or(true) {
-        log::info!("GPU acceleration disabled. Setting LIBGL_ALWAYS_SOFTWARE=1 and GALLIUM_DRIVER=softpipe.");
+        log::info!("GPU acceleration disabled. Setting LIBGL_ALWAYS_SOFTWARE=1 and GALLIUM_DRIVER=llvmpipe.");
         unsafe {
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-            std::env::set_var("GALLIUM_DRIVER", "softpipe");
+            std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
         }
     }
 

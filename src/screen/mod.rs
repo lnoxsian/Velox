@@ -4,3 +4,5 @@ pub mod damage;
 pub mod grid;
 pub mod scrollback;
 pub mod selection;
+pub mod scroll;
+pub mod reflow;

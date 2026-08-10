@@ -22,40 +22,40 @@ pub enum CustomEvent {
 }
 
 pub struct App {
-    event_loop_proxy: winit::event_loop::EventLoopProxy<CustomEvent>,
-    modifiers: winit::keyboard::ModifiersState,
-    window: Option<Window>,
-    gl: Option<Arc<glow::Context>>,
-    gl_context: Option<glutin::context::PossiblyCurrentContext>,
-    gl_display: Option<glutin::display::Display>,
-    gl_surface: Option<glutin::surface::Surface<glutin::surface::WindowSurface>>,
-    renderer: Option<Renderer>,
-    terminal: Option<Terminal>,
-    pty_master: Option<Arc<PtyMaster>>,
-    mouse_x: f64,
-    mouse_y: f64,
-    render_cells_buf: Vec<Cell>,
-    scroll_multiplier: f64,
-    fps_limit: Option<u32>,
-    last_frame_instant: std::time::Instant,
-    current_title: String,
-    default_font_size: f32,
-    current_font_size: f32,
-    padding_x: f32,
-    padding_y: f32,
-    is_mouse_down: bool,
-    last_click_instant: Option<std::time::Instant>,
-    last_click_pos: (usize, usize),
-    click_count: u8,
-    last_mouse_cell: (usize, usize),
-    is_focused: bool,
+    pub(crate) event_loop_proxy: winit::event_loop::EventLoopProxy<CustomEvent>,
+    pub(crate) modifiers: winit::keyboard::ModifiersState,
+    pub(crate) window: Option<Window>,
+    pub(crate) gl: Option<Arc<glow::Context>>,
+    pub(crate) gl_context: Option<glutin::context::PossiblyCurrentContext>,
+    pub(crate) gl_display: Option<glutin::display::Display>,
+    pub(crate) gl_surface: Option<glutin::surface::Surface<glutin::surface::WindowSurface>>,
+    pub(crate) renderer: Option<Renderer>,
+    pub(crate) terminal: Option<Terminal>,
+    pub(crate) pty_master: Option<Arc<PtyMaster>>,
+    pub(crate) mouse_x: f64,
+    pub(crate) mouse_y: f64,
+    pub(crate) render_cells_buf: Vec<Cell>,
+    pub(crate) scroll_multiplier: f64,
+    pub(crate) fps_limit: Option<u32>,
+    pub(crate) last_frame_instant: std::time::Instant,
+    pub(crate) current_title: String,
+    pub(crate) default_font_size: f32,
+    pub(crate) current_font_size: f32,
+    pub(crate) padding_x: f32,
+    pub(crate) padding_y: f32,
+    pub(crate) is_mouse_down: bool,
+    pub(crate) last_click_instant: Option<std::time::Instant>,
+    pub(crate) last_click_pos: (usize, usize),
+    pub(crate) click_count: u8,
+    pub(crate) last_mouse_cell: (usize, usize),
+    pub(crate) is_focused: bool,
     // ── CPU-optimization state ───────────────────────────────────────────
-    needs_redraw: bool,
-    content_dirty: bool,
-    last_title_check: std::time::Instant,
-    cursor_blink_enabled: bool,
-    cursor_blink_on: bool,
-    last_cursor_blink: std::time::Instant,
+    pub(crate) needs_redraw: bool,
+    pub(crate) content_dirty: bool,
+    pub(crate) last_title_check: std::time::Instant,
+    pub(crate) cursor_blink_enabled: bool,
+    pub(crate) cursor_blink_on: bool,
+    pub(crate) last_cursor_blink: std::time::Instant,
 }
 
 impl App {
@@ -261,388 +261,16 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.content_dirty = true;
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
-                    // 1. Copy (Ctrl+Shift+C) and Paste (Ctrl+Shift+V)
-                    if self.modifiers.control_key() && self.modifiers.shift_key() {
-                        let key_ch = match &event.logical_key {
-                            winit::keyboard::Key::Character(s) => Some(s.to_lowercase()),
-                            _ => None,
-                        };
-                        if let Some(ch) = key_ch {
-                            if ch == "c" {
-                                if let Some(terminal) = &self.terminal {
-                                    let active_grid = terminal.active_grid();
-                                    let text = if active_grid.selection.active {
-                                        active_grid.selection.extract_text(active_grid.width, active_grid.height, &active_grid.cells)
-                                    } else {
-                                        (0..active_grid.height)
-                                            .map(|y| {
-                                                (0..active_grid.width)
-                                                    .map(|x| active_grid.cells[y * active_grid.width + x].character)
-                                                    .collect::<String>()
-                                                    .trim_end()
-                                                    .to_string()
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    };
-                                    if !text.is_empty() {
-                                        crate::clipboard::clipboard::copy(&text);
-                                    }
-                                }
-                                return;
-                            } else if ch == "v" {
-                                let text = crate::clipboard::clipboard::paste();
-                                if !text.is_empty()
-                                    && let Some(pty_master) = &self.pty_master {
-                                        let formatted = if let Some(term) = &self.terminal {
-                                            term.format_paste(&text)
-                                        } else {
-                                            text
-                                        };
-                                        let _ = pty_master.write(formatted.as_bytes());
-                                    }
-                                return;
-                            }
-                        }
-                    }
-
-                    // 2. Font Zoom In (Ctrl+Shift++ / Ctrl+Shift+=), Zoom Out (Ctrl+-), Reset (Ctrl+0)
-                    let is_zoom_in = self.modifiers.control_key() && self.modifiers.shift_key() &&
-                        matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "+" || s == "=");
-
-                    let is_zoom_out = self.modifiers.control_key() && !self.modifiers.shift_key() && !self.modifiers.alt_key() &&
-                        matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "-");
-
-                    let is_zoom_reset = self.modifiers.control_key() && !self.modifiers.shift_key() && !self.modifiers.alt_key() &&
-                        matches!(&event.logical_key, winit::keyboard::Key::Character(s) if s == "0");
-
-                    if is_zoom_in || is_zoom_out || is_zoom_reset {
-                        let new_size = if is_zoom_in {
-                            (self.current_font_size + 1.0).min(72.0)
-                        } else if is_zoom_out {
-                            (self.current_font_size - 1.0).max(4.0)
-                        } else {
-                            self.default_font_size
-                        };
-
-                        if (new_size - self.current_font_size).abs() > 0.01 {
-                            self.current_font_size = new_size;
-                            if let (Some(window), Some(renderer), Some(terminal), Some(pty_master)) = 
-                               (&self.window, &mut self.renderer, &mut self.terminal, &self.pty_master) 
-                            {
-                                renderer.set_font_size(new_size);
-                                let size = window.inner_size();
-                                let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
-                                let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
-                                let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
-                                let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
-                                terminal.resize(cols, rows);
-                                let _ = pty_master.resize(cols as u16, rows as u16);
-                                self.needs_redraw = true;
-                                self.content_dirty = true;
-                            }
-                        }
-                        return;
-                    }
-
-                    if self.modifiers.shift_key() {
-                        if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageUp) = event.logical_key {
-                            if let Some(terminal) = &mut self.terminal {
-                                let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
-                                let history_len = active_grid.scrollback.lines.len();
-                                active_grid.scroll_offset = (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
-                                self.needs_redraw = true;
-                                return;
-                            }
-                        } else if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::PageDown) = event.logical_key
-                            && let Some(terminal) = &mut self.terminal {
-                                let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
-                                active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(active_grid.height / 2);
-                                self.needs_redraw = true;
-                                return;
-                            }
-                    }
-
-                    // Clear active text selection when typing input into the PTY
-                    if let Some(pty_master) = &self.pty_master {
-                        let cursor_keys_mode = self.terminal.as_ref().map(|t| t.cursor_keys_mode).unwrap_or(false);
-                        if let Some(bytes) = crate::input::keyboard::translate_key(&event.logical_key, self.modifiers, cursor_keys_mode) {
-                            if let Some(terminal) = &mut self.terminal {
-                                let active_grid = terminal.active_grid_mut();
-                                if active_grid.selection.active {
-                                    active_grid.selection.clear();
-                                    self.needs_redraw = true;
-                                }
-                            }
-                            let _ = pty_master.write(&bytes);
-                        }
-                    }
-                }
+                self.handle_keyboard_input(event);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_x = position.x;
-                self.mouse_y = position.y;
-
-                if self.is_mouse_down
-                    && let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
-                        let px = self.padding_x as f64;
-                        let py = self.padding_y as f64;
-                        let cw = renderer.font_loader.cell_width as f64;
-                        let ch = renderer.font_loader.cell_height as f64;
-                        let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                        let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
-
-                        if (col_idx, row_idx) != self.last_mouse_cell {
-                            self.last_mouse_cell = (col_idx, row_idx);
-
-                            let should_report_motion = terminal.mouse_mode == 1003 || (terminal.mouse_mode == 1002 && self.is_mouse_down);
-                            if should_report_motion && !self.modifiers.shift_key() {
-                                if let Some(pty_master) = &self.pty_master {
-                                    let btn_code = if self.is_mouse_down { 32 } else { 35 };
-                                    let seq = if terminal.mouse_sgr {
-                                        format!("\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1)
-                                    } else {
-                                        let cb = 32 + btn_code;
-                                        let cx = 32 + col_idx + 1;
-                                        let cy = 32 + row_idx + 1;
-                                        if cx <= 255 && cy <= 255 {
-                                            format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
-                                        } else {
-                                            String::new()
-                                        }
-                                    };
-                                    if !seq.is_empty() {
-                                        let _ = pty_master.write(seq.as_bytes());
-                                    }
-                                }
-                            } else {
-                                let active_grid = terminal.active_grid_mut();
-                                if active_grid.selection.active {
-                                    active_grid.selection.update_selection(col_idx, row_idx);
-                                    self.needs_redraw = true;
-                                }
-                            }
-                        }
-                    }
+                self.handle_cursor_moved(position);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines_f = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
-                        y as f64
-                    }
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        pos.y / 15.0
-                    }
-                };
-                let lines = (lines_f * self.scroll_multiplier).round() as i32;
-                if lines != 0
-                    && let Some(pty_master) = &self.pty_master
-                        && let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
-                            let px = self.padding_x as f64;
-                            let py = self.padding_y as f64;
-                            let cw = renderer.font_loader.cell_width as f64;
-                            let ch = renderer.font_loader.cell_height as f64;
-                            let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
-                            let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
-
-                            if terminal.mouse_mode > 0 {
-                                let btn = if lines > 0 { 64 } else { 65 };
-                                for _ in 0..lines.abs() {
-                                    let seq = if terminal.mouse_sgr {
-                                        format!("\x1b[<32;{};{}M", col, row)
-                                    } else {
-                                        let cb = 32 + btn;
-                                        let cx = 32 + col;
-                                        let cy = 32 + row;
-                                        if cx <= 255 && cy <= 255 {
-                                            format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
-                                        } else {
-                                            String::new()
-                                        }
-                                    };
-                                    if !seq.is_empty() {
-                                        let _ = pty_master.write(seq.as_bytes());
-                                    }
-                                }
-                            } else if terminal.is_alt_screen {
-                                let key_seq = if lines > 0 {
-                                    if terminal.cursor_keys_mode { b"\x1bOA" } else { b"\x1b[A" }
-                                } else {
-                                    if terminal.cursor_keys_mode { b"\x1bOB" } else { b"\x1b[B" }
-                                };
-                                for _ in 0..lines.abs() {
-                                    let _ = pty_master.write(key_seq);
-                                }
-                            } else {
-                                let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
-                                let history_len = active_grid.scrollback.lines.len();
-                                if lines > 0 {
-                                    active_grid.scroll_offset = (active_grid.scroll_offset + lines as usize).min(history_len);
-                                } else if lines < 0 {
-                                    active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(lines.unsigned_abs() as usize);
-                                }
-                                self.needs_redraw = true;
-                            }
-                        }
+                self.handle_mouse_wheel(delta);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if button == winit::event::MouseButton::Left {
-                    if state.is_pressed() {
-                        self.is_mouse_down = true;
-                        if let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
-                            let px = self.padding_x as f64;
-                            let py = self.padding_y as f64;
-                            let cw = renderer.font_loader.cell_width as f64;
-                            let ch = renderer.font_loader.cell_height as f64;
-                            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
-
-                            let mouse_mode = terminal.mouse_mode;
-                            let mouse_sgr = terminal.mouse_sgr;
-                            let active_grid = terminal.active_grid_mut();
-                            let grid_width = active_grid.width;
-                            let grid_height = active_grid.height;
-
-                            if col_idx < grid_width && row_idx < grid_height {
-                                let now = std::time::Instant::now();
-                                let is_double_click = if let Some(last_time) = self.last_click_instant {
-                                    self.last_click_pos == (col_idx, row_idx) && last_time.elapsed().as_millis() < 400
-                                } else {
-                                    false
-                                };
-
-                                if is_double_click {
-                                    self.click_count = (self.click_count % 3) + 1;
-                                } else {
-                                    self.click_count = 1;
-                                }
-                                self.last_click_instant = Some(now);
-                                self.last_click_pos = (col_idx, row_idx);
-
-                                if mouse_mode > 0 && !self.modifiers.shift_key() {
-                                    if let Some(pty_master) = &self.pty_master {
-                                        let seq = if mouse_sgr {
-                                            format!("\x1b[<0;{};{}M", col_idx + 1, row_idx + 1)
-                                        } else {
-                                            let cb = 32;
-                                            let cx = 32 + col_idx + 1;
-                                            let cy = 32 + row_idx + 1;
-                                            if cx <= 255 && cy <= 255 {
-                                                format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
-                                            } else {
-                                                String::new()
-                                            }
-                                        };
-                                        if !seq.is_empty() {
-                                            let _ = pty_master.write(seq.as_bytes());
-                                        }
-                                    }
-                                } else {
-                                    let mut url_opened = false;
-                                    let line_text: String = (0..grid_width)
-                                        .map(|x| active_grid.cells[row_idx * grid_width + x].character)
-                                        .collect();
-                                    let urls = crate::hyperlink::detector::detect(&line_text);
-                                    for (start, end, url) in urls {
-                                        if col_idx >= start && col_idx < end {
-                                            let _ = crate::hyperlink::detector::open(&url);
-                                            url_opened = true;
-                                            break;
-                                        }
-                                    }
-
-                                    if !url_opened {
-                                        match self.click_count {
-                                            1 => {
-                                                if self.modifiers.shift_key() && active_grid.selection.active {
-                                                    active_grid.selection.update_selection(col_idx, row_idx);
-                                                } else {
-                                                    active_grid.selection.start_selection(col_idx, row_idx);
-                                                }
-                                            }
-                                            2 => {
-                                                active_grid.selection.select_word(grid_width, grid_height, &active_grid.cells, col_idx, row_idx);
-                                                let text = active_grid.selection.extract_text(grid_width, grid_height, &active_grid.cells);
-                                                if !text.is_empty() {
-                                                    crate::clipboard::clipboard::copy(&text);
-                                                }
-                                            }
-                                            3 => {
-                                                active_grid.selection.select_line(grid_width, grid_height, row_idx);
-                                                let text = active_grid.selection.extract_text(grid_width, grid_height, &active_grid.cells);
-                                                if !text.is_empty() {
-                                                    crate::clipboard::clipboard::copy(&text);
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-
-                                        if self.click_count == 1 && row_idx == active_grid.cursor.y {
-                                            let cursor_x = active_grid.cursor.x;
-                                            if let Some(pty_master) = &self.pty_master {
-                                                if col_idx < cursor_x {
-                                                    let diff = cursor_x - col_idx;
-                                                    let seq = b"\x1b[D".repeat(diff);
-                                                    let _ = pty_master.write(&seq);
-                                                } else if col_idx > cursor_x {
-                                                    let diff = col_idx - cursor_x;
-                                                    let seq = b"\x1b[C".repeat(diff);
-                                                    let _ = pty_master.write(&seq);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    self.needs_redraw = true;
-                                }
-                            }
-                        }
-                    } else {
-                        self.is_mouse_down = false;
-                        if let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
-                            let px = self.padding_x as f64;
-                            let py = self.padding_y as f64;
-                            let cw = renderer.font_loader.cell_width as f64;
-                            let ch = renderer.font_loader.cell_height as f64;
-                            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
-
-                            let mouse_mode = terminal.mouse_mode;
-                            let mouse_sgr = terminal.mouse_sgr;
-                            if mouse_mode > 0 && !self.modifiers.shift_key() {
-                                if let Some(pty_master) = &self.pty_master {
-                                    let seq = if mouse_sgr {
-                                        format!("\x1b[<0;{};{}m", col_idx + 1, row_idx + 1)
-                                    } else {
-                                        let cb = 32 + 3;
-                                        let cx = 32 + col_idx + 1;
-                                        let cy = 32 + row_idx + 1;
-                                        if cx <= 255 && cy <= 255 {
-                                            format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
-                                        } else {
-                                            String::new()
-                                        }
-                                    };
-                                    if !seq.is_empty() {
-                                        let _ = pty_master.write(seq.as_bytes());
-                                    }
-                                }
-                            } else {
-                                let active_grid = terminal.active_grid_mut();
-                                if active_grid.selection.active {
-                                    let text = active_grid.selection.extract_text(active_grid.width, active_grid.height, &active_grid.cells);
-                                    if !text.is_empty() && (active_grid.selection.start_x != active_grid.selection.end_x || active_grid.selection.start_y != active_grid.selection.end_y) {
-                                        crate::clipboard::clipboard::copy(&text);
-                                    } else if active_grid.selection.start_x == active_grid.selection.end_x && active_grid.selection.start_y == active_grid.selection.end_y {
-                                        active_grid.selection.clear();
-                                        self.needs_redraw = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                self.handle_mouse_input(state, button);
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(renderer), Some(terminal), Some(gl_surface), Some(gl_context)) = 

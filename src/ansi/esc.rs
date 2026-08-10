@@ -23,6 +23,20 @@ pub fn handle_escape(byte: u8, terminal: &mut Terminal) {
             terminal.alt_grid.cursor.x = 0;
             terminal.alt_grid.cursor.y = 0;
         }
+        b'D' => { // Index (IND)
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().scroll_or_move_down(bg);
+        }
+        b'M' => { // Reverse Index (RI)
+            let bg = terminal.current_bg;
+            terminal.active_grid_mut().scroll_or_move_up(bg);
+        }
+        b'E' => { // Next Line (NEL)
+            let bg = terminal.current_bg;
+            let grid = terminal.active_grid_mut();
+            grid.cursor.x = 0;
+            grid.scroll_or_move_down(bg);
+        }
         _ => {}
     }
 }
