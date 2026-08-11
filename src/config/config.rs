@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::screen::cell::Color;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {

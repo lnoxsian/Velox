@@ -1,5 +1,5 @@
+use crate::screen::cell::{Cell, CellFlags, Color};
 use crate::screen::grid::Grid;
-use crate::screen::cell::{Cell, Color, CellFlags};
 
 impl Grid {
     pub fn scroll_or_move_down(&mut self, bg: Color) {
@@ -60,7 +60,8 @@ impl Grid {
 
             if top + u_delta < self.row_wrapped.len() {
                 let last_valid = bottom.min(self.row_wrapped.len() - 1);
-                self.row_wrapped.copy_within((top + u_delta)..=last_valid, top);
+                self.row_wrapped
+                    .copy_within((top + u_delta)..=last_valid, top);
             }
         }
 
@@ -107,7 +108,8 @@ impl Grid {
 
             if top < self.row_wrapped.len() {
                 let last_valid = (bottom - u_delta).min(self.row_wrapped.len() - 1);
-                self.row_wrapped.copy_within(top..=last_valid, top + u_delta);
+                self.row_wrapped
+                    .copy_within(top..=last_valid, top + u_delta);
             }
         }
 
@@ -135,8 +137,16 @@ impl Grid {
     }
 
     pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
-        let top_idx = if top == 0 { 0 } else { (top - 1).min(self.height - 1) };
-        let bottom_idx = if bottom == 0 { self.height - 1 } else { (bottom - 1).min(self.height - 1) };
+        let top_idx = if top == 0 {
+            0
+        } else {
+            (top - 1).min(self.height - 1)
+        };
+        let bottom_idx = if bottom == 0 {
+            self.height - 1
+        } else {
+            (bottom - 1).min(self.height - 1)
+        };
 
         if top_idx < bottom_idx {
             self.scroll_region_top = top_idx;
@@ -162,7 +172,8 @@ impl Grid {
 
                 if top < self.row_wrapped.len() {
                     let last_valid = (bottom - u_delta).min(self.row_wrapped.len() - 1);
-                    self.row_wrapped.copy_within(top..=last_valid, top + u_delta);
+                    self.row_wrapped
+                        .copy_within(top..=last_valid, top + u_delta);
                 }
             }
             let default_cell = Cell {
@@ -202,7 +213,8 @@ impl Grid {
 
                 if top + u_delta < self.row_wrapped.len() {
                     let last_valid = bottom.min(self.row_wrapped.len() - 1);
-                    self.row_wrapped.copy_within((top + u_delta)..=last_valid, top);
+                    self.row_wrapped
+                        .copy_within((top + u_delta)..=last_valid, top);
                 }
             }
             let default_cell = Cell {

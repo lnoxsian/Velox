@@ -17,9 +17,7 @@ impl PtyMaster {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let res = unsafe {
-            libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-        };
+        let res = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if res < 0 {
             Err(std::io::Error::last_os_error())
         } else {
@@ -28,9 +26,7 @@ impl PtyMaster {
     }
 
     pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
-        let res = unsafe {
-            libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len())
-        };
+        let res = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if res < 0 {
             Err(std::io::Error::last_os_error())
         } else {
@@ -45,9 +41,7 @@ impl PtyMaster {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let res = unsafe {
-            libc::ioctl(self.fd, libc::TIOCSWINSZ, &ws)
-        };
+        let res = unsafe { libc::ioctl(self.fd, libc::TIOCSWINSZ, &ws) };
         if res < 0 {
             Err(std::io::Error::last_os_error())
         } else {

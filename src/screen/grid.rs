@@ -1,17 +1,16 @@
-use crate::screen::cell::{Cell, Color, CellFlags};
+use crate::screen::cell::{Cell, CellFlags, Color};
 use crate::screen::cursor::Cursor;
 use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
 use crate::screen::selection::Selection;
-use unicode_width::UnicodeWidthChar;
 use std::sync::{Mutex, OnceLock};
+use unicode_width::UnicodeWidthChar;
 
 static COMBINING_REGISTRY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 pub fn get_combining_registry() -> &'static Mutex<Vec<String>> {
     COMBINING_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
 }
-
 
 pub struct Grid {
     pub width: usize,
@@ -37,7 +36,14 @@ pub struct Grid {
 }
 
 impl Grid {
-    pub fn new(width: usize, height: usize, fg: Color, bg: Color, scrollback_limit: usize, infinite_scrollback: bool) -> Self {
+    pub fn new(
+        width: usize,
+        height: usize,
+        fg: Color,
+        bg: Color,
+        scrollback_limit: usize,
+        infinite_scrollback: bool,
+    ) -> Self {
         let default_cell = Cell {
             character: ' ',
             foreground: fg,
@@ -85,7 +91,7 @@ impl Grid {
             self.cursor.y = 0;
         }
         if self.width > 0 {
-            self.cursor.x = self.cursor.x.min(self.width - 1);
+            self.cursor.x = self.cursor.x.min(self.width);
         } else {
             self.cursor.x = 0;
         }
@@ -100,19 +106,22 @@ impl Grid {
         if is_combining && self.cursor.x > 0 {
             let mut target_x = self.cursor.x - 1;
             let mut idx = self.cursor.y * self.width + target_x;
-            if idx < self.cells.len() && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION)
-                && target_x > 0 {
-                    target_x -= 1;
-                    idx = self.cursor.y * self.width + target_x;
-                }
+            if idx < self.cells.len()
+                && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION)
+                && target_x > 0
+            {
+                target_x -= 1;
+                idx = self.cursor.y * self.width + target_x;
+            }
             if idx < self.cells.len() {
                 let base_char = self.cells[idx].character;
                 if ('\u{100000}'..='\u{10ffff}').contains(&base_char) {
                     let reg_idx = (base_char as u32 - 0x100000) as usize;
                     if let Ok(mut registry) = get_combining_registry().lock()
-                        && reg_idx < registry.len() {
-                            registry[reg_idx].push(c);
-                        }
+                        && reg_idx < registry.len()
+                    {
+                        registry[reg_idx].push(c);
+                    }
                 } else {
                     let mut seq = String::new();
                     seq.push(base_char);
@@ -264,7 +273,6 @@ impl Grid {
         self.damage.mark_dirty(cursor_y);
     }
 
-
     pub fn erase_line(&mut self, mode: u8, fg: Color, bg: Color) {
         self.clamp_cursor();
         if self.height == 0 || self.width == 0 {
@@ -279,7 +287,8 @@ impl Grid {
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         let row_start = self.cursor.y * self.width;
         match mode {
-            0 => { // Cursor to end of line
+            0 => {
+                // Cursor to end of line
                 let start_idx = row_start + cur_x;
                 let end_idx = (row_start + self.width).min(self.cells.len());
                 if start_idx < end_idx {
@@ -288,7 +297,8 @@ impl Grid {
                     }
                 }
             }
-            1 => { // Start of line to cursor
+            1 => {
+                // Start of line to cursor
                 let start_idx = row_start;
                 let end_idx = (row_start + cur_x + 1).min(self.cells.len());
                 if start_idx < end_idx {
@@ -297,7 +307,8 @@ impl Grid {
                     }
                 }
             }
-            2 => { // Entire line
+            2 => {
+                // Entire line
                 let start_idx = row_start;
                 let end_idx = (row_start + self.width).min(self.cells.len());
                 if start_idx < end_idx {
@@ -325,7 +336,8 @@ impl Grid {
         let cur_y = self.cursor.y.min(self.height.saturating_sub(1));
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         match mode {
-            0 => { // Cursor to end of display
+            0 => {
+                // Cursor to end of display
                 let start = (cur_y * self.width + cur_x).min(self.cells.len());
                 for cell in &mut self.cells[start..] {
                     *cell = default_cell;
@@ -337,7 +349,8 @@ impl Grid {
                     }
                 }
             }
-            1 => { // Start of display to cursor
+            1 => {
+                // Start of display to cursor
                 let len = self.cells.len();
                 if len > 0 {
                     let end = (cur_y * self.width + cur_x).min(len - 1);
@@ -352,7 +365,8 @@ impl Grid {
                     }
                 }
             }
-            2 | 3 => { // Entire screen + scrollback buffer
+            2 | 3 => {
+                // Entire screen + scrollback buffer
                 for cell in &mut self.cells {
                     *cell = default_cell;
                 }
@@ -368,7 +382,6 @@ impl Grid {
             _ => {}
         }
     }
-
 }
 
 #[cfg(test)]
@@ -377,10 +390,57 @@ mod tests {
 
     #[test]
     fn test_grid_combining() {
-        let mut grid = Grid::new(80, 24, Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, 1000, false);
-        grid.put_char('a', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
-        grid.put_char('\u{0301}', Color { r:0, g:0, b:0, a:255 }, Color { r:0, g:0, b:0, a:255 }, CellFlags::empty());
-        
+        let mut grid = Grid::new(
+            80,
+            24,
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            1000,
+            false,
+        );
+        grid.put_char(
+            'a',
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            CellFlags::empty(),
+        );
+        grid.put_char(
+            '\u{0301}',
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            CellFlags::empty(),
+        );
+
         let cell_char = grid.cells[0].character;
         println!("Cell character: {:?}", cell_char);
         assert!(cell_char >= '\u{100000}');
@@ -388,8 +448,18 @@ mod tests {
 
     #[test]
     fn test_grid_reflow_narrow_and_expand() {
-        let fg = Color { r: 255, g: 255, b: 255, a: 255 };
-        let bg = Color { r: 0, g: 0, b: 0, a: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
         let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
         // Write a 70-character line (fits on 80 cols without wrapping)
@@ -414,13 +484,26 @@ mod tests {
         grid.resize(80, 10);
         assert!(!grid.row_wrapped[0]);
         let restored_str: String = (0..70).map(|x| grid.cells[x].character).collect();
-        assert_eq!(restored_str, "0123456789012345678901234567890123456789012345678901234567890123456789");
+        assert_eq!(
+            restored_str,
+            "0123456789012345678901234567890123456789012345678901234567890123456789"
+        );
     }
 
     #[test]
     fn test_grid_reflow_cursor_tracking() {
-        let fg = Color { r: 255, g: 255, b: 255, a: 255 };
-        let bg = Color { r: 0, g: 0, b: 0, a: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
         let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
         // Fill 50 characters, cursor will be at x=50, y=0
@@ -435,8 +518,18 @@ mod tests {
 
     #[test]
     fn test_grid_resize_shrink_erase_bounds_safety() {
-        let fg = Color { r: 255, g: 255, b: 255, a: 255 };
-        let bg = Color { r: 0, g: 0, b: 0, a: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
         let mut grid = Grid::new(98, 58, fg, bg, 1000, false);
         grid.cursor.y = 57;
         grid.cursor.x = 50;
@@ -455,8 +548,18 @@ mod tests {
 
     #[test]
     fn test_grid_resize_after_clear_keeps_cleared_screen() {
-        let fg = Color { r: 255, g: 255, b: 255, a: 255 };
-        let bg = Color { r: 0, g: 0, b: 0, a: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
         let mut grid = Grid::new(80, 5, fg, bg, 1000, false);
 
         // Fill history so scrollback has lines
@@ -486,5 +589,46 @@ mod tests {
         assert_eq!(grid.cells[0].character, ' ');
         assert_eq!(grid.cursor.y, 0);
     }
-}
+    #[test]
+    fn test_reflow_empty_lines() {
+        use crate::screen::cell::Color;
+        let default_color = Color { r: 0, g: 0, b: 0, a: 255 };
+        let mut grid = Grid::new(100, 24, default_color, default_color, 1000, false);
+        
+        // row 0: text
+        grid.cells[0].character = 'a';
+        
+        // row 1: hard-broken empty line (like \n)
+        grid.row_wrapped[1] = false;
+        
+        // row 2: text
+        grid.cells[200].character = 'b';
+        
+        // row 3: wrapped empty line (like spaces to edge)
+        grid.row_wrapped[3] = true;
+        
+        // row 4: prompt
+        grid.cells[400].character = '>';
+        
+        grid.cursor.x = 1;
+        grid.cursor.y = 4;
 
+        for width in [50, 40, 100, 20].iter() {
+            grid.resize(*width, 24);
+            
+            let mut prompt_y = 0;
+            let mut b_y = 0;
+            for y in 0..grid.height {
+                let row_start = y as usize * grid.width;
+                if grid.cells[row_start..row_start + grid.width].iter().any(|c| c.character == 'b') {
+                    b_y = y;
+                }
+                if grid.cells[row_start..row_start + grid.width].iter().any(|c| c.character == '>') {
+                    prompt_y = y;
+                }
+            }
+            assert_eq!(b_y, 2);
+            assert_eq!(prompt_y, 3);
+        }
+    }
+}

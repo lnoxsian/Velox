@@ -1,11 +1,11 @@
 use crate::screen::cell::Cell;
-use std::collections::VecDeque;
-use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Write, Read};
-use std::cell::RefCell;
-use tempfile::tempfile;
 use bincode;
+use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use tempfile::tempfile;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Row {
@@ -40,7 +40,11 @@ impl Scrollback {
             max_lines,
             lines: VecDeque::new(),
             infinite,
-            disk_store: if infinite { tempfile().ok().map(RefCell::new) } else { None },
+            disk_store: if infinite {
+                tempfile().ok().map(RefCell::new)
+            } else {
+                None
+            },
             disk_index: Vec::new(),
         }
     }

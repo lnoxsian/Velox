@@ -1,5 +1,5 @@
-use crate::terminal::terminal::Terminal;
 use crate::screen::cell::Color;
+use crate::terminal::terminal::Terminal;
 
 pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
     if params.is_empty() {
@@ -15,9 +15,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
         // OSC 0 / OSC 2: Set window title
         "0" | "2" => {
             if params.len() >= 2
-                && let Ok(title) = std::str::from_utf8(params[1]) {
-                    terminal.app_title = Some(title.to_string());
-                }
+                && let Ok(title) = std::str::from_utf8(params[1])
+            {
+                terminal.app_title = Some(title.to_string());
+            }
         }
 
         // OSC 4: Query or set ANSI palette colors
@@ -41,9 +42,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                         );
                         terminal.send_to_shell(resp.as_bytes());
                     } else if let Some(c) = parse_color_spec(color_str)
-                        && idx < 16 {
-                            terminal.theme.ansi_colors[idx] = c;
-                        }
+                        && idx < 16
+                    {
+                        terminal.theme.ansi_colors[idx] = c;
+                    }
                 }
                 i += 2;
             }
@@ -92,7 +94,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
             if params.len() >= 2 {
                 let color_str = std::str::from_utf8(params[1]).unwrap_or("").trim();
                 if color_str == "?" {
-                    let c = terminal.theme.cursor_color.unwrap_or(terminal.theme.default_fg);
+                    let c = terminal
+                        .theme
+                        .cursor_color
+                        .unwrap_or(terminal.theme.default_fg);
                     let resp = format!(
                         "\x1b]12;rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}\x07",
                         c.r, c.r, c.g, c.g, c.b, c.b
@@ -112,9 +117,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                 for param in &params[1..] {
                     if let Ok(idx_str) = std::str::from_utf8(param)
                         && let Ok(idx) = idx_str.trim().parse::<usize>()
-                        && idx < 16 {
-                            terminal.theme.ansi_colors[idx] = terminal.theme.initial_ansi_colors[idx];
-                        }
+                        && idx < 16
+                    {
+                        terminal.theme.ansi_colors[idx] = terminal.theme.initial_ansi_colors[idx];
+                    }
                 }
             }
         }
@@ -142,37 +148,34 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
 
         // OSC 52: Clipboard read / write
         // Format: OSC 52 ; target ; data
-        "52"
-            if params.len() >= 2 => {
-                let (target_str, data_bytes) = if params.len() >= 3 {
-                    (
-                        std::str::from_utf8(params[1]).unwrap_or("c"),
-                        params[2],
-                    )
+        "52" if params.len() >= 2 => {
+            let (target_str, data_bytes) = if params.len() >= 3 {
+                (std::str::from_utf8(params[1]).unwrap_or("c"), params[2])
+            } else {
+                ("c", params[1])
+            };
+
+            let data_str = std::str::from_utf8(data_bytes).unwrap_or("").trim();
+
+            if data_str == "?" {
+                // Clipboard query request from shell/app
+                let text = if target_str.contains('p') {
+                    crate::clipboard::clipboard::primary_selection()
                 } else {
-                    ("c", params[1])
+                    crate::clipboard::clipboard::paste()
                 };
-
-                let data_str = std::str::from_utf8(data_bytes).unwrap_or("").trim();
-
-                if data_str == "?" {
-                    // Clipboard query request from shell/app
-                    let text = if target_str.contains('p') {
-                        crate::clipboard::clipboard::primary_selection()
-                    } else {
-                        crate::clipboard::clipboard::paste()
-                    };
-                    let b64 = crate::clipboard::clipboard::base64_encode(text.as_bytes());
-                    let resp = format!("\x1b]52;{};{}\x07", target_str, b64);
-                    terminal.send_to_shell(resp.as_bytes());
-                } else {
-                    // Write decoded data to system clipboard
-                    if let Some(decoded) = crate::clipboard::clipboard::base64_decode(data_str)
-                        && let Ok(text) = String::from_utf8(decoded) {
-                            crate::clipboard::clipboard::copy(&text);
-                        }
+                let b64 = crate::clipboard::clipboard::base64_encode(text.as_bytes());
+                let resp = format!("\x1b]52;{};{}\x07", target_str, b64);
+                terminal.send_to_shell(resp.as_bytes());
+            } else {
+                // Write decoded data to system clipboard
+                if let Some(decoded) = crate::clipboard::clipboard::base64_decode(data_str)
+                    && let Ok(text) = String::from_utf8(decoded)
+                {
+                    crate::clipboard::clipboard::copy(&text);
                 }
             }
+        }
 
         // OSC 7: Current Working Directory notification
         "7" => {
@@ -197,17 +200,30 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                 let sub_cmd = std::str::from_utf8(params[1]).unwrap_or("").trim();
                 match sub_cmd {
                     "A" => {
-                        terminal.mark_semantic_zone(crate::terminal::terminal::SemanticZone::Prompt, None);
+                        terminal.mark_semantic_zone(
+                            crate::terminal::terminal::SemanticZone::Prompt,
+                            None,
+                        );
                     }
                     "B" => {
-                        terminal.mark_semantic_zone(crate::terminal::terminal::SemanticZone::Input, None);
+                        terminal.mark_semantic_zone(
+                            crate::terminal::terminal::SemanticZone::Input,
+                            None,
+                        );
                     }
                     "C" => {
-                        terminal.mark_semantic_zone(crate::terminal::terminal::SemanticZone::Output, None);
+                        terminal.mark_semantic_zone(
+                            crate::terminal::terminal::SemanticZone::Output,
+                            None,
+                        );
                     }
                     "D" => {
                         let exit_code = if params.len() >= 3 {
-                            std::str::from_utf8(params[2]).unwrap_or("").trim().parse::<i32>().ok()
+                            std::str::from_utf8(params[2])
+                                .unwrap_or("")
+                                .trim()
+                                .parse::<i32>()
+                                .ok()
                         } else {
                             None
                         };

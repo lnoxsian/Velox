@@ -1,5 +1,5 @@
-use crate::screen::grid::Grid;
 use crate::screen::cell::{Cell, CellFlags};
+use crate::screen::grid::Grid;
 
 impl Grid {
     pub fn resize(&mut self, cols: u32, rows: u32) {
@@ -49,7 +49,9 @@ impl Grid {
             let end = start + old_w;
             if end <= self.cells.len() {
                 let row_cells = &self.cells[start..end];
-                if row_cells.iter().any(|c| c.character != ' ' || !c.flags.is_empty() || c.background != self.default_bg) {
+                if row_cells.iter().any(|c| {
+                    c.character != ' ' || !c.flags.is_empty() || c.background != self.default_bg
+                }) {
                     last_used_y = last_used_y.max(y);
                     break;
                 }
@@ -82,6 +84,8 @@ impl Grid {
 
         let mut current_cells: Vec<Cell> = Vec::new();
 
+        let mut consecutive_empty_count = 0;
+
         for (row_idx, row) in combined_rows.iter().enumerate() {
             if active_screen_start_log_idx.is_none() && row_idx == scrollback_count {
                 active_screen_start_log_idx = Some(logical_lines.len());
@@ -89,22 +93,23 @@ impl Grid {
 
             let start_len = current_cells.len();
 
-            if row.wrapped {
-                current_cells.extend_from_slice(&row.cells);
-            } else {
-                let mut last_non_default = 0;
-                for (i, cell) in row.cells.iter().enumerate() {
-                    if cell.character != ' ' || !cell.flags.is_empty() || cell.background != self.default_bg {
-                        last_non_default = i + 1;
-                    }
+            let mut last_non_default = 0;
+            for (i, cell) in row.cells.iter().enumerate() {
+                if cell.character != ' '
+                    || !cell.flags.is_empty()
+                    || cell.background != self.default_bg
+                {
+                    last_non_default = i + 1;
                 }
-                let keep_len = if row_idx == old_cursor_row_idx {
-                    last_non_default.max(old_cursor_col + 1)
-                } else {
-                    last_non_default
-                };
-                current_cells.extend_from_slice(&row.cells[..keep_len.min(row.cells.len())]);
             }
+            let keep_len = if row_idx == old_cursor_row_idx {
+                last_non_default.max(old_cursor_col + 1)
+            } else if row.wrapped {
+                row.cells.len()
+            } else {
+                last_non_default
+            };
+            current_cells.extend_from_slice(&row.cells[..keep_len.min(row.cells.len())]);
 
             if !cursor_found && row_idx == old_cursor_row_idx {
                 cursor_logical_line_idx = logical_lines.len();
@@ -113,10 +118,23 @@ impl Grid {
             }
 
             if !row.wrapped {
-                logical_lines.push(LogicalLine {
-                    cells: std::mem::take(&mut current_cells),
-                    hard_break: true,
-                });
+                let is_empty = current_cells.is_empty();
+                let is_cursor_row = row_idx == old_cursor_row_idx;
+
+                if is_empty && !is_cursor_row && row_idx >= scrollback_count {
+                    consecutive_empty_count += 1;
+                } else {
+                    consecutive_empty_count = 0;
+                }
+
+                if consecutive_empty_count <= 1 {
+                    logical_lines.push(LogicalLine {
+                        cells: std::mem::take(&mut current_cells),
+                        hard_break: true,
+                    });
+                } else {
+                    current_cells.clear();
+                }
             }
         }
 
@@ -176,13 +194,17 @@ impl Grid {
                 continue;
             }
 
+            let start_reflowed_count = reflowed_rows.len();
             let mut chunk: Vec<Cell> = Vec::with_capacity(new_w);
             let mut i = 0;
 
             while i < cells.len() {
                 let cell = cells[i];
 
-                if !new_cursor_found && log_idx == cursor_logical_line_idx && i == cursor_logical_cell_idx {
+                if !new_cursor_found
+                    && log_idx == cursor_logical_line_idx
+                    && i == cursor_logical_cell_idx
+                {
                     new_cursor_row_idx = reflowed_rows.len();
                     new_cursor_col = chunk.len();
                     new_cursor_found = true;
@@ -194,16 +216,24 @@ impl Grid {
                     if chunk.len() < new_w {
                         chunk.push(default_cell);
                     }
-                    reflowed_rows.push(ReflowedRow {
-                        cells: pad_row(chunk, new_w, default_cell),
-                        wrapped: true,
+                    let is_all_spaces = chunk.iter().all(|c| {
+                        c.character == ' ' && c.flags.is_empty() && c.background == self.default_bg
                     });
+                    if !is_all_spaces {
+                        reflowed_rows.push(ReflowedRow {
+                            cells: pad_row(chunk, new_w, default_cell),
+                            wrapped: true,
+                        });
+                    }
                     chunk = Vec::with_capacity(new_w);
                     continue;
                 }
 
                 chunk.push(cell);
-                if is_wide && i + 1 < cells.len() && cells[i + 1].flags.contains(CellFlags::WIDE_CONTINUATION) {
+                if is_wide
+                    && i + 1 < cells.len()
+                    && cells[i + 1].flags.contains(CellFlags::WIDE_CONTINUATION)
+                {
                     i += 1;
                     chunk.push(cells[i]);
                 }
@@ -213,10 +243,15 @@ impl Grid {
                 if chunk.len() >= new_w {
                     let is_last = i >= cells.len();
                     let wrapped = if is_last { !log_line.hard_break } else { true };
-                    reflowed_rows.push(ReflowedRow {
-                        cells: chunk,
-                        wrapped,
+                    let is_all_spaces = chunk.iter().all(|c| {
+                        c.character == ' ' && c.flags.is_empty() && c.background == self.default_bg
                     });
+                    if !is_all_spaces {
+                        reflowed_rows.push(ReflowedRow {
+                            cells: chunk,
+                            wrapped,
+                        });
+                    }
                     chunk = Vec::with_capacity(new_w);
                 }
             }
@@ -232,8 +267,18 @@ impl Grid {
             }
 
             if !chunk.is_empty() {
+                let is_all_spaces = chunk.iter().all(|c| {
+                    c.character == ' ' && c.flags.is_empty() && c.background == self.default_bg
+                });
+                if !is_all_spaces || reflowed_rows.len() == start_reflowed_count {
+                    reflowed_rows.push(ReflowedRow {
+                        cells: pad_row(chunk, new_w, default_cell),
+                        wrapped: !log_line.hard_break,
+                    });
+                }
+            } else if reflowed_rows.len() == start_reflowed_count {
                 reflowed_rows.push(ReflowedRow {
-                    cells: pad_row(chunk, new_w, default_cell),
+                    cells: vec![default_cell; new_w],
                     wrapped: !log_line.hard_break,
                 });
             }
@@ -257,7 +302,6 @@ impl Grid {
                 .min(total_rows - 1)
                 .max(new_cursor_row_idx.saturating_sub(new_h - 1))
         };
-
 
         self.scrollback.clear();
         for row in &reflowed_rows[..grid_start] {

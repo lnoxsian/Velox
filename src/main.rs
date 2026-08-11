@@ -11,19 +11,20 @@ mod screen;
 mod terminal;
 mod theme;
 
-use winit::event_loop::EventLoop;
 use crate::app::app::{App, CustomEvent};
+use winit::event_loop::EventLoop;
 
 fn main() {
     env_logger::init();
 
     // Load config to check settings at startup
-    let config = crate::config::loader::load().unwrap_or_else(|_| {
-        crate::config::defaults::default_config()
-    });
+    let config =
+        crate::config::loader::load().unwrap_or_else(|_| crate::config::defaults::default_config());
 
     if !config.gpu_acceleration.unwrap_or(true) {
-        log::info!("GPU acceleration disabled. Setting LIBGL_ALWAYS_SOFTWARE=1 and GALLIUM_DRIVER=llvmpipe.");
+        log::info!(
+            "GPU acceleration disabled. Setting LIBGL_ALWAYS_SOFTWARE=1 and GALLIUM_DRIVER=llvmpipe."
+        );
         unsafe {
             std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
             std::env::set_var("GALLIUM_DRIVER", "llvmpipe");

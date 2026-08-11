@@ -1,9 +1,9 @@
+use crate::font::fallback::FallbackManager;
+use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
+use glow::HasContext;
+use owned_ttf_parser::AsFaceRef;
 use std::collections::HashMap;
 use std::sync::Arc;
-use glow::HasContext;
-use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
-use owned_ttf_parser::AsFaceRef;
-use crate::font::fallback::FallbackManager;
 
 #[derive(Clone, Copy)]
 pub struct GlyphUv {
@@ -44,28 +44,30 @@ pub struct FontLoader {
 
 fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontArc> {
     if let Some(id) = db.query(query)
-        && let Some(face) = db.face(id) {
-            match &face.source {
-                fontdb::Source::File(path) => {
-                    if let Ok(data) = std::fs::read(path)
-                        && let Ok(font) = FontArc::try_from_vec(data) {
-                            return Some(font);
-                        }
+        && let Some(face) = db.face(id)
+    {
+        match &face.source {
+            fontdb::Source::File(path) => {
+                if let Ok(data) = std::fs::read(path)
+                    && let Ok(font) = FontArc::try_from_vec(data)
+                {
+                    return Some(font);
                 }
-                fontdb::Source::Binary(data) => {
-                    let bytes = data.as_ref().as_ref();
-                    if let Ok(font) = FontArc::try_from_vec(bytes.to_vec()) {
-                        return Some(font);
-                    }
+            }
+            fontdb::Source::Binary(data) => {
+                let bytes = data.as_ref().as_ref();
+                if let Ok(font) = FontArc::try_from_vec(bytes.to_vec()) {
+                    return Some(font);
                 }
-                fontdb::Source::SharedFile(_, data) => {
-                    let bytes = data.as_ref().as_ref();
-                    if let Ok(font) = FontArc::try_from_vec(bytes.to_vec()) {
-                        return Some(font);
-                    }
+            }
+            fontdb::Source::SharedFile(_, data) => {
+                let bytes = data.as_ref().as_ref();
+                if let Ok(font) = FontArc::try_from_vec(bytes.to_vec()) {
+                    return Some(font);
                 }
             }
         }
+    }
 
     if query.style == fontdb::Style::Italic {
         let mut oblique_query = *query;
@@ -100,10 +102,15 @@ pub fn is_box_drawing_or_pipe(c: char) -> bool {
 }
 
 impl FontLoader {
-    pub fn new(gl: Arc<glow::Context>, font_family: &str, font_size: f32, font_scale_multiplier: f32) -> Self {
+    pub fn new(
+        gl: Arc<glow::Context>,
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+    ) -> Self {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
-        
+
         let query = fontdb::Query {
             families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
             weight: fontdb::Weight::NORMAL,
@@ -159,8 +166,11 @@ impl FontLoader {
         let scale = PxScale::from(px_size);
         let scaled_font = font.as_scaled(scale);
         let cell_width = scaled_font.h_advance(font.glyph_id('A')).ceil().max(1.0) as u32;
-        let cell_height = (scaled_font.ascent() - scaled_font.descent() + scaled_font.line_gap().max(0.0)).ceil().max(1.0) as u32;
-        
+        let cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
         let atlas_width = 1024;
         let atlas_height = 1024;
 
@@ -179,9 +189,17 @@ impl FontLoader {
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(None),
             );
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-            
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::NEAREST as i32,
+            );
+
             let white_pixels = [255u8; 2 * 2 * 4];
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
@@ -218,7 +236,10 @@ impl FontLoader {
     }
 
     pub fn white_pixel_uv(&self) -> (f32, f32) {
-        (1.0 / self.atlas_width as f32, 1.0 / self.atlas_height as f32)
+        (
+            1.0 / self.atlas_width as f32,
+            1.0 / self.atlas_height as f32,
+        )
     }
 
     pub fn update_font_size(&mut self, font_size: f32) {
@@ -226,8 +247,14 @@ impl FontLoader {
         let px_size = font_size * self.font_scale_multiplier;
         let scale = PxScale::from(px_size);
         let scaled_font = self.font.as_scaled(scale);
-        self.cell_width = scaled_font.h_advance(self.font.glyph_id('A')).ceil().max(1.0) as u32;
-        self.cell_height = (scaled_font.ascent() - scaled_font.descent() + scaled_font.line_gap().max(0.0)).ceil().max(1.0) as u32;
+        self.cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        self.cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
 
         self.cache.clear();
         self.next_x = 4;
@@ -235,7 +262,8 @@ impl FontLoader {
 
         unsafe {
             let white_square = [255u8; 2 * 2 * 4];
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
+            self.gl
+                .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
             self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.tex_image_2d(
                 glow::TEXTURE_2D,
@@ -262,12 +290,23 @@ impl FontLoader {
         }
     }
 
-    pub fn get_glyph_uv(&mut self, c: char, is_wide: bool, is_bold: bool, is_italic: bool) -> GlyphUv {
-        let key = CacheKey { c, is_wide, is_bold, is_italic };
+    pub fn get_glyph_uv(
+        &mut self,
+        c: char,
+        is_wide: bool,
+        is_bold: bool,
+        is_italic: bool,
+    ) -> GlyphUv {
+        let key = CacheKey {
+            c,
+            is_wide,
+            is_bold,
+            is_italic,
+        };
         if let Some(uv) = self.cache.get(&key) {
             return *uv;
         }
-        
+
         let seq = if ('\u{100000}'..='\u{10ffff}').contains(&c) {
             let reg_idx = (c as u32 - 0x100000) as usize;
             if let Ok(registry) = crate::screen::grid::get_combining_registry().lock() {
@@ -285,7 +324,12 @@ impl FontLoader {
         let base_c = seq.chars().next().unwrap_or(c);
 
         let active_font = match (is_bold, is_italic) {
-            (true, true) => self.font_bold_italic.as_ref().or(self.font_bold.as_ref()).or(self.font_italic.as_ref()).unwrap_or(&self.font),
+            (true, true) => self
+                .font_bold_italic
+                .as_ref()
+                .or(self.font_bold.as_ref())
+                .or(self.font_italic.as_ref())
+                .unwrap_or(&self.font),
             (true, false) => self.font_bold.as_ref().unwrap_or(&self.font),
             (false, true) => self.font_italic.as_ref().unwrap_or(&self.font),
             (false, false) => &self.font,
@@ -293,30 +337,39 @@ impl FontLoader {
         let mut color_pixels = None;
 
         if active_font.glyph_id(base_c).0 == 0
-            && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c) {
-                let fallback = &self.fallback_manager.fallbacks[idx];
-                let id = fallback.font.glyph_id(base_c);
-                if id.0 != 0
-                    && let Some(ref face) = fallback.owned_face {
-                        let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
-                        if let Some(img) = face.as_face_ref().glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
-                            && img.format == owned_ttf_parser::RasterImageFormat::PNG {
-                                let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
-                                decoder.set_transformations(png::Transformations::EXPAND);
-                                if let Ok(mut reader) = decoder.read_info() {
-                                    let mut buf = vec![0; reader.output_buffer_size()];
-                                    if let Ok(info) = reader.next_frame(&mut buf) {
-                                        let (output_color, _) = reader.output_color_type();
-                                        if output_color == png::ColorType::Rgba {
-                                            color_pixels = Some((buf, info.width, info.height));
-                                        }
-                                    }
-                                }
+            && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c)
+        {
+            let fallback = &self.fallback_manager.fallbacks[idx];
+            let id = fallback.font.glyph_id(base_c);
+            if id.0 != 0
+                && let Some(ref face) = fallback.owned_face
+            {
+                let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
+                if let Some(img) = face
+                    .as_face_ref()
+                    .glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
+                    && img.format == owned_ttf_parser::RasterImageFormat::PNG
+                {
+                    let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
+                    decoder.set_transformations(png::Transformations::EXPAND);
+                    if let Ok(mut reader) = decoder.read_info() {
+                        let mut buf = vec![0; reader.output_buffer_size()];
+                        if let Ok(info) = reader.next_frame(&mut buf) {
+                            let (output_color, _) = reader.output_color_type();
+                            if output_color == png::ColorType::Rgba {
+                                color_pixels = Some((buf, info.width, info.height));
                             }
+                        }
                     }
+                }
             }
+        }
 
-        let base_target_width = if is_wide { self.cell_width * 2 } else { self.cell_width };
+        let base_target_width = if is_wide {
+            self.cell_width * 2
+        } else {
+            self.cell_width
+        };
         let mut glyph_w = 0.0f32;
         let mut glyph_h = 0.0f32;
         let mut bounds_min_x = 0.0f32;
@@ -366,14 +419,15 @@ impl FontLoader {
             is_synthetic_italic = synth;
             let mut char_glyph_id = char_font.glyph_id(base_c);
             if char_glyph_id.0 == 0
-                && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c) {
-                    let fallback = &self.fallback_manager.fallbacks[idx];
-                    let id = fallback.font.glyph_id(base_c);
-                    if id.0 != 0 {
-                        char_font = &fallback.font;
-                        char_glyph_id = id;
-                    }
+                && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c)
+            {
+                let fallback = &self.fallback_manager.fallbacks[idx];
+                let id = fallback.font.glyph_id(base_c);
+                if id.0 != 0 {
+                    char_font = &fallback.font;
+                    char_glyph_id = id;
                 }
+            }
 
             if char_glyph_id.0 != 0 {
                 let font_scale = self.font_size * self.font_scale_multiplier;
@@ -486,7 +540,7 @@ impl FontLoader {
                         let src_idx = (sy * w + sx) as usize * 4;
                         let dst_idx = (dy * tw + dx) as usize * 4;
 
-                        rgba_pixels[dst_idx]     = rgba[src_idx];
+                        rgba_pixels[dst_idx] = rgba[src_idx];
                         rgba_pixels[dst_idx + 1] = rgba[src_idx + 1];
                         rgba_pixels[dst_idx + 2] = rgba[src_idx + 2];
                         rgba_pixels[dst_idx + 3] = rgba[src_idx + 3];
@@ -528,33 +582,43 @@ impl FontLoader {
                 };
 
                 if let Some(ref cf) = char_font_arc
-                    && let Some(outlined) = cf.outline_glyph(the_glyph) {
-                        outlined.draw(|gx, gy, alpha| {
-                            let slant_shift = if is_synthetic_italic {
-                                // Pivot the shear around the baseline.
-                                // Pixels above the baseline lean right; pixels below lean left.
-                                // cell_y is the pixel's position in the cell (0 = top).
-                                let cell_y = y_offset + gy as f32;
-                                (ascent - cell_y) * SHEAR_FACTOR
-                            } else {
-                                0.0
-                            };
-                            let px = (x_offset + gx as f32 + slant_shift).round() as i32;
-                            let py = (y_offset + gy as f32).round() as i32;
+                    && let Some(outlined) = cf.outline_glyph(the_glyph)
+                {
+                    outlined.draw(|gx, gy, alpha| {
+                        let slant_shift = if is_synthetic_italic {
+                            // Pivot the shear around the baseline.
+                            // Pixels above the baseline lean right; pixels below lean left.
+                            // cell_y is the pixel's position in the cell (0 = top).
+                            let cell_y = y_offset + gy as f32;
+                            (ascent - cell_y) * SHEAR_FACTOR
+                        } else {
+                            0.0
+                        };
+                        let px = (x_offset + gx as f32 + slant_shift).round() as i32;
+                        let py = (y_offset + gy as f32).round() as i32;
 
-                            if px >= 0 && px < target_width as i32 && py >= 0 && py < self.cell_height as i32 {
-                                let idx = py as usize * target_width as usize + px as usize;
-                                let old_alpha = pixels[idx] as f32 / 255.0;
-                                let new_alpha = old_alpha.max(alpha);
-                                pixels[idx] = (new_alpha * 255.0) as u8;
-                            }
-                        });
-                    }
+                        if px >= 0
+                            && px < target_width as i32
+                            && py >= 0
+                            && py < self.cell_height as i32
+                        {
+                            let idx = py as usize * target_width as usize + px as usize;
+                            let old_alpha = pixels[idx] as f32 / 255.0;
+                            let new_alpha = old_alpha.max(alpha);
+                            pixels[idx] = (new_alpha * 255.0) as u8;
+                        }
+                    });
+                }
 
                 // Also draw combining chars
                 for ch in seq.chars().skip(1) {
                     let mut char_font = match (is_bold, is_italic) {
-                        (true, true) => self.font_bold_italic.as_ref().or(self.font_bold.as_ref()).or(self.font_italic.as_ref()).unwrap_or(&self.font),
+                        (true, true) => self
+                            .font_bold_italic
+                            .as_ref()
+                            .or(self.font_bold.as_ref())
+                            .or(self.font_italic.as_ref())
+                            .unwrap_or(&self.font),
                         (true, false) => self.font_bold.as_ref().unwrap_or(&self.font),
                         (false, true) => self.font_italic.as_ref().unwrap_or(&self.font),
                         (false, false) => &self.font,
@@ -562,14 +626,15 @@ impl FontLoader {
                     let mut char_glyph_id = char_font.glyph_id(ch);
 
                     if char_glyph_id.0 == 0
-                        && let Some(idx) = self.fallback_manager.find_fallback_for_char(ch) {
-                            let fallback = &self.fallback_manager.fallbacks[idx];
-                            let id = fallback.font.glyph_id(ch);
-                            if id.0 != 0 {
-                                char_font = &fallback.font;
-                                char_glyph_id = id;
-                            }
+                        && let Some(idx) = self.fallback_manager.find_fallback_for_char(ch)
+                    {
+                        let fallback = &self.fallback_manager.fallbacks[idx];
+                        let id = fallback.font.glyph_id(ch);
+                        if id.0 != 0 {
+                            char_font = &fallback.font;
+                            char_glyph_id = id;
                         }
+                    }
 
                     if char_glyph_id.0 != 0 {
                         let px_size = self.font_size * self.font_scale_multiplier;
@@ -582,16 +647,21 @@ impl FontLoader {
                             let bounds = outlined.px_bounds();
                             let mut xo = bounds.min.x;
                             if unicode_width::UnicodeWidthChar::width(ch) == Some(0)
-                                && bounds.max.x <= 1.0 {
-                                    xo += base_target_width as f32;
-                                }
+                                && bounds.max.x <= 1.0
+                            {
+                                xo += base_target_width as f32;
+                            }
                             let yo = ascent + bounds.min.y;
 
                             outlined.draw(|gx, gy, alpha| {
                                 let px = (xo + gx as f32).round() as i32;
                                 let py = (yo + gy as f32).round() as i32;
 
-                                if px >= 0 && px < target_width as i32 && py >= 0 && py < self.cell_height as i32 {
+                                if px >= 0
+                                    && px < target_width as i32
+                                    && py >= 0
+                                    && py < self.cell_height as i32
+                                {
                                     let idx = py as usize * target_width as usize + px as usize;
                                     let old_alpha = pixels[idx] as f32 / 255.0;
                                     let new_alpha = old_alpha.max(alpha);
@@ -605,7 +675,7 @@ impl FontLoader {
 
             for (i, &mask) in pixels.iter().enumerate() {
                 let dst_idx = i * 4;
-                rgba_pixels[dst_idx]     = mask;
+                rgba_pixels[dst_idx] = mask;
                 rgba_pixels[dst_idx + 1] = mask;
                 rgba_pixels[dst_idx + 2] = mask;
                 rgba_pixels[dst_idx + 3] = mask;
@@ -623,7 +693,8 @@ impl FontLoader {
             self.next_x = 4;
             self.next_y = 0;
             unsafe {
-                self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
+                self.gl
+                    .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
                 self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
                 self.gl.tex_image_2d(
                     glow::TEXTURE_2D,
@@ -655,7 +726,8 @@ impl FontLoader {
         let oy = self.next_y;
 
         unsafe {
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
+            self.gl
+                .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
             self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,

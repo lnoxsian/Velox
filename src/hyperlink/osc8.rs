@@ -7,7 +7,7 @@ pub fn parse(params: &[&[u8]]) -> Option<(String, String)> {
     if params.len() >= 3 && params[0] == b"8" {
         let id_param = std::str::from_utf8(params[1]).unwrap_or("");
         let url = std::str::from_utf8(params[2]).unwrap_or("").to_string();
-        
+
         // Extract the "id" parameter (e.g. "id=123" or "id=foo") if it exists
         let mut id = String::new();
         for part in id_param.split(':') {
@@ -15,7 +15,7 @@ pub fn parse(params: &[&[u8]]) -> Option<(String, String)> {
                 id = rest.to_string();
             }
         }
-        
+
         Some((id, url))
     } else {
         None

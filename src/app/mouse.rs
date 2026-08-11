@@ -1,36 +1,54 @@
-use winit::event::{ElementState, MouseButton, MouseScrollDelta};
-use winit::dpi::PhysicalPosition;
 use crate::app::app::App;
+use winit::dpi::PhysicalPosition;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
 impl App {
     pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>) {
         self.mouse_x = position.x;
         self.mouse_y = position.y;
 
-        if let (Some(window), Some(renderer), Some(terminal)) = (&self.window, &self.renderer, &self.terminal) {
+        if let (Some(window), Some(renderer), Some(terminal)) =
+            (&self.window, &self.renderer, &self.terminal)
+        {
             let px = self.padding_x as f64;
             let py = self.padding_y as f64;
             let cw = renderer.font_loader.cell_width as f64;
             let ch = renderer.font_loader.cell_height as f64;
-            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
+            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
+                .min(terminal.grid.width.saturating_sub(1));
+            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
+                .min(terminal.grid.height.saturating_sub(1));
 
-            let active_grid = if terminal.is_alt_screen { &terminal.alt_grid } else { &terminal.grid };
+            let active_grid = if terminal.is_alt_screen {
+                &terminal.alt_grid
+            } else {
+                &terminal.grid
+            };
             let offset = active_grid.scroll_offset;
             let history_len = active_grid.scrollback.len();
 
             let mut is_link = false;
             let y_offset = (row_idx + history_len).saturating_sub(offset);
             let line_text: String = if y_offset < history_len {
-                active_grid.scrollback.get_row(y_offset).unwrap_or_else(|| crate::screen::scrollback::Row { cells: vec![], wrapped: false })
-                    .iter().map(|c| c.character).collect()
+                active_grid
+                    .scrollback
+                    .get_row(y_offset)
+                    .unwrap_or_else(|| crate::screen::scrollback::Row {
+                        cells: vec![],
+                        wrapped: false,
+                    })
+                    .iter()
+                    .map(|c| c.character)
+                    .collect()
             } else {
                 let y = y_offset - history_len;
                 if y < active_grid.height {
                     let src_start = y * active_grid.width;
                     let src_end = src_start + active_grid.width;
                     active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
-                        .iter().map(|c| c.character).collect()
+                        .iter()
+                        .map(|c| c.character)
+                        .collect()
                 } else {
                     String::new()
                 }
@@ -53,46 +71,53 @@ impl App {
         }
 
         if self.is_mouse_down
-            && let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal) {
-                let px = self.padding_x as f64;
-                let py = self.padding_y as f64;
-                let cw = renderer.font_loader.cell_width as f64;
-                let ch = renderer.font_loader.cell_height as f64;
-                let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
+            && let (Some(renderer), Some(terminal)) = (&self.renderer, &mut self.terminal)
+        {
+            let px = self.padding_x as f64;
+            let py = self.padding_y as f64;
+            let cw = renderer.font_loader.cell_width as f64;
+            let ch = renderer.font_loader.cell_height as f64;
+            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
+                .min(terminal.grid.width.saturating_sub(1));
+            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
+                .min(terminal.grid.height.saturating_sub(1));
 
-                if (col_idx, row_idx) != self.last_mouse_cell {
-                    self.last_mouse_cell = (col_idx, row_idx);
+            if (col_idx, row_idx) != self.last_mouse_cell {
+                self.last_mouse_cell = (col_idx, row_idx);
 
-                    let should_report_motion = terminal.mouse_mode == 1003 || (terminal.mouse_mode == 1002 && self.is_mouse_down);
-                    if should_report_motion && !self.modifiers.shift_key() {
-                        if let Some(pty_master) = &self.pty_master {
-                            let btn_code = if self.is_mouse_down { 32 } else { 35 };
-                            let seq = if terminal.mouse_sgr {
-                                format!("\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1)
+                let should_report_motion = terminal.mouse_mode == 1003
+                    || (terminal.mouse_mode == 1002 && self.is_mouse_down);
+                if should_report_motion && !self.modifiers.shift_key() {
+                    if let Some(pty_master) = &self.pty_master {
+                        let btn_code = if self.is_mouse_down { 32 } else { 35 };
+                        let seq = if terminal.mouse_sgr {
+                            format!("\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1)
+                        } else {
+                            let cb = 32 + btn_code;
+                            let cx = 32 + col_idx + 1;
+                            let cy = 32 + row_idx + 1;
+                            if cx <= 255 && cy <= 255 {
+                                format!(
+                                    "\x1b[M{}{}{}",
+                                    cb as u8 as char, cx as u8 as char, cy as u8 as char
+                                )
                             } else {
-                                let cb = 32 + btn_code;
-                                let cx = 32 + col_idx + 1;
-                                let cy = 32 + row_idx + 1;
-                                if cx <= 255 && cy <= 255 {
-                                    format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
-                                } else {
-                                    String::new()
-                                }
-                            };
-                            if !seq.is_empty() {
-                                let _ = pty_master.write(seq.as_bytes());
+                                String::new()
                             }
+                        };
+                        if !seq.is_empty() {
+                            let _ = pty_master.write(seq.as_bytes());
                         }
-                    } else {
-                        let active_grid = terminal.active_grid_mut();
-                        if active_grid.selection.active {
-                            active_grid.selection.update_selection(col_idx, row_idx);
-                            self.needs_redraw = true;
-                        }
+                    }
+                } else {
+                    let active_grid = terminal.active_grid_mut();
+                    if active_grid.selection.active {
+                        active_grid.selection.update_selection(col_idx, row_idx);
+                        self.needs_redraw = true;
                     }
                 }
             }
+        }
     }
 
     pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta) {
@@ -103,53 +128,72 @@ impl App {
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0
             && let Some(pty_master) = &self.pty_master
-                && let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer) {
-                    let px = self.padding_x as f64;
-                    let py = self.padding_y as f64;
-                    let cw = renderer.font_loader.cell_width as f64;
-                    let ch = renderer.font_loader.cell_height as f64;
-                    let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
-                    let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
+            && let (Some(terminal), Some(renderer)) = (&mut self.terminal, &self.renderer)
+        {
+            let px = self.padding_x as f64;
+            let py = self.padding_y as f64;
+            let cw = renderer.font_loader.cell_width as f64;
+            let ch = renderer.font_loader.cell_height as f64;
+            let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
+            let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
 
-                    if terminal.mouse_mode > 0 {
-                        let btn = if lines > 0 { 64 } else { 65 };
-                        for _ in 0..lines.abs() {
-                            let seq = if terminal.mouse_sgr {
-                                format!("\x1b[<{};{};{}M", btn, col, row)
-                            } else {
-                                let cb = 32 + btn;
-                                let cx = 32 + col;
-                                let cy = 32 + row;
-                                if cx <= 255 && cy <= 255 {
-                                    format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
-                                } else {
-                                    String::new()
-                                }
-                            };
-                            if !seq.is_empty() {
-                                let _ = pty_master.write(seq.as_bytes());
-                            }
-                        }
-                    } else if terminal.is_alt_screen {
-                        let key_seq = if lines > 0 {
-                            if terminal.cursor_keys_mode { b"\x1bOA" } else { b"\x1b[A" }
-                        } else {
-                            if terminal.cursor_keys_mode { b"\x1bOB" } else { b"\x1b[B" }
-                        };
-                        for _ in 0..lines.abs() {
-                            let _ = pty_master.write(key_seq);
-                        }
+            if terminal.mouse_mode > 0 {
+                let btn = if lines > 0 { 64 } else { 65 };
+                for _ in 0..lines.abs() {
+                    let seq = if terminal.mouse_sgr {
+                        format!("\x1b[<{};{};{}M", btn, col, row)
                     } else {
-                        let active_grid = if terminal.is_alt_screen { &mut terminal.alt_grid } else { &mut terminal.grid };
-                        let history_len = active_grid.scrollback.len();
-                        if lines > 0 {
-                            active_grid.scroll_offset = (active_grid.scroll_offset + lines as usize).min(history_len);
-                        } else if lines < 0 {
-                            active_grid.scroll_offset = active_grid.scroll_offset.saturating_sub(lines.unsigned_abs() as usize);
+                        let cb = 32 + btn;
+                        let cx = 32 + col;
+                        let cy = 32 + row;
+                        if cx <= 255 && cy <= 255 {
+                            format!(
+                                "\x1b[M{}{}{}",
+                                cb as u8 as char, cx as u8 as char, cy as u8 as char
+                            )
+                        } else {
+                            String::new()
                         }
-                        self.needs_redraw = true;
+                    };
+                    if !seq.is_empty() {
+                        let _ = pty_master.write(seq.as_bytes());
                     }
                 }
+            } else if terminal.is_alt_screen {
+                let key_seq = if lines > 0 {
+                    if terminal.cursor_keys_mode {
+                        b"\x1bOA"
+                    } else {
+                        b"\x1b[A"
+                    }
+                } else {
+                    if terminal.cursor_keys_mode {
+                        b"\x1bOB"
+                    } else {
+                        b"\x1b[B"
+                    }
+                };
+                for _ in 0..lines.abs() {
+                    let _ = pty_master.write(key_seq);
+                }
+            } else {
+                let active_grid = if terminal.is_alt_screen {
+                    &mut terminal.alt_grid
+                } else {
+                    &mut terminal.grid
+                };
+                let history_len = active_grid.scrollback.len();
+                if lines > 0 {
+                    active_grid.scroll_offset =
+                        (active_grid.scroll_offset + lines as usize).min(history_len);
+                } else if lines < 0 {
+                    active_grid.scroll_offset = active_grid
+                        .scroll_offset
+                        .saturating_sub(lines.unsigned_abs() as usize);
+                }
+                self.needs_redraw = true;
+            }
+        }
     }
 
     pub fn handle_mouse_input(&mut self, state: ElementState, button: MouseButton) {
@@ -161,8 +205,10 @@ impl App {
                     let py = self.padding_y as f64;
                     let cw = renderer.font_loader.cell_width as f64;
                     let ch = renderer.font_loader.cell_height as f64;
-                    let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                    let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
+                    let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
+                        .min(terminal.grid.width.saturating_sub(1));
+                    let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
+                        .min(terminal.grid.height.saturating_sub(1));
 
                     let mouse_mode = terminal.mouse_mode;
                     let mouse_sgr = terminal.mouse_sgr;
@@ -173,7 +219,8 @@ impl App {
                     if col_idx < grid_width && row_idx < grid_height {
                         let now = std::time::Instant::now();
                         let is_double_click = if let Some(last_time) = self.last_click_instant {
-                            self.last_click_pos == (col_idx, row_idx) && last_time.elapsed().as_millis() < 400
+                            self.last_click_pos == (col_idx, row_idx)
+                                && last_time.elapsed().as_millis() < 400
                         } else {
                             false
                         };
@@ -195,7 +242,10 @@ impl App {
                                     let cx = 32 + col_idx + 1;
                                     let cy = 32 + row_idx + 1;
                                     if cx <= 255 && cy <= 255 {
-                                        format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
+                                        format!(
+                                            "\x1b[M{}{}{}",
+                                            cb as u8 as char, cx as u8 as char, cy as u8 as char
+                                        )
                                     } else {
                                         String::new()
                                     }
@@ -209,17 +259,28 @@ impl App {
                             let offset = active_grid.scroll_offset;
                             let history_len = active_grid.scrollback.len();
                             let y_offset = (row_idx + history_len).saturating_sub(offset);
-                            
+
                             let line_text: String = if y_offset < history_len {
-                                active_grid.scrollback.get_row(y_offset).unwrap_or_else(|| crate::screen::scrollback::Row { cells: vec![], wrapped: false })
-                                    .iter().map(|c| c.character).collect()
+                                active_grid
+                                    .scrollback
+                                    .get_row(y_offset)
+                                    .unwrap_or_else(|| crate::screen::scrollback::Row {
+                                        cells: vec![],
+                                        wrapped: false,
+                                    })
+                                    .iter()
+                                    .map(|c| c.character)
+                                    .collect()
                             } else {
                                 let y = y_offset - history_len;
                                 if y < active_grid.height {
                                     let src_start = y * grid_width;
                                     let src_end = src_start + grid_width;
-                                    active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
-                                        .iter().map(|c| c.character).collect()
+                                    active_grid.cells
+                                        [src_start..src_end.min(active_grid.cells.len())]
+                                        .iter()
+                                        .map(|c| c.character)
+                                        .collect()
                                 } else {
                                     String::new()
                                 }
@@ -236,22 +297,44 @@ impl App {
                             if !url_opened {
                                 match self.click_count {
                                     1 => {
-                                        if self.modifiers.shift_key() && active_grid.selection.active {
-                                            active_grid.selection.update_selection(col_idx, row_idx);
+                                        if self.modifiers.shift_key()
+                                            && active_grid.selection.active
+                                        {
+                                            active_grid
+                                                .selection
+                                                .update_selection(col_idx, row_idx);
                                         } else {
                                             active_grid.selection.start_selection(col_idx, row_idx);
                                         }
                                     }
                                     2 => {
-                                        active_grid.selection.select_word(grid_width, grid_height, &active_grid.cells, col_idx, row_idx);
-                                        let text = active_grid.selection.extract_text(grid_width, grid_height, &active_grid.cells);
+                                        active_grid.selection.select_word(
+                                            grid_width,
+                                            grid_height,
+                                            &active_grid.cells,
+                                            col_idx,
+                                            row_idx,
+                                        );
+                                        let text = active_grid.selection.extract_text(
+                                            grid_width,
+                                            grid_height,
+                                            &active_grid.cells,
+                                        );
                                         if !text.is_empty() {
                                             crate::clipboard::clipboard::copy(&text);
                                         }
                                     }
                                     3 => {
-                                        active_grid.selection.select_line(grid_width, grid_height, row_idx);
-                                        let text = active_grid.selection.extract_text(grid_width, grid_height, &active_grid.cells);
+                                        active_grid.selection.select_line(
+                                            grid_width,
+                                            grid_height,
+                                            row_idx,
+                                        );
+                                        let text = active_grid.selection.extract_text(
+                                            grid_width,
+                                            grid_height,
+                                            &active_grid.cells,
+                                        );
                                         if !text.is_empty() {
                                             crate::clipboard::clipboard::copy(&text);
                                         }
@@ -286,8 +369,10 @@ impl App {
                     let py = self.padding_y as f64;
                     let cw = renderer.font_loader.cell_width as f64;
                     let ch = renderer.font_loader.cell_height as f64;
-                    let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize).min(terminal.grid.width.saturating_sub(1));
-                    let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize).min(terminal.grid.height.saturating_sub(1));
+                    let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
+                        .min(terminal.grid.width.saturating_sub(1));
+                    let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
+                        .min(terminal.grid.height.saturating_sub(1));
 
                     let mouse_mode = terminal.mouse_mode;
                     let mouse_sgr = terminal.mouse_sgr;
@@ -300,7 +385,10 @@ impl App {
                                 let cx = 32 + col_idx + 1;
                                 let cy = 32 + row_idx + 1;
                                 if cx <= 255 && cy <= 255 {
-                                    format!("\x1b[M{}{}{}", cb as u8 as char, cx as u8 as char, cy as u8 as char)
+                                    format!(
+                                        "\x1b[M{}{}{}",
+                                        cb as u8 as char, cx as u8 as char, cy as u8 as char
+                                    )
                                 } else {
                                     String::new()
                                 }
@@ -312,8 +400,15 @@ impl App {
                     } else {
                         let active_grid = terminal.active_grid_mut();
                         if active_grid.selection.active {
-                            let text = active_grid.selection.extract_text(active_grid.width, active_grid.height, &active_grid.cells);
-                            if !text.is_empty() && (active_grid.selection.start_x != active_grid.selection.end_x || active_grid.selection.start_y != active_grid.selection.end_y) {
+                            let text = active_grid.selection.extract_text(
+                                active_grid.width,
+                                active_grid.height,
+                                &active_grid.cells,
+                            );
+                            if !text.is_empty()
+                                && (active_grid.selection.start_x != active_grid.selection.end_x
+                                    || active_grid.selection.start_y != active_grid.selection.end_y)
+                            {
                                 crate::clipboard::clipboard::copy(&text);
                             }
                         }

@@ -12,26 +12,116 @@ pub struct Theme {
 
 impl Theme {
     pub fn new() -> Self {
-        let default_fg = Color { r: 248, g: 248, b: 242, a: 255 };
-        let default_bg = Color { r: 39, g: 40, b: 34, a: 255 };
+        let default_fg = Color {
+            r: 248,
+            g: 248,
+            b: 242,
+            a: 255,
+        };
+        let default_bg = Color {
+            r: 39,
+            g: 40,
+            b: 34,
+            a: 255,
+        };
         let ansi_colors = [
-            Color { r: 39, g: 40, b: 34, a: 255 },     // Black
-            Color { r: 249, g: 38, b: 114, a: 255 },   // Red
-            Color { r: 166, g: 226, b: 46, a: 255 },   // Green
-            Color { r: 244, g: 191, b: 117, a: 255 },  // Yellow
-            Color { r: 102, g: 217, b: 239, a: 255 },  // Blue
-            Color { r: 174, g: 129, b: 255, a: 255 },  // Magenta
-            Color { r: 161, g: 239, b: 228, a: 255 },  // Cyan
-            Color { r: 248, g: 248, b: 242, a: 255 },  // White
+            Color {
+                r: 39,
+                g: 40,
+                b: 34,
+                a: 255,
+            }, // Black
+            Color {
+                r: 249,
+                g: 38,
+                b: 114,
+                a: 255,
+            }, // Red
+            Color {
+                r: 166,
+                g: 226,
+                b: 46,
+                a: 255,
+            }, // Green
+            Color {
+                r: 244,
+                g: 191,
+                b: 117,
+                a: 255,
+            }, // Yellow
+            Color {
+                r: 102,
+                g: 217,
+                b: 239,
+                a: 255,
+            }, // Blue
+            Color {
+                r: 174,
+                g: 129,
+                b: 255,
+                a: 255,
+            }, // Magenta
+            Color {
+                r: 161,
+                g: 239,
+                b: 228,
+                a: 255,
+            }, // Cyan
+            Color {
+                r: 248,
+                g: 248,
+                b: 242,
+                a: 255,
+            }, // White
             // Brights
-            Color { r: 117, g: 113, b: 94, a: 255 },   // Bright Black
-            Color { r: 249, g: 38, b: 114, a: 255 },   // Bright Red
-            Color { r: 166, g: 226, b: 46, a: 255 },   // Bright Green
-            Color { r: 244, g: 191, b: 117, a: 255 },  // Bright Yellow
-            Color { r: 102, g: 217, b: 239, a: 255 },  // Bright Blue
-            Color { r: 174, g: 129, b: 255, a: 255 },  // Bright Magenta
-            Color { r: 161, g: 239, b: 228, a: 255 },  // Bright Cyan
-            Color { r: 248, g: 248, b: 240, a: 255 },  // Bright White
+            Color {
+                r: 117,
+                g: 113,
+                b: 94,
+                a: 255,
+            }, // Bright Black
+            Color {
+                r: 249,
+                g: 38,
+                b: 114,
+                a: 255,
+            }, // Bright Red
+            Color {
+                r: 166,
+                g: 226,
+                b: 46,
+                a: 255,
+            }, // Bright Green
+            Color {
+                r: 244,
+                g: 191,
+                b: 117,
+                a: 255,
+            }, // Bright Yellow
+            Color {
+                r: 102,
+                g: 217,
+                b: 239,
+                a: 255,
+            }, // Bright Blue
+            Color {
+                r: 174,
+                g: 129,
+                b: 255,
+                a: 255,
+            }, // Bright Magenta
+            Color {
+                r: 161,
+                g: 239,
+                b: 228,
+                a: 255,
+            }, // Bright Cyan
+            Color {
+                r: 248,
+                g: 248,
+                b: 240,
+                a: 255,
+            }, // Bright White
         ];
         Self {
             default_fg,
@@ -65,7 +155,12 @@ impl Theme {
             Color { r, g, b, a: 255 }
         } else {
             let gray = 8 + (idx - 232) * 10;
-            Color { r: gray, g: gray, b: gray, a: 255 }
+            Color {
+                r: gray,
+                g: gray,
+                b: gray,
+                a: 255,
+            }
         }
     }
 }

@@ -45,7 +45,15 @@ impl Selection {
     }
 
     #[inline(always)]
-    pub fn contains_fast(&self, min_x: usize, min_y: usize, max_x: usize, max_y: usize, x: usize, y: usize) -> bool {
+    pub fn contains_fast(
+        &self,
+        min_x: usize,
+        min_y: usize,
+        max_x: usize,
+        max_y: usize,
+        x: usize,
+        y: usize,
+    ) -> bool {
         if y < min_y || y > max_y {
             return false;
         }
@@ -71,7 +79,12 @@ impl Selection {
         self.contains_fast(min_x, min_y, max_x, max_y, x, y)
     }
 
-    pub fn extract_text(&self, width: usize, height: usize, cells: &[crate::screen::cell::Cell]) -> String {
+    pub fn extract_text(
+        &self,
+        width: usize,
+        height: usize,
+        cells: &[crate::screen::cell::Cell],
+    ) -> String {
         if !self.active {
             return String::new();
         }
@@ -85,7 +98,11 @@ impl Selection {
             }
 
             let start_col = if y == min_y { min_x } else { 0 };
-            let end_col = if y == max_y { max_x.min(width.saturating_sub(1)) } else { width.saturating_sub(1) };
+            let end_col = if y == max_y {
+                max_x.min(width.saturating_sub(1))
+            } else {
+                width.saturating_sub(1)
+            };
 
             let mut line = String::new();
             for x in start_col..=end_col {
@@ -100,7 +117,14 @@ impl Selection {
         lines.join("\n")
     }
 
-    pub fn select_word(&mut self, width: usize, height: usize, cells: &[crate::screen::cell::Cell], x: usize, y: usize) {
+    pub fn select_word(
+        &mut self,
+        width: usize,
+        height: usize,
+        cells: &[crate::screen::cell::Cell],
+        x: usize,
+        y: usize,
+    ) {
         if y >= height || x >= width {
             return;
         }

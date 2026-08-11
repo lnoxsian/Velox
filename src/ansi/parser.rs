@@ -1,4 +1,5 @@
 use crate::ansi::state::ParserState;
+use crate::screen::cell::CellFlags;
 use smallvec::SmallVec;
 
 pub struct AnsiParser {
@@ -151,16 +152,62 @@ impl AnsiParser {
     pub fn execute(&mut self, byte: u8, terminal: &mut crate::terminal::terminal::Terminal) {
         match byte {
             0x0a => {
-                let bg = terminal.current_bg;
-                terminal.active_grid_mut().scroll_or_move_down(bg);
+                let bg = terminal.active_grid().default_bg;
+                let active = terminal.active_grid_mut();
+                if active.cursor.x == active.width {
+                    active.cursor.x = 0;
+                    active.scroll_or_move_down(bg);
+                } else if active.cursor.x == 0
+                    && active.cursor.y > 0
+                    && active.row_wrapped[active.cursor.y - 1]
+                {
+                    let row_start = active.cursor.y * active.width;
+                    let is_empty = active
+                        .cells
+                        .get(row_start..row_start + active.width)
+                        .map_or(false, |slice| {
+                            slice.iter().all(|c| {
+                                c.character == ' ' && c.flags.is_empty() && c.background == bg
+                            })
+                        });
+                    if is_empty {
+                        active.row_wrapped[active.cursor.y - 1] = false;
+                    } else {
+                        active.scroll_or_move_down(bg);
+                    }
+                } else {
+                    active.scroll_or_move_down(bg);
+                }
             }
             0x0d => {
-                terminal.active_grid_mut().cursor.x = 0;
+                let active = terminal.active_grid_mut();
+                active.cursor.x = 0;
             }
             0x08 => {
                 let active = terminal.active_grid_mut();
                 if active.cursor.x > 0 {
                     active.cursor.x -= 1;
+                    let idx = active.cursor.y * active.width + active.cursor.x;
+                    if idx < active.cells.len()
+                        && active.cells[idx]
+                            .flags
+                            .contains(CellFlags::WIDE_CONTINUATION)
+                        && active.cursor.x > 0
+                    {
+                        active.cursor.x -= 1;
+                    }
+                } else if active.cursor.y > 0 && active.row_wrapped[active.cursor.y - 1] {
+                    active.cursor.y -= 1;
+                    active.cursor.x = active.width.saturating_sub(1);
+                    let idx = active.cursor.y * active.width + active.cursor.x;
+                    if idx < active.cells.len()
+                        && active.cells[idx]
+                            .flags
+                            .contains(CellFlags::WIDE_CONTINUATION)
+                        && active.cursor.x > 0
+                    {
+                        active.cursor.x -= 1;
+                    }
                 }
             }
             0x09 => {
@@ -182,7 +229,11 @@ impl AnsiParser {
         if self.utf8_buf.is_empty() && byte < 0x80 {
             let mut c = byte as char;
             let active_charset = terminal.active_charset;
-            let charset = if active_charset == 0 { terminal.g0_charset } else { terminal.g1_charset };
+            let charset = if active_charset == 0 {
+                terminal.g0_charset
+            } else {
+                terminal.g1_charset
+            };
             if charset == 1 {
                 c = Self::translate_dec_line_drawing(c);
             }
@@ -198,7 +249,11 @@ impl AnsiParser {
         if let Ok(s) = std::str::from_utf8(&self.utf8_buf) {
             if let Some(mut c) = s.chars().next() {
                 let active_charset = terminal.active_charset;
-                let charset = if active_charset == 0 { terminal.g0_charset } else { terminal.g1_charset };
+                let charset = if active_charset == 0 {
+                    terminal.g0_charset
+                } else {
+                    terminal.g1_charset
+                };
                 if charset == 1 {
                     c = Self::translate_dec_line_drawing(c);
                 }
@@ -214,44 +269,43 @@ impl AnsiParser {
         }
     }
 
-fn translate_dec_line_drawing(c: char) -> char {
-    match c {
-        '_' => ' ',
-        'q' => '─',
-        'x' => '│',
-        'm' => '└',
-        'j' => '┘',
-        'l' => '┌',
-        'k' => '┐',
-        't' => '├',
-        'u' => '┤',
-        'v' => '┴',
-        'w' => '┬',
-        'n' => '┼',
-        'o' => '⎺',
-        'p' => '⎻',
-        'r' => '⎼',
-        's' => '⎽',
-        '`' => '◆',
-        'a' => '▒',
-        'b' => '␉',
-        'c' => '␌',
-        'd' => '␍',
-        'e' => '␊',
-        'f' => '°',
-        'g' => '±',
-        'h' => '␤',
-        'i' => '␋',
-        '~' => '·',
-        'y' => '≤',
-        'z' => '≥',
-        '{' => 'π',
-        '|' => '≠',
-        '}' => '£',
-        _ => c,
+    fn translate_dec_line_drawing(c: char) -> char {
+        match c {
+            '_' => ' ',
+            'q' => '─',
+            'x' => '│',
+            'm' => '└',
+            'j' => '┘',
+            'l' => '┌',
+            'k' => '┐',
+            't' => '├',
+            'u' => '┤',
+            'v' => '┴',
+            'w' => '┬',
+            'n' => '┼',
+            'o' => '⎺',
+            'p' => '⎻',
+            'r' => '⎼',
+            's' => '⎽',
+            '`' => '◆',
+            'a' => '▒',
+            'b' => '␉',
+            'c' => '␌',
+            'd' => '␍',
+            'e' => '␊',
+            'f' => '°',
+            'g' => '±',
+            'h' => '␤',
+            'i' => '␋',
+            '~' => '·',
+            'y' => '≤',
+            'z' => '≥',
+            '{' => 'π',
+            '|' => '≠',
+            '}' => '£',
+            _ => c,
+        }
     }
-}
-
 
     fn parse_params(&mut self) {
         self.params.clear();
@@ -286,7 +340,12 @@ fn translate_dec_line_drawing(c: char) -> char {
                 }
                 b'0'..=b'9' => {
                     let digit = (b - b'0') as u16;
-                    current_val = Some(current_val.unwrap_or(0).saturating_mul(10).saturating_add(digit));
+                    current_val = Some(
+                        current_val
+                            .unwrap_or(0)
+                            .saturating_mul(10)
+                            .saturating_add(digit),
+                    );
                 }
                 _ => {}
             }

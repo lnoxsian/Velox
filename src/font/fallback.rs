@@ -1,7 +1,7 @@
+use ab_glyph::{Font, FontArc};
+use fontdb::Database;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use fontdb::Database;
-use ab_glyph::{Font, FontArc};
 
 pub struct FallbackFont {
     pub font: FontArc,
@@ -72,15 +72,19 @@ impl FallbackManager {
                 };
                 if let Some(id) = self.db.query(&query)
                     && let Some(face) = self.db.face(id)
-                        && let fontdb::Source::File(path) = &face.source
-                            && !self.loaded_paths.contains(path)
-                                && let Ok(data) = std::fs::read(path)
-                                    && let Ok(font) = FontArc::try_from_vec(data)
-                                        && font.glyph_id(c).0 != 0 {
-                                            self.loaded_paths.insert(path.clone());
-                                            self.fallbacks.push(FallbackFont { font, owned_face: None });
-                                            return Some(self.fallbacks.len() - 1);
-                                        }
+                    && let fontdb::Source::File(path) = &face.source
+                    && !self.loaded_paths.contains(path)
+                    && let Ok(data) = std::fs::read(path)
+                    && let Ok(font) = FontArc::try_from_vec(data)
+                    && font.glyph_id(c).0 != 0
+                {
+                    self.loaded_paths.insert(path.clone());
+                    self.fallbacks.push(FallbackFont {
+                        font,
+                        owned_face: None,
+                    });
+                    return Some(self.fallbacks.len() - 1);
+                }
             }
         }
 
@@ -88,20 +92,21 @@ impl FallbackManager {
         for face in self.db.faces() {
             if let fontdb::Source::File(path) = &face.source
                 && !self.loaded_paths.contains(path)
-                    && let Ok(data) = std::fs::read(path)
-                        && let Ok(font) = FontArc::try_from_vec(data.clone())
-                            && font.glyph_id(c).0 != 0 {
-                                self.loaded_paths.insert(path.clone());
-                                let path_str = path.to_string_lossy().to_lowercase();
-                                let is_emoji = path_str.contains("emoji");
-                                let owned_face = if is_emoji {
-                                    owned_ttf_parser::OwnedFace::from_vec(data, 0).ok()
-                                } else {
-                                    None
-                                };
-                                self.fallbacks.push(FallbackFont { font, owned_face });
-                                return Some(self.fallbacks.len() - 1);
-                            }
+                && let Ok(data) = std::fs::read(path)
+                && let Ok(font) = FontArc::try_from_vec(data.clone())
+                && font.glyph_id(c).0 != 0
+            {
+                self.loaded_paths.insert(path.clone());
+                let path_str = path.to_string_lossy().to_lowercase();
+                let is_emoji = path_str.contains("emoji");
+                let owned_face = if is_emoji {
+                    owned_ttf_parser::OwnedFace::from_vec(data, 0).ok()
+                } else {
+                    None
+                };
+                self.fallbacks.push(FallbackFont { font, owned_face });
+                return Some(self.fallbacks.len() - 1);
+            }
         }
 
         // Mark as missing to optimize future lookups

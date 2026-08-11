@@ -1,7 +1,7 @@
-use crate::screen::grid::Grid;
-use crate::screen::cell::{Color, CellFlags};
-use crate::theme::theme::Theme;
 use crate::ansi::parser::AnsiParser;
+use crate::screen::cell::{CellFlags, Color};
+use crate::screen::grid::Grid;
+use crate::theme::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticZone {
@@ -49,18 +49,19 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(width: usize, height: usize) -> Self {
-        let config = crate::config::loader::load().unwrap_or_else(|_| {
-            crate::config::defaults::default_config()
-        });
+        let config = crate::config::loader::load()
+            .unwrap_or_else(|_| crate::config::defaults::default_config());
         let mut theme = Theme::new();
         if let Some(fg) = &config.default_fg
-            && let Some(c) = crate::config::config::parse_hex_color(fg) {
-                theme.default_fg = c;
-            }
+            && let Some(c) = crate::config::config::parse_hex_color(fg)
+        {
+            theme.default_fg = c;
+        }
         if let Some(bg) = &config.default_bg
-            && let Some(c) = crate::config::config::parse_hex_color(bg) {
-                theme.default_bg = c;
-            }
+            && let Some(c) = crate::config::config::parse_hex_color(bg)
+        {
+            theme.default_bg = c;
+        }
         if let Some(colors) = &config.colors {
             let fields = [
                 (&colors.black, 0),
@@ -82,9 +83,10 @@ impl Terminal {
             ];
             for (opt, idx) in &fields {
                 if let Some(hex) = opt
-                    && let Some(c) = crate::config::config::parse_hex_color(hex) {
-                        theme.ansi_colors[*idx] = c;
-                    }
+                    && let Some(c) = crate::config::config::parse_hex_color(hex)
+                {
+                    theme.ansi_colors[*idx] = c;
+                }
             }
         }
 
@@ -95,8 +97,16 @@ impl Terminal {
         let bold_is_bright = config.bold_is_bright.unwrap_or(true);
         let app_title = config.app_title.clone();
 
-        let initial_shape = match config.cursor_shape.as_deref().unwrap_or("block").to_lowercase().as_str() {
-            "hollow_block" | "hollowblock" | "hollow" => crate::screen::cursor::CursorShape::HollowBlock,
+        let initial_shape = match config
+            .cursor_shape
+            .as_deref()
+            .unwrap_or("block")
+            .to_lowercase()
+            .as_str()
+        {
+            "hollow_block" | "hollowblock" | "hollow" => {
+                crate::screen::cursor::CursorShape::HollowBlock
+            }
             "beam" | "i" | "ibar" | "bar" => crate::screen::cursor::CursorShape::Beam,
             "underline" => crate::screen::cursor::CursorShape::Underline,
             _ => crate::screen::cursor::CursorShape::Block,
@@ -105,7 +115,14 @@ impl Terminal {
         let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
         let infinite_scrollback = config.infinite_scrollback.unwrap_or(false);
 
-        let mut grid = Grid::new(width, height, default_fg, default_bg, scrollback_limit, infinite_scrollback);
+        let mut grid = Grid::new(
+            width,
+            height,
+            default_fg,
+            default_bg,
+            scrollback_limit,
+            infinite_scrollback,
+        );
         grid.cursor.shape = initial_shape;
 
         let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0, false);
@@ -206,7 +223,11 @@ impl Terminal {
     }
 
     pub fn save_cursor(&mut self) {
-        let active_grid = if self.is_alt_screen { &mut self.alt_grid } else { &mut self.grid };
+        let active_grid = if self.is_alt_screen {
+            &mut self.alt_grid
+        } else {
+            &mut self.grid
+        };
         active_grid.saved_cursor = active_grid.cursor;
         active_grid.saved_fg = self.current_fg;
         active_grid.saved_bg = self.current_bg;
@@ -217,7 +238,11 @@ impl Terminal {
     }
 
     pub fn restore_cursor(&mut self) {
-        let active_grid = if self.is_alt_screen { &mut self.alt_grid } else { &mut self.grid };
+        let active_grid = if self.is_alt_screen {
+            &mut self.alt_grid
+        } else {
+            &mut self.grid
+        };
         active_grid.cursor = active_grid.saved_cursor;
         active_grid.clamp_cursor();
         self.current_fg = active_grid.saved_fg;
@@ -233,11 +258,19 @@ impl Terminal {
     }
 
     pub fn active_grid(&self) -> &Grid {
-        if self.is_alt_screen { &self.alt_grid } else { &self.grid }
+        if self.is_alt_screen {
+            &self.alt_grid
+        } else {
+            &self.grid
+        }
     }
 
     pub fn active_grid_mut(&mut self) -> &mut Grid {
-        if self.is_alt_screen { &mut self.alt_grid } else { &mut self.grid }
+        if self.is_alt_screen {
+            &mut self.alt_grid
+        } else {
+            &mut self.grid
+        }
     }
 
     pub fn resize(&mut self, cols: u32, rows: u32) {
@@ -354,7 +387,7 @@ mod tests {
         let grid = term.active_grid();
         // Since height is 5, we have scrolled multiple lines off the screen
         assert!(!grid.scrollback.is_empty());
-        
+
         // The first character of the oldest line in scrollback history should be 'l' from "line ..."
         assert_eq!(grid.scrollback.get_row(0).unwrap()[0].character, 'l');
     }
@@ -362,23 +395,23 @@ mod tests {
     #[test]
     fn test_charset_designation_and_translation() {
         let mut term = Terminal::new(80, 24);
-        
+
         // Designate G1 as DEC line drawing (\x1b)0)
         term.feed(b"\x1b)0");
         // Shift Out (\x0e) to activate G1
         term.feed(b"\x0e");
         // Feed 'q' and 'x' which should translate to '─' and '│'
         term.feed(b"qx");
-        
+
         let grid = term.active_grid();
         assert_eq!(grid.cells[0].character, '─');
         assert_eq!(grid.cells[1].character, '│');
-        
+
         // Shift In (\x0f) to activate G0 (which defaults to USASCII)
         term.feed(b"\x0f");
         // Feed 'qx' again, which should not translate
         term.feed(b"qx");
-        
+
         let grid = term.active_grid();
         assert_eq!(grid.cells[2].character, 'q');
         assert_eq!(grid.cells[3].character, 'x');
@@ -421,20 +454,20 @@ mod tests {
     fn test_cursor_attributes_preservation() {
         let mut term = Terminal::new(80, 24);
         use crate::screen::cell::CellFlags;
-        
+
         // 1. Set bold and designate/activate G1 line-drawing
         term.feed(b"\x1b[1m\x1b)0\x0e");
         assert!(term.current_flags.contains(CellFlags::BOLD));
         assert_eq!(term.active_charset, 1);
-        
+
         // 2. Save cursor and attributes (via ESC 7)
         term.feed(b"\x1b7");
-        
+
         // 3. Clear bold, reset to G0
         term.feed(b"\x1b[0m\x0f");
         assert!(!term.current_flags.contains(CellFlags::BOLD));
         assert_eq!(term.active_charset, 0);
-        
+
         // 4. Restore cursor and attributes (via ESC 8)
         term.feed(b"\x1b8");
         assert!(term.current_flags.contains(CellFlags::BOLD));
@@ -444,12 +477,12 @@ mod tests {
     #[test]
     fn test_csi_line_char_editing() {
         let mut term = Terminal::new(80, 24);
-        
+
         // 1. Test CHA (CSI G) and VPA (CSI d)
         term.feed(b"\x1b[5G\x1b[3d");
         assert_eq!(term.active_grid().cursor.x, 4);
         assert_eq!(term.active_grid().cursor.y, 2);
-        
+
         // 2. Test ECH (CSI X)
         term.feed(b"\x1b[1;1Hhello");
         term.feed(b"\x1b[1;2H\x1b[3X");
@@ -459,7 +492,7 @@ mod tests {
         assert_eq!(grid.cells[2].character, ' ');
         assert_eq!(grid.cells[3].character, ' ');
         assert_eq!(grid.cells[4].character, 'o');
-        
+
         // 3. Test DCH (CSI P)
         let mut term2 = Terminal::new(80, 24);
         term2.feed(b"hello");
@@ -469,7 +502,7 @@ mod tests {
         assert_eq!(grid2.cells[1].character, 'l');
         assert_eq!(grid2.cells[2].character, 'o');
         assert_eq!(grid2.cells[3].character, ' ');
-        
+
         // 4. Test ICH (CSI @)
         let mut term3 = Terminal::new(80, 24);
         term3.feed(b"hello");
@@ -571,7 +604,11 @@ mod tests {
 
         term.feed(b"Hello");
         for x in 0..5 {
-            assert!(!term.active_grid().cells[x].flags.contains(CellFlags::UNDERLINE));
+            assert!(
+                !term.active_grid().cells[x]
+                    .flags
+                    .contains(CellFlags::UNDERLINE)
+            );
         }
     }
 
@@ -584,7 +621,10 @@ mod tests {
         // Enable bracketed paste mode via CSI ? 2004 h
         term.feed(b"\x1b[?2004h");
         assert!(term.bracketed_paste_mode);
-        assert_eq!(term.format_paste("echo hello"), "\x1b[200~echo hello\x1b[201~");
+        assert_eq!(
+            term.format_paste("echo hello"),
+            "\x1b[200~echo hello\x1b[201~"
+        );
 
         // Disable bracketed paste mode via CSI ? 2004 l
         term.feed(b"\x1b[?2004l");
@@ -703,7 +743,11 @@ mod tests {
         // OSC 12: Query cursor color
         term.outgoing.clear();
         term.feed(b"\x1b]12;?\x07");
-        assert!(String::from_utf8(term.outgoing.clone()).unwrap().starts_with("\x1b]12;rgb:ffff/0000/0000"));
+        assert!(
+            String::from_utf8(term.outgoing.clone())
+                .unwrap()
+                .starts_with("\x1b]12;rgb:ffff/0000/0000")
+        );
 
         // OSC 112: Reset cursor color
         term.feed(b"\x1b]112\x07");
@@ -728,5 +772,34 @@ mod tests {
         assert_eq!(term.theme.default_bg.r, 0x65);
         term.feed(b"\x1b]111\x07");
         assert_eq!(term.theme.default_bg, term.theme.initial_bg);
+    }
+
+    #[test]
+    fn test_long_command_line_wrap() {
+        let mut term = Terminal::new(10, 5);
+        term.feed(b"1234567890abcdefghij12345");
+        let grid = term.active_grid();
+        assert_eq!(grid.row_wrapped[0], true);
+        assert_eq!(grid.row_wrapped[1], true);
+        assert_eq!(grid.cells[0].character, '1');
+        assert_eq!(grid.cells[9].character, '0');
+        assert_eq!(grid.cells[10].character, 'a');
+        assert_eq!(grid.cells[19].character, 'j');
+        assert_eq!(grid.cells[20].character, '1');
+        assert_eq!(grid.cells[24].character, '5');
+        assert_eq!(grid.cursor.x, 5);
+        assert_eq!(grid.cursor.y, 2);
+    }
+
+    #[test]
+    fn test_wrapped_line_backspace_navigation() {
+        let mut term = Terminal::new(10, 5);
+        term.feed(b"1234567890a");
+        assert_eq!(term.active_grid().cursor.x, 1);
+        assert_eq!(term.active_grid().cursor.y, 1);
+
+        term.feed(b"\x08\x08");
+        assert_eq!(term.active_grid().cursor.x, 9);
+        assert_eq!(term.active_grid().cursor.y, 0);
     }
 }

@@ -58,4 +58,3 @@ pub fn spawn_shell(shell_path: &str) -> Result<PtyMaster, PtyError> {
         Err(e) => Err(PtyError::Fork(e.to_string())),
     }
 }
-

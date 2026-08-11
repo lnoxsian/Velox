@@ -18,7 +18,6 @@ impl DamageTracker {
             self.dirty_rows[row] = true;
         }
     }
-
 }
 
 impl Default for DamageTracker {

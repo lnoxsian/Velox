@@ -10,4 +10,3 @@ pub enum ParserState {
     EscapeDesignateG2,
     EscapeDesignateG3,
 }
-

@@ -1,20 +1,19 @@
+use glutin::display::GetGlDisplay;
+use glutin::prelude::*;
+use glutin_winit::GlWindow;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
 use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::HasWindowHandle;
-use glutin::prelude::*;
-use glutin::display::GetGlDisplay;
-use glutin_winit::GlWindow;
+use winit::window::{Window, WindowId};
 
-use crate::terminal::terminal::Terminal;
-use crate::renderer::renderer::Renderer;
-use crate::pty::process::spawn_shell;
 use crate::pty::master::PtyMaster;
+use crate::pty::process::spawn_shell;
+use crate::renderer::renderer::Renderer;
+use crate::terminal::terminal::Terminal;
 
 use crate::screen::cell::{Cell, CellFlags};
-
 
 pub enum CustomEvent {
     PtyData(Vec<u8>),
@@ -96,8 +95,6 @@ impl App {
             last_cursor_blink: std::time::Instant::now(),
         }
     }
-
-
 }
 
 fn load_app_icon() -> Option<winit::window::Icon> {
@@ -127,9 +124,8 @@ fn load_app_icon() -> Option<winit::window::Icon> {
 
 impl ApplicationHandler<CustomEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let config = crate::config::loader::load().unwrap_or_else(|_| {
-            crate::config::defaults::default_config()
-        });
+        let config = crate::config::loader::load()
+            .unwrap_or_else(|_| crate::config::defaults::default_config());
 
         let initial_title = match &config.app_title {
             Some(tpl) => tpl.replace("{program}", "velox"),
@@ -147,11 +143,10 @@ impl ApplicationHandler<CustomEvent> for App {
             window_attributes = window_attributes.with_window_icon(Some(icon));
         }
 
-        let template = glutin::config::ConfigTemplateBuilder::new()
-            .with_alpha_size(8);
+        let template = glutin::config::ConfigTemplateBuilder::new().with_alpha_size(8);
 
-        let display_builder = glutin_winit::DisplayBuilder::new()
-            .with_window_attributes(Some(window_attributes));
+        let display_builder =
+            glutin_winit::DisplayBuilder::new().with_window_attributes(Some(window_attributes));
 
         let (window, gl_config) = display_builder
             .build(event_loop, template, |configs| {
@@ -173,17 +168,24 @@ impl ApplicationHandler<CustomEvent> for App {
 
         let gl_display = gl_config.display();
         let context_attributes = glutin::context::ContextAttributesBuilder::new()
-            .with_context_api(glutin::context::ContextApi::OpenGl(Some(glutin::context::Version::new(3, 3))))
+            .with_context_api(glutin::context::ContextApi::OpenGl(Some(
+                glutin::context::Version::new(3, 3),
+            )))
             .build(Some(window.window_handle().unwrap().as_raw()));
-        
+
         let gl_context = unsafe {
-            gl_display.create_context(&gl_config, &context_attributes).unwrap()
+            gl_display
+                .create_context(&gl_config, &context_attributes)
+                .unwrap()
         };
 
         let attrs = window.build_surface_attributes(<_>::default()).unwrap();
 
         let gl_surface = unsafe {
-            gl_config.display().create_window_surface(&gl_config, &attrs).unwrap()
+            gl_config
+                .display()
+                .create_window_surface(&gl_config, &attrs)
+                .unwrap()
         };
 
         let gl_context = gl_context.make_current(&gl_surface).unwrap();
@@ -202,24 +204,37 @@ impl ApplicationHandler<CustomEvent> for App {
         let gpu = config.gpu_acceleration.unwrap_or(true);
         self.fps_limit = match config.fps_limit {
             Some(limit) => Some(limit),
-            None => if gpu { Some(120) } else { Some(60) },
+            None => {
+                if gpu {
+                    Some(120)
+                } else {
+                    Some(60)
+                }
+            }
         };
         self.default_font_size = config.font_size;
         self.current_font_size = config.font_size;
         self.padding_x = config.padding_x.unwrap_or(8.0);
         self.padding_y = config.padding_y.unwrap_or(4.0);
         let font_scale_multiplier = config.font_scale_multiplier.unwrap_or(1.5);
-        let renderer = Renderer::new(gl.clone(), &config.font_family, config.font_size, font_scale_multiplier);
-        
+        let renderer = Renderer::new(
+            gl.clone(),
+            &config.font_family,
+            config.font_size,
+            font_scale_multiplier,
+        );
+
         let avail_w = (800.0 - self.padding_x * 2.0).max(10.0);
         let avail_h = (600.0 - self.padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
         let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
-        
+
         // Spawn PTY shell
-        let shell_path = config.shell.clone()
+        let shell_path = config
+            .shell
+            .clone()
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".to_string());
         let pty_master = Arc::new(spawn_shell(&shell_path).unwrap());
@@ -257,15 +272,21 @@ impl ApplicationHandler<CustomEvent> for App {
         self.pty_master = Some(pty_master);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         match event {
             WindowEvent::Focused(focused) => {
                 self.is_focused = focused;
                 if let (Some(terminal), Some(pty_master)) = (&mut self.terminal, &self.pty_master)
-                    && terminal.focus_tracking {
-                        let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
-                        let _ = pty_master.write(seq);
-                    }
+                    && terminal.focus_tracking
+                {
+                    let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
+                    let _ = pty_master.write(seq);
+                }
                 self.needs_redraw = true;
             }
             WindowEvent::CloseRequested => {
@@ -275,12 +296,24 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.modifiers = mods.state();
             }
             WindowEvent::Resized(size) => {
-                if let (Some(window), Some(gl_surface), Some(gl_context), Some(renderer), Some(terminal), Some(pty_master)) = 
-                   (&self.window, &self.gl_surface, &self.gl_context, &mut self.renderer, &mut self.terminal, &self.pty_master) 
-                {
+                if let (
+                    Some(window),
+                    Some(gl_surface),
+                    Some(gl_context),
+                    Some(renderer),
+                    Some(terminal),
+                    Some(pty_master),
+                ) = (
+                    &self.window,
+                    &self.gl_surface,
+                    &self.gl_context,
+                    &mut self.renderer,
+                    &mut self.terminal,
+                    &self.pty_master,
+                ) {
                     window.resize_surface(gl_surface, gl_context);
                     renderer.resize(size.width, size.height);
-                    
+
                     let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
                     let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
                     let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
@@ -304,9 +337,19 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.handle_mouse_input(state, button);
             }
             WindowEvent::RedrawRequested => {
-                if let (Some(window), Some(renderer), Some(terminal), Some(gl_surface), Some(gl_context)) = 
-                   (&self.window, &mut self.renderer, &self.terminal, &self.gl_surface, &self.gl_context) 
-                {
+                if let (
+                    Some(window),
+                    Some(renderer),
+                    Some(terminal),
+                    Some(gl_surface),
+                    Some(gl_context),
+                ) = (
+                    &self.window,
+                    &mut self.renderer,
+                    &self.terminal,
+                    &self.gl_surface,
+                    &self.gl_context,
+                ) {
                     self.last_frame_instant = std::time::Instant::now();
 
                     let active_grid = terminal.active_grid();
@@ -349,13 +392,20 @@ impl ApplicationHandler<CustomEvent> for App {
                                 self.render_cells_buf[dest_start..dest_end].fill(default_cell);
                             } else if idx < history_len {
                                 // Row comes from the scrollback buffer
-                                let row_data = active_grid.scrollback.get_row(idx).unwrap_or_else(|| crate::screen::scrollback::Row { cells: vec![default_cell; width], wrapped: false });
+                                let row_data =
+                                    active_grid.scrollback.get_row(idx).unwrap_or_else(|| {
+                                        crate::screen::scrollback::Row {
+                                            cells: vec![default_cell; width],
+                                            wrapped: false,
+                                        }
+                                    });
                                 let line_slice = &row_data;
                                 let copy_len = line_slice.len().min(width);
                                 self.render_cells_buf[dest_start..dest_start + copy_len]
                                     .copy_from_slice(&line_slice[..copy_len]);
                                 if copy_len < width {
-                                    self.render_cells_buf[dest_start + copy_len..dest_end].fill(default_cell);
+                                    self.render_cells_buf[dest_start + copy_len..dest_end]
+                                        .fill(default_cell);
                                 }
                             } else {
                                 // Row comes from the live grid
@@ -381,7 +431,9 @@ impl ApplicationHandler<CustomEvent> for App {
                         let urls = crate::hyperlink::detector::detect(&line_text);
                         for (start_col, end_col, _) in urls {
                             for col in start_col..end_col.min(width) {
-                                self.render_cells_buf[row_start + col].flags.insert(CellFlags::UNDERLINE);
+                                self.render_cells_buf[row_start + col]
+                                    .flags
+                                    .insert(CellFlags::UNDERLINE);
                             }
                         }
                     }
@@ -397,7 +449,8 @@ impl ApplicationHandler<CustomEvent> for App {
                     // Throttle title-bar updates to at most once per second
                     if self.last_title_check.elapsed() >= std::time::Duration::from_secs(1) {
                         self.last_title_check = std::time::Instant::now();
-                        let program = self.pty_master
+                        let program = self
+                            .pty_master
                             .as_ref()
                             .and_then(|pty| pty.get_foreground_process_name())
                             .unwrap_or_else(|| "velox".to_string());
@@ -411,17 +464,22 @@ impl ApplicationHandler<CustomEvent> for App {
                         }
                     }
 
-                    let cursor_shape = if !self.is_focused && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block {
+                    let cursor_shape = if !self.is_focused
+                        && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                    {
                         crate::screen::cursor::CursorShape::HollowBlock
                     } else {
                         active_grid.cursor.shape
                     };
 
+                    let display_cursor_x =
+                        active_grid.cursor.x.min((width as usize).saturating_sub(1));
+
                     renderer.draw(
                         &self.render_cells_buf,
                         width,
                         height,
-                        active_grid.cursor.x,
+                        display_cursor_x,
                         active_grid.cursor.y,
                         cursor_visible,
                         cursor_shape,
@@ -463,7 +521,9 @@ impl ApplicationHandler<CustomEvent> for App {
         let now = std::time::Instant::now();
 
         // ── Cursor blink: toggle every 500 ms ────────────────────────────────
-        if self.cursor_blink_enabled && now.duration_since(self.last_cursor_blink) >= std::time::Duration::from_millis(500) {
+        if self.cursor_blink_enabled
+            && now.duration_since(self.last_cursor_blink) >= std::time::Duration::from_millis(500)
+        {
             self.cursor_blink_on = !self.cursor_blink_on;
             self.last_cursor_blink = now;
             self.needs_redraw = true;
@@ -472,11 +532,13 @@ impl ApplicationHandler<CustomEvent> for App {
         // ── Schedule pending redraw with non-blocking FPS limiting ───────────
         if self.needs_redraw {
             if let Some(term) = &mut self.terminal
-                && term.is_synchronized_output_active() {
-                    return;
-                }
+                && term.is_synchronized_output_active()
+            {
+                return;
+            }
 
-            let frame_duration = self.fps_limit
+            let frame_duration = self
+                .fps_limit
                 .filter(|&l| l > 0)
                 .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
                 .unwrap_or(std::time::Duration::from_millis(8));
@@ -489,9 +551,7 @@ impl ApplicationHandler<CustomEvent> for App {
                 self.needs_redraw = false;
             } else {
                 // Defer until the FPS budget allows — no thread::sleep blocking
-                event_loop.set_control_flow(
-                    winit::event_loop::ControlFlow::WaitUntil(next_frame),
-                );
+                event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_frame));
                 return;
             }
         }
@@ -499,9 +559,7 @@ impl ApplicationHandler<CustomEvent> for App {
         // ── Idle: sleep until the next cursor-blink toggle or wait ───────────
         if self.cursor_blink_enabled {
             let next_blink = self.last_cursor_blink + std::time::Duration::from_millis(500);
-            event_loop.set_control_flow(
-                winit::event_loop::ControlFlow::WaitUntil(next_blink),
-            );
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_blink));
         } else {
             event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
         }
