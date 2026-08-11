@@ -37,5 +37,6 @@ pub fn default_config() -> Config {
         font_scale_multiplier: Some(1.5),
         cursor_shape: Some("block".to_string()),
         cursor_blink: Some(true),
+        single_instance: Some(true),
     }
 }

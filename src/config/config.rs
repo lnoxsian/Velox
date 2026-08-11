@@ -37,6 +37,8 @@ pub struct Config {
     pub cursor_shape: Option<String>,
     #[serde(default)]
     pub cursor_blink: Option<bool>,
+    #[serde(default)]
+    pub single_instance: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

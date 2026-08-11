@@ -1,5 +1,6 @@
 use crate::pty::master::PtyMaster;
 use nix::pty::openpty;
+use std::ffi::CString;
 use std::os::fd::IntoRawFd;
 use std::os::unix::process::CommandExt;
 
@@ -18,7 +19,16 @@ impl std::fmt::Display for PtyError {
 
 impl std::error::Error for PtyError {}
 
+#[allow(dead_code)]
 pub fn spawn_shell(shell_path: &str) -> Result<PtyMaster, PtyError> {
+    spawn_process(shell_path, None, None)
+}
+
+pub fn spawn_process(
+    shell_path: &str,
+    command: Option<&[String]>,
+    working_directory: Option<&str>,
+) -> Result<PtyMaster, PtyError> {
     let pty = openpty(None, None).map_err(|e| PtyError::Fork(e.to_string()))?;
     let master_fd = pty.master.into_raw_fd();
     let slave_fd = pty.slave.into_raw_fd();
@@ -40,13 +50,32 @@ pub fn spawn_shell(shell_path: &str) -> Result<PtyMaster, PtyError> {
 
                 libc::close(master_fd);
                 libc::close(slave_fd);
+
+                if let Some(dir) = working_directory {
+                    if let Ok(c_dir) = CString::new(dir) {
+                        libc::chdir(c_dir.as_ptr());
+                    }
+                }
             }
 
-            // Note: Since nix::unistd::execvp is gated, we can use std::process or libc
-            let err = std::process::Command::new(shell_path)
-                .env("TERM", "xterm-256color")
-                .env("COLORTERM", "truecolor")
-                .exec();
+            let mut cmd = if let Some(args) = command {
+                if !args.is_empty() {
+                    let mut c = std::process::Command::new(&args[0]);
+                    if args.len() > 1 {
+                        c.args(&args[1..]);
+                    }
+                    c
+                } else {
+                    std::process::Command::new(shell_path)
+                }
+            } else {
+                std::process::Command::new(shell_path)
+            };
+
+            cmd.env("TERM", "xterm-256color")
+                .env("COLORTERM", "truecolor");
+
+            let err = cmd.exec();
             panic!("exec failed: {}", err);
         }
         Ok(nix::unistd::ForkResult::Parent { child: _ }) => {
