@@ -115,26 +115,42 @@ LIBGL_ALWAYS_SOFTWARE=1 ./target/release/velox
 Velox reads user configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HOME/velox/config.toml`).
 
 ```toml
-font_family = "monospace"
-font_size = 14.0
-scrollback_limit = 1000
+[font]
+font_family = "ComicShannsMono Nerd Font"
+font_scale_multiplier = 1.5
+font_size = 11.0
+bold_is_bright = true
 
-# Single-Process Architecture (reuse process for all windows)
-single_instance = true
-
-# GPU Acceleration (set to false for software fallback)
+[window]
+scrollback_limit = 2000
+infinite_scrollback = true
 gpu_acceleration = true
-
-# Scroll Sensitivity & FPS Cap
-scroll_multiplier = 1.0
+scroll_multiplier = 5.0
 fps_limit = 120
-
-# Window Margin Padding (pixels)
 padding_x = 8.0
 padding_y = 4.0
-
-# Cursor Animation
+cursor_shape = "beam"
 cursor_blink = true
+
+[colors]
+default_fg = "#e0def4"
+default_bg = "#191724"
+black = "#26233a"
+red = "#eb6f92"
+green = "#31748f"
+yellow = "#f6c177"
+blue = "#9ccfd8"
+magenta = "#c4a7e7"
+cyan = "#ebbcba"
+white = "#e0def4"
+bright_black = "#6e6a86"
+bright_red = "#eb6f92"
+bright_green = "#31748f"
+bright_yellow = "#f6c177"
+bright_blue = "#9ccfd8"
+bright_magenta = "#c4a7e7"
+bright_cyan = "#ebbcba"
+bright_white = "#e0def4"
 ```
 
 ---

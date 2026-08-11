@@ -134,3 +134,50 @@ impl Default for Scrollback {
         Self::new(1000, false)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screen::cell::{Cell, CellFlags, Color};
+
+    #[test]
+    fn test_infinite_scrollback_disk_clearing() {
+        let mut scrollback = Scrollback::new(2, true);
+        let dummy_cell = Cell {
+            character: 'A',
+            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
+            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            flags: CellFlags::empty(),
+        };
+
+        // Push 5 lines to trigger disk store spilling (max_lines = 2)
+        for _ in 0..5 {
+            scrollback.push_line(&[dummy_cell.clone()], false);
+        }
+
+        assert_eq!(scrollback.len(), 5);
+        assert!(scrollback.disk_index.len() > 0);
+
+        // Verify disk file size before clear
+        if let Some(file_ref) = scrollback.disk_store.as_ref() {
+            let file = file_ref.borrow();
+            let metadata = file.metadata().unwrap();
+            assert!(metadata.len() > 0);
+        }
+
+        // Clear scrollback
+        scrollback.clear();
+
+        assert_eq!(scrollback.len(), 0);
+        assert_eq!(scrollback.lines.len(), 0);
+        assert_eq!(scrollback.disk_index.len(), 0);
+
+        // Verify temp disk file was truncated to 0 bytes
+        if let Some(file_ref) = scrollback.disk_store.as_ref() {
+            let file = file_ref.borrow();
+            let metadata = file.metadata().unwrap();
+            assert_eq!(metadata.len(), 0);
+        }
+    }
+}
+

@@ -303,10 +303,10 @@ impl App {
 
         let gl_context = gl_context.make_current(&gl_surface).unwrap();
 
-        let scroll_multiplier = config.scroll_multiplier.unwrap_or(1.0);
-        let cursor_blink_enabled = config.cursor_blink.unwrap_or(true);
-        let gpu = config.gpu_acceleration.unwrap_or(true);
-        let fps_limit = match config.fps_limit {
+        let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
+        let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
+        let gpu = config.gpu_acceleration().unwrap_or(true);
+        let fps_limit = match config.fps_limit() {
             Some(limit) => Some(limit),
             None => {
                 if gpu {
@@ -317,14 +317,14 @@ impl App {
             }
         };
 
-        let font_size = config.font_size;
-        let padding_x = config.padding_x.unwrap_or(8.0);
-        let padding_y = config.padding_y.unwrap_or(4.0);
-        let font_scale_multiplier = config.font_scale_multiplier.unwrap_or(1.5);
+        let font_size = config.font_size();
+        let padding_x = config.padding_x().unwrap_or(8.0);
+        let padding_y = config.padding_y().unwrap_or(4.0);
+        let font_scale_multiplier = config.font_scale_multiplier().unwrap_or(1.5);
 
         let renderer = Renderer::new(
             gl.clone(),
-            &config.font_family,
+            config.font_family(),
             font_size,
             font_scale_multiplier,
         );

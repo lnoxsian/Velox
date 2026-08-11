@@ -59,7 +59,7 @@ fn main() {
 
     cli_opts.single_instance = single_instance;
 
-    if !config.gpu_acceleration.unwrap_or(true) {
+    if !config.gpu_acceleration().unwrap_or(true) {
         log::info!(
             "GPU acceleration disabled. Setting LIBGL_ALWAYS_SOFTWARE=1 and GALLIUM_DRIVER=llvmpipe."
         );

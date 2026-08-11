@@ -52,12 +52,12 @@ impl Terminal {
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
         let mut theme = Theme::new();
-        if let Some(fg) = &config.default_fg
+        if let Some(fg) = config.default_fg()
             && let Some(c) = crate::config::config::parse_hex_color(fg)
         {
             theme.default_fg = c;
         }
-        if let Some(bg) = &config.default_bg
+        if let Some(bg) = config.default_bg()
             && let Some(c) = crate::config::config::parse_hex_color(bg)
         {
             theme.default_bg = c;
@@ -94,12 +94,11 @@ impl Terminal {
 
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
-        let bold_is_bright = config.bold_is_bright.unwrap_or(true);
+        let bold_is_bright = config.bold_is_bright().unwrap_or(true);
         let app_title = config.app_title.clone();
 
         let initial_shape = match config
-            .cursor_shape
-            .as_deref()
+            .cursor_shape()
             .unwrap_or("block")
             .to_lowercase()
             .as_str()
@@ -112,8 +111,8 @@ impl Terminal {
             _ => crate::screen::cursor::CursorShape::Block,
         };
 
-        let scrollback_limit = config.scrollback_limit.unwrap_or(1000);
-        let infinite_scrollback = config.infinite_scrollback.unwrap_or(false);
+        let scrollback_limit = config.scrollback_limit().unwrap_or(1000);
+        let infinite_scrollback = config.infinite_scrollback().unwrap_or(false);
 
         let mut grid = Grid::new(
             width,
