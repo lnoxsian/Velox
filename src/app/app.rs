@@ -171,6 +171,96 @@ impl WindowState {
             }
         }
 
+        let active_grid = self.terminal.active_grid();
+        let width = active_grid.width;
+        let height = active_grid.height;
+        let size = width * height;
+
+        if self.render_cells_buf.len() != size {
+            let default_cell = Cell {
+                character: ' ',
+                foreground: active_grid.default_fg,
+                background: active_grid.default_bg,
+                flags: CellFlags::empty(),
+            };
+            self.render_cells_buf.resize(size, default_cell);
+        }
+
+        let offset = active_grid.scroll_offset;
+        let history_len = active_grid.scrollback.len();
+
+        if offset == 0 {
+            self.render_cells_buf.copy_from_slice(&active_grid.cells);
+        } else {
+            let default_cell = Cell {
+                character: ' ',
+                foreground: active_grid.default_fg,
+                background: active_grid.default_bg,
+                flags: CellFlags::empty(),
+            };
+            for y in 0..height {
+                let dest_start = y * width;
+                let dest_end = dest_start + width;
+
+                let idx = (y + history_len).saturating_sub(offset);
+                if y + history_len < offset {
+                    self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                } else if idx < history_len {
+                    if !active_grid.scrollback.copy_row_to_slice(
+                        idx,
+                        &mut self.render_cells_buf[dest_start..dest_end],
+                        default_cell,
+                    ) {
+                        self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                    }
+                } else {
+                    let grid_y = idx - history_len;
+                    let src_start = grid_y * width;
+                    let src_end = src_start + width;
+                    if src_end <= active_grid.cells.len() {
+                        self.render_cells_buf[dest_start..dest_end]
+                            .copy_from_slice(&active_grid.cells[src_start..src_end]);
+                    } else {
+                        self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                    }
+                }
+            }
+        }
+
+        // Auto-detect URLs in visible rows and apply UNDERLINE styling
+        for y in 0..height {
+            let row_start = y * width;
+            let line_text: String = (0..width)
+                .map(|x| self.render_cells_buf[row_start + x].character)
+                .collect();
+            let urls = crate::hyperlink::detector::detect(&line_text);
+            for (start_col, end_col, _) in urls {
+                for col in start_col..end_col.min(width) {
+                    self.render_cells_buf[row_start + col]
+                        .flags
+                        .insert(CellFlags::UNDERLINE);
+                }
+            }
+        }
+
+        let cursor_visible = if offset > 0 {
+            false
+        } else if self.cursor_blink_enabled {
+            active_grid.cursor.visible && self.cursor_blink_on
+        } else {
+            active_grid.cursor.visible
+        };
+
+        let cursor_shape = if !self.is_focused
+            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+        {
+            crate::screen::cursor::CursorShape::HollowBlock
+        } else {
+            active_grid.cursor.shape
+        };
+
+        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
                 renderer,
@@ -178,105 +268,6 @@ impl WindowState {
                 gl_context,
             } => {
                 let _ = gl_context.make_current(gl_surface);
-
-                let active_grid = self.terminal.active_grid();
-                let width = active_grid.width;
-                let height = active_grid.height;
-                let size = width * height;
-
-                if self.render_cells_buf.len() != size {
-                    let default_cell = Cell {
-                        character: ' ',
-                        foreground: active_grid.default_fg,
-                        background: active_grid.default_bg,
-                        flags: CellFlags::empty(),
-                    };
-                    self.render_cells_buf.resize(size, default_cell);
-                }
-
-                let offset = active_grid.scroll_offset;
-                let history_len = active_grid.scrollback.len();
-
-                if offset == 0 {
-                    self.render_cells_buf.copy_from_slice(&active_grid.cells);
-                } else {
-                    let default_cell = Cell {
-                        character: ' ',
-                        foreground: active_grid.default_fg,
-                        background: active_grid.default_bg,
-                        flags: CellFlags::empty(),
-                    };
-                    for y in 0..height {
-                        let dest_start = y * width;
-                        let dest_end = dest_start + width;
-
-                        let idx = (y + history_len).saturating_sub(offset);
-                        if y + history_len < offset {
-                            self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                        } else if idx < history_len {
-                            let row_data =
-                                active_grid.scrollback.get_row(idx).unwrap_or_else(|| {
-                                    crate::screen::scrollback::Row {
-                                        cells: vec![default_cell; width],
-                                        wrapped: false,
-                                    }
-                                });
-                            let line_slice = &row_data;
-                            let copy_len = line_slice.len().min(width);
-                            self.render_cells_buf[dest_start..dest_start + copy_len]
-                                .copy_from_slice(&line_slice[..copy_len]);
-                            if copy_len < width {
-                                self.render_cells_buf[dest_start + copy_len..dest_end]
-                                    .fill(default_cell);
-                            }
-                        } else {
-                            let grid_y = idx - history_len;
-                            let src_start = grid_y * width;
-                            let src_end = src_start + width;
-                            if src_end <= active_grid.cells.len() {
-                                self.render_cells_buf[dest_start..dest_end]
-                                    .copy_from_slice(&active_grid.cells[src_start..src_end]);
-                            } else {
-                                self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                            }
-                        }
-                    }
-                }
-
-                // Auto-detect URLs in visible rows and apply UNDERLINE styling
-                for y in 0..height {
-                    let row_start = y * width;
-                    let line_text: String = (0..width)
-                        .map(|x| self.render_cells_buf[row_start + x].character)
-                        .collect();
-                    let urls = crate::hyperlink::detector::detect(&line_text);
-                    for (start_col, end_col, _) in urls {
-                        for col in start_col..end_col.min(width) {
-                            self.render_cells_buf[row_start + col]
-                                .flags
-                                .insert(CellFlags::UNDERLINE);
-                        }
-                    }
-                }
-
-                let cursor_visible = if offset > 0 {
-                    false
-                } else if self.cursor_blink_enabled {
-                    active_grid.cursor.visible && self.cursor_blink_on
-                } else {
-                    active_grid.cursor.visible
-                };
-
-                let cursor_shape = if !self.is_focused
-                    && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-                {
-                    crate::screen::cursor::CursorShape::HollowBlock
-                } else {
-                    active_grid.cursor.shape
-                };
-
-                let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
-
                 renderer.draw(
                     &self.render_cells_buf,
                     width,
@@ -291,23 +282,19 @@ impl WindowState {
                     self.padding_x,
                     self.padding_y,
                 );
-
                 let _ = gl_surface.swap_buffers(gl_context);
             }
             WindowRendererBackend::Software { renderer, surface } => {
-                let cursor_blink_on = if self.cursor_blink_enabled {
-                    self.cursor_blink_on
-                } else {
-                    true
-                };
-
                 if let Ok(mut buffer) = surface.buffer_mut() {
                     renderer.render(
-                        self.terminal.active_grid(),
+                        &self.render_cells_buf,
+                        active_grid,
                         &self.terminal.theme,
                         self.padding_x,
                         self.padding_y,
-                        cursor_blink_on,
+                        cursor_visible,
+                        cursor_shape,
+                        display_cursor_x,
                         self.is_focused,
                         &mut buffer,
                     );

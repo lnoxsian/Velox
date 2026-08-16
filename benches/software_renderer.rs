@@ -37,14 +37,36 @@ fn main() {
     );
 
     // Warm up
-    renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        true,
+        velox::screen::cursor::CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
 
     // 1. Idle Benchmark (0-damage)
     grid.damage.dirty_rows.fill(false);
     let iterations = 5_000u32;
     let start = Instant::now();
     for _ in 0..iterations {
-        renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            &mut target,
+        );
     }
     let elapsed = start.elapsed();
     println!(
@@ -78,7 +100,18 @@ fn main() {
     let start = Instant::now();
     for _ in 0..iters {
         grid.damage.dirty_rows.fill(true);
-        renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            &mut target,
+        );
     }
     let elapsed = start.elapsed();
     println!(
@@ -114,7 +147,18 @@ fn main() {
     let start = Instant::now();
     for _ in 0..iters {
         grid.damage.dirty_rows.fill(true);
-        renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            &mut target,
+        );
     }
     let elapsed = start.elapsed();
     println!(
@@ -150,7 +194,18 @@ fn main() {
     let start = Instant::now();
     for _ in 0..iters {
         grid.damage.dirty_rows.fill(true);
-        renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            &mut target,
+        );
     }
     let elapsed = start.elapsed();
     println!(
@@ -188,7 +243,18 @@ fn main() {
                 flags: CellFlags::empty(),
             };
         }
-        renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            &mut target,
+        );
     }
     let elapsed = start.elapsed();
     println!(

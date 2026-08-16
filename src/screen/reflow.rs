@@ -30,7 +30,10 @@ impl Grid {
         let mut combined_rows: Vec<CombinedRow> = Vec::new();
 
         let len = self.scrollback.len();
-        for i in 0..len {
+        let reflow_window = self.scrollback.max_lines.max(1000);
+        let start_idx = len.saturating_sub(reflow_window);
+
+        for i in start_idx..len {
             if let Some(row) = self.scrollback.get_row(i) {
                 combined_rows.push(CombinedRow {
                     cells: row.cells,
@@ -303,7 +306,11 @@ impl Grid {
                 .max(new_cursor_row_idx.saturating_sub(new_h - 1))
         };
 
-        self.scrollback.clear();
+        if start_idx == 0 {
+            self.scrollback.clear();
+        } else {
+            self.scrollback.clear_hot();
+        }
         for row in &reflowed_rows[..grid_start] {
             self.scrollback.push_line(&row.cells, row.wrapped);
         }

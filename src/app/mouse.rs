@@ -34,14 +34,8 @@ impl WindowState {
         let line_text: String = if y_offset < history_len {
             active_grid
                 .scrollback
-                .get_row(y_offset)
-                .unwrap_or_else(|| crate::screen::scrollback::Row {
-                    cells: vec![],
-                    wrapped: false,
-                })
-                .iter()
-                .map(|c| c.character)
-                .collect()
+                .with_row(y_offset, |row| row.iter().map(|c| c.character).collect())
+                .unwrap_or_default()
         } else {
             let y = y_offset - history_len;
             if y < active_grid.height {
@@ -259,14 +253,8 @@ impl WindowState {
                         let line_text: String = if y_offset < history_len {
                             active_grid
                                 .scrollback
-                                .get_row(y_offset)
-                                .unwrap_or_else(|| crate::screen::scrollback::Row {
-                                    cells: vec![],
-                                    wrapped: false,
-                                })
-                                .iter()
-                                .map(|c| c.character)
-                                .collect()
+                                .with_row(y_offset, |row| row.iter().map(|c| c.character).collect())
+                                .unwrap_or_default()
                         } else {
                             let y = y_offset - history_len;
                             if y < active_grid.height {

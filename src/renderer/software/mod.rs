@@ -15,7 +15,7 @@ pub use framebuffer::Framebuffer;
 pub use glyph::{GlyphCache, GlyphKey};
 pub use stats::RenderStats;
 
-use crate::screen::cell::CellFlags;
+use crate::screen::cell::{Cell, CellFlags};
 use crate::screen::cursor::CursorShape;
 use crate::screen::grid::Grid;
 use crate::theme::theme::Theme;
@@ -40,6 +40,7 @@ pub struct CpuRenderer {
     prev_theme_bg: crate::screen::cell::Color,
     prev_ansi_colors: [crate::screen::cell::Color; 16],
     bold_is_bright: bool,
+    prev_scroll_offset: usize,
 }
 
 impl CpuRenderer {
@@ -71,6 +72,7 @@ impl CpuRenderer {
             prev_theme_bg: theme.default_bg,
             prev_ansi_colors: theme.ansi_colors,
             bold_is_bright,
+            prev_scroll_offset: 0,
         }
     }
 
@@ -95,11 +97,14 @@ impl CpuRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
+        cells: &[Cell],
         grid: &Grid,
         theme: &Theme,
         padding_x: f32,
         padding_y: f32,
-        cursor_blink_on: bool,
+        cursor_visible: bool,
+        cursor_shape: CursorShape,
+        display_cursor_x: usize,
         is_focused: bool,
         target_buffer: &mut [u32],
     ) {
@@ -121,10 +126,15 @@ impl CpuRenderer {
             self.damage.mark_all();
         }
 
-        // 2. Ingest terminal damage
+        // 2. Ingest terminal damage and scroll offset changes
+        if grid.scroll_offset != self.prev_scroll_offset {
+            self.damage.mark_all();
+            self.prev_scroll_offset = grid.scroll_offset;
+        }
+
         self.damage.sync_from_grid(&grid.damage.dirty_rows);
         self.damage
-            .update_cursor(grid.cursor.x, grid.cursor.y, grid.cursor.visible);
+            .update_cursor(display_cursor_x, grid.cursor.y, cursor_visible);
 
         let ((sel_min_x, sel_min_y), (sel_max_x, sel_max_y)) = grid.selection.normalized_bounds();
         self.damage
@@ -165,7 +175,7 @@ impl CpuRenderer {
             }
 
             let row_start = y * grid_w;
-            let row_cells = &grid.cells[row_start..(row_start + grid_w).min(grid.cells.len())];
+            let row_cells = &cells[row_start..(row_start + grid_w).min(cells.len())];
 
             // ─── Pass A: Coalesced Background Spans ───────────────────────────
             let mut span_start_col = 0usize;
@@ -292,21 +302,22 @@ impl CpuRenderer {
         }
 
         // 4. Render Cursor
-        if grid.cursor.visible
-            && cursor_blink_on
-            && grid.cursor.y < grid_h
-            && grid.cursor.x < grid_w
-        {
-            let cur_x = grid.cursor.x;
+        if cursor_visible && grid.cursor.y < grid_h && display_cursor_x < grid_w {
+            let cur_x = display_cursor_x;
             let cur_y = grid.cursor.y;
             let px = px_offset + (cur_x as u32) * cell_w;
             let py = py_offset + (cur_y as u32) * cell_h;
 
             if px + cell_w <= self.framebuffer.width && py + cell_h <= self.framebuffer.height {
-                let cell = &grid.cells[cur_y * grid_w + cur_x];
+                let cell_idx = cur_y * grid_w + cur_x;
+                let cell = if cell_idx < cells.len() {
+                    &cells[cell_idx]
+                } else {
+                    &grid.cells[0]
+                };
                 let cursor_color = self.palette.default_fg;
 
-                if is_focused && grid.cursor.shape == CursorShape::Block {
+                if is_focused && cursor_shape == CursorShape::Block {
                     // Block cursor: fill cursor block and render inverted cell character
                     self.framebuffer
                         .fill_span(px, py, cell_w, cell_h, cursor_color);
@@ -351,7 +362,7 @@ impl CpuRenderer {
                         py,
                         cell_w,
                         cell_h,
-                        grid.cursor.shape,
+                        cursor_shape,
                         is_focused,
                         cursor_color,
                     );

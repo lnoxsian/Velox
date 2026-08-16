@@ -34,7 +34,18 @@ fn test_software_renderer_idle_zero_work() {
     let mut target = vec![0u32; 800 * 600];
 
     // First frame initializes and renders initial damage
-    renderer.render(&grid, &theme, 8.0, 4.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
     assert!(!renderer.damage.has_damage());
 
     // Clear grid damage
@@ -42,7 +53,18 @@ fn test_software_renderer_idle_zero_work() {
 
     // Second frame: grid is idle, no damage
     renderer.enable_stats = true;
-    renderer.render(&grid, &theme, 8.0, 4.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
 
     // Should touch 0 dirty rows
     assert_eq!(renderer.stats.dirty_rows, 0);
@@ -74,7 +96,18 @@ fn test_software_renderer_damage_partial_row() {
     let mut target = vec![0u32; 800 * 600];
 
     // Initial frame
-    renderer.render(&grid, &theme, 8.0, 4.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
     grid.damage.dirty_rows.fill(false);
 
     // Modify only row 5
@@ -97,7 +130,18 @@ fn test_software_renderer_damage_partial_row() {
     };
 
     renderer.enable_stats = true;
-    renderer.render(&grid, &theme, 8.0, 4.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
 
     // Only 1 dirty row rendered
     assert_eq!(renderer.stats.dirty_rows, 1);
@@ -151,7 +195,18 @@ fn test_software_renderer_box_and_block_primitives() {
     }
 
     grid.damage.mark_dirty(0);
-    renderer.render(&grid, &theme, 0.0, 0.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
 
     // Check that some green pixels (0x0000FF00) were drawn in the framebuffer
     let has_green_pixels = target.contains(&0x0000FF00);
@@ -191,7 +246,18 @@ fn test_software_renderer_selection_and_cursor() {
     grid.selection.start_selection(2, 2);
     grid.selection.update_selection(10, 2);
 
-    renderer.render(&grid, &theme, 8.0, 4.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
     assert!(!renderer.damage.has_damage());
 }
 
@@ -285,7 +351,78 @@ fn test_software_renderer_decorations() {
     };
 
     grid.damage.mark_dirty(0);
-    renderer.render(&grid, &theme, 8.0, 4.0, true, true, &mut target);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        &mut target,
+    );
+    assert!(!renderer.damage.has_damage());
+}
+
+#[test]
+fn test_software_renderer_scrollback_rendering() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut grid = Grid::new(
+        80,
+        24,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        },
+        Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        },
+        100,
+        true,
+    );
+    let theme = Theme::new();
+    let mut target = vec![0u32; 800 * 600];
+
+    // Push historical row into scrollback
+    let scroll_cell = Cell {
+        character: 'H',
+        foreground: Color {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        },
+        background: Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        },
+        flags: CellFlags::empty(),
+    };
+    grid.scrollback.push_line(&[scroll_cell], false);
+    grid.scroll_offset = 1;
+
+    let rendered_cells = vec![scroll_cell; 80 * 24];
+    renderer.render(
+        &rendered_cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        &mut target,
+    );
     assert!(!renderer.damage.has_damage());
 }
 
