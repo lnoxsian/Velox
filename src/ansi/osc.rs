@@ -181,10 +181,10 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
         "7" => {
             if params.len() >= 2 {
                 let uri_bytes = params[1..].join(&b';');
-                if let Ok(uri) = std::str::from_utf8(&uri_bytes) {
-                    if let Some(path) = parse_osc7_cwd(uri.trim()) {
-                        terminal.current_dir = Some(path);
-                    }
+                if let Ok(uri) = std::str::from_utf8(&uri_bytes)
+                    && let Some(path) = parse_osc7_cwd(uri.trim())
+                {
+                    terminal.current_dir = Some(path);
                 }
             }
         }
@@ -195,46 +195,38 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
         }
 
         // OSC 133: Shell Integration / Semantic Prompt Marking (FinalTerm / FTCS)
-        "133" => {
-            if params.len() >= 2 {
-                let sub_cmd = std::str::from_utf8(params[1]).unwrap_or("").trim();
-                match sub_cmd {
-                    "A" => {
-                        terminal.mark_semantic_zone(
-                            crate::terminal::terminal::SemanticZone::Prompt,
-                            None,
-                        );
-                    }
-                    "B" => {
-                        terminal.mark_semantic_zone(
-                            crate::terminal::terminal::SemanticZone::Input,
-                            None,
-                        );
-                    }
-                    "C" => {
-                        terminal.mark_semantic_zone(
-                            crate::terminal::terminal::SemanticZone::Output,
-                            None,
-                        );
-                    }
-                    "D" => {
-                        let exit_code = if params.len() >= 3 {
-                            std::str::from_utf8(params[2])
-                                .unwrap_or("")
-                                .trim()
-                                .parse::<i32>()
-                                .ok()
-                        } else {
-                            None
-                        };
-                        terminal.last_command_exit_code = exit_code;
-                        if let Some(mark) = terminal.prompt_marks.last_mut() {
-                            mark.exit_code = exit_code;
-                        }
-                        terminal.semantic_zone = crate::terminal::terminal::SemanticZone::Prompt;
-                    }
-                    _ => {}
+        "133" if params.len() >= 2 => {
+            let sub_cmd = std::str::from_utf8(params[1]).unwrap_or("").trim();
+            match sub_cmd {
+                "A" => {
+                    terminal
+                        .mark_semantic_zone(crate::terminal::terminal::SemanticZone::Prompt, None);
                 }
+                "B" => {
+                    terminal
+                        .mark_semantic_zone(crate::terminal::terminal::SemanticZone::Input, None);
+                }
+                "C" => {
+                    terminal
+                        .mark_semantic_zone(crate::terminal::terminal::SemanticZone::Output, None);
+                }
+                "D" => {
+                    let exit_code = if params.len() >= 3 {
+                        std::str::from_utf8(params[2])
+                            .unwrap_or("")
+                            .trim()
+                            .parse::<i32>()
+                            .ok()
+                    } else {
+                        None
+                    };
+                    terminal.last_command_exit_code = exit_code;
+                    if let Some(mark) = terminal.prompt_marks.last_mut() {
+                        mark.exit_code = exit_code;
+                    }
+                    terminal.semantic_zone = crate::terminal::terminal::SemanticZone::Prompt;
+                }
+                _ => {}
             }
         }
 

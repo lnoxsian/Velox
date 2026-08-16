@@ -75,14 +75,12 @@ impl WindowState {
 
                 if (new_size - self.current_font_size).abs() > 0.01 {
                     self.current_font_size = new_size;
-                    self.renderer.set_font_size(new_size);
+                    self.set_font_size(new_size);
                     let size = self.window.inner_size();
                     let avail_w = (size.width as f32 - self.padding_x * 2.0).max(10.0);
                     let avail_h = (size.height as f32 - self.padding_y * 2.0).max(10.0);
-                    let cols =
-                        ((avail_w as u32) / self.renderer.font_loader.cell_width).max(20);
-                    let rows =
-                        ((avail_h as u32) / self.renderer.font_loader.cell_height).max(10);
+                    let cols = ((avail_w as u32) / self.cell_width()).max(20);
+                    let rows = ((avail_h as u32) / self.cell_height()).max(10);
                     self.terminal.resize(cols, rows);
                     let _ = self.pty_master.resize(cols as u16, rows as u16);
                     self.needs_redraw = true;

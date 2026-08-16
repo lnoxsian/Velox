@@ -592,38 +592,49 @@ mod tests {
     #[test]
     fn test_reflow_empty_lines() {
         use crate::screen::cell::Color;
-        let default_color = Color { r: 0, g: 0, b: 0, a: 255 };
+        let default_color = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
         let mut grid = Grid::new(100, 24, default_color, default_color, 1000, false);
-        
+
         // row 0: text
         grid.cells[0].character = 'a';
-        
+
         // row 1: hard-broken empty line (like \n)
         grid.row_wrapped[1] = false;
-        
+
         // row 2: text
         grid.cells[200].character = 'b';
-        
+
         // row 3: wrapped empty line (like spaces to edge)
         grid.row_wrapped[3] = true;
-        
+
         // row 4: prompt
         grid.cells[400].character = '>';
-        
+
         grid.cursor.x = 1;
         grid.cursor.y = 4;
 
         for width in [50, 40, 100, 20].iter() {
             grid.resize(*width, 24);
-            
+
             let mut prompt_y = 0;
             let mut b_y = 0;
             for y in 0..grid.height {
-                let row_start = y as usize * grid.width;
-                if grid.cells[row_start..row_start + grid.width].iter().any(|c| c.character == 'b') {
+                let row_start = y * grid.width;
+                if grid.cells[row_start..row_start + grid.width]
+                    .iter()
+                    .any(|c| c.character == 'b')
+                {
                     b_y = y;
                 }
-                if grid.cells[row_start..row_start + grid.width].iter().any(|c| c.character == '>') {
+                if grid.cells[row_start..row_start + grid.width]
+                    .iter()
+                    .any(|c| c.character == '>')
+                {
                     prompt_y = y;
                 }
             }

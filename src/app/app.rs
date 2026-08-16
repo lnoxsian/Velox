@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin_winit::GlWindow;
+use std::collections::HashMap;
+use std::num::NonZeroU32;
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
@@ -10,16 +11,22 @@ use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Window, WindowId};
 
 use crate::cli::CliOptions;
-use crate::ipc::{start_ipc_server, IpcListenerHandle};
+use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_process;
 use crate::renderer::renderer::Renderer;
+use crate::renderer::software::CpuRenderer;
 use crate::screen::cell::{Cell, CellFlags};
 use crate::terminal::terminal::Terminal;
 
 pub enum CustomEvent {
-    PtyData { window_id: WindowId, data: Vec<u8> },
-    PtyExit { window_id: WindowId },
+    PtyData {
+        window_id: WindowId,
+        data: Vec<u8>,
+    },
+    PtyExit {
+        window_id: WindowId,
+    },
     IpcCreateWindow {
         working_directory: Option<String>,
         command: Option<Vec<String>>,
@@ -28,13 +35,42 @@ pub enum CustomEvent {
     },
 }
 
+#[allow(clippy::large_enum_variant)]
+pub enum WindowRendererBackend {
+    OpenGL {
+        renderer: Renderer,
+        gl_surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
+        gl_context: glutin::context::PossiblyCurrentContext,
+    },
+    Software {
+        renderer: CpuRenderer,
+        surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
+    },
+}
+
+impl WindowRendererBackend {
+    #[inline(always)]
+    pub fn cell_width(&self) -> u32 {
+        match self {
+            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_width,
+            Self::Software { renderer, .. } => renderer.glyph_cache.cell_width,
+        }
+    }
+
+    #[inline(always)]
+    pub fn cell_height(&self) -> u32 {
+        match self {
+            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_height,
+            Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
+        }
+    }
+}
+
 pub struct WindowState {
-    pub renderer: Renderer,
-    pub gl_surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
-    pub gl_context: glutin::context::PossiblyCurrentContext,
+    pub backend: WindowRendererBackend,
     pub pty_master: Arc<PtyMaster>,
     pub terminal: Terminal,
-    pub window: Window,
+    pub window: Arc<Window>,
     pub mouse_x: f64,
     pub mouse_y: f64,
     pub render_cells_buf: Vec<Cell>,
@@ -63,101 +99,60 @@ pub struct WindowState {
 
 impl Drop for WindowState {
     fn drop(&mut self) {
-        let _ = self.gl_context.make_current(&self.gl_surface);
+        if let WindowRendererBackend::OpenGL {
+            gl_context,
+            gl_surface,
+            ..
+        } = &self.backend
+        {
+            let _ = gl_context.make_current(gl_surface);
+        }
     }
 }
 
 impl WindowState {
+    #[inline(always)]
+    pub fn cell_width(&self) -> u32 {
+        self.backend.cell_width()
+    }
+
+    #[inline(always)]
+    pub fn cell_height(&self) -> u32 {
+        self.backend.cell_height()
+    }
+
+    pub fn set_font_size(&mut self, size: f32) {
+        match &mut self.backend {
+            WindowRendererBackend::OpenGL { renderer, .. } => {
+                renderer.set_font_size(size);
+            }
+            WindowRendererBackend::Software { renderer, .. } => {
+                renderer.update_font_size(size);
+            }
+        }
+    }
+
+    pub fn resize_renderer(&mut self, width: u32, height: u32) {
+        match &mut self.backend {
+            WindowRendererBackend::OpenGL {
+                renderer,
+                gl_surface,
+                gl_context,
+            } => {
+                self.window.resize_surface(gl_surface, gl_context);
+                renderer.resize(width, height);
+            }
+            WindowRendererBackend::Software { renderer, surface } => {
+                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                    let _ = surface.resize(w, h);
+                }
+                renderer.resize(width, height);
+            }
+        }
+    }
+
     pub fn draw(&mut self) {
-        let _ = self.gl_context.make_current(&self.gl_surface);
         self.last_frame_instant = std::time::Instant::now();
-
-        let active_grid = self.terminal.active_grid();
-        let width = active_grid.width;
-        let height = active_grid.height;
-        let size = width * height;
-
-        if self.render_cells_buf.len() != size {
-            let default_cell = Cell {
-                character: ' ',
-                foreground: active_grid.default_fg,
-                background: active_grid.default_bg,
-                flags: CellFlags::empty(),
-            };
-            self.render_cells_buf.resize(size, default_cell);
-        }
-
-        let offset = active_grid.scroll_offset;
-        let history_len = active_grid.scrollback.len();
-
-        if offset == 0 {
-            self.render_cells_buf.copy_from_slice(&active_grid.cells);
-        } else {
-            let default_cell = Cell {
-                character: ' ',
-                foreground: active_grid.default_fg,
-                background: active_grid.default_bg,
-                flags: CellFlags::empty(),
-            };
-            for y in 0..height {
-                let dest_start = y * width;
-                let dest_end = dest_start + width;
-
-                let idx = (y + history_len).saturating_sub(offset);
-                if y + history_len < offset {
-                    self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                } else if idx < history_len {
-                    let row_data = active_grid
-                        .scrollback
-                        .get_row(idx)
-                        .unwrap_or_else(|| crate::screen::scrollback::Row {
-                            cells: vec![default_cell; width],
-                            wrapped: false,
-                        });
-                    let line_slice = &row_data;
-                    let copy_len = line_slice.len().min(width);
-                    self.render_cells_buf[dest_start..dest_start + copy_len]
-                        .copy_from_slice(&line_slice[..copy_len]);
-                    if copy_len < width {
-                        self.render_cells_buf[dest_start + copy_len..dest_end].fill(default_cell);
-                    }
-                } else {
-                    let grid_y = idx - history_len;
-                    let src_start = grid_y * width;
-                    let src_end = src_start + width;
-                    if src_end <= active_grid.cells.len() {
-                        self.render_cells_buf[dest_start..dest_end]
-                            .copy_from_slice(&active_grid.cells[src_start..src_end]);
-                    } else {
-                        self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                    }
-                }
-            }
-        }
-
-        // Auto-detect URLs in visible rows and apply UNDERLINE styling
-        for y in 0..height {
-            let row_start = y * width;
-            let line_text: String = (0..width)
-                .map(|x| self.render_cells_buf[row_start + x].character)
-                .collect();
-            let urls = crate::hyperlink::detector::detect(&line_text);
-            for (start_col, end_col, _) in urls {
-                for col in start_col..end_col.min(width) {
-                    self.render_cells_buf[row_start + col]
-                        .flags
-                        .insert(CellFlags::UNDERLINE);
-                }
-            }
-        }
-
-        let cursor_visible = if offset > 0 {
-            false
-        } else if self.cursor_blink_enabled {
-            active_grid.cursor.visible && self.cursor_blink_on
-        } else {
-            active_grid.cursor.visible
-        };
 
         // Throttle title updates
         if self.last_title_check.elapsed() >= std::time::Duration::from_secs(1) {
@@ -176,32 +171,150 @@ impl WindowState {
             }
         }
 
-        let cursor_shape = if !self.is_focused
-            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-        {
-            crate::screen::cursor::CursorShape::HollowBlock
-        } else {
-            active_grid.cursor.shape
-        };
+        match &mut self.backend {
+            WindowRendererBackend::OpenGL {
+                renderer,
+                gl_surface,
+                gl_context,
+            } => {
+                let _ = gl_context.make_current(gl_surface);
 
-        let display_cursor_x = active_grid.cursor.x.min((width as usize).saturating_sub(1));
+                let active_grid = self.terminal.active_grid();
+                let width = active_grid.width;
+                let height = active_grid.height;
+                let size = width * height;
 
-        self.renderer.draw(
-            &self.render_cells_buf,
-            width,
-            height,
-            display_cursor_x,
-            active_grid.cursor.y,
-            cursor_visible,
-            cursor_shape,
-            &self.terminal.theme,
-            self.terminal.bold_is_bright,
-            &active_grid.selection,
-            self.padding_x,
-            self.padding_y,
-        );
+                if self.render_cells_buf.len() != size {
+                    let default_cell = Cell {
+                        character: ' ',
+                        foreground: active_grid.default_fg,
+                        background: active_grid.default_bg,
+                        flags: CellFlags::empty(),
+                    };
+                    self.render_cells_buf.resize(size, default_cell);
+                }
 
-        let _ = self.gl_surface.swap_buffers(&self.gl_context);
+                let offset = active_grid.scroll_offset;
+                let history_len = active_grid.scrollback.len();
+
+                if offset == 0 {
+                    self.render_cells_buf.copy_from_slice(&active_grid.cells);
+                } else {
+                    let default_cell = Cell {
+                        character: ' ',
+                        foreground: active_grid.default_fg,
+                        background: active_grid.default_bg,
+                        flags: CellFlags::empty(),
+                    };
+                    for y in 0..height {
+                        let dest_start = y * width;
+                        let dest_end = dest_start + width;
+
+                        let idx = (y + history_len).saturating_sub(offset);
+                        if y + history_len < offset {
+                            self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                        } else if idx < history_len {
+                            let row_data =
+                                active_grid.scrollback.get_row(idx).unwrap_or_else(|| {
+                                    crate::screen::scrollback::Row {
+                                        cells: vec![default_cell; width],
+                                        wrapped: false,
+                                    }
+                                });
+                            let line_slice = &row_data;
+                            let copy_len = line_slice.len().min(width);
+                            self.render_cells_buf[dest_start..dest_start + copy_len]
+                                .copy_from_slice(&line_slice[..copy_len]);
+                            if copy_len < width {
+                                self.render_cells_buf[dest_start + copy_len..dest_end]
+                                    .fill(default_cell);
+                            }
+                        } else {
+                            let grid_y = idx - history_len;
+                            let src_start = grid_y * width;
+                            let src_end = src_start + width;
+                            if src_end <= active_grid.cells.len() {
+                                self.render_cells_buf[dest_start..dest_end]
+                                    .copy_from_slice(&active_grid.cells[src_start..src_end]);
+                            } else {
+                                self.render_cells_buf[dest_start..dest_end].fill(default_cell);
+                            }
+                        }
+                    }
+                }
+
+                // Auto-detect URLs in visible rows and apply UNDERLINE styling
+                for y in 0..height {
+                    let row_start = y * width;
+                    let line_text: String = (0..width)
+                        .map(|x| self.render_cells_buf[row_start + x].character)
+                        .collect();
+                    let urls = crate::hyperlink::detector::detect(&line_text);
+                    for (start_col, end_col, _) in urls {
+                        for col in start_col..end_col.min(width) {
+                            self.render_cells_buf[row_start + col]
+                                .flags
+                                .insert(CellFlags::UNDERLINE);
+                        }
+                    }
+                }
+
+                let cursor_visible = if offset > 0 {
+                    false
+                } else if self.cursor_blink_enabled {
+                    active_grid.cursor.visible && self.cursor_blink_on
+                } else {
+                    active_grid.cursor.visible
+                };
+
+                let cursor_shape = if !self.is_focused
+                    && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                {
+                    crate::screen::cursor::CursorShape::HollowBlock
+                } else {
+                    active_grid.cursor.shape
+                };
+
+                let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+
+                renderer.draw(
+                    &self.render_cells_buf,
+                    width,
+                    height,
+                    display_cursor_x,
+                    active_grid.cursor.y,
+                    cursor_visible,
+                    cursor_shape,
+                    &self.terminal.theme,
+                    self.terminal.bold_is_bright,
+                    &active_grid.selection,
+                    self.padding_x,
+                    self.padding_y,
+                );
+
+                let _ = gl_surface.swap_buffers(gl_context);
+            }
+            WindowRendererBackend::Software { renderer, surface } => {
+                let cursor_blink_on = if self.cursor_blink_enabled {
+                    self.cursor_blink_on
+                } else {
+                    true
+                };
+
+                if let Ok(mut buffer) = surface.buffer_mut() {
+                    renderer.render(
+                        self.terminal.active_grid(),
+                        &self.terminal.theme,
+                        self.padding_x,
+                        self.padding_y,
+                        cursor_blink_on,
+                        self.is_focused,
+                        &mut buffer,
+                    );
+                    let _ = buffer.present();
+                }
+            }
+        }
     }
 }
 
@@ -266,42 +379,7 @@ impl App {
             window_attributes = window_attributes.with_window_icon(Some(icon));
         }
 
-        let gl_config = match &self.gl_config {
-            Some(cfg) => cfg.clone(),
-            None => return,
-        };
-        let gl_display = match &self.gl_display {
-            Some(disp) => disp.clone(),
-            None => return,
-        };
-        let gl = match &self.gl {
-            Some(g) => g.clone(),
-            None => return,
-        };
-
-        let window = event_loop.create_window(window_attributes).unwrap();
-
-        let context_attributes = glutin::context::ContextAttributesBuilder::new()
-            .with_context_api(glutin::context::ContextApi::OpenGl(Some(
-                glutin::context::Version::new(3, 3),
-            )))
-            .build(Some(window.window_handle().unwrap().as_raw()));
-
-        let gl_context = unsafe {
-            gl_display
-                .create_context(&gl_config, &context_attributes)
-                .unwrap()
-        };
-
-        let attrs = window.build_surface_attributes(<_>::default()).unwrap();
-        let gl_surface = unsafe {
-            gl_config
-                .display()
-                .create_window_surface(&gl_config, &attrs)
-                .unwrap()
-        };
-
-        let gl_context = gl_context.make_current(&gl_surface).unwrap();
+        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
@@ -321,18 +399,82 @@ impl App {
         let padding_x = config.padding_x().unwrap_or(8.0);
         let padding_y = config.padding_y().unwrap_or(4.0);
         let font_scale_multiplier = config.font_scale_multiplier().unwrap_or(1.5);
+        let bold_is_bright = config.bold_is_bright().unwrap_or(true);
 
-        let renderer = Renderer::new(
-            gl.clone(),
-            config.font_family(),
-            font_size,
-            font_scale_multiplier,
-        );
+        let backend = if gpu
+            && let (Some(gl_config), Some(gl_display), Some(gl)) = (
+                self.gl_config.as_ref(),
+                self.gl_display.as_ref(),
+                self.gl.as_ref(),
+            ) {
+            let gl = gl.clone();
+
+            let context_attributes = glutin::context::ContextAttributesBuilder::new()
+                .with_context_api(glutin::context::ContextApi::OpenGl(Some(
+                    glutin::context::Version::new(3, 3),
+                )))
+                .build(Some(window.window_handle().unwrap().as_raw()));
+
+            let gl_context = unsafe {
+                gl_display
+                    .create_context(gl_config, &context_attributes)
+                    .unwrap()
+            };
+
+            let attrs = window.build_surface_attributes(<_>::default()).unwrap();
+            let gl_surface = unsafe {
+                gl_config
+                    .display()
+                    .create_window_surface(gl_config, &attrs)
+                    .unwrap()
+            };
+
+            let gl_context = gl_context.make_current(&gl_surface).unwrap();
+
+            let renderer =
+                Renderer::new(gl, config.font_family(), font_size, font_scale_multiplier);
+
+            WindowRendererBackend::OpenGL {
+                renderer,
+                gl_surface,
+                gl_context,
+            }
+        } else {
+            let context = softbuffer::Context::new(window.clone()).unwrap();
+            let mut surface = softbuffer::Surface::new(&context, window.clone()).unwrap();
+            if let (Some(w), Some(h)) = (NonZeroU32::new(800), NonZeroU32::new(600)) {
+                let _ = surface.resize(w, h);
+            }
+
+            let mut theme = crate::theme::theme::Theme::new();
+            if let Some(fg) = config.default_fg()
+                && let Some(c) = crate::config::config::parse_hex_color(fg)
+            {
+                theme.default_fg = c;
+            }
+            if let Some(bg) = config.default_bg()
+                && let Some(c) = crate::config::config::parse_hex_color(bg)
+            {
+                theme.default_bg = c;
+            }
+
+            let renderer = CpuRenderer::new(
+                config.font_family(),
+                font_size,
+                font_scale_multiplier,
+                &theme,
+                800,
+                600,
+                bold_is_bright,
+            );
+
+            WindowRendererBackend::Software { renderer, surface }
+        };
 
         let avail_w = (800.0 - padding_x * 2.0).max(10.0);
         let avail_h = (600.0 - padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / renderer.font_loader.cell_width).max(20);
-        let rows = ((avail_h as u32) / renderer.font_loader.cell_height).max(10);
+        let cols = ((avail_w as u32) / backend.cell_width()).max(20);
+        let rows = ((avail_h as u32) / backend.cell_height()).max(10);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
 
@@ -343,8 +485,12 @@ impl App {
             .unwrap_or_else(|| "/bin/sh".to_string());
 
         let pty_master = Arc::new(
-            spawn_process(&shell_path, command.as_deref(), working_directory.as_deref())
-                .unwrap(),
+            spawn_process(
+                &shell_path,
+                command.as_deref(),
+                working_directory.as_deref(),
+            )
+            .unwrap(),
         );
         pty_master.resize(cols as u16, rows as u16).unwrap();
 
@@ -376,9 +522,7 @@ impl App {
 
         let window_state = WindowState {
             window,
-            gl_surface,
-            gl_context,
-            renderer,
+            backend,
             terminal,
             pty_master,
             mouse_x: 0.0,
@@ -396,7 +540,7 @@ impl App {
             last_click_instant: None,
             last_click_pos: (0, 0),
             click_count: 0,
-            last_mouse_cell: (usize::MAX, usize::MAX),
+            last_mouse_cell: (0, 0),
             is_focused: true,
             needs_redraw: true,
             content_dirty: true,
@@ -417,6 +561,7 @@ fn load_app_icon() -> Option<winit::window::Icon> {
     let mut reader = decoder.read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).ok()?;
+
     let raw_bytes = &buf[..info.buffer_size()];
 
     let rgba_bytes = match info.color_type {
@@ -445,7 +590,9 @@ impl ApplicationHandler<CustomEvent> for App {
             self.single_instance_mode = true;
         }
 
-        if self.gl_display.is_none() {
+        let gpu = config.gpu_acceleration().unwrap_or(true);
+
+        if gpu && self.gl_display.is_none() {
             let template = glutin::config::ConfigTemplateBuilder::new().with_alpha_size(8);
 
             let dummy_attrs = Window::default_attributes()
@@ -454,8 +601,8 @@ impl ApplicationHandler<CustomEvent> for App {
             let display_builder =
                 glutin_winit::DisplayBuilder::new().with_window_attributes(Some(dummy_attrs));
 
-            let (dummy_window, gl_config) = display_builder
-                .build(event_loop, template, |configs| {
+            if let Ok((dummy_window, gl_config)) =
+                display_builder.build(event_loop, template, |configs| {
                     configs
                         .reduce(|accum, config| {
                             if config.num_samples() > accum.num_samples() {
@@ -466,47 +613,46 @@ impl ApplicationHandler<CustomEvent> for App {
                         })
                         .unwrap()
                 })
-                .unwrap();
+                && let Some(dummy_window) = dummy_window
+            {
+                let gl_display = gl_config.display();
 
-            let dummy_window = dummy_window.unwrap();
-            let gl_display = gl_config.display();
+                let context_attributes = glutin::context::ContextAttributesBuilder::new()
+                    .with_context_api(glutin::context::ContextApi::OpenGl(Some(
+                        glutin::context::Version::new(3, 3),
+                    )))
+                    .build(Some(dummy_window.window_handle().unwrap().as_raw()));
 
-            let context_attributes = glutin::context::ContextAttributesBuilder::new()
-                .with_context_api(glutin::context::ContextApi::OpenGl(Some(
-                    glutin::context::Version::new(3, 3),
-                )))
-                .build(Some(dummy_window.window_handle().unwrap().as_raw()));
+                if let Ok(dummy_context) =
+                    unsafe { gl_display.create_context(&gl_config, &context_attributes) }
+                {
+                    let attrs = dummy_window
+                        .build_surface_attributes(<_>::default())
+                        .unwrap();
+                    if let Ok(dummy_surface) = unsafe {
+                        gl_config
+                            .display()
+                            .create_window_surface(&gl_config, &attrs)
+                    } {
+                        let _dummy_current = dummy_context.make_current(&dummy_surface).unwrap();
 
-            let dummy_context = unsafe {
-                gl_display
-                    .create_context(&gl_config, &context_attributes)
-                    .unwrap()
-            };
+                        let gl = unsafe {
+                            glow::Context::from_loader_function(|symbol| {
+                                let c_str = std::ffi::CString::new(symbol).unwrap();
+                                gl_display.get_proc_address(&c_str)
+                            })
+                        };
 
-            let attrs = dummy_window.build_surface_attributes(<_>::default()).unwrap();
-            let dummy_surface = unsafe {
-                gl_config
-                    .display()
-                    .create_window_surface(&gl_config, &attrs)
-                    .unwrap()
-            };
+                        self.gl_config = Some(gl_config);
+                        self.gl_display = Some(gl_display);
+                        self.gl = Some(Arc::new(gl));
 
-            let _dummy_current = dummy_context.make_current(&dummy_surface).unwrap();
-
-            let gl = unsafe {
-                glow::Context::from_loader_function(|symbol| {
-                    let c_str = std::ffi::CString::new(symbol).unwrap();
-                    gl_display.get_proc_address(&c_str)
-                })
-            };
-
-            self.gl_config = Some(gl_config);
-            self.gl_display = Some(gl_display);
-            self.gl = Some(Arc::new(gl));
-
-            drop(_dummy_current);
-            drop(dummy_surface);
-            drop(dummy_window);
+                        drop(_dummy_current);
+                        drop(dummy_surface);
+                        drop(dummy_window);
+                    }
+                }
+            }
         }
 
         if (self.single_instance_mode || self.daemon_mode) && self.ipc_listener.is_none() {
@@ -520,16 +666,16 @@ impl ApplicationHandler<CustomEvent> for App {
             }
         }
 
-        if let Some(opts) = self.initial_options.take() {
-            if !opts.daemon {
-                self.create_window(
-                    event_loop,
-                    opts.working_directory,
-                    opts.command,
-                    opts.title,
-                    Some(opts.hold),
-                );
-            }
+        if let Some(opts) = self.initial_options.take()
+            && !opts.daemon
+        {
+            self.create_window(
+                event_loop,
+                opts.working_directory,
+                opts.command,
+                opts.title,
+                Some(opts.hold),
+            );
         }
     }
 
@@ -563,13 +709,12 @@ impl ApplicationHandler<CustomEvent> for App {
                     ws.needs_redraw = true;
                 }
                 WindowEvent::Resized(size) => {
-                    ws.window.resize_surface(&ws.gl_surface, &ws.gl_context);
-                    ws.renderer.resize(size.width, size.height);
+                    ws.resize_renderer(size.width, size.height);
 
                     let avail_w = (size.width as f32 - ws.padding_x * 2.0).max(10.0);
                     let avail_h = (size.height as f32 - ws.padding_y * 2.0).max(10.0);
-                    let cols = ((avail_w as u32) / ws.renderer.font_loader.cell_width).max(20);
-                    let rows = ((avail_h as u32) / ws.renderer.font_loader.cell_height).max(10);
+                    let cols = ((avail_w as u32) / ws.cell_width()).max(20);
+                    let rows = ((avail_h as u32) / ws.cell_height()).max(10);
                     ws.terminal.resize(cols, rows);
                     let _ = ws.pty_master.resize(cols as u16, rows as u16);
                     ws.needs_redraw = true;
@@ -609,11 +754,11 @@ impl ApplicationHandler<CustomEvent> for App {
                 }
             }
             CustomEvent::PtyExit { window_id } => {
-                if let Some(ws) = self.windows.get(&window_id) {
-                    if ws.hold {
-                        ws.window.set_title("[Process exited]");
-                        return;
-                    }
+                if let Some(ws) = self.windows.get(&window_id)
+                    && ws.hold
+                {
+                    ws.window.set_title("[Process exited]");
+                    return;
                 }
                 self.windows.remove(&window_id);
                 if self.windows.is_empty() && !self.daemon_mode {

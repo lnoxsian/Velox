@@ -42,7 +42,7 @@ pub struct FontLoader {
     next_y: u32,
 }
 
-fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontArc> {
+pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontArc> {
     if let Some(id) = db.query(query)
         && let Some(face) = db.face(id)
     {
@@ -160,7 +160,7 @@ impl FontLoader {
             None // No distinct bold-italic face — synthetic italic will be applied on bold
         };
 
-        let fallback_manager = FallbackManager::new();
+        let fallback_manager = FallbackManager::with_database(db);
 
         let px_size = font_size * font_scale_multiplier;
         let scale = PxScale::from(px_size);

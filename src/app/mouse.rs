@@ -4,14 +4,18 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::ModifiersState;
 
 impl WindowState {
-    pub fn handle_cursor_moved(&mut self, position: PhysicalPosition<f64>, modifiers: ModifiersState) {
+    pub fn handle_cursor_moved(
+        &mut self,
+        position: PhysicalPosition<f64>,
+        modifiers: ModifiersState,
+    ) {
         self.mouse_x = position.x;
         self.mouse_y = position.y;
 
         let px = self.padding_x as f64;
         let py = self.padding_y as f64;
-        let cw = self.renderer.font_loader.cell_width as f64;
-        let ch = self.renderer.font_loader.cell_height as f64;
+        let cw = self.cell_width() as f64;
+        let ch = self.cell_height() as f64;
         let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
             .min(self.terminal.grid.width.saturating_sub(1));
         let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
@@ -70,8 +74,8 @@ impl WindowState {
         if self.is_mouse_down {
             let px = self.padding_x as f64;
             let py = self.padding_y as f64;
-            let cw = self.renderer.font_loader.cell_width as f64;
-            let ch = self.renderer.font_loader.cell_height as f64;
+            let cw = self.cell_width() as f64;
+            let ch = self.cell_height() as f64;
             let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
                 .min(self.terminal.grid.width.saturating_sub(1));
             let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
@@ -122,8 +126,8 @@ impl WindowState {
         if lines != 0 {
             let px = self.padding_x as f64;
             let py = self.padding_y as f64;
-            let cw = self.renderer.font_loader.cell_width as f64;
-            let ch = self.renderer.font_loader.cell_height as f64;
+            let cw = self.cell_width() as f64;
+            let ch = self.cell_height() as f64;
             let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
             let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
 
@@ -197,8 +201,8 @@ impl WindowState {
                 self.is_mouse_down = true;
                 let px = self.padding_x as f64;
                 let py = self.padding_y as f64;
-                let cw = self.renderer.font_loader.cell_width as f64;
-                let ch = self.renderer.font_loader.cell_height as f64;
+                let cw = self.cell_width() as f64;
+                let ch = self.cell_height() as f64;
                 let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
                     .min(self.terminal.grid.width.saturating_sub(1));
                 let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
@@ -268,8 +272,7 @@ impl WindowState {
                             if y < active_grid.height {
                                 let src_start = y * grid_width;
                                 let src_end = src_start + grid_width;
-                                active_grid.cells
-                                    [src_start..src_end.min(active_grid.cells.len())]
+                                active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
                                     .iter()
                                     .map(|c| c.character)
                                     .collect()
@@ -351,8 +354,8 @@ impl WindowState {
                 self.is_mouse_down = false;
                 let px = self.padding_x as f64;
                 let py = self.padding_y as f64;
-                let cw = self.renderer.font_loader.cell_width as f64;
-                let ch = self.renderer.font_loader.cell_height as f64;
+                let cw = self.cell_width() as f64;
+                let ch = self.cell_height() as f64;
                 let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
                     .min(self.terminal.grid.width.saturating_sub(1));
                 let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)

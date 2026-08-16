@@ -96,10 +96,10 @@ impl CliOptions {
         }
 
         // Canonicalize working directory if provided
-        if let Some(ref dir) = options.working_directory {
-            if let Ok(path) = PathBuf::from(dir).canonicalize() {
-                options.working_directory = Some(path.to_string_lossy().to_string());
-            }
+        if let Some(ref dir) = options.working_directory
+            && let Ok(path) = PathBuf::from(dir).canonicalize()
+        {
+            options.working_directory = Some(path.to_string_lossy().to_string());
         }
 
         options

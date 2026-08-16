@@ -179,12 +179,12 @@ impl Terminal {
 
     pub fn is_synchronized_output_active(&mut self) -> bool {
         if self.synchronized_output {
-            if let Some(start) = self.sync_output_start {
-                if start.elapsed() > std::time::Duration::from_millis(150) {
-                    self.synchronized_output = false;
-                    self.sync_output_start = None;
-                    return false;
-                }
+            if let Some(start) = self.sync_output_start
+                && start.elapsed() > std::time::Duration::from_millis(150)
+            {
+                self.synchronized_output = false;
+                self.sync_output_start = None;
+                return false;
             }
             true
         } else {
@@ -778,8 +778,8 @@ mod tests {
         let mut term = Terminal::new(10, 5);
         term.feed(b"1234567890abcdefghij12345");
         let grid = term.active_grid();
-        assert_eq!(grid.row_wrapped[0], true);
-        assert_eq!(grid.row_wrapped[1], true);
+        assert!(grid.row_wrapped[0]);
+        assert!(grid.row_wrapped[1]);
         assert_eq!(grid.cells[0].character, '1');
         assert_eq!(grid.cells[9].character, '0');
         assert_eq!(grid.cells[10].character, 'a');

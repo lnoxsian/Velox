@@ -51,10 +51,10 @@ pub fn spawn_process(
                 libc::close(master_fd);
                 libc::close(slave_fd);
 
-                if let Some(dir) = working_directory {
-                    if let Ok(c_dir) = CString::new(dir) {
-                        libc::chdir(c_dir.as_ptr());
-                    }
+                if let Some(dir) = working_directory
+                    && let Ok(c_dir) = CString::new(dir)
+                {
+                    libc::chdir(c_dir.as_ptr());
                 }
             }
 

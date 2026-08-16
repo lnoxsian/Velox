@@ -1,0 +1,376 @@
+pub mod atlas;
+pub mod color;
+pub mod damage;
+pub mod decorations;
+pub mod framebuffer;
+pub mod glyph;
+pub mod primitives;
+pub mod raster;
+pub mod stats;
+
+#[allow(unused_imports)]
+pub use color::{PackedColor, PrecomputedPalette};
+pub use damage::DamageMap;
+pub use framebuffer::Framebuffer;
+pub use glyph::{GlyphCache, GlyphKey};
+pub use stats::RenderStats;
+
+use crate::screen::cell::CellFlags;
+use crate::screen::cursor::CursorShape;
+use crate::screen::grid::Grid;
+use crate::theme::theme::Theme;
+use decorations::{
+    draw_curly_underline, draw_cursor, draw_double_underline, draw_strike, draw_underline,
+};
+use primitives::try_render_primitive;
+use raster::{blit_alpha_glyph, blit_color_glyph};
+use std::time::Instant;
+
+/// Pure-Rust, retained CPU software renderer for Velox.
+pub struct CpuRenderer {
+    pub framebuffer: Framebuffer,
+    pub glyph_cache: GlyphCache,
+    pub damage: DamageMap,
+    pub palette: PrecomputedPalette,
+    pub stats: RenderStats,
+    pub enable_stats: bool,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    prev_theme_fg: crate::screen::cell::Color,
+    prev_theme_bg: crate::screen::cell::Color,
+    prev_ansi_colors: [crate::screen::cell::Color; 16],
+    bold_is_bright: bool,
+}
+
+impl CpuRenderer {
+    pub fn new(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        theme: &Theme,
+        width: u32,
+        height: u32,
+        bold_is_bright: bool,
+    ) -> Self {
+        let glyph_cache =
+            GlyphCache::from_font_family(font_family, font_size, font_scale_multiplier);
+        let framebuffer = Framebuffer::new(width, height);
+        let palette = PrecomputedPalette::new(theme);
+        let rows = (height / glyph_cache.cell_height.max(1)).max(1) as usize;
+
+        Self {
+            framebuffer,
+            glyph_cache,
+            damage: DamageMap::new(rows),
+            palette,
+            stats: RenderStats::default(),
+            enable_stats: false,
+            viewport_width: width,
+            viewport_height: height,
+            prev_theme_fg: theme.default_fg,
+            prev_theme_bg: theme.default_bg,
+            prev_ansi_colors: theme.ansi_colors,
+            bold_is_bright,
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.viewport_width = width;
+        self.viewport_height = height;
+        if self.framebuffer.resize(width, height) {
+            let rows = (height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
+            self.damage.resize(rows);
+            self.damage.mark_all();
+        }
+    }
+
+    pub fn update_font_size(&mut self, font_size: f32) {
+        self.glyph_cache.update_font_size(font_size);
+        let rows = (self.viewport_height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
+        self.damage.resize(rows);
+        self.damage.mark_all();
+    }
+
+    /// Render terminal grid into persistent framebuffer and copy to Softbuffer target slice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &mut self,
+        grid: &Grid,
+        theme: &Theme,
+        padding_x: f32,
+        padding_y: f32,
+        cursor_blink_on: bool,
+        is_focused: bool,
+        target_buffer: &mut [u32],
+    ) {
+        let start_time = if self.enable_stats {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
+        // 1. Sync theme updates
+        if theme.default_fg != self.prev_theme_fg
+            || theme.default_bg != self.prev_theme_bg
+            || theme.ansi_colors != self.prev_ansi_colors
+        {
+            self.palette = PrecomputedPalette::new(theme);
+            self.prev_theme_fg = theme.default_fg;
+            self.prev_theme_bg = theme.default_bg;
+            self.prev_ansi_colors = theme.ansi_colors;
+            self.damage.mark_all();
+        }
+
+        // 2. Ingest terminal damage
+        self.damage.sync_from_grid(&grid.damage.dirty_rows);
+        self.damage
+            .update_cursor(grid.cursor.x, grid.cursor.y, grid.cursor.visible);
+
+        let ((sel_min_x, sel_min_y), (sel_max_x, sel_max_y)) = grid.selection.normalized_bounds();
+        self.damage
+            .update_selection(grid.selection.active, sel_min_y, sel_max_y);
+
+        // If no damage, directly copy current framebuffer to surface and return
+        if !self.damage.has_damage() {
+            if target_buffer.len() == self.framebuffer.pixels.len() {
+                target_buffer.copy_from_slice(self.framebuffer.as_slice());
+            }
+            return;
+        }
+
+        let cell_w = self.glyph_cache.cell_width;
+        let cell_h = self.glyph_cache.cell_height;
+        let grid_w = grid.width;
+        let grid_h = grid.height;
+        let px_offset = padding_x as u32;
+        let py_offset = padding_y as u32;
+
+        if self.damage.full_redraw {
+            self.framebuffer.clear(self.palette.default_bg);
+        }
+
+        let mut dirty_rows_count = 0;
+        let mut dirty_cells_count = 0;
+
+        // 3. Render each dirty row
+        for y in 0..grid_h {
+            if !self.damage.is_dirty(y) {
+                continue;
+            }
+            dirty_rows_count += 1;
+
+            let py = py_offset + (y as u32) * cell_h;
+            if py + cell_h > self.framebuffer.height {
+                break;
+            }
+
+            let row_start = y * grid_w;
+            let row_cells = &grid.cells[row_start..(row_start + grid_w).min(grid.cells.len())];
+
+            // ─── Pass A: Coalesced Background Spans ───────────────────────────
+            let mut span_start_col = 0usize;
+            let mut span_bg = 0u32;
+            let mut in_span = false;
+
+            for (col, cell) in row_cells.iter().enumerate() {
+                dirty_cells_count += 1;
+                let is_selected = grid.selection.active
+                    && grid
+                        .selection
+                        .contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, col, y);
+                let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                let is_inverted = is_selected ^ is_reverse;
+
+                let (_, bg) =
+                    self.palette
+                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright);
+
+                if !in_span {
+                    span_start_col = col;
+                    span_bg = bg;
+                    in_span = true;
+                } else if bg != span_bg {
+                    // Flush span
+                    let span_px = px_offset + (span_start_col as u32) * cell_w;
+                    let span_w = ((col - span_start_col) as u32) * cell_w;
+                    self.framebuffer
+                        .fill_span(span_px, py, span_w, cell_h, span_bg);
+
+                    span_start_col = col;
+                    span_bg = bg;
+                }
+            }
+
+            if in_span {
+                let span_px = px_offset + (span_start_col as u32) * cell_w;
+                let span_w = ((row_cells.len() - span_start_col) as u32) * cell_w;
+                self.framebuffer
+                    .fill_span(span_px, py, span_w, cell_h, span_bg);
+            }
+
+            // ─── Pass B: Glyphs, Primitives, and Decorations ──────────────────
+            for (col, cell) in row_cells.iter().enumerate() {
+                if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                    continue;
+                }
+
+                let px = px_offset + (col as u32) * cell_w;
+                if px + cell_w > self.framebuffer.width {
+                    break;
+                }
+
+                let is_selected = grid.selection.active
+                    && grid
+                        .selection
+                        .contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, col, y);
+                let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                let is_inverted = is_selected ^ is_reverse;
+
+                let (fg, _) =
+                    self.palette
+                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright);
+
+                // Render character
+                if cell.character != ' ' && !cell.flags.contains(CellFlags::HIDDEN) {
+                    let is_wide = cell.flags.contains(CellFlags::WIDE);
+                    let target_w = if is_wide { cell_w * 2 } else { cell_w };
+
+                    if !try_render_primitive(
+                        cell.character,
+                        px,
+                        py,
+                        target_w,
+                        cell_h,
+                        fg,
+                        &mut self.framebuffer,
+                    ) {
+                        let is_bold = cell.flags.contains(CellFlags::BOLD);
+                        let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                        let key = GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
+
+                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                            if glyph_ref.is_color {
+                                let pixels = self.glyph_cache.atlas.get_color(&glyph_ref);
+                                blit_color_glyph(
+                                    &mut self.framebuffer,
+                                    px,
+                                    py,
+                                    pixels,
+                                    glyph_ref.width,
+                                    glyph_ref.height,
+                                );
+                            } else {
+                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                                blit_alpha_glyph(
+                                    &mut self.framebuffer,
+                                    px,
+                                    py,
+                                    mask,
+                                    glyph_ref.width,
+                                    glyph_ref.height,
+                                    fg,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Render text decorations
+                if cell.flags.contains(CellFlags::UNDERLINE) {
+                    draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                }
+                if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                    draw_double_underline(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                }
+                if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                    draw_curly_underline(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                }
+                if cell.flags.contains(CellFlags::STRIKE) {
+                    draw_strike(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                }
+            }
+        }
+
+        // 4. Render Cursor
+        if grid.cursor.visible
+            && cursor_blink_on
+            && grid.cursor.y < grid_h
+            && grid.cursor.x < grid_w
+        {
+            let cur_x = grid.cursor.x;
+            let cur_y = grid.cursor.y;
+            let px = px_offset + (cur_x as u32) * cell_w;
+            let py = py_offset + (cur_y as u32) * cell_h;
+
+            if px + cell_w <= self.framebuffer.width && py + cell_h <= self.framebuffer.height {
+                let cell = &grid.cells[cur_y * grid_w + cur_x];
+                let cursor_color = self.palette.default_fg;
+
+                if is_focused && grid.cursor.shape == CursorShape::Block {
+                    // Block cursor: fill cursor block and render inverted cell character
+                    self.framebuffer
+                        .fill_span(px, py, cell_w, cell_h, cursor_color);
+                    if cell.character != ' ' && !cell.flags.contains(CellFlags::HIDDEN) {
+                        let is_wide = cell.flags.contains(CellFlags::WIDE);
+                        let target_w = if is_wide { cell_w * 2 } else { cell_w };
+                        let inv_fg = self.palette.default_bg;
+
+                        if !try_render_primitive(
+                            cell.character,
+                            px,
+                            py,
+                            target_w,
+                            cell_h,
+                            inv_fg,
+                            &mut self.framebuffer,
+                        ) {
+                            let is_bold = cell.flags.contains(CellFlags::BOLD);
+                            let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                            let key = GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
+
+                            if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key)
+                                && !glyph_ref.is_color
+                            {
+                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                                blit_alpha_glyph(
+                                    &mut self.framebuffer,
+                                    px,
+                                    py,
+                                    mask,
+                                    glyph_ref.width,
+                                    glyph_ref.height,
+                                    inv_fg,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    draw_cursor(
+                        &mut self.framebuffer,
+                        px,
+                        py,
+                        cell_w,
+                        cell_h,
+                        grid.cursor.shape,
+                        is_focused,
+                        cursor_color,
+                    );
+                }
+            }
+        }
+
+        // 5. Present to Softbuffer target slice
+        if target_buffer.len() == self.framebuffer.pixels.len() {
+            target_buffer.copy_from_slice(self.framebuffer.as_slice());
+        }
+
+        // 6. Clear damage
+        self.damage.clear();
+
+        if let Some(start) = start_time {
+            self.stats.frame_time_ns = start.elapsed().as_nanos() as u64;
+            self.stats.dirty_rows = dirty_rows_count;
+            self.stats.dirty_cells = dirty_cells_count;
+        }
+    }
+}

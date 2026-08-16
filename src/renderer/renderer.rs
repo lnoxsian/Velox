@@ -56,6 +56,7 @@ fn compute_cell_colors(
 
 /// Append a textured quad (two triangles) to the vertex buffer.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn push_quad(
     vertices: &mut Vec<f32>,
     x: f32,
@@ -96,6 +97,7 @@ fn push_quad(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn try_render_block_element(
     c: char,
     px: f32,
@@ -441,6 +443,7 @@ impl Renderer {
         self.font_loader.update_font_size(font_size);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         cells: &[Cell],

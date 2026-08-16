@@ -165,7 +165,7 @@ impl AnsiParser {
                     let is_empty = active
                         .cells
                         .get(row_start..row_start + active.width)
-                        .map_or(false, |slice| {
+                        .is_some_and(|slice| {
                             slice.iter().all(|c| {
                                 c.character == ' ' && c.flags.is_empty() && c.background == bg
                             })

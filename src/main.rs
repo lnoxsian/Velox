@@ -60,13 +60,7 @@ fn main() {
     cli_opts.single_instance = single_instance;
 
     if !config.gpu_acceleration().unwrap_or(true) {
-        log::info!(
-            "GPU acceleration disabled. Setting LIBGL_ALWAYS_SOFTWARE=1 and GALLIUM_DRIVER=llvmpipe."
-        );
-        unsafe {
-            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-            std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
-        }
+        log::info!("GPU acceleration disabled. Using native CPU software renderer via softbuffer.");
     }
 
     let event_loop = EventLoop::<CustomEvent>::with_user_event().build().unwrap();

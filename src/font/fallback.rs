@@ -10,6 +10,7 @@ pub struct FallbackFont {
 
 pub struct FallbackManager {
     db: Database,
+    db_loaded: bool,
     loaded_paths: HashSet<PathBuf>,
     pub fallbacks: Vec<FallbackFont>,
     missing_chars: HashSet<char>,
@@ -23,13 +24,29 @@ impl Default for FallbackManager {
 
 impl FallbackManager {
     pub fn new() -> Self {
-        let mut db = Database::new();
-        db.load_system_fonts();
         Self {
-            db,
+            db: Database::new(),
+            db_loaded: false,
             loaded_paths: HashSet::new(),
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
+        }
+    }
+
+    pub fn with_database(db: Database) -> Self {
+        Self {
+            db,
+            db_loaded: true,
+            loaded_paths: HashSet::new(),
+            fallbacks: Vec::new(),
+            missing_chars: HashSet::new(),
+        }
+    }
+
+    fn ensure_db_loaded(&mut self) {
+        if !self.db_loaded {
+            self.db.load_system_fonts();
+            self.db_loaded = true;
         }
     }
 
@@ -45,6 +62,8 @@ impl FallbackManager {
         if self.missing_chars.contains(&c) {
             return None;
         }
+
+        self.ensure_db_loaded();
 
         // 3. Check popular Nerd Font & Symbol families directly
         let is_symbol_or_pua = ('\u{e000}'..='\u{f8ff}').contains(&c)
@@ -93,19 +112,21 @@ impl FallbackManager {
             if let fontdb::Source::File(path) = &face.source
                 && !self.loaded_paths.contains(path)
                 && let Ok(data) = std::fs::read(path)
-                && let Ok(font) = FontArc::try_from_vec(data.clone())
-                && font.glyph_id(c).0 != 0
             {
-                self.loaded_paths.insert(path.clone());
                 let path_str = path.to_string_lossy().to_lowercase();
                 let is_emoji = path_str.contains("emoji");
                 let owned_face = if is_emoji {
-                    owned_ttf_parser::OwnedFace::from_vec(data, 0).ok()
+                    owned_ttf_parser::OwnedFace::from_vec(data.clone(), 0).ok()
                 } else {
                     None
                 };
-                self.fallbacks.push(FallbackFont { font, owned_face });
-                return Some(self.fallbacks.len() - 1);
+                if let Ok(font) = FontArc::try_from_vec(data)
+                    && font.glyph_id(c).0 != 0
+                {
+                    self.loaded_paths.insert(path.clone());
+                    self.fallbacks.push(FallbackFont { font, owned_face });
+                    return Some(self.fallbacks.len() - 1);
+                }
             }
         }
 

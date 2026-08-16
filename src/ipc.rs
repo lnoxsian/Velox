@@ -5,8 +5,8 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
@@ -102,9 +102,7 @@ impl Drop for IpcListenerHandle {
     }
 }
 
-pub fn start_ipc_server(
-    proxy: EventLoopProxy<CustomEvent>,
-) -> Result<IpcListenerHandle, String> {
+pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListenerHandle, String> {
     let path = socket_path();
 
     // Check if a stale socket exists
@@ -121,8 +119,9 @@ pub fn start_ipc_server(
         let _ = fs::create_dir_all(parent);
     }
 
-    let listener = UnixListener::bind(&path).map_err(|e| format!("Failed to bind IPC socket {:?}: {}", path, e))?;
-    
+    let listener = UnixListener::bind(&path)
+        .map_err(|e| format!("Failed to bind IPC socket {:?}: {}", path, e))?;
+
     // Set socket permissions to read/write for owner only (0o600)
     let permissions = fs::Permissions::from_mode(0o600);
     let _ = fs::set_permissions(&path, permissions);
@@ -212,9 +211,7 @@ fn handle_client_stream(
     stream
         .write_all(&resp_len.to_be_bytes())
         .map_err(|e| e.to_string())?;
-    stream
-        .write_all(&resp_payload)
-        .map_err(|e| e.to_string())?;
+    stream.write_all(&resp_payload).map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())?;
 
     Ok(())

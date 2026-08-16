@@ -111,7 +111,11 @@ pub struct Config {
     pub single_instance: Option<bool>,
 
     // Top-level fallback fields for legacy flat TOML files
-    #[serde(default, rename = "font_family", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "font_family",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) font_family_legacy: Option<String>,
     #[serde(default, rename = "font_size", skip_serializing_if = "Option::is_none")]
     pub(crate) font_size_legacy: Option<f32>,
@@ -121,9 +125,17 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) font_scale_multiplier_legacy: Option<f32>,
-    #[serde(default, rename = "bold_is_bright", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "bold_is_bright",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) bold_is_bright_legacy: Option<bool>,
-    #[serde(default, rename = "scrollback_limit", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "scrollback_limit",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) scrollback_limit_legacy: Option<usize>,
     #[serde(
         default,
@@ -149,13 +161,29 @@ pub struct Config {
     pub(crate) padding_x_legacy: Option<f32>,
     #[serde(default, rename = "padding_y", skip_serializing_if = "Option::is_none")]
     pub(crate) padding_y_legacy: Option<f32>,
-    #[serde(default, rename = "cursor_shape", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "cursor_shape",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) cursor_shape_legacy: Option<String>,
-    #[serde(default, rename = "cursor_blink", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "cursor_blink",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) cursor_blink_legacy: Option<bool>,
-    #[serde(default, rename = "default_fg", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "default_fg",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) default_fg_legacy: Option<String>,
-    #[serde(default, rename = "default_bg", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "default_bg",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub(crate) default_bg_legacy: Option<String>,
 }
 
@@ -173,7 +201,9 @@ impl Config {
     }
 
     pub fn font_scale_multiplier(&self) -> Option<f32> {
-        self.font.font_scale_multiplier.or(self.font_scale_multiplier_legacy)
+        self.font
+            .font_scale_multiplier
+            .or(self.font_scale_multiplier_legacy)
     }
 
     pub fn bold_is_bright(&self) -> Option<bool> {
@@ -181,19 +211,27 @@ impl Config {
     }
 
     pub fn scrollback_limit(&self) -> Option<usize> {
-        self.window.scrollback_limit.or(self.scrollback_limit_legacy)
+        self.window
+            .scrollback_limit
+            .or(self.scrollback_limit_legacy)
     }
 
     pub fn infinite_scrollback(&self) -> Option<bool> {
-        self.window.infinite_scrollback.or(self.infinite_scrollback_legacy)
+        self.window
+            .infinite_scrollback
+            .or(self.infinite_scrollback_legacy)
     }
 
     pub fn gpu_acceleration(&self) -> Option<bool> {
-        self.window.gpu_acceleration.or(self.gpu_acceleration_legacy)
+        self.window
+            .gpu_acceleration
+            .or(self.gpu_acceleration_legacy)
     }
 
     pub fn scroll_multiplier(&self) -> Option<f64> {
-        self.window.scroll_multiplier.or(self.scroll_multiplier_legacy)
+        self.window
+            .scroll_multiplier
+            .or(self.scroll_multiplier_legacy)
     }
 
     pub fn fps_limit(&self) -> Option<u32> {
@@ -209,7 +247,10 @@ impl Config {
     }
 
     pub fn cursor_shape(&self) -> Option<&str> {
-        self.window.cursor_shape.as_deref().or(self.cursor_shape_legacy.as_deref())
+        self.window
+            .cursor_shape
+            .as_deref()
+            .or(self.cursor_shape_legacy.as_deref())
     }
 
     pub fn cursor_blink(&self) -> Option<bool> {
@@ -333,4 +374,3 @@ mod tests {
         assert_eq!(config.app_title, Some("{program} - Velox".to_string()));
     }
 }
-

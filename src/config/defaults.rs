@@ -45,4 +45,3 @@ pub fn default_config() -> Config {
         ..Default::default()
     }
 }
-

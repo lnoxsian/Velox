@@ -57,14 +57,12 @@ impl Scrollback {
             if self.infinite {
                 if let Some(file_ref) = self.disk_store.as_ref() {
                     let oldest = self.lines.pop_front().unwrap();
-                    if let Ok(mut file) = file_ref.try_borrow_mut() {
-                        if let Ok(bytes) = bincode::serialize(&oldest) {
-                            if let Ok(offset) = file.stream_position() {
-                                if file.write_all(&bytes).is_ok() {
-                                    self.disk_index.push((offset, bytes.len()));
-                                }
-                            }
-                        }
+                    if let Ok(mut file) = file_ref.try_borrow_mut()
+                        && let Ok(bytes) = bincode::serialize(&oldest)
+                        && let Ok(offset) = file.stream_position()
+                        && file.write_all(&bytes).is_ok()
+                    {
+                        self.disk_index.push((offset, bytes.len()));
                     }
                 } else {
                     self.lines.pop_front();
@@ -95,16 +93,16 @@ impl Scrollback {
     pub fn get_row(&self, index: usize) -> Option<Row> {
         let disk_len = self.disk_index.len();
         if index < disk_len {
-            if let Some(file_ref) = self.disk_store.as_ref() {
-                if let Ok(mut file) = file_ref.try_borrow_mut() {
-                    let (offset, size) = self.disk_index[index];
-                    if file.seek(SeekFrom::Start(offset)).is_ok() {
-                        let mut buffer = vec![0; size];
-                        if file.read_exact(&mut buffer).is_ok() {
-                            if let Ok(row) = bincode::deserialize(&buffer) {
-                                return Some(row);
-                            }
-                        }
+            if let Some(file_ref) = self.disk_store.as_ref()
+                && let Ok(mut file) = file_ref.try_borrow_mut()
+            {
+                let (offset, size) = self.disk_index[index];
+                if file.seek(SeekFrom::Start(offset)).is_ok() {
+                    let mut buffer = vec![0; size];
+                    if file.read_exact(&mut buffer).is_ok()
+                        && let Ok(row) = bincode::deserialize(&buffer)
+                    {
+                        return Some(row);
                     }
                 }
             }
@@ -118,13 +116,12 @@ impl Scrollback {
     pub fn clear(&mut self) {
         self.lines.clear();
         self.disk_index.clear();
-        if self.infinite {
-            if let Some(file_ref) = self.disk_store.as_ref() {
-                if let Ok(mut file) = file_ref.try_borrow_mut() {
-                    let _ = file.set_len(0);
-                    let _ = file.seek(SeekFrom::Start(0));
-                }
-            }
+        if self.infinite
+            && let Some(file_ref) = self.disk_store.as_ref()
+            && let Ok(mut file) = file_ref.try_borrow_mut()
+        {
+            let _ = file.set_len(0);
+            let _ = file.seek(SeekFrom::Start(0));
         }
     }
 }
@@ -145,18 +142,28 @@ mod tests {
         let mut scrollback = Scrollback::new(2, true);
         let dummy_cell = Cell {
             character: 'A',
-            foreground: Color { r: 255, g: 255, b: 255, a: 255 },
-            background: Color { r: 0, g: 0, b: 0, a: 255 },
+            foreground: Color {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 255,
+            },
+            background: Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
             flags: CellFlags::empty(),
         };
 
         // Push 5 lines to trigger disk store spilling (max_lines = 2)
         for _ in 0..5 {
-            scrollback.push_line(&[dummy_cell.clone()], false);
+            scrollback.push_line(&[dummy_cell], false);
         }
 
         assert_eq!(scrollback.len(), 5);
-        assert!(scrollback.disk_index.len() > 0);
+        assert!(!scrollback.disk_index.is_empty());
 
         // Verify disk file size before clear
         if let Some(file_ref) = scrollback.disk_store.as_ref() {
@@ -180,4 +187,3 @@ mod tests {
         }
     }
 }
-

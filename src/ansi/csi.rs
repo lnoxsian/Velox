@@ -379,14 +379,13 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
                 _ => {}
             }
         }
-        b'p' => {
+        b'p'
             // DECRPM - DEC Private Mode Report
-            if is_private && params.first() == Some(&2026) {
+            if is_private && params.first() == Some(&2026) => {
                 let status = if terminal.synchronized_output { 1 } else { 2 };
                 let response = format!("\x1b[?2026;{}$y", status);
                 terminal.send_to_shell(response.as_bytes());
             }
-        }
         _ => {}
     }
 }
