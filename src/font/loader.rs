@@ -1,7 +1,6 @@
 use crate::font::fallback::FallbackManager;
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use glow::HasContext;
-use owned_ttf_parser::AsFaceRef;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -23,6 +22,8 @@ pub struct CacheKey {
     pub is_italic: bool,
 }
 
+pub const MAX_DYNAMIC_GLYPHS: usize = 2048;
+
 pub struct FontLoader {
     gl: Arc<glow::Context>,
     font: FontArc,
@@ -37,9 +38,18 @@ pub struct FontLoader {
     pub atlas_texture: glow::Texture,
     atlas_width: u32,
     atlas_height: u32,
-    cache: HashMap<CacheKey, GlyphUv>,
+    ascii_cache: [Option<GlyphUv>; 512],
+    dynamic_cache: HashMap<CacheKey, GlyphUv>,
     next_x: u32,
     next_y: u32,
+}
+
+impl Drop for FontLoader {
+    fn drop(&mut self) {
+        unsafe {
+            self.gl.delete_texture(self.atlas_texture);
+        }
+    }
 }
 
 pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontArc> {
@@ -171,8 +181,8 @@ impl FontLoader {
         .ceil()
         .max(1.0) as u32;
 
-        let atlas_width = 1024;
-        let atlas_height = 1024;
+        let atlas_width = 512;
+        let atlas_height = 512;
 
         let atlas_texture = unsafe {
             let tex = gl.create_texture().unwrap();
@@ -229,9 +239,21 @@ impl FontLoader {
             atlas_texture,
             atlas_width,
             atlas_height,
-            cache: HashMap::new(),
+            ascii_cache: [None; 512],
+            dynamic_cache: HashMap::new(),
             next_x: 4,
             next_y: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn ascii_cache_idx(c: char, is_bold: bool, is_italic: bool) -> Option<usize> {
+        let code = c as u32;
+        if code < 128 {
+            let style = (is_bold as usize) | ((is_italic as usize) << 1);
+            Some(((code as usize) << 2) | style)
+        } else {
+            None
         }
     }
 
@@ -256,7 +278,8 @@ impl FontLoader {
         .ceil()
         .max(1.0) as u32;
 
-        self.cache.clear();
+        self.ascii_cache.fill(None);
+        self.dynamic_cache.clear();
         self.next_x = 4;
         self.next_y = 0;
 
@@ -264,18 +287,6 @@ impl FontLoader {
             let white_square = [255u8; 2 * 2 * 4];
             self.gl
                 .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
-            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            self.gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA as i32,
-                self.atlas_width as i32,
-                self.atlas_height as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
             self.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -303,7 +314,12 @@ impl FontLoader {
             is_bold,
             is_italic,
         };
-        if let Some(uv) = self.cache.get(&key) {
+
+        if !is_wide && let Some(idx) = Self::ascii_cache_idx(c, is_bold, is_italic) {
+            if let Some(uv) = self.ascii_cache[idx] {
+                return uv;
+            }
+        } else if let Some(uv) = self.dynamic_cache.get(&key) {
             return *uv;
         }
 
@@ -342,12 +358,11 @@ impl FontLoader {
             let fallback = &self.fallback_manager.fallbacks[idx];
             let id = fallback.font.glyph_id(base_c);
             if id.0 != 0
-                && let Some(ref face) = fallback.owned_face
+                && let Some(ref raw) = fallback.raw_data
+                && let Ok(face) = owned_ttf_parser::Face::parse(raw, 0)
             {
                 let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
-                if let Some(img) = face
-                    .as_face_ref()
-                    .glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
+                if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
                     && img.format == owned_ttf_parser::RasterImageFormat::PNG
                 {
                     let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
@@ -689,24 +704,13 @@ impl FontLoader {
         }
 
         if self.next_y + self.cell_height + pad > self.atlas_height {
-            self.cache.clear();
+            self.ascii_cache.fill(None);
+            self.dynamic_cache.clear();
             self.next_x = 4;
             self.next_y = 0;
             unsafe {
                 self.gl
                     .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
-                self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-                self.gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA as i32,
-                    self.atlas_width as i32,
-                    self.atlas_height as i32,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(None),
-                );
                 let white_pixels = [255u8; 2 * 2 * 4];
                 self.gl.tex_sub_image_2d(
                     glow::TEXTURE_2D,
@@ -756,7 +760,14 @@ impl FontLoader {
             width_mult: target_width as f32 / self.cell_width as f32,
         };
 
-        self.cache.insert(key, uv);
+        if !is_wide && let Some(idx) = Self::ascii_cache_idx(key.c, key.is_bold, key.is_italic) {
+            self.ascii_cache[idx] = Some(uv);
+        } else {
+            if self.dynamic_cache.len() >= MAX_DYNAMIC_GLYPHS {
+                self.dynamic_cache.clear();
+            }
+            self.dynamic_cache.insert(key, uv);
+        }
         uv
     }
 }

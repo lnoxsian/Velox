@@ -2,7 +2,6 @@ use super::atlas::{GlyphAtlas, GlyphRef};
 use crate::font::fallback::FallbackManager;
 use crate::font::loader::{is_nerd_font_or_pua, is_powerline};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
-use owned_ttf_parser::AsFaceRef;
 use std::collections::HashMap;
 
 /// Cache key containing only properties that change the visual outline/bitmap of a glyph.
@@ -487,12 +486,11 @@ impl GlyphCache {
             let fallback = &self.fallback_manager.fallbacks[idx];
             let id = fallback.font.glyph_id(c);
             if id.0 != 0
-                && let Some(ref face) = fallback.owned_face
+                && let Some(ref raw) = fallback.raw_data
+                && let Ok(face) = owned_ttf_parser::Face::parse(raw, 0)
             {
                 let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
-                if let Some(img) = face
-                    .as_face_ref()
-                    .glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
+                if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
                     && img.format == owned_ttf_parser::RasterImageFormat::PNG
                 {
                     let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));

@@ -2,10 +2,16 @@ use ab_glyph::{Font, FontArc};
 use fontdb::Database;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+pub const MAX_FALLBACK_FONTS: usize = 8;
+pub const MAX_MISSING_CHARS: usize = 1024;
 
 pub struct FallbackFont {
     pub font: FontArc,
-    pub owned_face: Option<owned_ttf_parser::OwnedFace>,
+    pub raw_data: Option<Arc<[u8]>>,
+    pub last_used: u64,
+    pub path: PathBuf,
 }
 
 pub struct FallbackManager {
@@ -14,6 +20,7 @@ pub struct FallbackManager {
     loaded_paths: HashSet<PathBuf>,
     pub fallbacks: Vec<FallbackFont>,
     missing_chars: HashSet<char>,
+    usage_counter: u64,
 }
 
 impl Default for FallbackManager {
@@ -30,6 +37,7 @@ impl FallbackManager {
             loaded_paths: HashSet::new(),
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
+            usage_counter: 0,
         }
     }
 
@@ -40,6 +48,7 @@ impl FallbackManager {
             loaded_paths: HashSet::new(),
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
+            usage_counter: 0,
         }
     }
 
@@ -50,15 +59,47 @@ impl FallbackManager {
         }
     }
 
+    fn insert_fallback(
+        &mut self,
+        path: PathBuf,
+        font: FontArc,
+        raw_data: Option<Arc<[u8]>>,
+    ) -> usize {
+        self.usage_counter = self.usage_counter.wrapping_add(1);
+        if self.fallbacks.len() >= MAX_FALLBACK_FONTS {
+            // Evict the least recently used fallback font to bound RAM
+            let lru_idx = self
+                .fallbacks
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, f)| f.last_used)
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+            let evicted = self.fallbacks.remove(lru_idx);
+            self.loaded_paths.remove(&evicted.path);
+        }
+
+        self.loaded_paths.insert(path.clone());
+        self.fallbacks.push(FallbackFont {
+            font,
+            raw_data,
+            last_used: self.usage_counter,
+            path,
+        });
+        self.fallbacks.len() - 1
+    }
+
     pub fn find_fallback_for_char(&mut self, c: char) -> Option<usize> {
-        // 1. Check existing loaded fallback fonts first
-        for (idx, fallback) in self.fallbacks.iter().enumerate() {
+        // 1. Check existing loaded fallback fonts first and update LRU timestamp
+        for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
             if fallback.font.glyph_id(c).0 != 0 {
+                self.usage_counter = self.usage_counter.wrapping_add(1);
+                fallback.last_used = self.usage_counter;
                 return Some(idx);
             }
         }
 
-        // 2. Check if char is known to be missing across all system fonts to prevent redundant disk I/O
+        // 2. Check if char is known to be missing across all system fonts
         if self.missing_chars.contains(&c) {
             return None;
         }
@@ -97,40 +138,51 @@ impl FallbackManager {
                     && let Ok(font) = FontArc::try_from_vec(data)
                     && font.glyph_id(c).0 != 0
                 {
-                    self.loaded_paths.insert(path.clone());
-                    self.fallbacks.push(FallbackFont {
-                        font,
-                        owned_face: None,
-                    });
-                    return Some(self.fallbacks.len() - 1);
+                    let idx = self.insert_fallback(path.clone(), font, None);
+                    return Some(idx);
                 }
             }
         }
 
         // 4. Scan system font faces in fontdb
-        for face in self.db.faces() {
-            if let fontdb::Source::File(path) = &face.source
-                && !self.loaded_paths.contains(path)
-                && let Ok(data) = std::fs::read(path)
+        let candidate_paths: Vec<(PathBuf, bool)> = self
+            .db
+            .faces()
+            .filter_map(|face| {
+                if let fontdb::Source::File(path) = &face.source
+                    && !self.loaded_paths.contains(path)
+                {
+                    let path_str = path.to_string_lossy().to_lowercase();
+                    let is_emoji = path_str.contains("emoji");
+                    Some((path.clone(), is_emoji))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (path, is_emoji) in candidate_paths {
+            if !self.loaded_paths.contains(&path)
+                && let Ok(data) = std::fs::read(&path)
             {
-                let path_str = path.to_string_lossy().to_lowercase();
-                let is_emoji = path_str.contains("emoji");
-                let owned_face = if is_emoji {
-                    owned_ttf_parser::OwnedFace::from_vec(data.clone(), 0).ok()
+                let raw_data = if is_emoji {
+                    Some(Arc::from(data.as_slice()))
                 } else {
                     None
                 };
                 if let Ok(font) = FontArc::try_from_vec(data)
                     && font.glyph_id(c).0 != 0
                 {
-                    self.loaded_paths.insert(path.clone());
-                    self.fallbacks.push(FallbackFont { font, owned_face });
-                    return Some(self.fallbacks.len() - 1);
+                    let idx = self.insert_fallback(path, font, raw_data);
+                    return Some(idx);
                 }
             }
         }
 
-        // Mark as missing to optimize future lookups
+        // Mark as missing to optimize future lookups (bounded capacity)
+        if self.missing_chars.len() >= MAX_MISSING_CHARS {
+            self.missing_chars.clear();
+        }
         self.missing_chars.insert(c);
         None
     }
@@ -146,5 +198,6 @@ mod tests {
         let _ = manager.find_fallback_for_char('A');
         let _ = manager.find_fallback_for_char('\u{1f600}'); // 😀
         let _ = manager.find_fallback_for_char('\u{e0b0}'); // 
+        assert!(manager.fallbacks.len() <= MAX_FALLBACK_FONTS);
     }
 }

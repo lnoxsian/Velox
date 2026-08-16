@@ -851,7 +851,14 @@ impl Renderer {
                 .draw_arrays(glow::TRIANGLES, 0, (vertices.len() / 8) as i32);
         }
 
-        self.vertices = vertices;
+        const DEFAULT_VERTEX_CAPACITY: usize = 80 * 24 * 6 * 8;
+        const MAX_RETAINED_VERTEX_CAPACITY: usize = 200 * 60 * 6 * 8;
+
+        if vertices.capacity() > MAX_RETAINED_VERTEX_CAPACITY {
+            self.vertices = Vec::with_capacity(DEFAULT_VERTEX_CAPACITY);
+        } else {
+            self.vertices = vertices;
+        }
     }
 }
 
