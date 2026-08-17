@@ -768,19 +768,17 @@ impl ApplicationHandler<CustomEvent> for App {
         let mut min_next_wake: Option<std::time::Instant> = None;
 
         for ws in self.windows.values_mut() {
-            // Cursor blink toggle
-            if ws.cursor_blink_enabled
-                && now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500)
-            {
-                ws.cursor_blink_on = !ws.cursor_blink_on;
+            // Cursor and text blink toggle (500ms cycle)
+            if now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500) {
+                if ws.cursor_blink_enabled {
+                    ws.cursor_blink_on = !ws.cursor_blink_on;
+                }
                 ws.last_cursor_blink = now;
                 ws.needs_redraw = true;
             }
 
-            if ws.cursor_blink_enabled {
-                let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
-                min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
-            }
+            let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
+            min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
 
             // Redraw scheduling
             if ws.needs_redraw {

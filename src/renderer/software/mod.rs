@@ -41,6 +41,8 @@ pub struct CpuRenderer {
     prev_ansi_colors: [crate::screen::cell::Color; 16],
     bold_is_bright: bool,
     prev_scroll_offset: usize,
+    pub start_time: Instant,
+    pub prev_blink_on: bool,
 }
 
 impl CpuRenderer {
@@ -73,6 +75,8 @@ impl CpuRenderer {
             prev_ansi_colors: theme.ansi_colors,
             bold_is_bright,
             prev_scroll_offset: 0,
+            start_time: Instant::now(),
+            prev_blink_on: true,
         }
     }
 
@@ -140,6 +144,28 @@ impl CpuRenderer {
         self.damage
             .update_selection(grid.selection.active, sel_min_y, sel_max_y);
 
+        let grid_w = grid.width;
+        let grid_h = grid.height;
+
+        // Blink animation handling
+        let blink_on = (self.start_time.elapsed().as_millis() / 500).is_multiple_of(2);
+        let blink_changed = blink_on != self.prev_blink_on;
+        self.prev_blink_on = blink_on;
+
+        if blink_changed {
+            for y in 0..grid_h {
+                let row_start = y * grid_w;
+                let row_end = (row_start + grid_w).min(cells.len());
+                if row_start < cells.len()
+                    && cells[row_start..row_end]
+                        .iter()
+                        .any(|c| c.flags.contains(CellFlags::BLINK))
+                {
+                    self.damage.mark_row(y);
+                }
+            }
+        }
+
         // If no damage, directly copy current framebuffer to surface and return
         if !self.damage.has_damage() {
             if target_buffer.len() == self.framebuffer.pixels.len() {
@@ -150,8 +176,6 @@ impl CpuRenderer {
 
         let cell_w = self.glyph_cache.cell_width;
         let cell_h = self.glyph_cache.cell_height;
-        let grid_w = grid.width;
-        let grid_h = grid.height;
         let px_offset = padding_x as u32;
         let py_offset = padding_y as u32;
 
@@ -240,8 +264,11 @@ impl CpuRenderer {
                     self.palette
                         .resolve_cell_colors(cell, is_inverted, self.bold_is_bright);
 
-                // Render character
-                if cell.character != ' ' && !cell.flags.contains(CellFlags::HIDDEN) {
+                // Render character (skip if HIDDEN or BLINK during off phase)
+                let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
+                    || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
+
+                if !skip_fg && cell.character != ' ' {
                     let is_wide = cell.flags.contains(CellFlags::WIDE);
                     let target_w = if is_wide { cell_w * 2 } else { cell_w };
 
@@ -321,7 +348,10 @@ impl CpuRenderer {
                     // Block cursor: fill cursor block and render inverted cell character
                     self.framebuffer
                         .fill_span(px, py, cell_w, cell_h, cursor_color);
-                    if cell.character != ' ' && !cell.flags.contains(CellFlags::HIDDEN) {
+                    let skip_cursor_fg = cell.flags.contains(CellFlags::HIDDEN)
+                        || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
+
+                    if !skip_cursor_fg && cell.character != ' ' {
                         let is_wide = cell.flags.contains(CellFlags::WIDE);
                         let target_w = if is_wide { cell_w * 2 } else { cell_w };
                         let inv_fg = self.palette.default_bg;
