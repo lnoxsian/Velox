@@ -375,63 +375,255 @@ fn draw_box_arms(
             }
             (LineStyle::None, LineStyle::Double, LineStyle::None, LineStyle::Double) => {
                 // ╔
-                fb.fill_span(x_d_left, y_d_top, cell_right.saturating_sub(x_d_left), t_light, fg);
-                fb.fill_span(x_d_left, y_d_top, t_light, cell_bottom.saturating_sub(y_d_top), fg);
-                fb.fill_span(x_d_right, y_d_bot, cell_right.saturating_sub(x_d_right), t_light, fg);
-                fb.fill_span(x_d_right, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
+                fb.fill_span(
+                    x_d_left,
+                    y_d_top,
+                    cell_right.saturating_sub(x_d_left),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_d_top,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_top),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Double, LineStyle::Double, LineStyle::None) => {
                 // ╗
-                fb.fill_span(px, y_d_top, (x_d_right + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_right, y_d_top, t_light, cell_bottom.saturating_sub(y_d_top), fg);
-                fb.fill_span(px, y_d_bot, (x_d_left + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_left, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_d_right + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_top,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_top),
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::None, LineStyle::None, LineStyle::Double) => {
                 // ╚
-                fb.fill_span(x_d_left, y_d_bot, cell_right.saturating_sub(x_d_left), t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_d_bot + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_right, y_d_top, cell_right.saturating_sub(x_d_right), t_light, fg);
-                fb.fill_span(x_d_right, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    x_d_left,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_d_left),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_d_bot + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_top,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::None, LineStyle::Double, LineStyle::None) => {
                 // ╝
-                fb.fill_span(px, y_d_bot, (x_d_right + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_right, py, t_light, (y_d_bot + t_light).saturating_sub(py), fg);
-                fb.fill_span(px, y_d_top, (x_d_left + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_d_right + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_d_bot + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::None, LineStyle::Double) => {
                 // ╠
                 fb.fill_span(x_d_left, py, t_light, cell_h, fg);
-                fb.fill_span(x_d_right, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_right, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
-                fb.fill_span(x_d_right, y_d_top, cell_right.saturating_sub(x_d_right), t_light, fg);
-                fb.fill_span(x_d_right, y_d_bot, cell_right.saturating_sub(x_d_right), t_light, fg);
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_top,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::Double, LineStyle::None) => {
                 // ╣
                 fb.fill_span(x_d_right, py, t_light, cell_h, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_left, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
-                fb.fill_span(px, y_d_top, (x_d_left + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(px, y_d_bot, (x_d_left + t_light).saturating_sub(px), t_light, fg);
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Double, LineStyle::Double, LineStyle::Double) => {
                 // ╦
                 fb.fill_span(px, y_d_top, cell_w, t_light, fg);
-                fb.fill_span(px, y_d_bot, (x_d_left + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_right, y_d_bot, cell_right.saturating_sub(x_d_right), t_light, fg);
-                fb.fill_span(x_d_left, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
-                fb.fill_span(x_d_right, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::None, LineStyle::Double, LineStyle::Double) => {
                 // ╩
                 fb.fill_span(px, y_d_bot, cell_w, t_light, fg);
-                fb.fill_span(px, y_d_top, (x_d_left + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_right, y_d_top, cell_right.saturating_sub(x_d_right), t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_right, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_top,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::Double, LineStyle::Double) => {
                 // ╬
@@ -444,99 +636,315 @@ fn draw_box_arms(
             // Mixed single and double
             (LineStyle::None, LineStyle::Light, LineStyle::None, LineStyle::Double) => {
                 // ╒
-                fb.fill_span(x_s_light, y_d_top, t_light, cell_bottom.saturating_sub(y_d_top), fg);
-                fb.fill_span(x_s_light, y_d_top, cell_right.saturating_sub(x_s_light), t_light, fg);
-                fb.fill_span(x_s_light, y_d_bot, cell_right.saturating_sub(x_s_light), t_light, fg);
+                fb.fill_span(
+                    x_s_light,
+                    y_d_top,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_top),
+                    fg,
+                );
+                fb.fill_span(
+                    x_s_light,
+                    y_d_top,
+                    cell_right.saturating_sub(x_s_light),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_s_light,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_s_light),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Double, LineStyle::None, LineStyle::Light) => {
                 // ╓
-                fb.fill_span(x_d_left, y_s_light, cell_right.saturating_sub(x_d_left), t_light, fg);
-                fb.fill_span(x_d_left, y_s_light, t_light, cell_bottom.saturating_sub(y_s_light), fg);
-                fb.fill_span(x_d_right, y_s_light, t_light, cell_bottom.saturating_sub(y_s_light), fg);
+                fb.fill_span(
+                    x_d_left,
+                    y_s_light,
+                    cell_right.saturating_sub(x_d_left),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_s_light,
+                    t_light,
+                    cell_bottom.saturating_sub(y_s_light),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_s_light,
+                    t_light,
+                    cell_bottom.saturating_sub(y_s_light),
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Light, LineStyle::Double, LineStyle::None) => {
                 // ╕
-                fb.fill_span(x_s_light, y_d_top, t_light, cell_bottom.saturating_sub(y_d_top), fg);
-                fb.fill_span(px, y_d_top, (x_s_light + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(px, y_d_bot, (x_s_light + t_light).saturating_sub(px), t_light, fg);
+                fb.fill_span(
+                    x_s_light,
+                    y_d_top,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_top),
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_s_light + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_s_light + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Double, LineStyle::Light, LineStyle::None) => {
                 // ╖
-                fb.fill_span(px, y_s_light, (x_d_right + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_left, y_s_light, t_light, cell_bottom.saturating_sub(y_s_light), fg);
-                fb.fill_span(x_d_right, y_s_light, t_light, cell_bottom.saturating_sub(y_s_light), fg);
+                fb.fill_span(
+                    px,
+                    y_s_light,
+                    (x_d_right + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_s_light,
+                    t_light,
+                    cell_bottom.saturating_sub(y_s_light),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_s_light,
+                    t_light,
+                    cell_bottom.saturating_sub(y_s_light),
+                    fg,
+                );
             }
             (LineStyle::Light, LineStyle::None, LineStyle::None, LineStyle::Double) => {
                 // ╘
-                fb.fill_span(x_s_light, py, t_light, (y_d_bot + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_s_light, y_d_top, cell_right.saturating_sub(x_s_light), t_light, fg);
-                fb.fill_span(x_s_light, y_d_bot, cell_right.saturating_sub(x_s_light), t_light, fg);
+                fb.fill_span(
+                    x_s_light,
+                    py,
+                    t_light,
+                    (y_d_bot + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_s_light,
+                    y_d_top,
+                    cell_right.saturating_sub(x_s_light),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_s_light,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_s_light),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::None, LineStyle::None, LineStyle::Light) => {
                 // ╙
-                fb.fill_span(x_d_left, y_s_light, cell_right.saturating_sub(x_d_left), t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_s_light + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_right, py, t_light, (y_s_light + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    x_d_left,
+                    y_s_light,
+                    cell_right.saturating_sub(x_d_left),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_s_light + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_s_light + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Light, LineStyle::None, LineStyle::Double, LineStyle::None) => {
                 // ╛
-                fb.fill_span(x_s_light, py, t_light, (y_d_bot + t_light).saturating_sub(py), fg);
-                fb.fill_span(px, y_d_top, (x_s_light + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(px, y_d_bot, (x_s_light + t_light).saturating_sub(px), t_light, fg);
+                fb.fill_span(
+                    x_s_light,
+                    py,
+                    t_light,
+                    (y_d_bot + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_s_light + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_s_light + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::None, LineStyle::Light, LineStyle::None) => {
                 // ╜
-                fb.fill_span(px, y_s_light, (x_d_right + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_s_light + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_right, py, t_light, (y_s_light + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    px,
+                    y_s_light,
+                    (x_d_right + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_s_light + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_s_light + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Light, LineStyle::Light, LineStyle::None, LineStyle::Double) => {
                 // ╞
                 fb.fill_span(x_s_light, py, t_light, cell_h, fg);
-                fb.fill_span(x_s_light, y_d_top, cell_right.saturating_sub(x_s_light), t_light, fg);
-                fb.fill_span(x_s_light, y_d_bot, cell_right.saturating_sub(x_s_light), t_light, fg);
+                fb.fill_span(
+                    x_s_light,
+                    y_d_top,
+                    cell_right.saturating_sub(x_s_light),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_s_light,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_s_light),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::None, LineStyle::Light) => {
                 // ╟
                 fb.fill_span(x_d_left, py, t_light, cell_h, fg);
                 fb.fill_span(x_d_right, py, t_light, cell_h, fg);
-                fb.fill_span(x_d_right, y_s_light, cell_right.saturating_sub(x_d_right), t_light, fg);
+                fb.fill_span(
+                    x_d_right,
+                    y_s_light,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::Light, LineStyle::Light, LineStyle::Double, LineStyle::None) => {
                 // ╡
                 fb.fill_span(x_s_light, py, t_light, cell_h, fg);
-                fb.fill_span(px, y_d_top, (x_s_light + t_light).saturating_sub(px), t_light, fg);
-                fb.fill_span(px, y_d_bot, (x_s_light + t_light).saturating_sub(px), t_light, fg);
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_s_light + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_s_light + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::Light, LineStyle::None) => {
                 // ╢
                 fb.fill_span(x_d_left, py, t_light, cell_h, fg);
                 fb.fill_span(x_d_right, py, t_light, cell_h, fg);
-                fb.fill_span(px, y_s_light, (x_d_left + t_light).saturating_sub(px), t_light, fg);
+                fb.fill_span(
+                    px,
+                    y_s_light,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Light, LineStyle::Double, LineStyle::Double) => {
                 // ╤
                 fb.fill_span(px, y_d_top, cell_w, t_light, fg);
                 fb.fill_span(px, y_d_bot, cell_w, t_light, fg);
-                fb.fill_span(x_s_light, y_d_bot, t_light, cell_bottom.saturating_sub(y_d_bot), fg);
+                fb.fill_span(
+                    x_s_light,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
             }
             (LineStyle::None, LineStyle::Double, LineStyle::Light, LineStyle::Light) => {
                 // ╥
                 fb.fill_span(px, y_s_light, cell_w, t_light, fg);
-                fb.fill_span(x_d_left, y_s_light, t_light, cell_bottom.saturating_sub(y_s_light), fg);
-                fb.fill_span(x_d_right, y_s_light, t_light, cell_bottom.saturating_sub(y_s_light), fg);
+                fb.fill_span(
+                    x_d_left,
+                    y_s_light,
+                    t_light,
+                    cell_bottom.saturating_sub(y_s_light),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_s_light,
+                    t_light,
+                    cell_bottom.saturating_sub(y_s_light),
+                    fg,
+                );
             }
             (LineStyle::Light, LineStyle::None, LineStyle::Double, LineStyle::Double) => {
                 // ╧
                 fb.fill_span(px, y_d_top, cell_w, t_light, fg);
                 fb.fill_span(px, y_d_bot, cell_w, t_light, fg);
-                fb.fill_span(x_s_light, py, t_light, (y_d_top + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    x_s_light,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Double, LineStyle::None, LineStyle::Light, LineStyle::Light) => {
                 // ╨
                 fb.fill_span(px, y_s_light, cell_w, t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, (y_s_light + t_light).saturating_sub(py), fg);
-                fb.fill_span(x_d_right, py, t_light, (y_s_light + t_light).saturating_sub(py), fg);
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_s_light + t_light).saturating_sub(py),
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_s_light + t_light).saturating_sub(py),
+                    fg,
+                );
             }
             (LineStyle::Light, LineStyle::Light, LineStyle::Double, LineStyle::Double) => {
                 // ╪
@@ -570,19 +978,21 @@ fn draw_box_arms(
     // Up arm
     match up {
         LineStyle::Light => {
-            let y_end = if down != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                mid_y + center_half + 1
-            } else {
-                mid_y
-            };
+            let y_end =
+                if down != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
+                    mid_y + center_half + 1
+                } else {
+                    mid_y
+                };
             fb.fill_span(x_s_light, py, t_light, y_end.saturating_sub(py), fg);
         }
         LineStyle::Heavy => {
-            let y_end = if down != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                mid_y + center_half + 1
-            } else {
-                mid_y
-            };
+            let y_end =
+                if down != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
+                    mid_y + center_half + 1
+                } else {
+                    mid_y
+                };
             fb.fill_span(x_s_heavy, py, t_heavy, y_end.saturating_sub(py), fg);
         }
         _ => {}
@@ -591,20 +1001,34 @@ fn draw_box_arms(
     // Down arm
     match down {
         LineStyle::Light => {
-            let y_start = if up != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                mid_y.saturating_sub(center_half)
-            } else {
-                mid_y
-            };
-            fb.fill_span(x_s_light, y_start, t_light, cell_bottom.saturating_sub(y_start), fg);
+            let y_start =
+                if up != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
+                    mid_y.saturating_sub(center_half)
+                } else {
+                    mid_y
+                };
+            fb.fill_span(
+                x_s_light,
+                y_start,
+                t_light,
+                cell_bottom.saturating_sub(y_start),
+                fg,
+            );
         }
         LineStyle::Heavy => {
-            let y_start = if up != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                mid_y.saturating_sub(center_half)
-            } else {
-                mid_y
-            };
-            fb.fill_span(x_s_heavy, y_start, t_heavy, cell_bottom.saturating_sub(y_start), fg);
+            let y_start =
+                if up != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
+                    mid_y.saturating_sub(center_half)
+                } else {
+                    mid_y
+                };
+            fb.fill_span(
+                x_s_heavy,
+                y_start,
+                t_heavy,
+                cell_bottom.saturating_sub(y_start),
+                fg,
+            );
         }
         _ => {}
     }
@@ -612,19 +1036,21 @@ fn draw_box_arms(
     // Left arm
     match left {
         LineStyle::Light => {
-            let x_end = if right != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                mid_x + center_half + 1
-            } else {
-                mid_x
-            };
+            let x_end =
+                if right != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
+                    mid_x + center_half + 1
+                } else {
+                    mid_x
+                };
             fb.fill_span(px, y_s_light, x_end.saturating_sub(px), t_light, fg);
         }
         LineStyle::Heavy => {
-            let x_end = if right != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                mid_x + center_half + 1
-            } else {
-                mid_x
-            };
+            let x_end =
+                if right != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
+                    mid_x + center_half + 1
+                } else {
+                    mid_x
+                };
             fb.fill_span(px, y_s_heavy, x_end.saturating_sub(px), t_heavy, fg);
         }
         _ => {}
@@ -633,20 +1059,34 @@ fn draw_box_arms(
     // Right arm
     match right {
         LineStyle::Light => {
-            let x_start = if left != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                mid_x.saturating_sub(center_half)
-            } else {
-                mid_x
-            };
-            fb.fill_span(x_start, y_s_light, cell_right.saturating_sub(x_start), t_light, fg);
+            let x_start =
+                if left != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
+                    mid_x.saturating_sub(center_half)
+                } else {
+                    mid_x
+                };
+            fb.fill_span(
+                x_start,
+                y_s_light,
+                cell_right.saturating_sub(x_start),
+                t_light,
+                fg,
+            );
         }
         LineStyle::Heavy => {
-            let x_start = if left != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                mid_x.saturating_sub(center_half)
-            } else {
-                mid_x
-            };
-            fb.fill_span(x_start, y_s_heavy, cell_right.saturating_sub(x_start), t_heavy, fg);
+            let x_start =
+                if left != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
+                    mid_x.saturating_sub(center_half)
+                } else {
+                    mid_x
+                };
+            fb.fill_span(
+                x_start,
+                y_s_heavy,
+                cell_right.saturating_sub(x_start),
+                t_heavy,
+                fg,
+            );
         }
         _ => {}
     }
@@ -679,34 +1119,106 @@ fn render_box_drawing(
     match c {
         // Rounded corners
         '╭' => {
-            fb.fill_span(mid_x + half_tl, y_s_light, cell_right.saturating_sub(mid_x + half_tl), t_light, fg);
-            fb.fill_span(x_s_light, mid_y + half_tl, t_light, cell_bottom.saturating_sub(mid_y + half_tl), fg);
+            fb.fill_span(
+                mid_x + half_tl,
+                y_s_light,
+                cell_right.saturating_sub(mid_x + half_tl),
+                t_light,
+                fg,
+            );
+            fb.fill_span(
+                x_s_light,
+                mid_y + half_tl,
+                t_light,
+                cell_bottom.saturating_sub(mid_y + half_tl),
+                fg,
+            );
             if x_s_light + t_light < cell_right && y_s_light + t_light < cell_bottom {
-                fb.fill_span(x_s_light + t_light, y_s_light + t_light, t_light, t_light, fg);
+                fb.fill_span(
+                    x_s_light + t_light,
+                    y_s_light + t_light,
+                    t_light,
+                    t_light,
+                    fg,
+                );
             }
             true
         }
         '╮' => {
-            fb.fill_span(px, y_s_light, (mid_x.saturating_sub(half_tl)).saturating_sub(px), t_light, fg);
-            fb.fill_span(x_s_light, mid_y + half_tl, t_light, cell_bottom.saturating_sub(mid_y + half_tl), fg);
+            fb.fill_span(
+                px,
+                y_s_light,
+                (mid_x.saturating_sub(half_tl)).saturating_sub(px),
+                t_light,
+                fg,
+            );
+            fb.fill_span(
+                x_s_light,
+                mid_y + half_tl,
+                t_light,
+                cell_bottom.saturating_sub(mid_y + half_tl),
+                fg,
+            );
             if x_s_light >= px + t_light && y_s_light + t_light < cell_bottom {
-                fb.fill_span(x_s_light.saturating_sub(t_light), y_s_light + t_light, t_light, t_light, fg);
+                fb.fill_span(
+                    x_s_light.saturating_sub(t_light),
+                    y_s_light + t_light,
+                    t_light,
+                    t_light,
+                    fg,
+                );
             }
             true
         }
         '╯' => {
-            fb.fill_span(px, y_s_light, (mid_x.saturating_sub(half_tl)).saturating_sub(px), t_light, fg);
-            fb.fill_span(x_s_light, py, t_light, (mid_y.saturating_sub(half_tl)).saturating_sub(py), fg);
+            fb.fill_span(
+                px,
+                y_s_light,
+                (mid_x.saturating_sub(half_tl)).saturating_sub(px),
+                t_light,
+                fg,
+            );
+            fb.fill_span(
+                x_s_light,
+                py,
+                t_light,
+                (mid_y.saturating_sub(half_tl)).saturating_sub(py),
+                fg,
+            );
             if x_s_light >= px + t_light && y_s_light >= py + t_light {
-                fb.fill_span(x_s_light.saturating_sub(t_light), y_s_light.saturating_sub(t_light), t_light, t_light, fg);
+                fb.fill_span(
+                    x_s_light.saturating_sub(t_light),
+                    y_s_light.saturating_sub(t_light),
+                    t_light,
+                    t_light,
+                    fg,
+                );
             }
             true
         }
         '╰' => {
-            fb.fill_span(mid_x + half_tl, y_s_light, cell_right.saturating_sub(mid_x + half_tl), t_light, fg);
-            fb.fill_span(x_s_light, py, t_light, (mid_y.saturating_sub(half_tl)).saturating_sub(py), fg);
+            fb.fill_span(
+                mid_x + half_tl,
+                y_s_light,
+                cell_right.saturating_sub(mid_x + half_tl),
+                t_light,
+                fg,
+            );
+            fb.fill_span(
+                x_s_light,
+                py,
+                t_light,
+                (mid_y.saturating_sub(half_tl)).saturating_sub(py),
+                fg,
+            );
             if x_s_light + t_light < cell_right && y_s_light >= py + t_light {
-                fb.fill_span(x_s_light + t_light, y_s_light.saturating_sub(t_light), t_light, t_light, fg);
+                fb.fill_span(
+                    x_s_light + t_light,
+                    y_s_light.saturating_sub(t_light),
+                    t_light,
+                    t_light,
+                    fg,
+                );
             }
             true
         }
@@ -715,7 +1227,8 @@ fn render_box_drawing(
         '╱' => {
             for i in 0..cell_w {
                 let x = px + i;
-                let frac = (cell_w.saturating_sub(1).saturating_sub(i)) as f32 / (cell_w.max(2) - 1) as f32;
+                let frac = (cell_w.saturating_sub(1).saturating_sub(i)) as f32
+                    / (cell_w.max(2) - 1) as f32;
                 let y = py + (frac * (cell_h.saturating_sub(1)) as f32).round() as u32;
                 fb.fill_span(x, y, 1, t_light, fg);
             }
@@ -733,7 +1246,8 @@ fn render_box_drawing(
         '╳' => {
             for i in 0..cell_w {
                 let x = px + i;
-                let frac1 = (cell_w.saturating_sub(1).saturating_sub(i)) as f32 / (cell_w.max(2) - 1) as f32;
+                let frac1 = (cell_w.saturating_sub(1).saturating_sub(i)) as f32
+                    / (cell_w.max(2) - 1) as f32;
                 let y1 = py + (frac1 * (cell_h.saturating_sub(1)) as f32).round() as u32;
                 fb.fill_span(x, y1, 1, t_light, fg);
                 let frac2 = i as f32 / (cell_w.max(2) - 1) as f32;
@@ -746,7 +1260,11 @@ fn render_box_drawing(
         // Dashes: Horizontal
         '┄' | '┅' => {
             let t = if c == '┄' { t_light } else { t_heavy };
-            let y = if c == '┄' { y_s_light } else { mid_y.saturating_sub(t / 2) };
+            let y = if c == '┄' {
+                y_s_light
+            } else {
+                mid_y.saturating_sub(t / 2)
+            };
             let dash_w = (cell_w / 5).max(1);
             fb.fill_span(px, y, dash_w, t, fg);
             fb.fill_span(px + (cell_w.saturating_sub(dash_w)) / 2, y, dash_w, t, fg);
@@ -755,7 +1273,11 @@ fn render_box_drawing(
         }
         '┈' | '┉' => {
             let t = if c == '┈' { t_light } else { t_heavy };
-            let y = if c == '┈' { y_s_light } else { mid_y.saturating_sub(t / 2) };
+            let y = if c == '┈' {
+                y_s_light
+            } else {
+                mid_y.saturating_sub(t / 2)
+            };
             let dash_w = (cell_w / 7).max(1);
             for k in 0..4 {
                 let dx = px + (k * cell_w.saturating_sub(dash_w)) / 3;
@@ -765,7 +1287,11 @@ fn render_box_drawing(
         }
         '╌' | '╍' => {
             let t = if c == '╌' { t_light } else { t_heavy };
-            let y = if c == '╌' { y_s_light } else { mid_y.saturating_sub(t / 2) };
+            let y = if c == '╌' {
+                y_s_light
+            } else {
+                mid_y.saturating_sub(t / 2)
+            };
             let dash_w = (cell_w / 3).max(1);
             fb.fill_span(px, y, dash_w, t, fg);
             fb.fill_span(px + cell_w.saturating_sub(dash_w), y, dash_w, t, fg);
@@ -775,7 +1301,11 @@ fn render_box_drawing(
         // Dashes: Vertical
         '┆' | '┇' => {
             let t = if c == '┆' { t_light } else { t_heavy };
-            let x = if c == '┆' { x_s_light } else { mid_x.saturating_sub(t / 2) };
+            let x = if c == '┆' {
+                x_s_light
+            } else {
+                mid_x.saturating_sub(t / 2)
+            };
             let dash_h = (cell_h / 5).max(1);
             fb.fill_span(x, py, t, dash_h, fg);
             fb.fill_span(x, py + (cell_h.saturating_sub(dash_h)) / 2, t, dash_h, fg);
@@ -784,7 +1314,11 @@ fn render_box_drawing(
         }
         '┊' | '┋' => {
             let t = if c == '┊' { t_light } else { t_heavy };
-            let x = if c == '┊' { x_s_light } else { mid_x.saturating_sub(t / 2) };
+            let x = if c == '┊' {
+                x_s_light
+            } else {
+                mid_x.saturating_sub(t / 2)
+            };
             let dash_h = (cell_h / 7).max(1);
             for k in 0..4 {
                 let dy = py + (k * cell_h.saturating_sub(dash_h)) / 3;
@@ -794,7 +1328,11 @@ fn render_box_drawing(
         }
         '╎' | '╏' => {
             let t = if c == '╎' { t_light } else { t_heavy };
-            let x = if c == '╎' { x_s_light } else { mid_x.saturating_sub(t / 2) };
+            let x = if c == '╎' {
+                x_s_light
+            } else {
+                mid_x.saturating_sub(t / 2)
+            };
             let dash_h = (cell_h / 3).max(1);
             fb.fill_span(x, py, t, dash_h, fg);
             fb.fill_span(x, py + cell_h.saturating_sub(dash_h), t, dash_h, fg);
@@ -813,15 +1351,19 @@ mod tests {
     fn test_render_all_double_line_table_chars() {
         let mut fb = Framebuffer::new(50, 50);
         let double_chars = [
-            '═', '║', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬',
-            '╒', '╓', '╕', '╖', '╘', '╙', '╛', '╜', '╞', '╟', '╡', '╢', '╤', '╥', '╧', '╨', '╪', '╫',
+            '═', '║', '╔', '╗', '╚', '╝', '╠', '╣', '╦', '╩', '╬', '╒', '╓', '╕', '╖', '╘', '╙',
+            '╛', '╜', '╞', '╟', '╡', '╢', '╤', '╥', '╧', '╨', '╪', '╫',
         ];
 
         for &c in &double_chars {
             fb.clear(0);
             let handled = try_render_primitive(c, 5, 5, 10, 20, 0xFFFFFFFF, &mut fb);
             assert!(handled, "Character {} should be handled as primitive", c);
-            assert!(fb.pixels.contains(&0xFFFFFFFF), "Character {} must draw pixels", c);
+            assert!(
+                fb.pixels.contains(&0xFFFFFFFF),
+                "Character {} must draw pixels",
+                c
+            );
         }
     }
 
@@ -841,7 +1383,9 @@ mod tests {
     #[test]
     fn test_render_rounded_and_diagonals() {
         let mut fb = Framebuffer::new(50, 50);
-        let special_box = ['╭', '╮', '╯', '╰', '╱', '╲', '╳', '┄', '┆', '┈', '┊', '╌', '╎'];
+        let special_box = [
+            '╭', '╮', '╯', '╰', '╱', '╲', '╳', '┄', '┆', '┈', '┊', '╌', '╎',
+        ];
 
         for &c in &special_box {
             fb.clear(0);

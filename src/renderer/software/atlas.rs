@@ -10,6 +10,12 @@ pub struct GlyphRef {
     pub width_mult: u8,
 }
 
+pub const DEFAULT_ALPHA_CAPACITY: usize = 64 * 1024; // 64 KB initial capacity
+pub const DEFAULT_COLOR_CAPACITY: usize = 16 * 1024; // 64 KB (16k u32) initial capacity
+pub const MAX_RETAINED_ALPHA_CAPACITY: usize = 256 * 1024; // 256 KB threshold
+pub const MAX_RETAINED_COLOR_CAPACITY: usize = 128 * 1024; // 512 KB (128k u32) threshold
+pub const MAX_ATLAS_BYTES: usize = 4 * 1024 * 1024; // 4 MB memory ceiling
+
 #[derive(Debug, Clone, Default)]
 pub struct GlyphAtlas {
     /// Contiguous buffer of 8-bit alpha masks for monochrome glyphs
@@ -21,14 +27,49 @@ pub struct GlyphAtlas {
 impl GlyphAtlas {
     pub fn new() -> Self {
         Self {
-            alpha_pixels: Vec::with_capacity(64 * 1024), // 64 KB initial capacity
-            color_pixels: Vec::with_capacity(16 * 1024), // 64 KB initial capacity
+            alpha_pixels: Vec::with_capacity(DEFAULT_ALPHA_CAPACITY),
+            color_pixels: Vec::with_capacity(DEFAULT_COLOR_CAPACITY),
         }
     }
 
+    /// Clear length while retaining allocated capacity for fast frame reuse.
     pub fn clear(&mut self) {
         self.alpha_pixels.clear();
         self.color_pixels.clear();
+    }
+
+    /// Clear length and release excessive memory back to the allocator if above high-water mark.
+    pub fn clear_and_release(&mut self) {
+        if self.alpha_pixels.capacity() > MAX_RETAINED_ALPHA_CAPACITY {
+            self.alpha_pixels = Vec::with_capacity(DEFAULT_ALPHA_CAPACITY);
+        } else {
+            self.alpha_pixels.clear();
+        }
+
+        if self.color_pixels.capacity() > MAX_RETAINED_COLOR_CAPACITY {
+            self.color_pixels = Vec::with_capacity(DEFAULT_COLOR_CAPACITY);
+        } else {
+            self.color_pixels.clear();
+        }
+    }
+
+    /// Total memory used in bytes by the resident pixel buffers.
+    #[inline(always)]
+    pub fn total_bytes(&self) -> usize {
+        self.alpha_pixels.len() + (self.color_pixels.len() * 4)
+    }
+
+    /// Total capacity in bytes allocated on the heap.
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub fn total_capacity_bytes(&self) -> usize {
+        self.alpha_pixels.capacity() + (self.color_pixels.capacity() * 4)
+    }
+
+    /// Check if atlas has reached the memory ceiling.
+    #[inline(always)]
+    pub fn is_full(&self) -> bool {
+        self.total_bytes() >= MAX_ATLAS_BYTES
     }
 
     /// Insert an 8-bit alpha mask into the contiguous atlas buffer.
@@ -106,5 +147,25 @@ mod tests {
         let color_data = vec![0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF];
         let color_ref = atlas.insert_color(2, 2, 0, 0, 1, &color_data);
         assert_eq!(atlas.get_color(&color_ref), &color_data[..]);
+    }
+
+    #[test]
+    fn test_glyph_atlas_clear_and_release() {
+        let mut atlas = GlyphAtlas::new();
+        // Allocate past threshold
+        let large_mask = vec![0xAA; MAX_RETAINED_ALPHA_CAPACITY + 1024];
+        let _ = atlas.insert_alpha(
+            1,
+            (MAX_RETAINED_ALPHA_CAPACITY + 1024) as u16,
+            0,
+            0,
+            1,
+            &large_mask,
+        );
+        assert!(atlas.alpha_pixels.capacity() > MAX_RETAINED_ALPHA_CAPACITY);
+
+        atlas.clear_and_release();
+        assert_eq!(atlas.alpha_pixels.len(), 0);
+        assert!(atlas.alpha_pixels.capacity() <= DEFAULT_ALPHA_CAPACITY);
     }
 }

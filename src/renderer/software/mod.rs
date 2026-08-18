@@ -97,6 +97,12 @@ impl CpuRenderer {
         self.damage.mark_all();
     }
 
+    /// Full memory cleanup: compacts glyph atlas, prunes fallback fonts, and shrinks scratch buffers.
+    pub fn release_memory(&mut self) {
+        self.glyph_cache.release_memory();
+        self.damage.mark_all();
+    }
+
     /// Render terminal grid into persistent framebuffer and copy to Softbuffer target slice.
     #[allow(clippy::too_many_arguments)]
     pub fn render(

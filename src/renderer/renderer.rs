@@ -860,6 +860,17 @@ impl Renderer {
             self.vertices = vertices;
         }
     }
+
+    /// Full memory cleanup: trims vertex capacity and prunes fallback font memory.
+    pub fn release_memory(&mut self) {
+        const DEFAULT_VERTEX_CAPACITY: usize = 80 * 24 * 6 * 8;
+        if self.vertices.capacity() > DEFAULT_VERTEX_CAPACITY {
+            self.vertices = Vec::with_capacity(DEFAULT_VERTEX_CAPACITY);
+        } else {
+            self.vertices.clear();
+        }
+        self.font_loader.release_memory();
+    }
 }
 
 impl Drop for Renderer {

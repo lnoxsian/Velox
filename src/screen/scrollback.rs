@@ -30,6 +30,63 @@ impl std::ops::DerefMut for Row {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowMeta {
+    pub start: u32,
+    pub len: u32,
+    pub wrapped: bool,
+}
+
+/// Contiguous memory storage for a chunk of serialized scrollback rows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Chunk {
+    pub cells: Vec<Cell>,
+    pub rows: Vec<RowMeta>,
+}
+
+impl Chunk {
+    pub fn new() -> Self {
+        Self {
+            cells: Vec::with_capacity(SCROLLBACK_CHUNK_ROWS * 80),
+            rows: Vec::with_capacity(SCROLLBACK_CHUNK_ROWS),
+        }
+    }
+
+    pub fn push_row(&mut self, cells: &[Cell], wrapped: bool) {
+        let start = self.cells.len() as u32;
+        let len = cells.len() as u32;
+        self.cells.extend_from_slice(cells);
+        self.rows.push(RowMeta {
+            start,
+            len,
+            wrapped,
+        });
+    }
+
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.cells.clear();
+        self.rows.clear();
+    }
+
+    #[inline(always)]
+    pub fn get_row_view(&self, row_offset: usize) -> Option<(&[Cell], bool)> {
+        let meta = self.rows.get(row_offset)?;
+        let start = meta.start as usize;
+        let end = start + meta.len as usize;
+        Some((&self.cells[start..end], meta.wrapped))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkIndex {
     pub first_line: u64,
     pub line_count: u32,
@@ -39,16 +96,18 @@ pub struct ChunkIndex {
 
 struct CachedChunk {
     pub chunk_id: usize,
-    pub rows: Vec<Row>,
+    pub chunk: Chunk,
     pub access_tick: u64,
 }
 
 pub struct ScrollbackStorage {
     file: RefCell<File>,
     chunks: Vec<ChunkIndex>,
-    pending_chunk: Vec<Row>,
+    pending_chunk: Chunk,
     cache: RefCell<Vec<CachedChunk>>,
     tick_counter: RefCell<u64>,
+    serialize_buf: RefCell<Vec<u8>>,
+    read_buf: RefCell<Vec<u8>>,
     total_disk_lines: u64,
 }
 
@@ -57,9 +116,11 @@ impl ScrollbackStorage {
         tempfile().ok().map(|f| Self {
             file: RefCell::new(f),
             chunks: Vec::new(),
-            pending_chunk: Vec::with_capacity(SCROLLBACK_CHUNK_ROWS),
+            pending_chunk: Chunk::new(),
             cache: RefCell::new(Vec::with_capacity(CHUNK_CACHE_CAPACITY)),
             tick_counter: RefCell::new(0),
+            serialize_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
+            read_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
             total_disk_lines: 0,
         })
     }
@@ -72,19 +133,27 @@ impl ScrollbackStorage {
         let line_count = self.pending_chunk.len() as u32;
         let first_line = self.total_disk_lines;
 
+        let mut serialize_buf = self.serialize_buf.borrow_mut();
+        serialize_buf.clear();
+
         if let Ok(mut file) = self.file.try_borrow_mut()
             && let Ok(offset) = file.seek(SeekFrom::End(0))
-            && let Ok(bytes) = bincode::serialize(&self.pending_chunk)
-            && file.write_all(&bytes).is_ok()
+            && bincode::serialize_into(&mut *serialize_buf, &self.pending_chunk).is_ok()
+            && file.write_all(&serialize_buf).is_ok()
         {
             self.chunks.push(ChunkIndex {
                 first_line,
                 line_count,
                 file_offset: offset,
-                byte_len: bytes.len() as u32,
+                byte_len: serialize_buf.len() as u32,
             });
             self.total_disk_lines += line_count as u64;
             self.pending_chunk.clear();
+        }
+
+        // Release serialization buffer if it grew abnormally large
+        if serialize_buf.capacity() > 1024 * 1024 {
+            *serialize_buf = Vec::with_capacity(128 * 1024);
         }
     }
 
@@ -94,11 +163,11 @@ impl ScrollbackStorage {
         *tick
     }
 
-    fn with_disk_row<R>(
+    fn with_disk_row_slice<R>(
         &self,
         chunk_idx: usize,
         row_offset: usize,
-        f: impl FnOnce(&Row) -> R,
+        f: impl FnOnce(&[Cell], bool) -> R,
     ) -> Option<R> {
         let tick = self.next_tick();
 
@@ -107,40 +176,47 @@ impl ScrollbackStorage {
             let mut cache = self.cache.borrow_mut();
             if let Some(pos) = cache.iter().position(|c| c.chunk_id == chunk_idx) {
                 cache[pos].access_tick = tick;
-                return cache[pos].rows.get(row_offset).map(f);
+                let (cells, wrapped) = cache[pos].chunk.get_row_view(row_offset)?;
+                return Some(f(cells, wrapped));
             }
         }
 
-        // 2. Cache miss: Read chunk from disk
+        // 2. Cache miss: Read chunk from disk using reusable buffer
         let chunk_meta = *self.chunks.get(chunk_idx)?;
         let mut file = self.file.try_borrow_mut().ok()?;
         file.seek(SeekFrom::Start(chunk_meta.file_offset)).ok()?;
 
-        let mut buffer = vec![0u8; chunk_meta.byte_len as usize];
-        file.read_exact(&mut buffer).ok()?;
+        let mut read_buf = self.read_buf.borrow_mut();
+        let needed_len = chunk_meta.byte_len as usize;
+        if read_buf.len() < needed_len {
+            read_buf.resize(needed_len, 0);
+        }
+        file.read_exact(&mut read_buf[..needed_len]).ok()?;
 
-        let rows: Vec<Row> = bincode::deserialize(&buffer).ok()?;
-        let result = rows.get(row_offset).map(f);
+        let chunk: Chunk = bincode::deserialize(&read_buf[..needed_len]).ok()?;
+        let (cells, wrapped) = chunk.get_row_view(row_offset)?;
+        let result = f(cells, wrapped);
 
         // 3. Insert into bounded LRU cache
         let mut cache = self.cache.borrow_mut();
-        if cache.len() >= CHUNK_CACHE_CAPACITY {
-            // Evict oldest accessed chunk
-            if let Some((oldest_idx, _)) = cache
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, chunk)| chunk.access_tick)
-            {
-                cache.remove(oldest_idx);
-            }
+        if cache.len() >= CHUNK_CACHE_CAPACITY
+            && let Some((oldest_idx, _)) =
+                cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
+        {
+            cache.remove(oldest_idx);
         }
         cache.push(CachedChunk {
             chunk_id: chunk_idx,
-            rows,
+            chunk,
             access_tick: tick,
         });
 
-        result
+        // Release read buffer if it grew abnormally large
+        if read_buf.capacity() > 1024 * 1024 {
+            *read_buf = Vec::with_capacity(128 * 1024);
+        }
+
+        Some(result)
     }
 }
 
@@ -178,10 +254,7 @@ impl Scrollback {
             if self.max_lines == 0 {
                 // Directly accumulate in pending chunk when hot RAM buffer limit is 0
                 if let Some(storage) = self.storage.as_mut() {
-                    storage.pending_chunk.push(Row {
-                        cells: cells.to_vec(),
-                        wrapped,
-                    });
+                    storage.pending_chunk.push_row(cells, wrapped);
                     if storage.pending_chunk.len() >= SCROLLBACK_CHUNK_ROWS {
                         storage.flush_pending_chunk();
                     }
@@ -192,7 +265,9 @@ impl Scrollback {
             if self.hot_rows.len() >= self.max_lines {
                 let oldest = self.hot_rows.pop_front().unwrap();
                 if let Some(storage) = self.storage.as_mut() {
-                    storage.pending_chunk.push(oldest);
+                    storage
+                        .pending_chunk
+                        .push_row(&oldest.cells, oldest.wrapped);
                     if storage.pending_chunk.len() >= SCROLLBACK_CHUNK_ROWS {
                         storage.flush_pending_chunk();
                     }
@@ -234,13 +309,13 @@ impl Scrollback {
         self.len() == 0
     }
 
-    pub fn with_row<R>(&self, index: usize, f: impl FnOnce(&Row) -> R) -> Option<R> {
+    /// Access row by reference slice without allocating a heap Row.
+    pub fn with_row_slice<R>(&self, index: usize, f: impl FnOnce(&[Cell], bool) -> R) -> Option<R> {
         if let Some(storage) = &self.storage {
             let total_disk = storage.total_disk_lines as usize;
             let pending_len = storage.pending_chunk.len();
 
             if index < total_disk {
-                // Locate chunk using binary search
                 let chunk_idx = match storage.chunks.binary_search_by(|chunk| {
                     let start = chunk.first_line as usize;
                     let end = start + chunk.line_count as usize;
@@ -258,27 +333,42 @@ impl Scrollback {
 
                 let chunk = &storage.chunks[chunk_idx];
                 let row_offset = index - chunk.first_line as usize;
-                storage.with_disk_row(chunk_idx, row_offset, f)
+                return storage.with_disk_row_slice(chunk_idx, row_offset, f);
             } else if index < total_disk + pending_len {
                 let pending_idx = index - total_disk;
-                storage.pending_chunk.get(pending_idx).map(f)
+                let (cells, wrapped) = storage.pending_chunk.get_row_view(pending_idx)?;
+                return Some(f(cells, wrapped));
             } else {
                 let hot_idx = index - total_disk - pending_len;
-                self.hot_rows.get(hot_idx).map(f)
+                return self.hot_rows.get(hot_idx).map(|r| f(&r.cells, r.wrapped));
             }
-        } else {
-            self.hot_rows.get(index).map(f)
         }
+
+        self.hot_rows.get(index).map(|r| f(&r.cells, r.wrapped))
     }
 
+    pub fn with_row<R>(&self, index: usize, f: impl FnOnce(&Row) -> R) -> Option<R> {
+        self.with_row_slice(index, |cells, wrapped| {
+            let row = Row {
+                cells: cells.to_vec(),
+                wrapped,
+            };
+            f(&row)
+        })
+    }
+
+    #[allow(dead_code)]
     pub fn get_row(&self, index: usize) -> Option<Row> {
-        self.with_row(index, |r| r.clone())
+        self.with_row_slice(index, |cells, wrapped| Row {
+            cells: cells.to_vec(),
+            wrapped,
+        })
     }
 
     pub fn copy_row_to_slice(&self, index: usize, dest: &mut [Cell], default_cell: Cell) -> bool {
-        self.with_row(index, |row| {
-            let copy_len = row.cells.len().min(dest.len());
-            dest[..copy_len].copy_from_slice(&row.cells[..copy_len]);
+        self.with_row_slice(index, |cells, _| {
+            let copy_len = cells.len().min(dest.len());
+            dest[..copy_len].copy_from_slice(&cells[..copy_len]);
             if copy_len < dest.len() {
                 dest[copy_len..].fill(default_cell);
             }
@@ -317,7 +407,7 @@ impl Scrollback {
         let cached: usize = self
             .storage
             .as_ref()
-            .map_or(0, |s| s.cache.borrow().iter().map(|c| c.rows.len()).sum());
+            .map_or(0, |s| s.cache.borrow().iter().map(|c| c.chunk.len()).sum());
         hot + pending + cached
     }
 

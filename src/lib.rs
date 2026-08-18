@@ -7,6 +7,7 @@ pub mod font;
 pub mod hyperlink;
 pub mod input;
 pub mod ipc;
+pub mod memory;
 pub mod pty;
 pub mod renderer;
 pub mod screen;

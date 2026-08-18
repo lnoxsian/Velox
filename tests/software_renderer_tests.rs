@@ -494,8 +494,13 @@ fn test_software_renderer_blinking_text() {
         &mut target,
     );
 
-    let has_green_when_on = target.iter().any(|&p| (p & 0x0000FF00) != 0 && (p & 0x00FF0000) == 0);
-    assert!(has_green_when_on, "Blinking text should be visible when blink_on is true");
+    let has_green_when_on = target
+        .iter()
+        .any(|&p| (p & 0x0000FF00) != 0 && (p & 0x00FF0000) == 0);
+    assert!(
+        has_green_when_on,
+        "Blinking text should be visible when blink_on is true"
+    );
 
     // 2. Phase 2: blink_on is false (simulate 550ms elapsed)
     renderer.start_time = std::time::Instant::now() - std::time::Duration::from_millis(550);
@@ -524,7 +529,10 @@ fn test_software_renderer_blinking_text() {
             }
         }
     }
-    assert!(!cell_has_green_when_off, "Blinking text should be hidden when blink_on is false");
+    assert!(
+        !cell_has_green_when_off,
+        "Blinking text should be hidden when blink_on is false"
+    );
 }
 
 #[test]
@@ -602,7 +610,10 @@ fn test_software_renderer_double_line_table() {
 
     // Verify cyan table pixels exist
     let has_cyan_pixels = target.iter().any(|&p| (p & 0x00FFFF) == 0x00FFFF);
-    assert!(has_cyan_pixels, "Double line table should be rendered with cyan pixels");
+    assert!(
+        has_cyan_pixels,
+        "Double line table should be rendered with cyan pixels"
+    );
 }
 
 #[test]
@@ -670,6 +681,8 @@ fn test_software_renderer_all_box_drawing_chars() {
     );
 
     let has_yellow_pixels = target.iter().any(|&p| (p & 0xFFFF00) == 0xFFFF00);
-    assert!(has_yellow_pixels, "All box drawing chars should render yellow pixels");
+    assert!(
+        has_yellow_pixels,
+        "All box drawing chars should render yellow pixels"
+    );
 }
-

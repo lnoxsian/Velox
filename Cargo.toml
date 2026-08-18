@@ -25,6 +25,7 @@ fontdb = "0.23"
 png = "0.17"
 owned_ttf_parser = "0.25"
 softbuffer = "0.4"
+memmap2 = "0.9"
 
 [[bench]]
 name = "software_renderer"

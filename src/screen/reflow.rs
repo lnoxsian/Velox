@@ -34,12 +34,12 @@ impl Grid {
         let start_idx = len.saturating_sub(reflow_window);
 
         for i in start_idx..len {
-            if let Some(row) = self.scrollback.get_row(i) {
+            self.scrollback.with_row_slice(i, |cells, wrapped| {
                 combined_rows.push(CombinedRow {
-                    cells: row.cells,
-                    wrapped: row.wrapped,
+                    cells: cells.to_vec(),
+                    wrapped,
                 });
-            }
+            });
         }
 
         let scrollback_count = combined_rows.len();

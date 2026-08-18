@@ -94,6 +94,8 @@ pub struct WindowState {
     pub cursor_blink_enabled: bool,
     pub cursor_blink_on: bool,
     pub last_cursor_blink: std::time::Instant,
+    pub last_activity: std::time::Instant,
+    pub last_cleanup: std::time::Instant,
     pub hold: bool,
 }
 
@@ -107,10 +109,30 @@ impl Drop for WindowState {
         {
             let _ = gl_context.make_current(gl_surface);
         }
+        crate::memory::trim_allocator_memory();
     }
 }
 
 impl WindowState {
+    pub fn release_memory(&mut self) {
+        match &mut self.backend {
+            WindowRendererBackend::OpenGL {
+                renderer,
+                gl_context,
+                gl_surface,
+            } => {
+                let _ = gl_context.make_current(gl_surface);
+                renderer.release_memory();
+            }
+            WindowRendererBackend::Software { renderer, .. } => {
+                renderer.release_memory();
+            }
+        }
+        if self.render_cells_buf.capacity() > 200 * 60 {
+            self.render_cells_buf = Vec::new();
+        }
+        crate::memory::trim_allocator_memory();
+    }
     #[inline(always)]
     pub fn cell_width(&self) -> u32 {
         self.backend.cell_width()
@@ -535,6 +557,8 @@ impl App {
             cursor_blink_enabled,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            last_cleanup: std::time::Instant::now(),
             hold: hold.unwrap_or(false),
         };
 
@@ -731,6 +755,7 @@ impl ApplicationHandler<CustomEvent> for App {
         match event {
             CustomEvent::PtyData { window_id, data } => {
                 if let Some(ws) = self.windows.get_mut(&window_id) {
+                    ws.last_activity = std::time::Instant::now();
                     ws.terminal.feed(&data);
                     if !ws.terminal.outgoing.is_empty() {
                         let _ = ws.pty_master.write(&ws.terminal.outgoing);
@@ -748,6 +773,7 @@ impl ApplicationHandler<CustomEvent> for App {
                     return;
                 }
                 self.windows.remove(&window_id);
+                crate::memory::trim_allocator_memory();
                 if self.windows.is_empty() && !self.daemon_mode {
                     event_loop.exit();
                 }
@@ -768,6 +794,14 @@ impl ApplicationHandler<CustomEvent> for App {
         let mut min_next_wake: Option<std::time::Instant> = None;
 
         for ws in self.windows.values_mut() {
+            // Idle memory trimming (2.5s of PTY inactivity after burst activity)
+            if now.duration_since(ws.last_activity) >= std::time::Duration::from_millis(2500)
+                && ws.last_activity > ws.last_cleanup
+            {
+                ws.release_memory();
+                ws.last_cleanup = now;
+            }
+
             // Cursor and text blink toggle (500ms cycle)
             if now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500) {
                 if ws.cursor_blink_enabled {

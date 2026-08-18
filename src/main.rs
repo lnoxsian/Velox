@@ -7,6 +7,7 @@ mod font;
 mod hyperlink;
 mod input;
 mod ipc;
+mod memory;
 mod pty;
 mod renderer;
 mod screen;

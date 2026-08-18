@@ -2051,6 +2051,7 @@ dependencies = [
  "glutin-winit",
  "libc",
  "log",
+ "memmap2",
  "nix",
  "owned_ttf_parser",
  "png",

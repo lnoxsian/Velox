@@ -4,6 +4,45 @@ use crate::font::loader::{is_nerd_font_or_pua, is_powerline};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use std::collections::HashMap;
 
+/// Reusable temporary scratch storage for decoding PNG emojis and rasterizing glyph outlines.
+#[derive(Default)]
+pub struct GlyphScratch {
+    pub png_buf: Vec<u8>,
+    pub color_pixels: Vec<u32>,
+    pub alpha_pixels: Vec<u8>,
+}
+
+impl GlyphScratch {
+    pub fn new() -> Self {
+        Self {
+            png_buf: Vec::with_capacity(32 * 1024),
+            color_pixels: Vec::with_capacity(4096),
+            alpha_pixels: Vec::with_capacity(4096),
+        }
+    }
+
+    /// Clear scratch buffers and release excessive capacity if overgrown.
+    pub fn clear_and_release(&mut self, max_capacity: usize) {
+        if self.png_buf.capacity() > max_capacity {
+            self.png_buf = Vec::with_capacity(32 * 1024);
+        } else {
+            self.png_buf.clear();
+        }
+
+        if self.color_pixels.capacity() > max_capacity / 4 {
+            self.color_pixels = Vec::with_capacity(4096);
+        } else {
+            self.color_pixels.clear();
+        }
+
+        if self.alpha_pixels.capacity() > max_capacity {
+            self.alpha_pixels = Vec::with_capacity(4096);
+        } else {
+            self.alpha_pixels.clear();
+        }
+    }
+}
+
 /// Cache key containing only properties that change the visual outline/bitmap of a glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GlyphKey {
@@ -47,6 +86,7 @@ pub struct GlyphCache {
     pub font_size: f32,
     pub font_scale_multiplier: f32,
     pub atlas: GlyphAtlas,
+    pub scratch: GlyphScratch,
     /// Fast direct lookup table for ASCII 0..127 across 4 styles (regular, bold, italic, bold_italic)
     ascii_table: [Option<GlyphRef>; 512],
     /// Bounded LRU-style cache for Unicode and emoji
@@ -78,6 +118,7 @@ impl GlyphCache {
             font_size,
             font_scale_multiplier,
             atlas: GlyphAtlas::new(),
+            scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
             unicode_table: HashMap::with_capacity(1024),
             max_unicode_entries: 4096,
@@ -190,11 +231,21 @@ impl GlyphCache {
         }
     }
 
-    /// Clear cached glyphs and atlas (e.g. on font size change).
+    /// Clear cached glyphs and atlas (retains memory capacity for immediate reuse).
     pub fn clear(&mut self) {
         self.atlas.clear();
         self.ascii_table = [None; 512];
         self.unicode_table.clear();
+    }
+
+    /// Full memory cleanup: releases oversized atlas buffers, prunes fallback fonts, and shrinks scratch.
+    pub fn release_memory(&mut self) {
+        self.atlas.clear_and_release();
+        self.ascii_table = [None; 512];
+        self.unicode_table.clear();
+        self.fallback_manager.prune_unused(2);
+        self.scratch.clear_and_release(64 * 1024);
+        self.preload_common_glyphs();
     }
 
     #[inline(always)]
@@ -217,8 +268,13 @@ impl GlyphCache {
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx] = Some(g_ref);
         } else {
-            if self.unicode_table.len() >= self.max_unicode_entries {
+            if self.unicode_table.len() >= self.max_unicode_entries || self.atlas.is_full() {
                 self.unicode_table.clear();
+                self.atlas.clear();
+                self.ascii_table = [None; 512];
+                self.preload_common_glyphs();
+                // Re-rasterize the requested key if it was flushed
+                return self.get_or_rasterize(key);
             }
             self.unicode_table.insert(key, g_ref);
         }
@@ -234,7 +290,7 @@ impl GlyphCache {
         };
 
         // Try extracting embedded color PNG glyph if any (e.g., color emojis)
-        let color_pixels = self.extract_color_png(key.codepoint);
+        let color_extract = self.extract_color_png(key.codepoint);
 
         let is_pw_sep = is_powerline(key.codepoint);
         let is_nerd_or_pua = is_nerd_font_or_pua(key.codepoint);
@@ -249,7 +305,7 @@ impl GlyphCache {
         let mut is_synthetic_italic = false;
         let mut ascent = 0.0f32;
 
-        if color_pixels.is_none() {
+        if color_extract.is_none() {
             let (mut char_font, synth) = match (key.bold, key.italic) {
                 (true, true) => {
                     if let Some(ref f) = self.font_bold_italic {
@@ -372,11 +428,13 @@ impl GlyphCache {
             1
         };
 
-        if let Some((rgba, w, h)) = color_pixels {
-            // Scale and convert RGBA to u32 ARGB (0x00RRGGBB)
+        if let Some((w, h)) = color_extract {
+            // Scale and convert RGBA to u32 ARGB (0x00RRGGBB) using scratch buffers
             let tw = target_width;
             let th = self.cell_height;
-            let mut u32_pixels = vec![0u32; (tw * th) as usize];
+            let needed_u32 = (tw * th) as usize;
+            self.scratch.color_pixels.clear();
+            self.scratch.color_pixels.resize(needed_u32, 0);
 
             let scale_x = tw as f32 / w as f32;
             let scale_y = th as f32 / h as f32;
@@ -387,6 +445,7 @@ impl GlyphCache {
             let x_offset = (tw as i32 - new_w as i32) / 2;
             let y_offset = (th as i32 - new_h as i32) / 2;
 
+            let rgba = &self.scratch.png_buf;
             for dy in 0..th {
                 for dx in 0..tw {
                     let rx = dx as i32 - x_offset;
@@ -398,13 +457,16 @@ impl GlyphCache {
                         let src_idx = (sy * w + sx) as usize * 4;
                         let dst_idx = (dy * tw + dx) as usize;
 
-                        let r = rgba[src_idx] as u32;
-                        let g = rgba[src_idx + 1] as u32;
-                        let b = rgba[src_idx + 2] as u32;
-                        let a = rgba[src_idx + 3] as u32;
+                        if src_idx + 3 < rgba.len() {
+                            let r = rgba[src_idx] as u32;
+                            let g = rgba[src_idx + 1] as u32;
+                            let b = rgba[src_idx + 2] as u32;
+                            let a = rgba[src_idx + 3] as u32;
 
-                        if a > 0 {
-                            u32_pixels[dst_idx] = (a << 24) | (r << 16) | (g << 8) | b;
+                            if a > 0 {
+                                self.scratch.color_pixels[dst_idx] =
+                                    (a << 24) | (r << 16) | (g << 8) | b;
+                            }
                         }
                     }
                 }
@@ -416,10 +478,12 @@ impl GlyphCache {
                 0,
                 0,
                 width_mult,
-                &u32_pixels,
+                &self.scratch.color_pixels,
             ))
         } else {
-            let mut alpha_pixels = vec![0u8; (target_width * self.cell_height) as usize];
+            let needed_alpha = (target_width * self.cell_height) as usize;
+            self.scratch.alpha_pixels.clear();
+            self.scratch.alpha_pixels.resize(needed_alpha, 0);
 
             if has_outline && let (Some(font), Some(glyph)) = (char_font_arc, the_glyph) {
                 let (x_offset, y_offset) = if is_nerd_or_pua && !is_pw_sep {
@@ -444,6 +508,7 @@ impl GlyphCache {
                 };
 
                 if let Some(outlined) = font.outline_glyph(glyph) {
+                    let alpha_slice = &mut self.scratch.alpha_pixels;
                     outlined.draw(|gx, gy, alpha| {
                         let slant_shift = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
                             let cell_y = y_offset + gy as f32;
@@ -460,9 +525,9 @@ impl GlyphCache {
                             && py < self.cell_height as i32
                         {
                             let idx = py as usize * target_width as usize + px as usize;
-                            let old_alpha = alpha_pixels[idx] as f32 / 255.0;
+                            let old_alpha = alpha_slice[idx] as f32 / 255.0;
                             let new_alpha = old_alpha.max(alpha);
-                            alpha_pixels[idx] = (new_alpha * 255.0) as u8;
+                            alpha_slice[idx] = (new_alpha * 255.0) as u8;
                         }
                     });
                 }
@@ -474,20 +539,19 @@ impl GlyphCache {
                 0,
                 0,
                 width_mult,
-                &alpha_pixels,
+                &self.scratch.alpha_pixels,
             ))
         }
     }
 
-    fn extract_color_png(&mut self, c: char) -> Option<(Vec<u8>, u32, u32)> {
+    fn extract_color_png(&mut self, c: char) -> Option<(u32, u32)> {
         if self.font.glyph_id(c).0 == 0
             && let Some(idx) = self.fallback_manager.find_fallback_for_char(c)
         {
             let fallback = &self.fallback_manager.fallbacks[idx];
             let id = fallback.font.glyph_id(c);
             if id.0 != 0
-                && let Some(ref raw) = fallback.raw_data
-                && let Ok(face) = owned_ttf_parser::Face::parse(raw, 0)
+                && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), 0)
             {
                 let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
                 if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
@@ -496,11 +560,14 @@ impl GlyphCache {
                     let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
                     decoder.set_transformations(png::Transformations::EXPAND);
                     if let Ok(mut reader) = decoder.read_info() {
-                        let mut buf = vec![0; reader.output_buffer_size()];
-                        if let Ok(info) = reader.next_frame(&mut buf) {
+                        let out_size = reader.output_buffer_size();
+                        if self.scratch.png_buf.len() < out_size {
+                            self.scratch.png_buf.resize(out_size, 0);
+                        }
+                        if let Ok(info) = reader.next_frame(&mut self.scratch.png_buf[..out_size]) {
                             let (output_color, _) = reader.output_color_type();
                             if output_color == png::ColorType::Rgba {
-                                return Some((buf, info.width, info.height));
+                                return Some((info.width, info.height));
                             }
                         }
                     }

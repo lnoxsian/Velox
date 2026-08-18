@@ -1,3 +1,4 @@
+use crate::font::storage::{FontStorage, create_font_arc};
 use ab_glyph::{Font, FontArc};
 use fontdb::Database;
 use std::collections::HashSet;
@@ -5,11 +6,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub const MAX_FALLBACK_FONTS: usize = 8;
+pub const MAX_FALLBACK_BYTES: usize = 64 * 1024 * 1024; // 64 MB virtual/resident fallback budget
 pub const MAX_MISSING_CHARS: usize = 1024;
 
 pub struct FallbackFont {
     pub font: FontArc,
-    pub raw_data: Option<Arc<[u8]>>,
+    pub storage: Arc<FontStorage>,
+    pub byte_size: usize,
     pub last_used: u64,
     pub path: PathBuf,
 }
@@ -21,6 +24,9 @@ pub struct FallbackManager {
     pub fallbacks: Vec<FallbackFont>,
     missing_chars: HashSet<char>,
     usage_counter: u64,
+    pub resident_bytes: usize,
+    pub max_fallback_fonts: usize,
+    pub max_fallback_bytes: usize,
 }
 
 impl Default for FallbackManager {
@@ -38,6 +44,9 @@ impl FallbackManager {
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
             usage_counter: 0,
+            resident_bytes: 0,
+            max_fallback_fonts: MAX_FALLBACK_FONTS,
+            max_fallback_bytes: MAX_FALLBACK_BYTES,
         }
     }
 
@@ -49,6 +58,9 @@ impl FallbackManager {
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
             usage_counter: 0,
+            resident_bytes: 0,
+            max_fallback_fonts: MAX_FALLBACK_FONTS,
+            max_fallback_bytes: MAX_FALLBACK_BYTES,
         }
     }
 
@@ -59,15 +71,11 @@ impl FallbackManager {
         }
     }
 
-    fn insert_fallback(
-        &mut self,
-        path: PathBuf,
-        font: FontArc,
-        raw_data: Option<Arc<[u8]>>,
-    ) -> usize {
-        self.usage_counter = self.usage_counter.wrapping_add(1);
-        if self.fallbacks.len() >= MAX_FALLBACK_FONTS {
-            // Evict the least recently used fallback font to bound RAM
+    /// Prune cached fallback fonts so total resident bytes and count stay within budget limits.
+    pub fn prune_to_budget(&mut self) {
+        while self.fallbacks.len() > self.max_fallback_fonts
+            || (self.resident_bytes > self.max_fallback_bytes && self.fallbacks.len() > 1)
+        {
             let lru_idx = self
                 .fallbacks
                 .iter()
@@ -75,18 +83,54 @@ impl FallbackManager {
                 .min_by_key(|(_, f)| f.last_used)
                 .map(|(idx, _)| idx)
                 .unwrap_or(0);
+
             let evicted = self.fallbacks.remove(lru_idx);
+            self.resident_bytes = self.resident_bytes.saturating_sub(evicted.byte_size);
             self.loaded_paths.remove(&evicted.path);
         }
+    }
+
+    /// Explicitly prune inactive fallback fonts down to a small target count (e.g. on idle cleanup).
+    pub fn prune_unused(&mut self, keep_count: usize) {
+        let keep = keep_count.min(self.max_fallback_fonts);
+        while self.fallbacks.len() > keep {
+            let lru_idx = self
+                .fallbacks
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, f)| f.last_used)
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+            let evicted = self.fallbacks.remove(lru_idx);
+            self.resident_bytes = self.resident_bytes.saturating_sub(evicted.byte_size);
+            self.loaded_paths.remove(&evicted.path);
+        }
+    }
+
+    fn insert_fallback(
+        &mut self,
+        path: PathBuf,
+        font: FontArc,
+        storage: Arc<FontStorage>,
+    ) -> usize {
+        self.usage_counter = self.usage_counter.wrapping_add(1);
+        let byte_size = storage.len();
+        self.resident_bytes += byte_size;
 
         self.loaded_paths.insert(path.clone());
         self.fallbacks.push(FallbackFont {
             font,
-            raw_data,
+            storage,
+            byte_size,
             last_used: self.usage_counter,
             path,
         });
-        self.fallbacks.len() - 1
+
+        // Enforce bounds and eviction
+        self.prune_to_budget();
+
+        self.fallbacks.len().saturating_sub(1)
     }
 
     pub fn find_fallback_for_char(&mut self, c: char) -> Option<usize> {
@@ -134,48 +178,39 @@ impl FallbackManager {
                     && let Some(face) = self.db.face(id)
                     && let fontdb::Source::File(path) = &face.source
                     && !self.loaded_paths.contains(path)
-                    && let Ok(data) = std::fs::read(path)
-                    && let Ok(font) = FontArc::try_from_vec(data)
+                    && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
+                    && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
                     && font.glyph_id(c).0 != 0
                 {
-                    let idx = self.insert_fallback(path.clone(), font, None);
+                    let idx = self.insert_fallback(path.clone(), font, storage);
                     return Some(idx);
                 }
             }
         }
 
-        // 4. Scan system font faces in fontdb
-        let candidate_paths: Vec<(PathBuf, bool)> = self
+        // 4. Scan system font faces in fontdb with mmap
+        let candidate_paths: Vec<(PathBuf, u32)> = self
             .db
             .faces()
             .filter_map(|face| {
                 if let fontdb::Source::File(path) = &face.source
                     && !self.loaded_paths.contains(path)
                 {
-                    let path_str = path.to_string_lossy().to_lowercase();
-                    let is_emoji = path_str.contains("emoji");
-                    Some((path.clone(), is_emoji))
+                    Some((path.clone(), face.index))
                 } else {
                     None
                 }
             })
             .collect();
 
-        for (path, is_emoji) in candidate_paths {
+        for (path, face_index) in candidate_paths {
             if !self.loaded_paths.contains(&path)
-                && let Ok(data) = std::fs::read(&path)
+                && let Ok(storage) = FontStorage::from_file(&path).map(Arc::new)
+                && let Ok(font) = create_font_arc(Arc::clone(&storage), face_index)
+                && font.glyph_id(c).0 != 0
             {
-                let raw_data = if is_emoji {
-                    Some(Arc::from(data.as_slice()))
-                } else {
-                    None
-                };
-                if let Ok(font) = FontArc::try_from_vec(data)
-                    && font.glyph_id(c).0 != 0
-                {
-                    let idx = self.insert_fallback(path, font, raw_data);
-                    return Some(idx);
-                }
+                let idx = self.insert_fallback(path, font, storage);
+                return Some(idx);
             }
         }
 
@@ -199,5 +234,16 @@ mod tests {
         let _ = manager.find_fallback_for_char('\u{1f600}'); // 😀
         let _ = manager.find_fallback_for_char('\u{e0b0}'); // 
         assert!(manager.fallbacks.len() <= MAX_FALLBACK_FONTS);
+    }
+
+    #[test]
+    fn test_fallback_manager_prune_to_budget() {
+        let mut manager = FallbackManager::new();
+        manager.max_fallback_fonts = 2;
+        let _ = manager.find_fallback_for_char('\u{1f600}');
+        let _ = manager.find_fallback_for_char('\u{e0b0}');
+        let _ = manager.find_fallback_for_char('中');
+        manager.prune_to_budget();
+        assert!(manager.fallbacks.len() <= 2);
     }
 }

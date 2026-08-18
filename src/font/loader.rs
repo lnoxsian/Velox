@@ -1,4 +1,5 @@
 use crate::font::fallback::FallbackManager;
+use crate::font::storage::{FontStorage, create_font_arc};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use glow::HasContext;
 use std::collections::HashMap;
@@ -42,6 +43,9 @@ pub struct FontLoader {
     dynamic_cache: HashMap<CacheKey, GlyphUv>,
     next_x: u32,
     next_y: u32,
+    scratch_png: Vec<u8>,
+    scratch_pixels: Vec<u8>,
+    scratch_rgba: Vec<u8>,
 }
 
 impl Drop for FontLoader {
@@ -56,26 +60,20 @@ pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<Fo
     if let Some(id) = db.query(query)
         && let Some(face) = db.face(id)
     {
-        match &face.source {
-            fontdb::Source::File(path) => {
-                if let Ok(data) = std::fs::read(path)
-                    && let Ok(font) = FontArc::try_from_vec(data)
-                {
-                    return Some(font);
-                }
-            }
+        let storage = match &face.source {
+            fontdb::Source::File(path) => FontStorage::from_file(path).ok().map(Arc::new),
             fontdb::Source::Binary(data) => {
-                let bytes = data.as_ref().as_ref();
-                if let Ok(font) = FontArc::try_from_vec(bytes.to_vec()) {
-                    return Some(font);
-                }
+                Some(Arc::new(FontStorage::from_shared(Arc::clone(data))))
             }
             fontdb::Source::SharedFile(_, data) => {
-                let bytes = data.as_ref().as_ref();
-                if let Ok(font) = FontArc::try_from_vec(bytes.to_vec()) {
-                    return Some(font);
-                }
+                Some(Arc::new(FontStorage::from_shared(Arc::clone(data))))
             }
+        };
+
+        if let Some(st) = storage
+            && let Ok(font) = create_font_arc(st, face.index)
+        {
+            return Some(font);
         }
     }
 
@@ -139,8 +137,6 @@ impl FontLoader {
         let font_bold = load_font_face(&db, &query_bold);
 
         // Query italic and bold-italic faces.
-        // If fontdb resolves italic to the same font file as regular (e.g. DejaVu Sans Mono has no italic),
-        // treat them as None so the synthetic shear path activates instead of rendering un-slanted glyphs.
         let regular_id = db.query(&query);
 
         let query_italic = fontdb::Query {
@@ -243,25 +239,21 @@ impl FontLoader {
             dynamic_cache: HashMap::new(),
             next_x: 4,
             next_y: 0,
+            scratch_png: Vec::with_capacity(32 * 1024),
+            scratch_pixels: Vec::with_capacity(4096),
+            scratch_rgba: Vec::with_capacity(4096 * 4),
         }
     }
 
     #[inline(always)]
     fn ascii_cache_idx(c: char, is_bold: bool, is_italic: bool) -> Option<usize> {
-        let code = c as u32;
-        if code < 128 {
+        let cp = c as u32;
+        if cp < 128 {
             let style = (is_bold as usize) | ((is_italic as usize) << 1);
-            Some(((code as usize) << 2) | style)
+            Some((cp as usize) * 4 + style)
         } else {
             None
         }
-    }
-
-    pub fn white_pixel_uv(&self) -> (f32, f32) {
-        (
-            1.0 / self.atlas_width as f32,
-            1.0 / self.atlas_height as f32,
-        )
     }
 
     pub fn update_font_size(&mut self, font_size: f32) {
@@ -284,9 +276,21 @@ impl FontLoader {
         self.next_y = 0;
 
         unsafe {
-            let white_square = [255u8; 2 * 2 * 4];
             self.gl
                 .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                self.atlas_width as i32,
+                self.atlas_height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+
+            let white_pixels = [255u8; 2 * 2 * 4];
             self.gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -296,8 +300,48 @@ impl FontLoader {
                 2,
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&white_square[..])),
+                glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
             );
+        }
+
+        self.preload_ascii();
+    }
+
+    /// Full memory cleanup for FontLoader: prunes fallback fonts and trims oversized scratch buffers.
+    pub fn release_memory(&mut self) {
+        self.fallback_manager.prune_unused(2);
+        if self.scratch_png.capacity() > 64 * 1024 {
+            self.scratch_png = Vec::with_capacity(32 * 1024);
+        } else {
+            self.scratch_png.clear();
+        }
+        if self.scratch_pixels.capacity() > 16 * 1024 {
+            self.scratch_pixels = Vec::with_capacity(4096);
+        } else {
+            self.scratch_pixels.clear();
+        }
+        if self.scratch_rgba.capacity() > 64 * 1024 {
+            self.scratch_rgba = Vec::with_capacity(4096 * 4);
+        } else {
+            self.scratch_rgba.clear();
+        }
+    }
+
+    #[inline(always)]
+    pub fn white_pixel_uv(&self) -> (f32, f32) {
+        (
+            1.0 / self.atlas_width as f32,
+            1.0 / self.atlas_height as f32,
+        )
+    }
+
+    pub fn preload_ascii(&mut self) {
+        for c in 32u8..=126u8 {
+            let ch = c as char;
+            self.get_glyph_uv(ch, false, false, false);
+            self.get_glyph_uv(ch, false, true, false);
+            self.get_glyph_uv(ch, false, false, true);
+            self.get_glyph_uv(ch, false, true, true);
         }
     }
 
@@ -350,7 +394,7 @@ impl FontLoader {
             (false, true) => self.font_italic.as_ref().unwrap_or(&self.font),
             (false, false) => &self.font,
         };
-        let mut color_pixels = None;
+        let mut color_img_size = None;
 
         if active_font.glyph_id(base_c).0 == 0
             && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c)
@@ -358,8 +402,7 @@ impl FontLoader {
             let fallback = &self.fallback_manager.fallbacks[idx];
             let id = fallback.font.glyph_id(base_c);
             if id.0 != 0
-                && let Some(ref raw) = fallback.raw_data
-                && let Ok(face) = owned_ttf_parser::Face::parse(raw, 0)
+                && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), 0)
             {
                 let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
                 if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
@@ -368,11 +411,14 @@ impl FontLoader {
                     let mut decoder = png::Decoder::new(std::io::Cursor::new(img.data));
                     decoder.set_transformations(png::Transformations::EXPAND);
                     if let Ok(mut reader) = decoder.read_info() {
-                        let mut buf = vec![0; reader.output_buffer_size()];
-                        if let Ok(info) = reader.next_frame(&mut buf) {
+                        let out_size = reader.output_buffer_size();
+                        if self.scratch_png.len() < out_size {
+                            self.scratch_png.resize(out_size, 0);
+                        }
+                        if let Ok(info) = reader.next_frame(&mut self.scratch_png[..out_size]) {
                             let (output_color, _) = reader.output_color_type();
                             if output_color == png::ColorType::Rgba {
-                                color_pixels = Some((buf, info.width, info.height));
+                                color_img_size = Some((info.width, info.height));
                             }
                         }
                     }
@@ -402,15 +448,15 @@ impl FontLoader {
             position: ab_glyph::point(0.0, 0.0),
         };
 
-        if color_pixels.is_none() {
+        if color_img_size.is_none() {
             let (mut char_font, synth) = match (is_bold, is_italic) {
                 (true, true) => {
                     if let Some(ref f) = self.font_bold_italic {
                         (f, false)
-                    } else if let Some(ref f) = self.font_italic {
-                        (f, false)
                     } else if let Some(ref f) = self.font_bold {
                         (f, true)
+                    } else if let Some(ref f) = self.font_italic {
+                        (f, false)
                     } else {
                         (&self.font, true)
                     }
@@ -432,6 +478,7 @@ impl FontLoader {
                 (false, false) => (&self.font, false),
             };
             is_synthetic_italic = synth;
+
             let mut char_glyph_id = char_font.glyph_id(base_c);
             if char_glyph_id.0 == 0
                 && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c)
@@ -446,10 +493,9 @@ impl FontLoader {
 
             if char_glyph_id.0 != 0 {
                 let font_scale = self.font_size * self.font_scale_multiplier;
-                let scale;
+                let scale: PxScale;
 
                 if is_pw_sep {
-                    // Powerline prompt separators: scale to fill exactly the cell height
                     let probe_scale = PxScale::from(font_scale);
                     let probe_glyph = char_glyph_id.with_scale(probe_scale);
                     if let Some(outlined) = char_font.outline_glyph(probe_glyph) {
@@ -467,9 +513,6 @@ impl FontLoader {
                         scale = PxScale::from(font_scale);
                     }
                 } else if is_nerd_or_pua {
-                    // Nerd Font icons / PUA / Emojis:
-                    // Scale ONLY on height. Icons wider than one cell are cropped/centered horizontally.
-                    // Previously using sw.min(sh) caused tiny icons because many icons are wider than one cell column.
                     let probe_scale = PxScale::from(font_scale);
                     let probe_glyph = char_glyph_id.with_scale(probe_scale);
                     if let Some(outlined) = char_font.outline_glyph(probe_glyph) {
@@ -485,7 +528,6 @@ impl FontLoader {
                         scale = PxScale::from(font_scale);
                     }
                 } else {
-                    // All other characters: use native font scale
                     scale = PxScale::from(font_scale);
                 }
 
@@ -506,13 +548,6 @@ impl FontLoader {
             }
         }
 
-        // Atlas region width:
-        // - Nerd/PUA icons: icon's actual rendered pixel width, capped at 2×cell.
-        //   width_mult reflects this so the renderer draws a correctly-sized quad.
-        // - Synthetic italic regular text: add headroom for the italic slant bleed.
-        //   The maximum horizontal shift is ascent × SHEAR_FACTOR pixels at the glyph top.
-        //   The quad width (width_mult) stays at 1.0 — the extra pixels just overdraw slightly.
-        // - Everything else: strictly base_target_width.
         const SHEAR_FACTOR: f32 = 0.22;
         let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
             (ascent * SHEAR_FACTOR).ceil() as u32
@@ -527,10 +562,12 @@ impl FontLoader {
             base_target_width + italic_bleed
         };
 
-        let mut rgba_pixels = vec![0u8; (target_width * self.cell_height * 4) as usize];
-        let is_color = color_pixels.is_some();
+        let needed_rgba = (target_width * self.cell_height * 4) as usize;
+        self.scratch_rgba.clear();
+        self.scratch_rgba.resize(needed_rgba, 0);
+        let is_color = color_img_size.is_some();
 
-        if let Some((rgba, w, h)) = color_pixels {
+        if let Some((w, h)) = color_img_size {
             let tw = target_width;
             let th = self.cell_height;
 
@@ -544,6 +581,7 @@ impl FontLoader {
             let x_offset = (tw as i32 - new_w as i32) / 2;
             let y_offset = (th as i32 - new_h as i32) / 2;
 
+            let rgba = &self.scratch_png;
             for dy in 0..th {
                 for dx in 0..tw {
                     let rx = dx as i32 - x_offset;
@@ -555,37 +593,32 @@ impl FontLoader {
                         let src_idx = (sy * w + sx) as usize * 4;
                         let dst_idx = (dy * tw + dx) as usize * 4;
 
-                        rgba_pixels[dst_idx] = rgba[src_idx];
-                        rgba_pixels[dst_idx + 1] = rgba[src_idx + 1];
-                        rgba_pixels[dst_idx + 2] = rgba[src_idx + 2];
-                        rgba_pixels[dst_idx + 3] = rgba[src_idx + 3];
+                        if src_idx + 3 < rgba.len() {
+                            self.scratch_rgba[dst_idx] = rgba[src_idx];
+                            self.scratch_rgba[dst_idx + 1] = rgba[src_idx + 1];
+                            self.scratch_rgba[dst_idx + 2] = rgba[src_idx + 2];
+                            self.scratch_rgba[dst_idx + 3] = rgba[src_idx + 3];
+                        }
                     }
                 }
             }
         } else {
-            let mut pixels = vec![0u8; (target_width * self.cell_height) as usize];
+            let needed_pixels = (target_width * self.cell_height) as usize;
+            self.scratch_pixels.clear();
+            self.scratch_pixels.resize(needed_pixels, 0);
 
             if has_outline {
-                // Compute draw offsets:
-                // - Nerd/PUA icons: center horizontally within the (potentially wider) atlas slot, center vertically
-                // - Powerline separators: center within cell
-                // - Box Drawing & Vertical Pipes: exact font alignment (bounds_min_x)
-                // - Regular text: baseline-aligned, horizontally centered if narrower than cell
                 let (x_offset, y_offset) = if is_nerd_or_pua && !is_pw_sep {
-                    // Nerd/PUA icons: center within the atlas slot (which is sized to the icon)
                     let xo = (target_width as f32 - glyph_w) / 2.0;
                     let yo = (self.cell_height as f32 - glyph_h) / 2.0;
                     (xo, yo)
                 } else if is_pw_sep {
-                    // Powerline separators: center within cell
                     let xo = (base_target_width as f32 - glyph_w) / 2.0;
                     let yo = (self.cell_height as f32 - glyph_h) / 2.0;
                     (xo, yo)
                 } else if is_box_drawing_or_pipe(base_c) {
-                    // Box drawing & vertical pipes: exact font origin so all glyphs share the same pixel grid
                     (bounds_min_x, ascent + bounds_min_y)
                 } else {
-                    // Regular text: baseline-aligned, horizontally centered if narrower than cell
                     let xo = if glyph_w < base_target_width as f32 {
                         let calc = (base_target_width as f32 - glyph_w) / 2.0;
                         if calc > 0.0 { calc } else { bounds_min_x }
@@ -601,9 +634,6 @@ impl FontLoader {
                 {
                     outlined.draw(|gx, gy, alpha| {
                         let slant_shift = if is_synthetic_italic {
-                            // Pivot the shear around the baseline.
-                            // Pixels above the baseline lean right; pixels below lean left.
-                            // cell_y is the pixel's position in the cell (0 = top).
                             let cell_y = y_offset + gy as f32;
                             (ascent - cell_y) * SHEAR_FACTOR
                         } else {
@@ -618,9 +648,9 @@ impl FontLoader {
                             && py < self.cell_height as i32
                         {
                             let idx = py as usize * target_width as usize + px as usize;
-                            let old_alpha = pixels[idx] as f32 / 255.0;
+                            let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
                             let new_alpha = old_alpha.max(alpha);
-                            pixels[idx] = (new_alpha * 255.0) as u8;
+                            self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
                         }
                     });
                 }
@@ -678,9 +708,9 @@ impl FontLoader {
                                     && py < self.cell_height as i32
                                 {
                                     let idx = py as usize * target_width as usize + px as usize;
-                                    let old_alpha = pixels[idx] as f32 / 255.0;
+                                    let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
                                     let new_alpha = old_alpha.max(alpha);
-                                    pixels[idx] = (new_alpha * 255.0) as u8;
+                                    self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
                                 }
                             });
                         }
@@ -688,12 +718,12 @@ impl FontLoader {
                 }
             }
 
-            for (i, &mask) in pixels.iter().enumerate() {
+            for (i, &mask) in self.scratch_pixels.iter().enumerate() {
                 let dst_idx = i * 4;
-                rgba_pixels[dst_idx] = mask;
-                rgba_pixels[dst_idx + 1] = mask;
-                rgba_pixels[dst_idx + 2] = mask;
-                rgba_pixels[dst_idx + 3] = mask;
+                self.scratch_rgba[dst_idx] = mask;
+                self.scratch_rgba[dst_idx + 1] = mask;
+                self.scratch_rgba[dst_idx + 2] = mask;
+                self.scratch_rgba[dst_idx + 3] = mask;
             }
         }
 
@@ -742,7 +772,7 @@ impl FontLoader {
                 self.cell_height as i32,
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&rgba_pixels[..])),
+                glow::PixelUnpackData::Slice(Some(&self.scratch_rgba[..needed_rgba])),
             );
         }
 
@@ -754,9 +784,6 @@ impl FontLoader {
             u_max: (ox + target_width) as f32 / self.atlas_width as f32,
             v_max: (oy + self.cell_height) as f32 / self.atlas_height as f32,
             is_color,
-            // width_mult: ratio of atlas region to one cell width.
-            // The renderer uses this to size the quad: quad_w = cw * width_mult.
-            // For Nerd/PUA icons this will be >= 1.0, matching natural glyph width.
             width_mult: target_width as f32 / self.cell_width as f32,
         };
 
