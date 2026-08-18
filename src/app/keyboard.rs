@@ -42,6 +42,10 @@ impl WindowState {
                         let text = crate::clipboard::clipboard::paste();
                         if !text.is_empty() {
                             let formatted = self.terminal.format_paste(&text);
+                            if self.terminal.scroll_on_keystroke {
+                                self.terminal.active_grid_mut().scroll_offset = 0;
+                                self.needs_redraw = true;
+                            }
                             let _ = self.pty_master.write(formatted.as_bytes());
                         }
                         return;
@@ -126,9 +130,14 @@ impl WindowState {
                 modifiers,
                 cursor_keys_mode,
             ) {
+                let scroll_on_keystroke = self.terminal.scroll_on_keystroke;
                 let active_grid = self.terminal.active_grid_mut();
                 if active_grid.selection.active {
                     active_grid.selection.clear();
+                    self.needs_redraw = true;
+                }
+                if scroll_on_keystroke && active_grid.scroll_offset > 0 {
+                    active_grid.scroll_offset = 0;
                     self.needs_redraw = true;
                 }
                 let _ = self.pty_master.write(&bytes);

@@ -52,6 +52,16 @@ pub struct WindowConfig {
     pub cursor_shape: Option<String>,
     #[serde(default)]
     pub cursor_blink: Option<bool>,
+    #[serde(default, alias = "scroll_to_bottom_on_output")]
+    pub scroll_on_output: Option<bool>,
+    #[serde(
+        default,
+        alias = "scroll_on_keystrock",
+        alias = "scroll_to_bottom_on_keystroke",
+        alias = "scroll_on_key",
+        alias = "scroll_to_bottom_on_input"
+    )]
+    pub scroll_on_keystroke: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -175,6 +185,23 @@ pub struct Config {
     pub(crate) cursor_blink_legacy: Option<bool>,
     #[serde(
         default,
+        rename = "scroll_on_output",
+        alias = "scroll_to_bottom_on_output",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) scroll_on_output_legacy: Option<bool>,
+    #[serde(
+        default,
+        rename = "scroll_on_keystroke",
+        alias = "scroll_on_keystrock",
+        alias = "scroll_to_bottom_on_keystroke",
+        alias = "scroll_on_key",
+        alias = "scroll_to_bottom_on_input",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) scroll_on_keystroke_legacy: Option<bool>,
+    #[serde(
+        default,
         rename = "default_fg",
         skip_serializing_if = "Option::is_none"
     )]
@@ -257,6 +284,18 @@ impl Config {
         self.window.cursor_blink.or(self.cursor_blink_legacy)
     }
 
+    pub fn scroll_on_output(&self) -> Option<bool> {
+        self.window
+            .scroll_on_output
+            .or(self.scroll_on_output_legacy)
+    }
+
+    pub fn scroll_on_keystroke(&self) -> Option<bool> {
+        self.window
+            .scroll_on_keystroke
+            .or(self.scroll_on_keystroke_legacy)
+    }
+
     pub fn default_fg(&self) -> Option<&str> {
         self.colors
             .as_ref()
@@ -313,6 +352,8 @@ mod tests {
             padding_y = 4.0
             cursor_shape = "beam"
             cursor_blink = true
+            scroll_on_output = false
+            scroll_on_keystroke = true
 
             [colors]
             default_fg = "#e0def4"
@@ -349,6 +390,8 @@ mod tests {
         assert_eq!(config.padding_y(), Some(4.0));
         assert_eq!(config.cursor_shape(), Some("beam"));
         assert_eq!(config.cursor_blink(), Some(true));
+        assert_eq!(config.scroll_on_output(), Some(false));
+        assert_eq!(config.scroll_on_keystroke(), Some(true));
 
         assert_eq!(config.default_fg(), Some("#e0def4"));
         assert_eq!(config.default_bg(), Some("#191724"));
@@ -366,11 +409,15 @@ mod tests {
             scrollback_limit = 30000
             bold_is_bright = true
             app_title = "{program} - Velox"
+            scroll_on_output = true
+            scroll_on_keystroke = false
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.scrollback_limit(), Some(30000));
         assert_eq!(config.infinite_scrollback(), None);
         assert_eq!(config.bold_is_bright(), Some(true));
         assert_eq!(config.app_title, Some("{program} - Velox".to_string()));
+        assert_eq!(config.scroll_on_output(), Some(true));
+        assert_eq!(config.scroll_on_keystroke(), Some(false));
     }
 }

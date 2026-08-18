@@ -50,6 +50,9 @@ impl Grid {
                 let wrapped = self.row_wrapped.get(y).copied().unwrap_or(false);
                 self.scrollback.push_line(&self.cells[start..end], wrapped);
             }
+            if self.scroll_offset > 0 {
+                self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());
+            }
         }
 
         if u_delta < height_of_region {

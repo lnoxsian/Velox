@@ -45,6 +45,8 @@ pub struct Terminal {
     pub semantic_zone: SemanticZone,
     pub prompt_marks: Vec<PromptMark>,
     pub last_command_exit_code: Option<i32>,
+    pub scroll_on_output: bool,
+    pub scroll_on_keystroke: bool,
 }
 
 impl Terminal {
@@ -127,6 +129,9 @@ impl Terminal {
         let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0, false);
         alt_grid.cursor.shape = initial_shape;
 
+        let scroll_on_output = config.scroll_on_output().unwrap_or(true);
+        let scroll_on_keystroke = config.scroll_on_keystroke().unwrap_or(true);
+
         Self {
             grid,
             alt_grid,
@@ -154,6 +159,8 @@ impl Terminal {
             semantic_zone: SemanticZone::Output,
             prompt_marks: Vec::new(),
             last_command_exit_code: None,
+            scroll_on_output,
+            scroll_on_keystroke,
         }
     }
 
@@ -201,7 +208,9 @@ impl Terminal {
     }
 
     pub fn feed(&mut self, data: &[u8]) {
-        self.grid.scroll_offset = 0;
+        if self.scroll_on_output {
+            self.grid.scroll_offset = 0;
+        }
         // Feed bytes one by one. Note: We temporarily take ownership or borrow
         // to avoid duplicate mutable borrows on Self.
         let mut parser = std::mem::take(&mut self.parser);
@@ -800,5 +809,35 @@ mod tests {
         term.feed(b"\x08\x08");
         assert_eq!(term.active_grid().cursor.x, 9);
         assert_eq!(term.active_grid().cursor.y, 0);
+    }
+
+    #[test]
+    fn test_scroll_on_output_behavior() {
+        let mut term = Terminal::new(80, 5);
+        term.scroll_on_output = true;
+
+        // Produce 10 lines of output to populate scrollback
+        for i in 0..10 {
+            term.feed(format!("Line {}\n", i).as_bytes());
+        }
+
+        assert_eq!(term.grid.scrollback.len(), 6);
+        assert_eq!(term.grid.scroll_offset, 0);
+
+        // Manually scroll up 3 lines
+        term.grid.scroll_offset = 3;
+
+        // When scroll_on_output = true, new feed resets scroll_offset to 0
+        term.feed(b"New output\n");
+        assert_eq!(term.grid.scroll_offset, 0);
+
+        // Now set scroll_on_output = false
+        term.scroll_on_output = false;
+        term.grid.scroll_offset = 3;
+
+        // Feed new output without resetting scroll_offset
+        term.feed(b"Another line\n");
+        // scroll_offset should not be reset to 0; it should increase to track new scrollback lines
+        assert!(term.grid.scroll_offset >= 3);
     }
 }
