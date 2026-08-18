@@ -1,0 +1,40 @@
+single_instance = true
+
+[font]
+font_family = "monospace"
+font_size = 12.0
+font_scale_multiplier = 1.5
+bold_is_bright = true
+
+[window]
+scrollback_limit = 2000
+infinite_scrollback = true
+gpu_acceleration = true
+scroll_multiplier = 5.0
+fps_limit = 120
+padding_x = 8.0
+padding_y = 4.0
+cursor_shape = "beam"
+cursor_blink = true
+scroll_on_output = true
+scroll_on_keystroke = true
+
+[colors]
+default_fg = "#4c4f69"
+default_bg = "#eff1f5"
+black = "#5c5f77"
+red = "#d20f39"
+green = "#40a02b"
+yellow = "#df8e1d"
+blue = "#1e66f5"
+magenta = "#ea76cb"
+cyan = "#179299"
+white = "#acb0be"
+bright_black = "#6c6f85"
+bright_red = "#d20f39"
+bright_green = "#40a02b"
+bright_yellow = "#df8e1d"
+bright_blue = "#1e66f5"
+bright_magenta = "#ea76cb"
+bright_cyan = "#179299"
+bright_white = "#bcc0cc"
