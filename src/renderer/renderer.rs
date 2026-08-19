@@ -414,7 +414,12 @@ impl Renderer {
             gl.enable_vertex_attrib_array(2);
 
             gl.enable(glow::BLEND);
-            gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            gl.blend_func_separate(
+                glow::SRC_ALPHA,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
 
             let font_loader =
                 FontLoader::new(gl.clone(), font_family, font_size, font_scale_multiplier);
@@ -468,6 +473,7 @@ impl Renderer {
         history_len: usize,
         padding_x: f32,
         padding_y: f32,
+        opacity: f32,
     ) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
@@ -536,22 +542,26 @@ impl Renderer {
 
                 let (_fg, bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
 
-                let px = padding_x + x as f32 * cw;
-                let py = padding_y + y as f32 * ch;
-                let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
-                push_quad(
-                    &mut vertices,
-                    px,
-                    py,
-                    cw * cell_w_mult,
-                    ch,
-                    wu,
-                    wv,
-                    wu,
-                    wv,
-                    bg,
-                    false,
-                );
+                // Skip background quad if the cell has the default background and is not inverted/selected,
+                // because gl.clear_color already cleared the entire window (including margins) with default_bg + opacity.
+                if bg != theme.default_bg || is_inverted {
+                    let px = padding_x + x as f32 * cw;
+                    let py = padding_y + y as f32 * ch;
+                    let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
+                    push_quad(
+                        &mut vertices,
+                        px,
+                        py,
+                        cw * cell_w_mult,
+                        ch,
+                        wu,
+                        wv,
+                        wu,
+                        wv,
+                        bg,
+                        false,
+                    );
+                }
 
                 x += if is_wide { 2 } else { 1 };
             }
@@ -861,11 +871,12 @@ impl Renderer {
                 self.viewport_width as i32,
                 self.viewport_height as i32,
             );
+            let alpha = opacity.clamp(0.0, 1.0);
             self.gl.clear_color(
-                theme.default_bg.r as f32 / 255.0,
-                theme.default_bg.g as f32 / 255.0,
-                theme.default_bg.b as f32 / 255.0,
-                1.0,
+                (theme.default_bg.r as f32 / 255.0) * alpha,
+                (theme.default_bg.g as f32 / 255.0) * alpha,
+                (theme.default_bg.b as f32 / 255.0) * alpha,
+                alpha,
             );
             self.gl.clear(glow::COLOR_BUFFER_BIT);
 

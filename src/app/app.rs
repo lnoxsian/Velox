@@ -97,6 +97,7 @@ pub struct WindowState {
     pub last_activity: std::time::Instant,
     pub last_cleanup: std::time::Instant,
     pub hold: bool,
+    pub opacity: f32,
 }
 
 impl Drop for WindowState {
@@ -314,6 +315,7 @@ impl WindowState {
                     history_len,
                     self.padding_x,
                     self.padding_y,
+                    self.opacity,
                 );
                 let _ = gl_surface.swap_buffers(gl_context);
             }
@@ -329,6 +331,7 @@ impl WindowState {
                         cursor_shape,
                         display_cursor_x,
                         self.is_focused,
+                        self.opacity,
                         &mut buffer,
                     );
                     let _ = buffer.present();
@@ -390,9 +393,11 @@ impl App {
         };
 
         let icon = load_app_icon();
+        let opacity = config.opacity();
 
         let mut window_attributes = Window::default_attributes()
             .with_title(&initial_title)
+            .with_transparent(true)
             .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
 
         if let Some(icon) = icon {
@@ -496,6 +501,7 @@ impl App {
                 win_width,
                 win_height,
                 bold_is_bright,
+                opacity,
             );
 
             WindowRendererBackend::Software { renderer, surface }
@@ -580,6 +586,7 @@ impl App {
             last_activity: std::time::Instant::now(),
             last_cleanup: std::time::Instant::now(),
             hold: hold.unwrap_or(false),
+            opacity,
         };
 
         self.windows.insert(window_id, window_state);
@@ -624,10 +631,13 @@ impl ApplicationHandler<CustomEvent> for App {
         let gpu = config.gpu_acceleration().unwrap_or(true);
 
         if gpu && self.gl_display.is_none() {
-            let template = glutin::config::ConfigTemplateBuilder::new().with_alpha_size(8);
+            let template = glutin::config::ConfigTemplateBuilder::new()
+                .with_alpha_size(8)
+                .with_transparency(true);
 
             let dummy_attrs = Window::default_attributes()
                 .with_visible(false)
+                .with_transparent(true)
                 .with_inner_size(winit::dpi::PhysicalSize::new(1, 1));
             let display_builder =
                 glutin_winit::DisplayBuilder::new().with_window_attributes(Some(dummy_attrs));

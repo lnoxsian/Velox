@@ -62,6 +62,13 @@ pub struct WindowConfig {
         alias = "scroll_to_bottom_on_input"
     )]
     pub scroll_on_keystroke: Option<bool>,
+    #[serde(
+        default,
+        alias = "background_opacity",
+        alias = "alpha",
+        alias = "window_opacity"
+    )]
+    pub opacity: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -212,9 +219,25 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) default_bg_legacy: Option<String>,
+    #[serde(
+        default,
+        rename = "opacity",
+        alias = "background_opacity",
+        alias = "alpha",
+        alias = "window_opacity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) opacity_legacy: Option<f32>,
 }
 
 impl Config {
+    pub fn opacity(&self) -> f32 {
+        self.window
+            .opacity
+            .or(self.opacity_legacy)
+            .unwrap_or(1.0)
+            .clamp(0.0, 1.0)
+    }
     pub fn font_family(&self) -> &str {
         if let Some(ref ff) = self.font_family_legacy {
             ff.as_str()
@@ -354,6 +377,7 @@ mod tests {
             cursor_blink = true
             scroll_on_output = false
             scroll_on_keystroke = true
+            opacity = 0.85
 
             [colors]
             default_fg = "#e0def4"
@@ -392,6 +416,7 @@ mod tests {
         assert_eq!(config.cursor_blink(), Some(true));
         assert_eq!(config.scroll_on_output(), Some(false));
         assert_eq!(config.scroll_on_keystroke(), Some(true));
+        assert_eq!(config.opacity(), 0.85);
 
         assert_eq!(config.default_fg(), Some("#e0def4"));
         assert_eq!(config.default_bg(), Some("#191724"));
@@ -411,6 +436,7 @@ mod tests {
             app_title = "{program} - Velox"
             scroll_on_output = true
             scroll_on_keystroke = false
+            opacity = 0.75
         "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.scrollback_limit(), Some(30000));
@@ -419,5 +445,43 @@ mod tests {
         assert_eq!(config.app_title, Some("{program} - Velox".to_string()));
         assert_eq!(config.scroll_on_output(), Some(true));
         assert_eq!(config.scroll_on_keystroke(), Some(false));
+        assert_eq!(config.opacity(), 0.75);
+    }
+
+    #[test]
+    fn test_config_opacity_parsing_and_clamping() {
+        // Default opacity is 1.0
+        let empty_cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(empty_cfg.opacity(), 1.0);
+
+        // Aliases: background_opacity in [window]
+        let toml_alias1 = r#"
+            [window]
+            background_opacity = 0.6
+        "#;
+        let cfg1: Config = toml::from_str(toml_alias1).unwrap();
+        assert_eq!(cfg1.opacity(), 0.6);
+
+        // Aliases: alpha in flat TOML
+        let toml_alias2 = r#"
+            alpha = 0.4
+        "#;
+        let cfg2: Config = toml::from_str(toml_alias2).unwrap();
+        assert_eq!(cfg2.opacity(), 0.4);
+
+        // Clamping: negative clamped to 0.0, > 1.0 clamped to 1.0
+        let toml_underflow = r#"
+            [window]
+            opacity = -0.5
+        "#;
+        let cfg_underflow: Config = toml::from_str(toml_underflow).unwrap();
+        assert_eq!(cfg_underflow.opacity(), 0.0);
+
+        let toml_overflow = r#"
+            [window]
+            opacity = 1.5
+        "#;
+        let cfg_overflow: Config = toml::from_str(toml_overflow).unwrap();
+        assert_eq!(cfg_overflow.opacity(), 1.0);
     }
 }

@@ -1,7 +1,7 @@
 single_instance = true
 
 [font]
-font_family = "monospace"
+font_family = "ComicShannsMono Nerd Font"
 font_size = 12.0
 font_scale_multiplier = 1.5
 bold_is_bright = true
@@ -12,19 +12,20 @@ infinite_scrollback = true
 gpu_acceleration = true
 scroll_multiplier = 5.0
 fps_limit = 120
-padding_x = 8.0
+padding_x = 4.0
 padding_y = 4.0
-cursor_shape = "beam"
+cursor_shape = "block"
 cursor_blink = true
-scroll_on_output = true
+scroll_on_output = false
 scroll_on_keystroke = true
+opacity = 0.75
 
 [colors]
 default_fg = "#e6edf3"
 default_bg = "#0d1117"
 black = "#484f58"
 red = "#ff7b72"
-green = "#7ee787"
+green = "#3fb950"
 yellow = "#d29922"
 blue = "#58a6ff"
 magenta = "#bc8cff"

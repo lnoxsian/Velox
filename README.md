@@ -131,6 +131,7 @@ padding_x = 8.0
 padding_y = 4.0
 cursor_shape = "beam"
 cursor_blink = true
+opacity = 1.0
 
 [colors]
 default_fg = "#e0def4"

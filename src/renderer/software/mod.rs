@@ -43,6 +43,8 @@ pub struct CpuRenderer {
     prev_scroll_offset: usize,
     pub start_time: Instant,
     pub prev_blink_on: bool,
+    pub opacity: f32,
+    prev_opacity: f32,
 }
 
 impl CpuRenderer {
@@ -54,11 +56,13 @@ impl CpuRenderer {
         width: u32,
         height: u32,
         bold_is_bright: bool,
+        opacity: f32,
     ) -> Self {
         let glyph_cache =
             GlyphCache::from_font_family(font_family, font_size, font_scale_multiplier);
         let framebuffer = Framebuffer::new(width, height);
-        let palette = PrecomputedPalette::new(theme);
+        let opacity = opacity.clamp(0.0, 1.0);
+        let palette = PrecomputedPalette::new(theme, opacity);
         let rows = (height / glyph_cache.cell_height.max(1)).max(1) as usize;
 
         Self {
@@ -77,6 +81,17 @@ impl CpuRenderer {
             prev_scroll_offset: 0,
             start_time: Instant::now(),
             prev_blink_on: true,
+            opacity,
+            prev_opacity: opacity,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn set_opacity(&mut self, opacity: f32) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if (self.opacity - opacity).abs() > f32::EPSILON {
+            self.opacity = opacity;
+            self.damage.mark_all();
         }
     }
 
@@ -116,6 +131,7 @@ impl CpuRenderer {
         cursor_shape: CursorShape,
         display_cursor_x: usize,
         is_focused: bool,
+        opacity: f32,
         target_buffer: &mut [u32],
     ) {
         let start_time = if self.enable_stats {
@@ -124,15 +140,20 @@ impl CpuRenderer {
             None
         };
 
+        let opacity = opacity.clamp(0.0, 1.0);
+
         // 1. Sync theme updates
         if theme.default_fg != self.prev_theme_fg
             || theme.default_bg != self.prev_theme_bg
             || theme.ansi_colors != self.prev_ansi_colors
+            || (opacity - self.prev_opacity).abs() > f32::EPSILON
         {
-            self.palette = PrecomputedPalette::new(theme);
+            self.palette = PrecomputedPalette::new(theme, opacity);
             self.prev_theme_fg = theme.default_fg;
             self.prev_theme_bg = theme.default_bg;
             self.prev_ansi_colors = theme.ansi_colors;
+            self.opacity = opacity;
+            self.prev_opacity = opacity;
             self.damage.mark_all();
         }
 

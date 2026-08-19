@@ -1,19 +1,34 @@
 use crate::screen::cell::{Cell, CellFlags, Color};
 use crate::theme::theme::Theme;
 
-/// Fast packed ARGB/XRGB color: `0x00RRGGBB`
+/// Fast packed ARGB/XRGB color: `0xAARRGGBB`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PackedColor(pub u32);
 
 impl PackedColor {
     #[inline(always)]
     pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        Self(((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
+        Self((0xFF << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
+    }
+
+    #[allow(dead_code)]
+    #[inline(always)]
+    pub const fn from_argb(a: u8, r: u8, g: u8, b: u8) -> Self {
+        Self(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
     }
 
     #[inline(always)]
     pub const fn from_color(c: Color) -> Self {
         Self::from_rgb(c.r, c.g, c.b)
+    }
+
+    #[inline(always)]
+    pub const fn from_premultiplied(c: Color, alpha: u8) -> Self {
+        let a = alpha as u32;
+        let r = ((c.r as u32) * a) / 255;
+        let g = ((c.g as u32) * a) / 255;
+        let b = ((c.b as u32) * a) / 255;
+        Self((a << 24) | (r << 16) | (g << 8) | b)
     }
 
     #[inline(always)]
@@ -24,10 +39,11 @@ impl PackedColor {
     /// Fast integer dim attenuation (~60% intensity: `val * 153 >> 8`)
     #[inline(always)]
     pub const fn dim(self) -> Self {
+        let a = self.0 & 0xFF000000;
         let r = (((self.0 >> 16) & 0xFF) * 153) >> 8;
         let g = (((self.0 >> 8) & 0xFF) * 153) >> 8;
         let b = ((self.0 & 0xFF) * 153) >> 8;
-        Self((r << 16) | (g << 8) | b)
+        Self(a | (r << 16) | (g << 8) | b)
     }
 }
 
@@ -38,10 +54,15 @@ pub struct PrecomputedPalette {
     pub ansi_colors_raw: [Color; 16],
     pub default_fg: u32,
     pub default_bg: u32,
+    pub raw_default_bg: Color,
+    #[allow(dead_code)]
+    pub opacity: f32,
 }
 
 impl PrecomputedPalette {
-    pub fn new(theme: &Theme) -> Self {
+    pub fn new(theme: &Theme, opacity: f32) -> Self {
+        let opacity = opacity.clamp(0.0, 1.0);
+        let alpha = (opacity * 255.0).round() as u8;
         let mut ansi_colors = [0u32; 16];
         let mut ansi_colors_raw = [Color {
             r: 0,
@@ -56,7 +77,9 @@ impl PrecomputedPalette {
             ansi_colors,
             ansi_colors_raw,
             default_fg: PackedColor::from_color(theme.default_fg).to_u32(),
-            default_bg: PackedColor::from_color(theme.default_bg).to_u32(),
+            default_bg: PackedColor::from_premultiplied(theme.default_bg, alpha).to_u32(),
+            raw_default_bg: theme.default_bg,
+            opacity,
         }
     }
 
@@ -81,7 +104,11 @@ impl PrecomputedPalette {
             }
         }
 
-        let cell_bg = PackedColor::from_color(cell.background).to_u32();
+        let cell_bg = if cell.background == self.raw_default_bg {
+            self.default_bg
+        } else {
+            PackedColor::from_color(cell.background).to_u32()
+        };
 
         let (mut fg, bg) = if is_inverted {
             (cell_bg, cell_fg)
@@ -109,13 +136,17 @@ mod tests {
             b: 0x56,
         };
         let packed = PackedColor::from_color(color);
-        assert_eq!(packed.to_u32(), 0x00123456);
+        assert_eq!(packed.to_u32(), 0xFF123456);
+
+        let premult = PackedColor::from_premultiplied(Color { r: 200, g: 100, b: 50 }, 128);
+        assert_eq!((premult.to_u32() >> 24) & 0xFF, 128);
+        assert_eq!((premult.to_u32() >> 16) & 0xFF, (200 * 128) / 255);
     }
 
     #[test]
     fn test_packed_color_dim() {
         let packed = PackedColor::from_rgb(200, 100, 50);
         let dimmed = packed.dim();
-        assert_eq!(dimmed.to_u32(), (119 << 16) | (59 << 8) | 29);
+        assert_eq!(dimmed.to_u32(), 0xFF000000 | (119 << 16) | (59 << 8) | 29);
     }
 }

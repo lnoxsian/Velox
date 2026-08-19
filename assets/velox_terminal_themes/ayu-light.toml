@@ -1,0 +1,41 @@
+single_instance = true
+
+[font]
+font_family = "ComicShannsMono Nerd Font"
+font_size = 12.0
+font_scale_multiplier = 1.5
+bold_is_bright = true
+
+[window]
+scrollback_limit = 2000
+infinite_scrollback = true
+gpu_acceleration = true
+scroll_multiplier = 5.0
+fps_limit = 120
+padding_x = 4.0
+padding_y = 4.0
+cursor_shape = "block"
+cursor_blink = true
+scroll_on_output = false
+scroll_on_keystroke = true
+opacity = 0.75
+
+[colors]
+default_fg = "#5c6166"
+default_bg = "#fafafa"
+black = "#01060e"
+red = "#f07171"
+green = "#86b300"
+yellow = "#f2ae49"
+blue = "#399ee6"
+magenta = "#a37acc"
+cyan = "#4cbf99"
+white = "#abb0b6"
+bright_black = "#686868"
+bright_red = "#f07171"
+bright_green = "#86b300"
+bright_yellow = "#f2ae49"
+bright_blue = "#399ee6"
+bright_magenta = "#a37acc"
+bright_cyan = "#4cbf99"
+bright_white = "#f2f2f2"

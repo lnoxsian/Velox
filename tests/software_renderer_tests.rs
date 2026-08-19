@@ -6,7 +6,7 @@ use velox::theme::theme::Theme;
 
 fn setup_renderer(width: u32, height: u32) -> CpuRenderer {
     let theme = Theme::new();
-    CpuRenderer::new("monospace", 14.0, 1.5, &theme, width, height, true)
+    CpuRenderer::new("monospace", 14.0, 1.5, &theme, width, height, true, 1.0)
 }
 
 #[test]
@@ -42,6 +42,7 @@ fn test_software_renderer_idle_zero_work() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
     assert!(!renderer.damage.has_damage());
@@ -61,6 +62,7 @@ fn test_software_renderer_idle_zero_work() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
 
@@ -102,6 +104,7 @@ fn test_software_renderer_damage_partial_row() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
     grid.damage.dirty_rows.fill(false);
@@ -134,6 +137,7 @@ fn test_software_renderer_damage_partial_row() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
 
@@ -195,11 +199,12 @@ fn test_software_renderer_box_and_block_primitives() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
 
-    // Check that some green pixels (0x0000FF00) were drawn in the framebuffer
-    let has_green_pixels = target.contains(&0x0000FF00);
+    // Check that some green pixels (0xFF00FF00) were drawn in the framebuffer
+    let has_green_pixels = target.iter().any(|&p| (p & 0x00FFFFFF) == 0x0000FF00);
     assert!(has_green_pixels);
 }
 
@@ -244,6 +249,7 @@ fn test_software_renderer_selection_and_cursor() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
     assert!(!renderer.damage.has_damage());
@@ -301,6 +307,7 @@ fn test_software_renderer_scroll_selection() {
         CursorShape::Block,
         0,
         true,
+        1.0,
         &mut target,
     );
 
@@ -399,6 +406,7 @@ fn test_software_renderer_decorations() {
         CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
     assert!(!renderer.damage.has_damage());
@@ -455,6 +463,7 @@ fn test_software_renderer_scrollback_rendering() {
         CursorShape::Block,
         0,
         true,
+        1.0,
         &mut target,
     );
     assert!(!renderer.damage.has_damage());
@@ -512,6 +521,7 @@ fn test_software_renderer_blinking_text() {
         CursorShape::Block,
         0,
         true,
+        1.0,
         &mut target,
     );
 
@@ -535,6 +545,7 @@ fn test_software_renderer_blinking_text() {
         CursorShape::Block,
         0,
         true,
+        1.0,
         &mut target,
     );
 
@@ -622,6 +633,7 @@ fn test_software_renderer_double_line_table() {
         CursorShape::Block,
         0,
         true,
+        1.0,
         &mut target,
     );
 
@@ -690,6 +702,7 @@ fn test_software_renderer_all_box_drawing_chars() {
         CursorShape::Block,
         0,
         true,
+        1.0,
         &mut target,
     );
 
@@ -698,4 +711,60 @@ fn test_software_renderer_all_box_drawing_chars() {
         has_yellow_pixels,
         "All box drawing chars should render yellow pixels"
     );
+}
+
+#[test]
+fn test_software_renderer_transparency() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut grid = Grid::new(
+        80,
+        24,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color {
+            r: 30,
+            g: 40,
+            b: 50,
+        },
+        100,
+        false,
+    );
+    let mut theme = Theme::new();
+    theme.default_bg = Color {
+        r: 30,
+        g: 40,
+        b: 50,
+    };
+    let mut target = vec![0u32; 800 * 600];
+
+    // Render with 50% opacity (0.5)
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        0.5,
+        &mut target,
+    );
+
+    // Alpha channel of cleared background should be ~128 (0x80)
+    let bg_pixel = target[0];
+    let bg_alpha = (bg_pixel >> 24) & 0xFF;
+    assert_eq!(bg_alpha, 128);
+
+    // Premultiplied RGB check:
+    let bg_r = (bg_pixel >> 16) & 0xFF;
+    let bg_g = (bg_pixel >> 8) & 0xFF;
+    let bg_b = bg_pixel & 0xFF;
+    assert_eq!(bg_r, (30 * 128) / 255);
+    assert_eq!(bg_g, (40 * 128) / 255);
+    assert_eq!(bg_b, (50 * 128) / 255);
 }

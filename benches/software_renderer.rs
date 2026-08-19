@@ -7,7 +7,7 @@ use velox::theme::theme::Theme;
 fn main() {
     println!("=== Velox CPU Software Renderer Benchmark Suite ===");
     let theme = Theme::new();
-    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 1920, 1080, true);
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 1920, 1080, true, 1.0);
     let mut target = vec![0u32; 1920 * 1080];
 
     let cols = 1920 / renderer.glyph_cache.cell_width;
@@ -45,6 +45,7 @@ fn main() {
         velox::screen::cursor::CursorShape::Block,
         grid.cursor.x,
         true,
+        1.0,
         &mut target,
     );
 
@@ -63,6 +64,7 @@ fn main() {
             velox::screen::cursor::CursorShape::Block,
             grid.cursor.x,
             true,
+            1.0,
             &mut target,
         );
     }
@@ -106,6 +108,7 @@ fn main() {
             velox::screen::cursor::CursorShape::Block,
             grid.cursor.x,
             true,
+            1.0,
             &mut target,
         );
     }
@@ -151,6 +154,7 @@ fn main() {
             velox::screen::cursor::CursorShape::Block,
             grid.cursor.x,
             true,
+            1.0,
             &mut target,
         );
     }
@@ -196,6 +200,7 @@ fn main() {
             velox::screen::cursor::CursorShape::Block,
             grid.cursor.x,
             true,
+            1.0,
             &mut target,
         );
     }
@@ -243,6 +248,7 @@ fn main() {
             velox::screen::cursor::CursorShape::Block,
             grid.cursor.x,
             true,
+            1.0,
             &mut target,
         );
     }

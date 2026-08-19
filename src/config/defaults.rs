@@ -20,6 +20,7 @@ pub fn default_config() -> Config {
             cursor_blink: Some(true),
             scroll_on_output: Some(true),
             scroll_on_keystroke: Some(true),
+            opacity: Some(1.0),
         },
         colors: Some(ConfigColors {
             default_fg: Some("#d4d4d4".to_string()),

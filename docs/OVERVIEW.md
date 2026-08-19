@@ -97,6 +97,7 @@ Key settings currently supported by the code include:
 - `font_scale_multiplier`
 - `cursor_shape`
 - `cursor_blink`
+- `opacity`
 
 ## Building
 
