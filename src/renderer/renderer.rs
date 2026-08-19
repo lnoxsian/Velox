@@ -320,6 +320,8 @@ impl Renderer {
         font_family: &str,
         font_size: f32,
         font_scale_multiplier: f32,
+        viewport_width: u32,
+        viewport_height: u32,
     ) -> Self {
         unsafe {
             // ── Shaders ──────────────────────────────────────────────────────
@@ -417,14 +419,18 @@ impl Renderer {
             let font_loader =
                 FontLoader::new(gl.clone(), font_family, font_size, font_scale_multiplier);
 
+            let viewport_width = viewport_width.max(1);
+            let viewport_height = viewport_height.max(1);
+            gl.viewport(0, 0, viewport_width as i32, viewport_height as i32);
+
             Self {
                 gl,
                 program,
                 vao,
                 vbo,
                 font_loader,
-                viewport_width: 800,
-                viewport_height: 600,
+                viewport_width,
+                viewport_height,
                 start_time: std::time::Instant::now(),
                 vertices: Vec::with_capacity(80 * 24 * 6 * 8),
             }
@@ -432,6 +438,8 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
         self.viewport_width = width;
         self.viewport_height = height;
         unsafe {
@@ -801,6 +809,12 @@ impl Renderer {
 
         // ── GPU draw call ─────────────────────────────────────────────────────
         unsafe {
+            self.gl.viewport(
+                0,
+                0,
+                self.viewport_width as i32,
+                self.viewport_height as i32,
+            );
             self.gl.clear_color(
                 theme.default_bg.r as f32 / 255.0,
                 theme.default_bg.g as f32 / 255.0,

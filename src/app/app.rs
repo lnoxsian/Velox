@@ -145,7 +145,12 @@ impl WindowState {
 
     pub fn set_font_size(&mut self, size: f32) {
         match &mut self.backend {
-            WindowRendererBackend::OpenGL { renderer, .. } => {
+            WindowRendererBackend::OpenGL {
+                renderer,
+                gl_surface,
+                gl_context,
+            } => {
+                let _ = gl_context.make_current(gl_surface);
                 renderer.set_font_size(size);
             }
             WindowRendererBackend::Software { renderer, .. } => {
@@ -155,12 +160,15 @@ impl WindowState {
     }
 
     pub fn resize_renderer(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
                 renderer,
                 gl_surface,
                 gl_context,
             } => {
+                let _ = gl_context.make_current(gl_surface);
                 self.window.resize_surface(gl_surface, gl_context);
                 renderer.resize(width, height);
             }
@@ -410,6 +418,10 @@ impl App {
         let font_scale_multiplier = config.font_scale_multiplier().unwrap_or(1.5);
         let bold_is_bright = config.bold_is_bright().unwrap_or(true);
 
+        let size = window.inner_size();
+        let win_width = size.width.max(1);
+        let win_height = size.height.max(1);
+
         let backend = if gpu
             && let (Some(gl_config), Some(gl_display), Some(gl)) = (
                 self.gl_config.as_ref(),
@@ -440,8 +452,14 @@ impl App {
 
             let gl_context = gl_context.make_current(&gl_surface).unwrap();
 
-            let renderer =
-                Renderer::new(gl, config.font_family(), font_size, font_scale_multiplier);
+            let renderer = Renderer::new(
+                gl,
+                config.font_family(),
+                font_size,
+                font_scale_multiplier,
+                win_width,
+                win_height,
+            );
 
             WindowRendererBackend::OpenGL {
                 renderer,
@@ -451,7 +469,7 @@ impl App {
         } else {
             let context = softbuffer::Context::new(window.clone()).unwrap();
             let mut surface = softbuffer::Surface::new(&context, window.clone()).unwrap();
-            if let (Some(w), Some(h)) = (NonZeroU32::new(800), NonZeroU32::new(600)) {
+            if let (Some(w), Some(h)) = (NonZeroU32::new(win_width), NonZeroU32::new(win_height)) {
                 let _ = surface.resize(w, h);
             }
 
@@ -472,16 +490,16 @@ impl App {
                 font_size,
                 font_scale_multiplier,
                 &theme,
-                800,
-                600,
+                win_width,
+                win_height,
                 bold_is_bright,
             );
 
             WindowRendererBackend::Software { renderer, surface }
         };
 
-        let avail_w = (800.0 - padding_x * 2.0).max(10.0);
-        let avail_h = (600.0 - padding_y * 2.0).max(10.0);
+        let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
+        let avail_h = (win_height as f32 - padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / backend.cell_width()).max(20);
         let rows = ((avail_h as u32) / backend.cell_height()).max(10);
 
@@ -720,10 +738,12 @@ impl ApplicationHandler<CustomEvent> for App {
                     ws.needs_redraw = true;
                 }
                 WindowEvent::Resized(size) => {
-                    ws.resize_renderer(size.width, size.height);
+                    let width = size.width.max(1);
+                    let height = size.height.max(1);
+                    ws.resize_renderer(width, height);
 
-                    let avail_w = (size.width as f32 - ws.padding_x * 2.0).max(10.0);
-                    let avail_h = (size.height as f32 - ws.padding_y * 2.0).max(10.0);
+                    let avail_w = (width as f32 - ws.padding_x * 2.0).max(10.0);
+                    let avail_h = (height as f32 - ws.padding_y * 2.0).max(10.0);
                     let cols = ((avail_w as u32) / ws.cell_width()).max(20);
                     let rows = ((avail_h as u32) / ws.cell_height()).max(10);
                     ws.terminal.resize(cols, rows);
