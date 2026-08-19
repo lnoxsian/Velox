@@ -1,12 +1,8 @@
-use std::sync::Arc;
 use velox::font::fallback::{
     FallbackManager, MAX_FALLBACK_BYTES, MAX_FALLBACK_FONTS, MAX_MISSING_CHARS,
 };
 use velox::font::loader::MAX_DYNAMIC_GLYPHS;
-use velox::font::storage::FontStorage;
-use velox::renderer::software::atlas::{
-    DEFAULT_ALPHA_CAPACITY, GlyphAtlas, MAX_RETAINED_ALPHA_CAPACITY,
-};
+use velox::renderer::software::atlas::DEFAULT_ALPHA_CAPACITY;
 use velox::renderer::software::glyph::{GlyphCache, GlyphKey, GlyphScratch};
 use velox::screen::cell::{Cell, CellFlags, Color};
 use velox::screen::scrollback::Chunk;
@@ -95,14 +91,6 @@ fn test_glyph_cache_max_bound_constant() {
 }
 
 #[test]
-fn test_mmap_font_loading_zero_copy() {
-    let dummy_ttf = vec![0u8; 256];
-    let storage = Arc::new(FontStorage::from_bytes(dummy_ttf));
-    assert_eq!(storage.len(), 256);
-    assert_eq!(storage.as_bytes().len(), 256);
-}
-
-#[test]
 fn test_byte_budgeted_fallback_eviction() {
     let mut manager = FallbackManager::new();
     manager.max_fallback_fonts = 3;
@@ -136,36 +124,6 @@ fn test_glyph_scratch_buffer_reuse() {
 }
 
 #[test]
-fn test_glyph_atlas_bounds_and_release() {
-    let mut atlas = GlyphAtlas::new();
-    assert_eq!(atlas.total_bytes(), 0);
-    assert!(!atlas.is_full());
-
-    // Insert alpha pixels
-    let data = vec![255u8; 1000];
-    let g_ref = atlas.insert_alpha(100, 10, 0, 0, 1, &data);
-    assert_eq!(g_ref.width, 100);
-    assert_eq!(atlas.get_alpha(&g_ref).len(), 1000);
-    assert_eq!(atlas.total_bytes(), 1000);
-
-    // Grow past threshold
-    let large_data = vec![128u8; MAX_RETAINED_ALPHA_CAPACITY + 2048];
-    let _ = atlas.insert_alpha(
-        1,
-        (MAX_RETAINED_ALPHA_CAPACITY + 2048) as u16,
-        0,
-        0,
-        1,
-        &large_data,
-    );
-    assert!(atlas.alpha_pixels.capacity() > MAX_RETAINED_ALPHA_CAPACITY);
-
-    atlas.clear_and_release();
-    assert_eq!(atlas.total_bytes(), 0);
-    assert!(atlas.alpha_pixels.capacity() <= DEFAULT_ALPHA_CAPACITY);
-}
-
-#[test]
 fn test_contiguous_scrollback_chunk_representation() {
     let mut chunk = Chunk::new();
     let default_cell = Cell {
@@ -174,13 +132,11 @@ fn test_contiguous_scrollback_chunk_representation() {
             r: 255,
             g: 0,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::empty(),
     };

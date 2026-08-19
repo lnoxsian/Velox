@@ -263,7 +263,7 @@ impl Scrollback {
             }
 
             if self.hot_rows.len() >= self.max_lines {
-                let oldest = self.hot_rows.pop_front().unwrap();
+                let mut oldest = self.hot_rows.pop_front().unwrap();
                 if let Some(storage) = self.storage.as_mut() {
                     storage
                         .pending_chunk
@@ -272,12 +272,17 @@ impl Scrollback {
                         storage.flush_pending_chunk();
                     }
                 }
+                // Recycle the popped row's allocation instead of dropping and reallocating
+                oldest.cells.clear();
+                oldest.cells.extend_from_slice(cells);
+                oldest.wrapped = wrapped;
+                self.hot_rows.push_back(oldest);
+            } else {
+                self.hot_rows.push_back(Row {
+                    cells: cells.to_vec(),
+                    wrapped,
+                });
             }
-
-            self.hot_rows.push_back(Row {
-                cells: cells.to_vec(),
-                wrapped,
-            });
         } else {
             // Finite mode: Recycled ring buffer in RAM
             if self.hot_rows.len() >= self.max_lines
@@ -345,16 +350,6 @@ impl Scrollback {
         }
 
         self.hot_rows.get(index).map(|r| f(&r.cells, r.wrapped))
-    }
-
-    pub fn with_row<R>(&self, index: usize, f: impl FnOnce(&Row) -> R) -> Option<R> {
-        self.with_row_slice(index, |cells, wrapped| {
-            let row = Row {
-                cells: cells.to_vec(),
-                wrapped,
-            };
-            f(&row)
-        })
     }
 
     #[allow(dead_code)]
@@ -442,13 +437,11 @@ mod tests {
                 r: fg_r,
                 g: 200,
                 b: 100,
-                a: 255,
             },
             background: Color {
                 r: 10,
                 g: 20,
                 b: 30,
-                a: 255,
             },
             flags: CellFlags::BOLD | CellFlags::UNDERLINE,
         }

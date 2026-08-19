@@ -2,6 +2,7 @@ use crate::ansi::parser::AnsiParser;
 use crate::screen::cell::{CellFlags, Color};
 use crate::screen::grid::Grid;
 use crate::theme::theme::Theme;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticZone {
@@ -43,7 +44,7 @@ pub struct Terminal {
     pub focus_tracking: bool,
     pub current_dir: Option<String>,
     pub semantic_zone: SemanticZone,
-    pub prompt_marks: Vec<PromptMark>,
+    pub prompt_marks: VecDeque<PromptMark>,
     pub last_command_exit_code: Option<i32>,
     pub scroll_on_output: bool,
     pub scroll_on_keystroke: bool,
@@ -157,7 +158,7 @@ impl Terminal {
             focus_tracking: false,
             current_dir: None,
             semantic_zone: SemanticZone::Output,
-            prompt_marks: Vec::new(),
+            prompt_marks: VecDeque::new(),
             last_command_exit_code: None,
             scroll_on_output,
             scroll_on_keystroke,
@@ -167,12 +168,17 @@ impl Terminal {
     pub fn mark_semantic_zone(&mut self, zone: SemanticZone, exit_code: Option<i32>) {
         self.semantic_zone = zone;
         let cursor = self.active_grid().cursor;
-        self.prompt_marks.push(PromptMark {
+        self.prompt_marks.push_back(PromptMark {
             x: cursor.x,
             y: cursor.y,
             zone,
             exit_code,
         });
+        // Cap prompt marks to prevent unbounded growth in long sessions
+        let max_marks = self.grid.scrollback.max_lines.max(1000) * 3;
+        while self.prompt_marks.len() > max_marks {
+            self.prompt_marks.pop_front();
+        }
     }
 
     pub fn set_synchronized_output(&mut self, enabled: bool) {
@@ -736,7 +742,7 @@ mod tests {
         // Command Finished with Exit Code 0: OSC 133 ; D ; 0
         term.feed(b"\x1b]133;D;0\x07");
         assert_eq!(term.last_command_exit_code, Some(0));
-        assert_eq!(term.prompt_marks.last().unwrap().exit_code, Some(0));
+        assert_eq!(term.prompt_marks.back().unwrap().exit_code, Some(0));
     }
 
     #[test]

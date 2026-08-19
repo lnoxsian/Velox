@@ -19,13 +19,11 @@ fn test_software_renderer_idle_zero_work() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -81,13 +79,11 @@ fn test_software_renderer_damage_partial_row() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -118,13 +114,11 @@ fn test_software_renderer_damage_partial_row() {
             r: 255,
             g: 0,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::BOLD,
     };
@@ -158,13 +152,11 @@ fn test_software_renderer_box_and_block_primitives() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -182,13 +174,11 @@ fn test_software_renderer_box_and_block_primitives() {
                 r: 0,
                 g: 255,
                 b: 0,
-                a: 255,
             },
             background: Color {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             flags: CellFlags::empty(),
         };
@@ -223,13 +213,11 @@ fn test_software_renderer_selection_and_cursor() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -262,6 +250,66 @@ fn test_software_renderer_selection_and_cursor() {
 }
 
 #[test]
+fn test_software_renderer_scroll_selection() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut grid = Grid::new(
+        80,
+        10,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color {
+            r: 0,
+            g: 0,
+            b: 0,
+        },
+        100,
+        false,
+    );
+    let theme = Theme::new();
+    let mut target = vec![0u32; 800 * 600];
+
+    // Populate lines 0..15 so scrollback has 5 lines and active grid has 10 lines
+    for i in 0..15 {
+        for c in format!("line-{}", i).chars() {
+            grid.put_char(c, grid.default_fg, grid.default_bg, CellFlags::empty());
+        }
+        if i < 14 {
+            grid.scroll_or_move_down(grid.default_bg);
+            grid.cursor.x = 0;
+        }
+    }
+
+    assert_eq!(grid.scrollback.len(), 5);
+
+    // Select row 2 (which is in scrollback)
+    grid.selection.start_selection(0, 2);
+    grid.selection.update_selection(5, 2);
+
+    // Scroll up by 3 lines so row 2 is visible at viewport row 0 (since history_len=5, scroll_offset=3, abs_row=5-3+0=2)
+    grid.scroll_offset = 3;
+
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        &mut target,
+    );
+
+    // Render should succeed with damage resolved
+    assert!(!renderer.damage.has_damage());
+    assert_eq!(grid.extract_selection_text(), "line-2");
+}
+
+#[test]
 fn test_software_renderer_decorations() {
     let mut renderer = setup_renderer(800, 600);
     let mut grid = Grid::new(
@@ -271,13 +319,11 @@ fn test_software_renderer_decorations() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -291,13 +337,11 @@ fn test_software_renderer_decorations() {
             r: 255,
             g: 255,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::UNDERLINE,
     };
@@ -307,13 +351,11 @@ fn test_software_renderer_decorations() {
             r: 255,
             g: 255,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::DOUBLE_UNDERLINE,
     };
@@ -323,13 +365,11 @@ fn test_software_renderer_decorations() {
             r: 255,
             g: 255,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::CURLY_UNDERLINE,
     };
@@ -339,13 +379,11 @@ fn test_software_renderer_decorations() {
             r: 255,
             g: 255,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::STRIKE,
     };
@@ -376,13 +414,11 @@ fn test_software_renderer_scrollback_rendering() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         true,
@@ -397,13 +433,11 @@ fn test_software_renderer_scrollback_rendering() {
             r: 255,
             g: 0,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::empty(),
     };
@@ -427,15 +461,6 @@ fn test_software_renderer_scrollback_rendering() {
 }
 
 #[test]
-fn test_software_renderer_scroll_down() {
-    let mut fb = velox::renderer::software::Framebuffer::new(10, 10);
-    fb.fill_span(0, 0, 10, 1, 0x00FF0000);
-    fb.scroll_region_down(0, 10, 1, 0);
-    assert_eq!(fb.pixels[10], 0x00FF0000);
-    assert_eq!(fb.pixels[0], 0);
-}
-
-#[test]
 fn test_software_renderer_blinking_text() {
     let mut renderer = setup_renderer(800, 600);
     let mut grid = Grid::new(
@@ -445,13 +470,11 @@ fn test_software_renderer_blinking_text() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -466,13 +489,11 @@ fn test_software_renderer_blinking_text() {
             r: 0,
             g: 255,
             b: 0,
-            a: 255,
         },
         background: Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         flags: CellFlags::BLINK,
     };
@@ -545,13 +566,11 @@ fn test_software_renderer_double_line_table() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -581,13 +600,11 @@ fn test_software_renderer_double_line_table() {
                     r: 0,
                     g: 255,
                     b: 255,
-                    a: 255,
                 },
                 background: Color {
                     r: 0,
                     g: 0,
                     b: 0,
-                    a: 255,
                 },
                 flags: CellFlags::empty(),
             };
@@ -626,13 +643,11 @@ fn test_software_renderer_all_box_drawing_chars() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         100,
         false,
@@ -651,13 +666,11 @@ fn test_software_renderer_all_box_drawing_chars() {
                         r: 255,
                         g: 255,
                         b: 0,
-                        a: 255,
                     },
                     background: Color {
                         r: 0,
                         g: 0,
                         b: 0,
-                        a: 255,
                     },
                     flags: CellFlags::empty(),
                 };

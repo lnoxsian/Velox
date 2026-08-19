@@ -127,9 +127,14 @@ impl Grid {
                     seq.push(base_char);
                     seq.push(c);
                     let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
-                        let reg_idx = registry.len();
-                        registry.push(seq);
-                        char::from_u32(0x100000 + reg_idx as u32).unwrap_or(base_char)
+                        // Deduplicate: reuse existing registry entry if this sequence was seen before
+                        if let Some(pos) = registry.iter().position(|s| *s == seq) {
+                            char::from_u32(0x100000 + pos as u32).unwrap_or(base_char)
+                        } else {
+                            let reg_idx = registry.len();
+                            registry.push(seq);
+                            char::from_u32(0x100000 + reg_idx as u32).unwrap_or(base_char)
+                        }
                     } else {
                         base_char
                     };
@@ -378,9 +383,139 @@ impl Grid {
                 }
                 self.scrollback.clear();
                 self.scroll_offset = 0;
+                self.selection.clear();
             }
             _ => {}
         }
+    }
+
+    pub fn extract_selection_text(&self) -> String {
+        if !self.selection.active {
+            return String::new();
+        }
+
+        let ((min_x, min_y), (max_x, max_y)) = self.selection.normalized_bounds();
+        let history_len = self.scrollback.len();
+        let total_lines = history_len + self.height;
+
+        let mut lines = Vec::new();
+
+        for y in min_y..=max_y {
+            if y >= total_lines {
+                break;
+            }
+
+            let start_col = if y == min_y { min_x } else { 0 };
+            let end_col = if y == max_y {
+                max_x.min(self.width.saturating_sub(1))
+            } else {
+                self.width.saturating_sub(1)
+            };
+
+            let mut line = String::new();
+            if y < history_len {
+                self.scrollback.with_row_slice(y, |cells, _| {
+                    for x in start_col..=end_col {
+                        if x < cells.len() {
+                            line.push(cells[x].character);
+                        } else {
+                            line.push(' ');
+                        }
+                    }
+                });
+            } else {
+                let grid_y = y - history_len;
+                if grid_y < self.height {
+                    let row_start = grid_y * self.width;
+                    for x in start_col..=end_col {
+                        let idx = row_start + x;
+                        if idx < self.cells.len() {
+                            line.push(self.cells[idx].character);
+                        } else {
+                            line.push(' ');
+                        }
+                    }
+                }
+            }
+            lines.push(line.trim_end().to_string());
+        }
+
+        lines.join("\n")
+    }
+
+    pub fn select_word_at(&mut self, col: usize, abs_y: usize) {
+        let history_len = self.scrollback.len();
+        let total_lines = history_len + self.height;
+        if abs_y >= total_lines || col >= self.width {
+            return;
+        }
+
+        let is_word_char = |c: char| -> bool {
+            c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/' || c == '~'
+        };
+
+        let mut row_cells = Vec::new();
+        if abs_y < history_len {
+            self.scrollback.with_row_slice(abs_y, |cells, _| {
+                row_cells = cells.to_vec();
+            });
+        } else {
+            let grid_y = abs_y - history_len;
+            if grid_y < self.height {
+                let row_start = grid_y * self.width;
+                let row_end = (row_start + self.width).min(self.cells.len());
+                row_cells = self.cells[row_start..row_end].to_vec();
+            }
+        }
+
+        if col >= row_cells.len() {
+            self.selection.start_selection(col, abs_y);
+            return;
+        }
+
+        let target_c = row_cells[col].character;
+        if !is_word_char(target_c) {
+            self.selection.start_selection(col, abs_y);
+            return;
+        }
+
+        let mut start_col = col;
+        while start_col > 0 {
+            if is_word_char(row_cells[start_col - 1].character) {
+                start_col -= 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut end_col = col;
+        while end_col + 1 < row_cells.len() && end_col + 1 < self.width {
+            if is_word_char(row_cells[end_col + 1].character) {
+                end_col += 1;
+            } else {
+                break;
+            }
+        }
+
+        self.selection.start_x = start_col;
+        self.selection.start_y = abs_y;
+        self.selection.end_x = end_col;
+        self.selection.end_y = abs_y;
+        self.selection.active = true;
+    }
+
+    pub fn select_line_at(&mut self, abs_y: usize) {
+        let history_len = self.scrollback.len();
+        let total_lines = history_len + self.height;
+        if abs_y >= total_lines {
+            return;
+        }
+
+        self.selection.start_x = 0;
+        self.selection.start_y = abs_y;
+        self.selection.end_x = self.width.saturating_sub(1);
+        self.selection.end_y = abs_y;
+        self.selection.active = true;
     }
 }
 
@@ -397,13 +532,11 @@ mod tests {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             Color {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             1000,
             false,
@@ -414,13 +547,11 @@ mod tests {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             Color {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             CellFlags::empty(),
         );
@@ -430,13 +561,11 @@ mod tests {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             Color {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             CellFlags::empty(),
         );
@@ -452,13 +581,11 @@ mod tests {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         };
         let bg = Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         };
         let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
@@ -496,13 +623,11 @@ mod tests {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         };
         let bg = Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         };
         let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
@@ -522,13 +647,11 @@ mod tests {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         };
         let bg = Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         };
         let mut grid = Grid::new(98, 58, fg, bg, 1000, false);
         grid.cursor.y = 57;
@@ -552,13 +675,11 @@ mod tests {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         };
         let bg = Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         };
         let mut grid = Grid::new(80, 5, fg, bg, 1000, false);
 
@@ -596,7 +717,6 @@ mod tests {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         };
         let mut grid = Grid::new(100, 24, default_color, default_color, 1000, false);
 
@@ -641,5 +761,130 @@ mod tests {
             assert_eq!(b_y, 2);
             assert_eq!(prompt_y, 3);
         }
+    }
+
+    #[test]
+    fn test_extract_selection_text_scrollback_and_grid() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+        };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+
+        // Put 10 lines of text (5 scroll into scrollback, 5 remain in active grid)
+        for i in 0..10 {
+            for c in format!("line-{}", i).chars() {
+                grid.put_char(c, fg, bg, CellFlags::empty());
+            }
+            if i < 9 {
+                grid.scroll_or_move_down(bg);
+                grid.cursor.x = 0;
+            }
+        }
+
+        assert_eq!(grid.scrollback.len(), 5);
+
+        // 1. Select lines 0..2 (entirely within scrollback)
+        grid.selection.start_selection(0, 0);
+        grid.selection.update_selection(5, 2);
+        let text_scrollback = grid.extract_selection_text();
+        assert_eq!(text_scrollback, "line-0\nline-1\nline-2");
+
+        // 2. Select lines 3..7 (spanning scrollback and active grid: rows 3,4 from scrollback, 5,6,7 from grid)
+        grid.selection.start_selection(0, 3);
+        grid.selection.update_selection(5, 7);
+        let text_spanning = grid.extract_selection_text();
+        assert_eq!(text_spanning, "line-3\nline-4\nline-5\nline-6\nline-7");
+
+        // 3. Select lines 7..9 (entirely within active grid)
+        grid.selection.start_selection(0, 7);
+        grid.selection.update_selection(5, 9);
+        let text_grid = grid.extract_selection_text();
+        assert_eq!(text_grid, "line-7\nline-8\nline-9");
+    }
+
+    #[test]
+    fn test_select_word_and_line_in_scrollback() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+        };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+
+        for i in 0..10 {
+            for c in format!("hello_world_{} foo-bar", i).chars() {
+                grid.put_char(c, fg, bg, CellFlags::empty());
+            }
+            if i < 9 {
+                grid.scroll_or_move_down(bg);
+                grid.cursor.x = 0;
+            }
+        }
+
+        // Line 0 is in scrollback: "hello_world_0 foo-bar"
+        // Select word at col 2 in row 0 ("hello_world_0")
+        grid.select_word_at(2, 0);
+        assert_eq!(grid.extract_selection_text(), "hello_world_0");
+
+        // Select word at col 15 in row 0 ("foo-bar")
+        grid.select_word_at(15, 0);
+        assert_eq!(grid.extract_selection_text(), "foo-bar");
+
+        // Select entire line at row 0
+        grid.select_line_at(0);
+        assert_eq!(grid.extract_selection_text(), "hello_world_0 foo-bar");
+    }
+
+    #[test]
+    fn test_selection_eviction_on_scroll() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color {
+            r: 0,
+            g: 0,
+            b: 0,
+        };
+        // Finite scrollback with capacity 5, height 5
+        let mut grid = Grid::new(80, 5, fg, bg, 5, false);
+
+        // Scroll 10 lines into scrollback (filling the 5-line capacity)
+        for i in 0..10 {
+            for c in format!("line-{}", i).chars() {
+                grid.put_char(c, fg, bg, CellFlags::empty());
+            }
+            grid.scroll(1, bg);
+        }
+
+        assert_eq!(grid.scrollback.len(), 5);
+
+        // Select line 1 (which is index 1 in the 5-element scrollback)
+        grid.selection.start_selection(0, 1);
+        grid.selection.update_selection(5, 1);
+        assert_eq!(grid.selection.start_y, 1);
+        assert!(grid.selection.active);
+
+        // Scroll 1 more line: row 0 is evicted, old row 1 becomes new row 0
+        grid.scroll(1, bg);
+        assert!(grid.selection.active);
+        assert_eq!(grid.selection.start_y, 0);
+
+        // Scroll 1 more line: row 0 is evicted, selection is dropped
+        grid.scroll(1, bg);
+        assert!(!grid.selection.active);
     }
 }

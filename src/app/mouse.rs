@@ -21,63 +21,54 @@ impl WindowState {
         let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
             .min(self.terminal.grid.height.saturating_sub(1));
 
-        let active_grid = if self.terminal.is_alt_screen {
-            &self.terminal.alt_grid
-        } else {
-            &self.terminal.grid
-        };
-        let offset = active_grid.scroll_offset;
-        let history_len = active_grid.scrollback.len();
+        if (col_idx, row_idx) != self.last_mouse_cell {
+            self.last_mouse_cell = (col_idx, row_idx);
 
-        let mut is_link = false;
-        let y_offset = (row_idx + history_len).saturating_sub(offset);
-        let line_text: String = if y_offset < history_len {
-            active_grid
-                .scrollback
-                .with_row(y_offset, |row| row.iter().map(|c| c.character).collect())
-                .unwrap_or_default()
-        } else {
-            let y = y_offset - history_len;
-            if y < active_grid.height {
-                let src_start = y * active_grid.width;
-                let src_end = src_start + active_grid.width;
-                active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
-                    .iter()
-                    .map(|c| c.character)
-                    .collect()
+            let active_grid = if self.terminal.is_alt_screen {
+                &self.terminal.alt_grid
             } else {
-                String::new()
+                &self.terminal.grid
+            };
+            let offset = active_grid.scroll_offset;
+            let history_len = active_grid.scrollback.len();
+
+            let mut is_link = false;
+            let y_offset = (row_idx + history_len).saturating_sub(offset);
+            let line_text: String = if y_offset < history_len {
+                active_grid
+                    .scrollback
+                    .with_row_slice(y_offset, |cells, _| {
+                        cells.iter().map(|c| c.character).collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                let y = y_offset - history_len;
+                if y < active_grid.height {
+                    let src_start = y * active_grid.width;
+                    let src_end = src_start + active_grid.width;
+                    active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
+                        .iter()
+                        .map(|c| c.character)
+                        .collect()
+                } else {
+                    String::new()
+                }
+            };
+            crate::hyperlink::detector::for_each_url(&line_text, |start_col, end_col| {
+                if col_idx >= start_col && col_idx < end_col {
+                    is_link = true;
+                }
+            });
+
+            if is_link {
+                self.window.set_cursor(winit::window::CursorIcon::Pointer);
+            } else if self.terminal.mouse_mode > 0 {
+                self.window.set_cursor(winit::window::CursorIcon::Default);
+            } else {
+                self.window.set_cursor(winit::window::CursorIcon::Text);
             }
-        };
-        let urls = crate::hyperlink::detector::detect(&line_text);
-        for (start_col, end_col, _) in urls {
-            if col_idx >= start_col && col_idx < end_col {
-                is_link = true;
-                break;
-            }
-        }
 
-        if is_link {
-            self.window.set_cursor(winit::window::CursorIcon::Pointer);
-        } else if self.terminal.mouse_mode > 0 {
-            self.window.set_cursor(winit::window::CursorIcon::Default);
-        } else {
-            self.window.set_cursor(winit::window::CursorIcon::Text);
-        }
-
-        if self.is_mouse_down {
-            let px = self.padding_x as f64;
-            let py = self.padding_y as f64;
-            let cw = self.cell_width() as f64;
-            let ch = self.cell_height() as f64;
-            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-                .min(self.terminal.grid.width.saturating_sub(1));
-            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-                .min(self.terminal.grid.height.saturating_sub(1));
-
-            if (col_idx, row_idx) != self.last_mouse_cell {
-                self.last_mouse_cell = (col_idx, row_idx);
-
+            if self.is_mouse_down {
                 let should_report_motion = self.terminal.mouse_mode == 1003
                     || (self.terminal.mouse_mode == 1002 && self.is_mouse_down);
                 if should_report_motion && !modifiers.shift_key() {
@@ -103,7 +94,10 @@ impl WindowState {
                 } else {
                     let active_grid = self.terminal.active_grid_mut();
                     if active_grid.selection.active {
-                        active_grid.selection.update_selection(col_idx, row_idx);
+                        let offset = active_grid.scroll_offset;
+                        let history_len = active_grid.scrollback.len();
+                        let abs_y = (history_len + row_idx).saturating_sub(offset);
+                        active_grid.selection.update_selection(col_idx, abs_y);
                         self.needs_redraw = true;
                     }
                 }
@@ -253,7 +247,9 @@ impl WindowState {
                         let line_text: String = if y_offset < history_len {
                             active_grid
                                 .scrollback
-                                .with_row(y_offset, |row| row.iter().map(|c| c.character).collect())
+                                .with_row_slice(y_offset, |cells, _| {
+                                    cells.iter().map(|c| c.character).collect()
+                                })
                                 .unwrap_or_default()
                         } else {
                             let y = y_offset - history_len;
@@ -271,7 +267,7 @@ impl WindowState {
                         let urls = crate::hyperlink::detector::detect(&line_text);
                         for (start, end, url) in urls {
                             if col_idx >= start && col_idx < end {
-                                let _ = crate::hyperlink::detector::open(&url);
+                                let _ = crate::hyperlink::detector::open(url);
                                 url_opened = true;
                                 break;
                             }
@@ -281,41 +277,23 @@ impl WindowState {
                             match self.click_count {
                                 1 => {
                                     if modifiers.shift_key() && active_grid.selection.active {
-                                        active_grid.selection.update_selection(col_idx, row_idx);
+                                        active_grid.selection.update_selection(col_idx, y_offset);
                                     } else {
-                                        active_grid.selection.start_selection(col_idx, row_idx);
+                                        active_grid.selection.start_selection(col_idx, y_offset);
                                     }
                                 }
                                 2 => {
-                                    active_grid.selection.select_word(
-                                        grid_width,
-                                        grid_height,
-                                        &active_grid.cells,
-                                        col_idx,
-                                        row_idx,
-                                    );
-                                    let text = active_grid.selection.extract_text(
-                                        grid_width,
-                                        grid_height,
-                                        &active_grid.cells,
-                                    );
+                                    active_grid.select_word_at(col_idx, y_offset);
+                                    let text = active_grid.extract_selection_text();
                                     if !text.is_empty() {
-                                        crate::clipboard::clipboard::copy(&text);
+                                        crate::clipboard::clipboard::copy(text);
                                     }
                                 }
                                 3 => {
-                                    active_grid.selection.select_line(
-                                        grid_width,
-                                        grid_height,
-                                        row_idx,
-                                    );
-                                    let text = active_grid.selection.extract_text(
-                                        grid_width,
-                                        grid_height,
-                                        &active_grid.cells,
-                                    );
+                                    active_grid.select_line_at(y_offset);
+                                    let text = active_grid.extract_selection_text();
                                     if !text.is_empty() {
-                                        crate::clipboard::clipboard::copy(&text);
+                                        crate::clipboard::clipboard::copy(text);
                                     }
                                 }
                                 _ => {}
@@ -373,16 +351,12 @@ impl WindowState {
                 } else {
                     let active_grid = self.terminal.active_grid_mut();
                     if active_grid.selection.active {
-                        let text = active_grid.selection.extract_text(
-                            active_grid.width,
-                            active_grid.height,
-                            &active_grid.cells,
-                        );
+                        let text = active_grid.extract_selection_text();
                         if !text.is_empty()
                             && (active_grid.selection.start_x != active_grid.selection.end_x
                                 || active_grid.selection.start_y != active_grid.selection.end_y)
                         {
-                            crate::clipboard::clipboard::copy(&text);
+                            crate::clipboard::clipboard::copy(text);
                         }
                     }
                 }

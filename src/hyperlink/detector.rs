@@ -18,11 +18,11 @@ pub fn open(url: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Detects hyperlinks in a given text line.
+/// Detects hyperlinks in a given text line without heap string allocations.
 ///
 /// Returns a vector of tuples containing:
-/// `(start_index, end_index, url_string)`
-pub fn detect(text: &str) -> Vec<(usize, usize, String)> {
+/// `(start_index, end_index, &str)`
+pub fn detect(text: &str) -> Vec<(usize, usize, &str)> {
     let mut results = Vec::new();
     let schemes = ["http://", "https://", "mailto:", "file://"];
 
@@ -71,7 +71,7 @@ pub fn detect(text: &str) -> Vec<(usize, usize, String)> {
             if end_idx > abs_start + scheme.len()
                 && let Ok(url) = std::str::from_utf8(&bytes[abs_start..end_idx])
             {
-                results.push((abs_start, end_idx, url.to_string()));
+                results.push((abs_start, end_idx, url));
             }
 
             start_search = end_idx;
@@ -81,6 +81,54 @@ pub fn detect(text: &str) -> Vec<(usize, usize, String)> {
     // Sort results by start index
     results.sort_by_key(|&(start, _, _)| start);
     results
+}
+
+/// Zero-allocation scanner for URL ranges in a line of text.
+#[inline]
+pub fn for_each_url(text: &str, mut f: impl FnMut(usize, usize)) {
+    let schemes = ["http://", "https://", "mailto:", "file://"];
+    for scheme in &schemes {
+        let mut start_search = 0;
+        while let Some(start_idx) = text[start_search..].find(scheme) {
+            let abs_start = start_search + start_idx;
+            let mut end_idx = abs_start + scheme.len();
+            let bytes = text.as_bytes();
+            while end_idx < bytes.len() {
+                let b = bytes[end_idx];
+                if b.is_ascii_whitespace()
+                    || b == b'"'
+                    || b == b'\''
+                    || b == b'<'
+                    || b == b'>'
+                    || b == b'`'
+                    || b == b'{'
+                    || b == b'}'
+                {
+                    break;
+                }
+                end_idx += 1;
+            }
+            while end_idx > abs_start + scheme.len() {
+                let last_byte = bytes[end_idx - 1];
+                if last_byte == b'.'
+                    || last_byte == b','
+                    || last_byte == b';'
+                    || last_byte == b'?'
+                    || last_byte == b'!'
+                    || last_byte == b':'
+                    || last_byte == b')'
+                {
+                    end_idx -= 1;
+                } else {
+                    break;
+                }
+            }
+            if end_idx > abs_start + scheme.len() {
+                f(abs_start, end_idx);
+            }
+            start_search = end_idx;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -48,7 +48,19 @@ impl Grid {
                 let start = y * self.width;
                 let end = start + self.width;
                 let wrapped = self.row_wrapped.get(y).copied().unwrap_or(false);
+                let prev_len = self.scrollback.len();
                 self.scrollback.push_line(&self.cells[start..end], wrapped);
+                let new_len = self.scrollback.len();
+                let evicted = (prev_len + 1).saturating_sub(new_len);
+                if evicted > 0 && self.selection.active {
+                    let max_y = self.selection.start_y.max(self.selection.end_y);
+                    if max_y < evicted {
+                        self.selection.clear();
+                    } else {
+                        self.selection.start_y = self.selection.start_y.saturating_sub(evicted);
+                        self.selection.end_y = self.selection.end_y.saturating_sub(evicted);
+                    }
+                }
             }
             if self.scroll_offset > 0 {
                 self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());

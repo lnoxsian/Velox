@@ -411,14 +411,12 @@ fn parse_sgr_color(
                     r: (params[*i + 2] & 0x7fff) as u8,
                     g: (params[*i + 3] & 0x7fff) as u8,
                     b: (params[*i + 4] & 0x7fff) as u8,
-                    a: 255,
                 })
             } else if num_subs >= 5 {
                 Some(Color {
                     r: (params[*i + 3] & 0x7fff) as u8,
                     g: (params[*i + 4] & 0x7fff) as u8,
                     b: (params[*i + 5] & 0x7fff) as u8,
-                    a: 255,
                 })
             } else {
                 None
@@ -445,7 +443,6 @@ fn parse_sgr_color(
                     r: params[*i + 2] as u8,
                     g: params[*i + 3] as u8,
                     b: params[*i + 4] as u8,
-                    a: 255,
                 };
                 *i += 4;
                 Some(color)

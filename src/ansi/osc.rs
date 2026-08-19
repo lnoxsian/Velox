@@ -172,7 +172,7 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                 if let Some(decoded) = crate::clipboard::clipboard::base64_decode(data_str)
                     && let Ok(text) = String::from_utf8(decoded)
                 {
-                    crate::clipboard::clipboard::copy(&text);
+                    crate::clipboard::clipboard::copy(text);
                 }
             }
         }
@@ -221,7 +221,7 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                         None
                     };
                     terminal.last_command_exit_code = exit_code;
-                    if let Some(mark) = terminal.prompt_marks.last_mut() {
+                    if let Some(mark) = terminal.prompt_marks.back_mut() {
                         mark.exit_code = exit_code;
                     }
                     terminal.semantic_zone = crate::terminal::terminal::SemanticZone::Prompt;
@@ -285,7 +285,7 @@ fn parse_color_spec(s: &str) -> Option<Color> {
             let r = parse_channel(parts[0])?;
             let g = parse_channel(parts[1])?;
             let b = parse_channel(parts[2])?;
-            Some(Color { r, g, b, a: 255 })
+            Some(Color { r, g, b })
         } else {
             None
         }

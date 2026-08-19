@@ -19,11 +19,6 @@ impl std::fmt::Display for PtyError {
 
 impl std::error::Error for PtyError {}
 
-#[allow(dead_code)]
-pub fn spawn_shell(shell_path: &str) -> Result<PtyMaster, PtyError> {
-    spawn_process(shell_path, None, None)
-}
-
 pub fn spawn_process(
     shell_path: &str,
     command: Option<&[String]>,

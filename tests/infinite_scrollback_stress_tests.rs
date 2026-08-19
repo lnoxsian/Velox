@@ -14,13 +14,11 @@ fn test_infinite_scrollback_million_lines_memory_bounded() {
                 r: (i % 255) as u8,
                 g: ((i * 3) % 255) as u8,
                 b: ((i * 7) % 255) as u8,
-                a: 255,
             },
             background: Color {
                 r: 0,
                 g: 0,
                 b: 0,
-                a: 255,
             },
             flags: if i % 2 == 0 {
                 CellFlags::BOLD
@@ -86,13 +84,11 @@ fn test_infinite_scrollback_all_cell_attributes_intact() {
                 r: 12,
                 g: 34,
                 b: 56,
-                a: 255,
             },
             background: Color {
                 r: 78,
                 g: 90,
                 b: 12,
-                a: 255,
             },
             flags: CellFlags::BOLD | CellFlags::ITALIC,
         },
@@ -102,13 +98,11 @@ fn test_infinite_scrollback_all_cell_attributes_intact() {
                 r: 255,
                 g: 200,
                 b: 100,
-                a: 255,
             },
             background: Color {
                 r: 50,
                 g: 60,
                 b: 70,
-                a: 255,
             },
             flags: CellFlags::WIDE,
         },
@@ -118,13 +112,11 @@ fn test_infinite_scrollback_all_cell_attributes_intact() {
                 r: 255,
                 g: 200,
                 b: 100,
-                a: 255,
             },
             background: Color {
                 r: 50,
                 g: 60,
                 b: 70,
-                a: 255,
             },
             flags: CellFlags::WIDE_CONTINUATION,
         },
@@ -134,13 +126,11 @@ fn test_infinite_scrollback_all_cell_attributes_intact() {
                 r: 11,
                 g: 22,
                 b: 33,
-                a: 255,
             },
             background: Color {
                 r: 44,
                 g: 55,
                 b: 66,
-                a: 255,
             },
             flags: CellFlags::CURLY_UNDERLINE | CellFlags::STRIKE,
         },
@@ -164,7 +154,6 @@ fn test_infinite_scrollback_all_cell_attributes_intact() {
             r: 12,
             g: 34,
             b: 56,
-            a: 255
         }
     );
 

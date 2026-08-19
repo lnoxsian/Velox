@@ -47,7 +47,6 @@ impl PrecomputedPalette {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         }; 16];
         for i in 0..16 {
             ansi_colors[i] = PackedColor::from_color(theme.ansi_colors[i]).to_u32();
@@ -108,7 +107,6 @@ mod tests {
             r: 0x12,
             g: 0x34,
             b: 0x56,
-            a: 0xFF,
         };
         let packed = PackedColor::from_color(color);
         assert_eq!(packed.to_u32(), 0x00123456);

@@ -369,6 +369,9 @@ impl AnsiParser {
         let params: Vec<&[u8]> = self.osc_buf.split(|&b| b == b';').collect();
         crate::ansi::osc::handle_osc(&params, terminal);
         self.osc_buf.clear();
+        if self.osc_buf.capacity() > 1024 {
+            self.osc_buf.shrink_to_fit();
+        }
     }
 
     fn dispatch_dcs(&mut self, terminal: &mut crate::terminal::terminal::Terminal) {
@@ -380,6 +383,9 @@ impl AnsiParser {
             terminal.send_to_shell(resp);
         }
         self.dcs_buf.clear();
+        if self.dcs_buf.capacity() > 1024 {
+            self.dcs_buf.shrink_to_fit();
+        }
     }
 }
 

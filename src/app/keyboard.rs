@@ -15,11 +15,7 @@ impl WindowState {
                     if ch == "c" {
                         let active_grid = self.terminal.active_grid();
                         let text = if active_grid.selection.active {
-                            active_grid.selection.extract_text(
-                                active_grid.width,
-                                active_grid.height,
-                                &active_grid.cells,
-                            )
+                            active_grid.extract_selection_text()
                         } else {
                             (0..active_grid.height)
                                 .map(|y| {
@@ -35,7 +31,7 @@ impl WindowState {
                                 .join("\n")
                         };
                         if !text.is_empty() {
-                            crate::clipboard::clipboard::copy(&text);
+                            crate::clipboard::clipboard::copy(text);
                         }
                         return;
                     } else if ch == "v" {

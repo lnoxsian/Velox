@@ -6,15 +6,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// Storage backing for font bytes: memory-mapped file, owned byte slice, or shared dynamic buffer.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub enum FontStorage {
     Mmap(Arc<memmap2::Mmap>),
+    #[allow(dead_code)]
     Owned(Arc<[u8]>),
     Shared(Arc<dyn AsRef<[u8]> + Send + Sync>),
 }
 
-#[allow(dead_code)]
 impl FontStorage {
     /// Attempt to memory-map a font file from the filesystem.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
@@ -24,13 +23,9 @@ impl FontStorage {
     }
 
     /// Construct from owned bytes in memory.
+    #[allow(dead_code)]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self::Owned(Arc::from(bytes.into_boxed_slice()))
-    }
-
-    /// Construct from an existing Arc slice.
-    pub fn from_arc(arc: Arc<[u8]>) -> Self {
-        Self::Owned(arc)
     }
 
     /// Construct from fontdb's shared binary buffer.
@@ -54,6 +49,7 @@ impl FontStorage {
         self.as_bytes().len()
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.as_bytes().is_empty()

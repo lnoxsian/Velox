@@ -1,11 +1,11 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-pub fn copy(text: &str) {
+pub fn copy(text: String) {
     if text.is_empty() {
         return;
     }
-    let text_bytes = text.as_bytes().to_vec();
+    let text_bytes = text.into_bytes();
 
     std::thread::spawn(move || {
         // Try wl-copy (Wayland) first

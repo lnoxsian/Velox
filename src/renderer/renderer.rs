@@ -464,6 +464,8 @@ impl Renderer {
         theme: &Theme,
         bold_is_bright: bool,
         selection: &crate::screen::selection::Selection,
+        scroll_offset: usize,
+        history_len: usize,
         padding_x: f32,
         padding_y: f32,
     ) {
@@ -475,7 +477,7 @@ impl Renderer {
         vertices.clear();
         let needed = cells.len() * 6 * 8;
         if vertices.capacity() < needed {
-            vertices.reserve(needed - vertices.capacity());
+            vertices.reserve(needed);
         }
 
         // Blink: toggle every 500 ms
@@ -483,7 +485,7 @@ impl Renderer {
 
         // Pre-compute selection bounds once to avoid re-normalizing per cell
         let selection_active = selection.active;
-        let ((sel_min_x, sel_min_y), (sel_max_x, sel_max_y)) = if selection_active {
+        let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = if selection_active {
             selection.normalized_bounds()
         } else {
             ((0, 0), (0, 0))
@@ -494,6 +496,17 @@ impl Renderer {
 
         // ── Pass 1: Background quads ──────────────────────────────────────────
         for y in 0..rows {
+            let abs_y = y + history_len;
+            let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
+                (true, abs_y - scroll_offset)
+            } else {
+                (false, 0)
+            };
+            let is_row_in_selection = selection_active
+                && is_row_valid
+                && abs_row >= sel_min_abs_y
+                && abs_row <= sel_max_abs_y;
+
             let mut x = 0;
             while x < cols {
                 let cell = cells[y * cols + x];
@@ -504,8 +517,19 @@ impl Renderer {
 
                 let is_wide = cell.flags.contains(CellFlags::WIDE);
                 let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
-                let is_selected = selection_active
-                    && selection.contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, x, y);
+                let is_selected = if is_row_in_selection {
+                    if sel_min_abs_y == sel_max_abs_y {
+                        x >= sel_min_x && x <= sel_max_x
+                    } else if abs_row == sel_min_abs_y {
+                        x >= sel_min_x
+                    } else if abs_row == sel_max_abs_y {
+                        x <= sel_max_x
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
                 let is_inverted = (is_cursor && cursor_shape == CursorShape::Block)
                     || is_selected
                     || cell.flags.contains(CellFlags::REVERSE);
@@ -535,6 +559,17 @@ impl Renderer {
 
         // ── Pass 2: Foreground glyphs + decorations ───────────────────────────
         for y in 0..rows {
+            let abs_y = y + history_len;
+            let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
+                (true, abs_y - scroll_offset)
+            } else {
+                (false, 0)
+            };
+            let is_row_in_selection = selection_active
+                && is_row_valid
+                && abs_row >= sel_min_abs_y
+                && abs_row <= sel_max_abs_y;
+
             let mut x = 0;
             while x < cols {
                 let cell = cells[y * cols + x];
@@ -547,8 +582,19 @@ impl Renderer {
                 let is_bold = cell.flags.contains(CellFlags::BOLD);
                 let is_italic = cell.flags.contains(CellFlags::ITALIC);
                 let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
-                let is_selected = selection_active
-                    && selection.contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, x, y);
+                let is_selected = if is_row_in_selection {
+                    if sel_min_abs_y == sel_max_abs_y {
+                        x >= sel_min_x && x <= sel_max_x
+                    } else if abs_row == sel_min_abs_y {
+                        x >= sel_min_x
+                    } else if abs_row == sel_max_abs_y {
+                        x <= sel_max_x
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
                 let is_inverted = (is_cursor && cursor_shape == CursorShape::Block)
                     || is_selected
                     || cell.flags.contains(CellFlags::REVERSE);
@@ -865,11 +911,12 @@ impl Renderer {
                 .draw_arrays(glow::TRIANGLES, 0, (vertices.len() / 8) as i32);
         }
 
-        const DEFAULT_VERTEX_CAPACITY: usize = 80 * 24 * 6 * 8;
-        const MAX_RETAINED_VERTEX_CAPACITY: usize = 200 * 60 * 6 * 8;
-
-        if vertices.capacity() > MAX_RETAINED_VERTEX_CAPACITY {
-            self.vertices = Vec::with_capacity(DEFAULT_VERTEX_CAPACITY);
+        // Retain the vertex buffer if within 2x the current viewport needs;
+        // otherwise shrink to current needs to prevent unbounded growth.
+        let current_viewport_capacity = cols * rows * 6 * 8;
+        let max_retained = current_viewport_capacity * 2;
+        if vertices.capacity() > max_retained {
+            self.vertices = Vec::with_capacity(current_viewport_capacity);
         } else {
             self.vertices = vertices;
         }

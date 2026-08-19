@@ -258,19 +258,20 @@ impl WindowState {
         }
 
         // Auto-detect URLs in visible rows and apply UNDERLINE styling
+        let mut line_buf = String::with_capacity(width);
         for y in 0..height {
             let row_start = y * width;
-            let line_text: String = (0..width)
-                .map(|x| self.render_cells_buf[row_start + x].character)
-                .collect();
-            let urls = crate::hyperlink::detector::detect(&line_text);
-            for (start_col, end_col, _) in urls {
+            line_buf.clear();
+            for x in 0..width {
+                line_buf.push(self.render_cells_buf[row_start + x].character);
+            }
+            crate::hyperlink::detector::for_each_url(&line_buf, |start_col, end_col| {
                 for col in start_col..end_col.min(width) {
                     self.render_cells_buf[row_start + col]
                         .flags
                         .insert(CellFlags::UNDERLINE);
                 }
-            }
+            });
         }
 
         let cursor_visible = if offset > 0 {
@@ -309,6 +310,8 @@ impl WindowState {
                     &self.terminal.theme,
                     self.terminal.bold_is_bright,
                     &active_grid.selection,
+                    offset,
+                    history_len,
                     self.padding_x,
                     self.padding_y,
                 );
@@ -507,7 +510,6 @@ impl App {
 
         let shell_path = config
             .shell
-            .clone()
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".to_string());
 
@@ -780,6 +782,9 @@ impl ApplicationHandler<CustomEvent> for App {
                     if !ws.terminal.outgoing.is_empty() {
                         let _ = ws.pty_master.write(&ws.terminal.outgoing);
                         ws.terminal.outgoing.clear();
+                        if ws.terminal.outgoing.capacity() > 4096 {
+                            ws.terminal.outgoing.shrink_to_fit();
+                        }
                     }
                     ws.needs_redraw = true;
                     ws.content_dirty = true;

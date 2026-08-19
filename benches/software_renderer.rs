@@ -24,13 +24,11 @@ fn main() {
             r: 255,
             g: 255,
             b: 255,
-            a: 255,
         },
         Color {
             r: 0,
             g: 0,
             b: 0,
-            a: 255,
         },
         1000,
         false,
@@ -84,13 +82,11 @@ fn main() {
                     r: 220,
                     g: 220,
                     b: 220,
-                    a: 255,
                 },
                 background: Color {
                     r: 15,
                     g: 15,
                     b: 15,
-                    a: 255,
                 },
                 flags: CellFlags::empty(),
             };
@@ -132,13 +128,11 @@ fn main() {
                     r: 255,
                     g: 255,
                     b: 255,
-                    a: 255,
                 },
                 background: Color {
                     r: bg_r,
                     g: bg_g,
                     b: bg_b,
-                    a: 255,
                 },
                 flags: CellFlags::empty(),
             };
@@ -179,13 +173,11 @@ fn main() {
                     r: 0,
                     g: 255,
                     b: 128,
-                    a: 255,
                 },
                 background: Color {
                     r: 20,
                     g: 20,
                     b: 30,
-                    a: 255,
                 },
                 flags: CellFlags::empty(),
             };
@@ -232,13 +224,11 @@ fn main() {
                     r: 255,
                     g: 255,
                     b: 255,
-                    a: 255,
                 },
                 background: Color {
                     r: 0,
                     g: 0,
                     b: 0,
-                    a: 255,
                 },
                 flags: CellFlags::empty(),
             };

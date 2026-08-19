@@ -317,13 +317,13 @@ pub fn parse_hex_color(hex: &str) -> Option<Color> {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        Some(Color { r, g, b, a: 255 })
+        Some(Color { r, g, b })
     } else if hex.len() == 8 {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-        Some(Color { r, g, b, a })
+        let _a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+        Some(Color { r, g, b })
     } else {
         None
     }

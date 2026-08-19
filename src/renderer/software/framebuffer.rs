@@ -1,6 +1,5 @@
 /// A persistent, CPU-resident 32-bit linear pixel framebuffer (`0x00RRGGBB`).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Framebuffer {
     pub pixels: Vec<u32>,
     pub width: u32,
@@ -8,7 +7,6 @@ pub struct Framebuffer {
     pub stride: usize,
 }
 
-#[allow(dead_code)]
 impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
         let w = width.max(1);
@@ -70,6 +68,7 @@ impl Framebuffer {
     }
 
     /// Optimized vertical row shift in memory using `copy_within`.
+    #[allow(dead_code)]
     pub fn scroll_region_up(
         &mut self,
         top_px: u32,
@@ -99,6 +98,7 @@ impl Framebuffer {
     }
 
     /// Optimized vertical row shift down in memory using `copy_within`.
+    #[allow(dead_code)]
     pub fn scroll_region_down(
         &mut self,
         top_px: u32,
@@ -168,5 +168,25 @@ mod tests {
         assert_eq!(fb.pixels[8], 4);
         // Row 3 should have fill color (0x99)
         assert_eq!(fb.pixels[12], 0x99);
+    }
+
+    #[test]
+    fn test_framebuffer_scroll_down() {
+        let mut fb = Framebuffer::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                fb.pixels[y * 4 + x] = (y as u32) + 1;
+            }
+        }
+        // Scroll down by 1 line
+        fb.scroll_region_down(0, 4, 1, 0x99);
+        // Row 0 should have fill color (0x99)
+        assert_eq!(fb.pixels[0], 0x99);
+        // Row 1 should have old row 0's content (1)
+        assert_eq!(fb.pixels[4], 1);
+        // Row 2 should have old row 1's content (2)
+        assert_eq!(fb.pixels[8], 2);
+        // Row 3 should have old row 2's content (3)
+        assert_eq!(fb.pixels[12], 3);
     }
 }

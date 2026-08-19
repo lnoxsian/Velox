@@ -146,9 +146,11 @@ impl CpuRenderer {
         self.damage
             .update_cursor(display_cursor_x, grid.cursor.y, cursor_visible);
 
-        let ((sel_min_x, sel_min_y), (sel_max_x, sel_max_y)) = grid.selection.normalized_bounds();
+        let history_len = grid.scrollback.len();
+        let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) =
+            grid.selection.normalized_bounds();
         self.damage
-            .update_selection(grid.selection.active, sel_min_y, sel_max_y);
+            .update_selection(grid.selection.active, sel_min_abs_y, sel_max_abs_y);
 
         let grid_w = grid.width;
         let grid_h = grid.height;
@@ -199,6 +201,17 @@ impl CpuRenderer {
             }
             dirty_rows_count += 1;
 
+            let abs_y = y + history_len;
+            let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
+                (true, abs_y - grid.scroll_offset)
+            } else {
+                (false, 0)
+            };
+            let is_row_in_selection = grid.selection.active
+                && is_row_valid
+                && abs_row >= sel_min_abs_y
+                && abs_row <= sel_max_abs_y;
+
             let py = py_offset + (y as u32) * cell_h;
             if py + cell_h > self.framebuffer.height {
                 break;
@@ -214,10 +227,19 @@ impl CpuRenderer {
 
             for (col, cell) in row_cells.iter().enumerate() {
                 dirty_cells_count += 1;
-                let is_selected = grid.selection.active
-                    && grid
-                        .selection
-                        .contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, col, y);
+                let is_selected = if is_row_in_selection {
+                    if sel_min_abs_y == sel_max_abs_y {
+                        col >= sel_min_x && col <= sel_max_x
+                    } else if abs_row == sel_min_abs_y {
+                        col >= sel_min_x
+                    } else if abs_row == sel_max_abs_y {
+                        col <= sel_max_x
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
                 let is_reverse = cell.flags.contains(CellFlags::REVERSE);
                 let is_inverted = is_selected ^ is_reverse;
 
@@ -259,10 +281,19 @@ impl CpuRenderer {
                     break;
                 }
 
-                let is_selected = grid.selection.active
-                    && grid
-                        .selection
-                        .contains_fast(sel_min_x, sel_min_y, sel_max_x, sel_max_y, col, y);
+                let is_selected = if is_row_in_selection {
+                    if sel_min_abs_y == sel_max_abs_y {
+                        col >= sel_min_x && col <= sel_max_x
+                    } else if abs_row == sel_min_abs_y {
+                        col >= sel_min_x
+                    } else if abs_row == sel_max_abs_y {
+                        col <= sel_max_x
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
                 let is_reverse = cell.flags.contains(CellFlags::REVERSE);
                 let is_inverted = is_selected ^ is_reverse;
 

@@ -27,14 +27,6 @@ pub fn blend_alpha(dst: u32, src: u32, alpha: u8) -> u32 {
     res_rb | res_g
 }
 
-/// Blend a 32-bit `0xAARRGGBB` color pixel (from emoji) over a destination `0x00RRGGBB` pixel.
-#[inline(always)]
-#[allow(dead_code)]
-pub fn blend_color_pixel(dst: u32, src_argb: u32) -> u32 {
-    let alpha = (src_argb >> 24) as u8;
-    blend_alpha(dst, src_argb & 0x00FFFFFF, alpha)
-}
-
 /// Blit an 8-bit alpha mask onto the framebuffer tinted by `fg` color.
 #[inline(always)]
 pub fn blit_alpha_glyph(
@@ -59,7 +51,7 @@ pub fn blit_alpha_glyph(
     let max_y = (gh).min(fb_h.saturating_sub(py as usize));
     let max_x = (gw).min(fb_w.saturating_sub(px as usize));
 
-    let pixels = fb.pixels.as_mut_slice();
+    let pixels = fb.as_mut_slice();
 
     for y in 0..max_y {
         let src_row = y * gw;
@@ -104,7 +96,7 @@ pub fn blit_color_glyph(
     let max_y = (gh).min(fb_h.saturating_sub(py as usize));
     let max_x = (gw).min(fb_w.saturating_sub(px as usize));
 
-    let pixels = fb.pixels.as_mut_slice();
+    let pixels = fb.as_mut_slice();
 
     for y in 0..max_y {
         let src_row = y * gw;
