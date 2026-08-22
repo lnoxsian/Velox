@@ -20,11 +20,7 @@ fn test_software_renderer_idle_zero_work() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -82,11 +78,7 @@ fn test_software_renderer_damage_partial_row() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -113,16 +105,8 @@ fn test_software_renderer_damage_partial_row() {
     grid.damage.mark_dirty(5);
     grid.cells[5 * 80 + 10] = Cell {
         character: 'A',
-        foreground: Color {
-            r: 255,
-            g: 0,
-            b: 0,
-        },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        foreground: Color { r: 255, g: 0, b: 0 },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::BOLD,
     };
 
@@ -157,11 +141,7 @@ fn test_software_renderer_box_and_block_primitives() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -174,16 +154,8 @@ fn test_software_renderer_box_and_block_primitives() {
     for (i, &ch) in test_primitives.iter().enumerate() {
         grid.cells[i] = Cell {
             character: ch,
-            foreground: Color {
-                r: 0,
-                g: 255,
-                b: 0,
-            },
-            background: Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
+            foreground: Color { r: 0, g: 255, b: 0 },
+            background: Color { r: 0, g: 0, b: 0 },
             flags: CellFlags::empty(),
         };
     }
@@ -219,11 +191,7 @@ fn test_software_renderer_selection_and_cursor() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -266,11 +234,7 @@ fn test_software_renderer_scroll_selection() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -327,11 +291,7 @@ fn test_software_renderer_decorations() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -345,11 +305,7 @@ fn test_software_renderer_decorations() {
             g: 255,
             b: 0,
         },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::UNDERLINE,
     };
     grid.cells[1] = Cell {
@@ -359,11 +315,7 @@ fn test_software_renderer_decorations() {
             g: 255,
             b: 0,
         },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::DOUBLE_UNDERLINE,
     };
     grid.cells[2] = Cell {
@@ -373,11 +325,7 @@ fn test_software_renderer_decorations() {
             g: 255,
             b: 0,
         },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::CURLY_UNDERLINE,
     };
     grid.cells[3] = Cell {
@@ -387,11 +335,7 @@ fn test_software_renderer_decorations() {
             g: 255,
             b: 0,
         },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::STRIKE,
     };
 
@@ -423,11 +367,7 @@ fn test_software_renderer_scrollback_rendering() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         true,
     );
@@ -437,16 +377,8 @@ fn test_software_renderer_scrollback_rendering() {
     // Push historical row into scrollback
     let scroll_cell = Cell {
         character: 'H',
-        foreground: Color {
-            r: 255,
-            g: 0,
-            b: 0,
-        },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        foreground: Color { r: 255, g: 0, b: 0 },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::empty(),
     };
     grid.scrollback.push_line(&[scroll_cell], false);
@@ -480,11 +412,7 @@ fn test_software_renderer_blinking_text() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -494,16 +422,8 @@ fn test_software_renderer_blinking_text() {
     // Create a blinking green 'A' cell
     grid.cells[0] = Cell {
         character: 'A',
-        foreground: Color {
-            r: 0,
-            g: 255,
-            b: 0,
-        },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        foreground: Color { r: 0, g: 255, b: 0 },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::BLINK,
     };
     grid.damage.mark_dirty(0);
@@ -578,11 +498,7 @@ fn test_software_renderer_double_line_table() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -612,11 +528,7 @@ fn test_software_renderer_double_line_table() {
                     g: 255,
                     b: 255,
                 },
-                background: Color {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                },
+                background: Color { r: 0, g: 0, b: 0 },
                 flags: CellFlags::empty(),
             };
         }
@@ -656,11 +568,7 @@ fn test_software_renderer_all_box_drawing_chars() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         100,
         false,
     );
@@ -679,11 +587,7 @@ fn test_software_renderer_all_box_drawing_chars() {
                         g: 255,
                         b: 0,
                     },
-                    background: Color {
-                        r: 0,
-                        g: 0,
-                        b: 0,
-                    },
+                    background: Color { r: 0, g: 0, b: 0 },
                     flags: CellFlags::empty(),
                 };
             }
@@ -716,7 +620,7 @@ fn test_software_renderer_all_box_drawing_chars() {
 #[test]
 fn test_software_renderer_transparency() {
     let mut renderer = setup_renderer(800, 600);
-    let mut grid = Grid::new(
+    let grid = Grid::new(
         80,
         24,
         Color {
@@ -767,4 +671,47 @@ fn test_software_renderer_transparency() {
     assert_eq!(bg_r, (30 * 128) / 255);
     assert_eq!(bg_g, (40 * 128) / 255);
     assert_eq!(bg_b, (50 * 128) / 255);
+}
+
+#[test]
+fn test_software_renderer_custom_cursor_color() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut grid = Grid::new(
+        80,
+        24,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    grid.cursor.x = 0;
+    grid.cursor.y = 0;
+    grid.cursor.visible = true;
+
+    let mut theme = Theme::new();
+    theme.cursor_color = Some(Color { r: 255, g: 0, b: 0 }); // Red cursor
+    theme.cursor_text_color = Some(Color { r: 0, g: 255, b: 0 }); // Green text
+
+    let mut target = vec![0u32; 800 * 600];
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        true,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+
+    // Pixel at (0, 0) should have the cursor color (0xFFFF0000)
+    let pixel = target[0];
+    assert_eq!(pixel, 0xFFFF0000);
 }

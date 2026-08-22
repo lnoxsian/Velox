@@ -536,15 +536,28 @@ impl Renderer {
                 } else {
                     false
                 };
-                let is_inverted = (is_cursor && cursor_shape == CursorShape::Block)
-                    || is_selected
-                    || cell.flags.contains(CellFlags::REVERSE);
+                let is_reversed = cell.flags.contains(CellFlags::REVERSE);
+                let is_inverted = is_selected || is_reversed;
 
-                let (_fg, bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
+                let (_fg, mut bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
 
-                // Skip background quad if the cell has the default background and is not inverted/selected,
+                let is_block_cursor = is_cursor && cursor_shape == CursorShape::Block;
+                if is_block_cursor {
+                    let mut cell_fg = cell.foreground;
+                    if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                        for i in 0..8 {
+                            if cell_fg == theme.ansi_colors[i] {
+                                cell_fg = theme.ansi_colors[i + 8];
+                                break;
+                            }
+                        }
+                    }
+                    bg = theme.resolve_cursor_color(cell_fg);
+                }
+
+                // Skip background quad if the cell has the default background and is not inverted/selected/cursor,
                 // because gl.clear_color already cleared the entire window (including margins) with default_bg + opacity.
-                if bg != theme.default_bg || is_inverted {
+                if bg != theme.default_bg || is_inverted || is_block_cursor {
                     let px = padding_x + x as f32 * cw;
                     let py = padding_y + y as f32 * ch;
                     let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
@@ -605,11 +618,10 @@ impl Renderer {
                 } else {
                     false
                 };
-                let is_inverted = (is_cursor && cursor_shape == CursorShape::Block)
-                    || is_selected
-                    || cell.flags.contains(CellFlags::REVERSE);
+                let is_reversed = cell.flags.contains(CellFlags::REVERSE);
+                let is_inverted = is_selected || is_reversed;
 
-                let (fg, _bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
+                let (mut fg, _bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
 
                 // Bold-bright cell_fg needed for cursor color (pre-dim value)
                 let mut cell_fg = cell.foreground;
@@ -620,6 +632,10 @@ impl Renderer {
                             break;
                         }
                     }
+                }
+
+                if is_cursor && cursor_shape == CursorShape::Block {
+                    fg = theme.resolve_cursor_text_color(cell.background);
                 }
 
                 let px = padding_x + x as f32 * cw;
@@ -668,6 +684,7 @@ impl Renderer {
 
                 // ── Cursor (non-block shapes) ─────────────────────────────────
                 if is_cursor {
+                    let cursor_color = theme.resolve_cursor_color(cell_fg);
                     match cursor_shape {
                         CursorShape::Beam => {
                             let beam_w = (cw * 0.15).max(2.0);
@@ -681,7 +698,7 @@ impl Renderer {
                                 wv,
                                 wu,
                                 wv,
-                                cell_fg,
+                                cursor_color,
                                 false,
                             );
                         }
@@ -697,7 +714,7 @@ impl Renderer {
                                 wv,
                                 wu,
                                 wv,
-                                cell_fg,
+                                cursor_color,
                                 false,
                             );
                         }
@@ -715,7 +732,7 @@ impl Renderer {
                                 wv,
                                 wu,
                                 wv,
-                                cell_fg,
+                                cursor_color,
                                 false,
                             );
                             // Bottom border
@@ -729,7 +746,7 @@ impl Renderer {
                                 wv,
                                 wu,
                                 wv,
-                                cell_fg,
+                                cursor_color,
                                 false,
                             );
                             // Left border
@@ -743,7 +760,7 @@ impl Renderer {
                                 wv,
                                 wu,
                                 wv,
-                                cell_fg,
+                                cursor_color,
                                 false,
                             );
                             // Right border
@@ -757,11 +774,11 @@ impl Renderer {
                                 wv,
                                 wu,
                                 wv,
-                                cell_fg,
+                                cursor_color,
                                 false,
                             );
                         }
-                        CursorShape::Block => {} // handled as background inversion in Pass 1
+                        CursorShape::Block => {} // handled as background in Pass 1
                     }
                 }
 

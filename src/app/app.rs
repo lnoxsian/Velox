@@ -481,17 +481,7 @@ impl App {
                 let _ = surface.resize(w, h);
             }
 
-            let mut theme = crate::theme::theme::Theme::new();
-            if let Some(fg) = config.default_fg()
-                && let Some(c) = crate::config::config::parse_hex_color(fg)
-            {
-                theme.default_fg = c;
-            }
-            if let Some(bg) = config.default_bg()
-                && let Some(c) = crate::config::config::parse_hex_color(bg)
-            {
-                theme.default_bg = c;
-            }
+            let theme = crate::theme::theme::Theme::from_config(&config);
 
             let renderer = CpuRenderer::new(
                 config.font_family(),

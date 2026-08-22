@@ -18,6 +18,8 @@ pub fn default_config() -> Config {
             padding_y: Some(4.0),
             cursor_shape: Some("beam".to_string()),
             cursor_blink: Some(true),
+            cursor_color: Some("default".to_string()),
+            cursor_text_color: Some("default".to_string()),
             scroll_on_output: Some(true),
             scroll_on_keystroke: Some(true),
             opacity: Some(1.0),

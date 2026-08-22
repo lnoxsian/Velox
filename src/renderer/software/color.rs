@@ -52,6 +52,7 @@ impl PackedColor {
 pub struct PrecomputedPalette {
     pub ansi_colors: [u32; 16],
     pub ansi_colors_raw: [Color; 16],
+    #[allow(dead_code)]
     pub default_fg: u32,
     pub default_bg: u32,
     pub raw_default_bg: Color,
@@ -64,11 +65,7 @@ impl PrecomputedPalette {
         let opacity = opacity.clamp(0.0, 1.0);
         let alpha = (opacity * 255.0).round() as u8;
         let mut ansi_colors = [0u32; 16];
-        let mut ansi_colors_raw = [Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        }; 16];
+        let mut ansi_colors_raw = [Color { r: 0, g: 0, b: 0 }; 16];
         for i in 0..16 {
             ansi_colors[i] = PackedColor::from_color(theme.ansi_colors[i]).to_u32();
             ansi_colors_raw[i] = theme.ansi_colors[i];
@@ -138,7 +135,14 @@ mod tests {
         let packed = PackedColor::from_color(color);
         assert_eq!(packed.to_u32(), 0xFF123456);
 
-        let premult = PackedColor::from_premultiplied(Color { r: 200, g: 100, b: 50 }, 128);
+        let premult = PackedColor::from_premultiplied(
+            Color {
+                r: 200,
+                g: 100,
+                b: 50,
+            },
+            128,
+        );
         assert_eq!((premult.to_u32() >> 24) & 0xFF, 128);
         assert_eq!((premult.to_u32() >> 16) & 0xFF, (200 * 128) / 255);
     }

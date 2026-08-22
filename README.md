@@ -115,6 +115,11 @@ LIBGL_ALWAYS_SOFTWARE=1 ./target/release/velox
 Velox reads user configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HOME/velox/config.toml`).
 
 ```toml
+# Top-level settings
+shell = "/bin/bash"
+app_title = "{program} - Velox"
+single_instance = true
+
 [font]
 font_family = "ComicShannsMono Nerd Font"
 font_scale_multiplier = 1.5
@@ -129,8 +134,12 @@ scroll_multiplier = 5.0
 fps_limit = 120
 padding_x = 8.0
 padding_y = 4.0
-cursor_shape = "beam"
+cursor_shape = "beam"         # "block", "beam", "underline", "hollow_block"
 cursor_blink = true
+cursor_color = "default"      # "default", "inverted", or hex like "#ffffff"
+cursor_text_color = "default" # "default", "inverted", or hex like "#000000"
+scroll_on_output = true
+scroll_on_keystroke = true
 opacity = 1.0
 
 [colors]

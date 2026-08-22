@@ -18,7 +18,8 @@ pub fn handle_escape(byte: u8, terminal: &mut Terminal) {
             terminal.semantic_zone = crate::terminal::terminal::SemanticZone::Output;
             terminal.prompt_marks.clear();
             terminal.last_command_exit_code = None;
-            terminal.theme.cursor_color = None;
+            terminal.theme.cursor_color = terminal.theme.initial_cursor_color;
+            terminal.theme.cursor_text_color = terminal.theme.initial_cursor_text_color;
             let fg = terminal.current_fg;
             let bg = terminal.current_bg;
             terminal.grid.erase_display(3, fg, bg);

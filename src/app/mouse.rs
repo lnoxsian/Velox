@@ -184,61 +184,100 @@ impl WindowState {
         button: MouseButton,
         modifiers: ModifiersState,
     ) {
-        if button == MouseButton::Left {
-            if state.is_pressed() {
-                self.is_mouse_down = true;
-                let px = self.padding_x as f64;
-                let py = self.padding_y as f64;
-                let cw = self.cell_width() as f64;
-                let ch = self.cell_height() as f64;
-                let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-                    .min(self.terminal.grid.width.saturating_sub(1));
-                let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-                    .min(self.terminal.grid.height.saturating_sub(1));
+        let px = self.padding_x as f64;
+        let py = self.padding_y as f64;
+        let cw = self.cell_width() as f64;
+        let ch = self.cell_height() as f64;
+        let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
+            .min(self.terminal.grid.width.saturating_sub(1));
+        let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
+            .min(self.terminal.grid.height.saturating_sub(1));
 
-                let mouse_mode = self.terminal.mouse_mode;
-                let mouse_sgr = self.terminal.mouse_sgr;
-                let active_grid = self.terminal.active_grid_mut();
-                let grid_width = active_grid.width;
-                let grid_height = active_grid.height;
+        let mouse_mode = self.terminal.mouse_mode;
+        let mouse_sgr = self.terminal.mouse_sgr;
 
-                if col_idx < grid_width && row_idx < grid_height {
-                    let now = std::time::Instant::now();
-                    let is_double_click = if let Some(last_time) = self.last_click_instant {
-                        self.last_click_pos == (col_idx, row_idx)
-                            && last_time.elapsed().as_millis() < 400
+        // Determine standard X11/Xterm button code:
+        // 0: Left, 1: Middle, 2: Right
+        let btn_code = match button {
+            MouseButton::Left => Some(0),
+            MouseButton::Middle => Some(1),
+            MouseButton::Right => Some(2),
+            _ => None,
+        };
+
+        // 1. Terminal Application Mouse Reporting (X10 / Normal / Button-event / Any-event)
+        // When mouse reporting is active and Shift is NOT held, send mouse sequences to PTY.
+        if mouse_mode > 0 && !modifiers.shift_key() {
+            if let Some(btn) = btn_code {
+                if state.is_pressed() {
+                    let seq = if mouse_sgr {
+                        format!("\x1b[<{};{};{}M", btn, col_idx + 1, row_idx + 1)
                     } else {
-                        false
-                    };
-
-                    if is_double_click {
-                        self.click_count = (self.click_count % 3) + 1;
-                    } else {
-                        self.click_count = 1;
-                    }
-                    self.last_click_instant = Some(now);
-                    self.last_click_pos = (col_idx, row_idx);
-
-                    if mouse_mode > 0 && !modifiers.shift_key() {
-                        let seq = if mouse_sgr {
-                            format!("\x1b[<0;{};{}M", col_idx + 1, row_idx + 1)
+                        let cb = 32 + btn;
+                        let cx = 32 + col_idx + 1;
+                        let cy = 32 + row_idx + 1;
+                        if cx <= 255 && cy <= 255 {
+                            format!(
+                                "\x1b[M{}{}{}",
+                                cb as u8 as char, cx as u8 as char, cy as u8 as char
+                            )
                         } else {
-                            let cb = 32;
-                            let cx = 32 + col_idx + 1;
-                            let cy = 32 + row_idx + 1;
-                            if cx <= 255 && cy <= 255 {
-                                format!(
-                                    "\x1b[M{}{}{}",
-                                    cb as u8 as char, cx as u8 as char, cy as u8 as char
-                                )
-                            } else {
-                                String::new()
-                            }
-                        };
-                        if !seq.is_empty() {
-                            let _ = self.pty_master.write(seq.as_bytes());
+                            String::new()
                         }
+                    };
+                    if !seq.is_empty() {
+                        let _ = self.pty_master.write(seq.as_bytes());
+                    }
+                } else {
+                    let seq = if mouse_sgr {
+                        format!("\x1b[<{};{};{}m", btn, col_idx + 1, row_idx + 1)
                     } else {
+                        let cb = 32 + 3; // Release code in standard xterm mode
+                        let cx = 32 + col_idx + 1;
+                        let cy = 32 + row_idx + 1;
+                        if cx <= 255 && cy <= 255 {
+                            format!(
+                                "\x1b[M{}{}{}",
+                                cb as u8 as char, cx as u8 as char, cy as u8 as char
+                            )
+                        } else {
+                            String::new()
+                        }
+                    };
+                    if !seq.is_empty() {
+                        let _ = self.pty_master.write(seq.as_bytes());
+                    }
+                }
+            }
+            return;
+        }
+
+        // 2. Terminal Local Mouse Behavior (when mouse tracking is inactive or Shift is held)
+        match button {
+            MouseButton::Left => {
+                if state.is_pressed() {
+                    self.is_mouse_down = true;
+                    let active_grid = self.terminal.active_grid_mut();
+                    let grid_width = active_grid.width;
+                    let grid_height = active_grid.height;
+
+                    if col_idx < grid_width && row_idx < grid_height {
+                        let now = std::time::Instant::now();
+                        let is_double_click = if let Some(last_time) = self.last_click_instant {
+                            self.last_click_pos == (col_idx, row_idx)
+                                && last_time.elapsed().as_millis() < 400
+                        } else {
+                            false
+                        };
+
+                        if is_double_click {
+                            self.click_count = (self.click_count % 3) + 1;
+                        } else {
+                            self.click_count = 1;
+                        }
+                        self.last_click_instant = Some(now);
+                        self.last_click_pos = (col_idx, row_idx);
+
                         let mut url_opened = false;
                         let offset = active_grid.scroll_offset;
                         let history_len = active_grid.scrollback.len();
@@ -315,40 +354,8 @@ impl WindowState {
 
                         self.needs_redraw = true;
                     }
-                }
-            } else {
-                self.is_mouse_down = false;
-                let px = self.padding_x as f64;
-                let py = self.padding_y as f64;
-                let cw = self.cell_width() as f64;
-                let ch = self.cell_height() as f64;
-                let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-                    .min(self.terminal.grid.width.saturating_sub(1));
-                let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-                    .min(self.terminal.grid.height.saturating_sub(1));
-
-                let mouse_mode = self.terminal.mouse_mode;
-                let mouse_sgr = self.terminal.mouse_sgr;
-                if mouse_mode > 0 && !modifiers.shift_key() {
-                    let seq = if mouse_sgr {
-                        format!("\x1b[<0;{};{}m", col_idx + 1, row_idx + 1)
-                    } else {
-                        let cb = 32 + 3;
-                        let cx = 32 + col_idx + 1;
-                        let cy = 32 + row_idx + 1;
-                        if cx <= 255 && cy <= 255 {
-                            format!(
-                                "\x1b[M{}{}{}",
-                                cb as u8 as char, cx as u8 as char, cy as u8 as char
-                            )
-                        } else {
-                            String::new()
-                        }
-                    };
-                    if !seq.is_empty() {
-                        let _ = self.pty_master.write(seq.as_bytes());
-                    }
                 } else {
+                    self.is_mouse_down = false;
                     let active_grid = self.terminal.active_grid_mut();
                     if active_grid.selection.active {
                         let text = active_grid.extract_selection_text();
@@ -361,6 +368,34 @@ impl WindowState {
                     }
                 }
             }
+            MouseButton::Middle => {
+                if state.is_pressed() {
+                    // Middle click paste: prefer primary selection (Linux standard), fallback to clipboard
+                    let mut text = crate::clipboard::clipboard::primary_selection();
+                    if text.is_empty() {
+                        text = crate::clipboard::clipboard::paste();
+                    }
+                    if !text.is_empty() {
+                        let formatted = self.terminal.format_paste(&text);
+                        if self.terminal.scroll_on_keystroke {
+                            self.terminal.active_grid_mut().scroll_offset = 0;
+                        }
+                        self.needs_redraw = true;
+                        let _ = self.pty_master.write(formatted.as_bytes());
+                    }
+                }
+            }
+            MouseButton::Right => {
+                // Right click behavior (when mouse mode is off): can clear selection or reserved for contextual operations
+                if state.is_pressed() {
+                    let active_grid = self.terminal.active_grid_mut();
+                    if active_grid.selection.active {
+                        active_grid.selection.active = false;
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

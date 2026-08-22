@@ -528,45 +528,21 @@ mod tests {
         let mut grid = Grid::new(
             80,
             24,
-            Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
-            Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
+            Color { r: 0, g: 0, b: 0 },
+            Color { r: 0, g: 0, b: 0 },
             1000,
             false,
         );
         grid.put_char(
             'a',
-            Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
-            Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
+            Color { r: 0, g: 0, b: 0 },
+            Color { r: 0, g: 0, b: 0 },
             CellFlags::empty(),
         );
         grid.put_char(
             '\u{0301}',
-            Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
-            Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
+            Color { r: 0, g: 0, b: 0 },
+            Color { r: 0, g: 0, b: 0 },
             CellFlags::empty(),
         );
 
@@ -582,11 +558,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
         // Write a 70-character line (fits on 80 cols without wrapping)
@@ -624,11 +596,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 10, fg, bg, 1000, false);
 
         // Fill 50 characters, cursor will be at x=50, y=0
@@ -648,11 +616,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(98, 58, fg, bg, 1000, false);
         grid.cursor.y = 57;
         grid.cursor.x = 50;
@@ -676,11 +640,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 5, fg, bg, 1000, false);
 
         // Fill history so scrollback has lines
@@ -713,11 +673,7 @@ mod tests {
     #[test]
     fn test_reflow_empty_lines() {
         use crate::screen::cell::Color;
-        let default_color = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let default_color = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(100, 24, default_color, default_color, 1000, false);
 
         // row 0: text
@@ -770,11 +726,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 5, fg, bg, 100, false);
 
         // Put 10 lines of text (5 scroll into scrollback, 5 remain in active grid)
@@ -816,11 +768,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 5, fg, bg, 100, false);
 
         for i in 0..10 {
@@ -854,11 +802,7 @@ mod tests {
             g: 255,
             b: 255,
         };
-        let bg = Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        };
+        let bg = Color { r: 0, g: 0, b: 0 };
         // Finite scrollback with capacity 5, height 5
         let mut grid = Grid::new(80, 5, fg, bg, 5, false);
 

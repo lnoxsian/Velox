@@ -15,11 +15,7 @@ fn test_infinite_scrollback_million_lines_memory_bounded() {
                 g: ((i * 3) % 255) as u8,
                 b: ((i * 7) % 255) as u8,
             },
-            background: Color {
-                r: 0,
-                g: 0,
-                b: 0,
-            },
+            background: Color { r: 0, g: 0, b: 0 },
             flags: if i % 2 == 0 {
                 CellFlags::BOLD
             } else {

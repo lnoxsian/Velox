@@ -25,11 +25,7 @@ fn main() {
             g: 255,
             b: 255,
         },
-        Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        Color { r: 0, g: 0, b: 0 },
         1000,
         false,
     );
@@ -230,11 +226,7 @@ fn main() {
                     g: 255,
                     b: 255,
                 },
-                background: Color {
-                    r: 0,
-                    g: 0,
-                    b: 0,
-                },
+                background: Color { r: 0, g: 0, b: 0 },
                 flags: CellFlags::empty(),
             };
         }

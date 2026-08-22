@@ -143,7 +143,8 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
 
         // OSC 112: Reset cursor color
         "112" => {
-            terminal.theme.cursor_color = None;
+            terminal.theme.cursor_color = terminal.theme.initial_cursor_color;
+            terminal.theme.cursor_text_color = terminal.theme.initial_cursor_text_color;
         }
 
         // OSC 52: Clipboard read / write

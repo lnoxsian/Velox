@@ -39,6 +39,8 @@ pub struct CpuRenderer {
     prev_theme_fg: crate::screen::cell::Color,
     prev_theme_bg: crate::screen::cell::Color,
     prev_ansi_colors: [crate::screen::cell::Color; 16],
+    prev_cursor_color: Option<crate::screen::cell::Color>,
+    prev_cursor_text_color: Option<crate::screen::cell::Color>,
     bold_is_bright: bool,
     prev_scroll_offset: usize,
     pub start_time: Instant,
@@ -48,6 +50,7 @@ pub struct CpuRenderer {
 }
 
 impl CpuRenderer {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         font_family: &str,
         font_size: f32,
@@ -77,6 +80,8 @@ impl CpuRenderer {
             prev_theme_fg: theme.default_fg,
             prev_theme_bg: theme.default_bg,
             prev_ansi_colors: theme.ansi_colors,
+            prev_cursor_color: theme.cursor_color,
+            prev_cursor_text_color: theme.cursor_text_color,
             bold_is_bright,
             prev_scroll_offset: 0,
             start_time: Instant::now(),
@@ -146,12 +151,16 @@ impl CpuRenderer {
         if theme.default_fg != self.prev_theme_fg
             || theme.default_bg != self.prev_theme_bg
             || theme.ansi_colors != self.prev_ansi_colors
+            || theme.cursor_color != self.prev_cursor_color
+            || theme.cursor_text_color != self.prev_cursor_text_color
             || (opacity - self.prev_opacity).abs() > f32::EPSILON
         {
             self.palette = PrecomputedPalette::new(theme, opacity);
             self.prev_theme_fg = theme.default_fg;
             self.prev_theme_bg = theme.default_bg;
             self.prev_ansi_colors = theme.ansi_colors;
+            self.prev_cursor_color = theme.cursor_color;
+            self.prev_cursor_text_color = theme.cursor_text_color;
             self.opacity = opacity;
             self.prev_opacity = opacity;
             self.damage.mark_all();
@@ -400,7 +409,23 @@ impl CpuRenderer {
                 } else {
                     &grid.cells[0]
                 };
-                let cursor_color = self.palette.default_fg;
+
+                let cell_fg_color = cell.foreground;
+                let mut cell_fg = cell_fg_color;
+                if self.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                    for i in 0..8 {
+                        if cell_fg_color == self.palette.ansi_colors_raw[i] {
+                            cell_fg = theme.ansi_colors[i + 8];
+                            break;
+                        }
+                    }
+                }
+
+                let cursor_color =
+                    PackedColor::from_color(theme.resolve_cursor_color(cell_fg)).to_u32();
+                let cursor_text_color =
+                    PackedColor::from_color(theme.resolve_cursor_text_color(cell.background))
+                        .to_u32();
 
                 if is_focused && cursor_shape == CursorShape::Block {
                     // Block cursor: fill cursor block and render inverted cell character
@@ -412,7 +437,7 @@ impl CpuRenderer {
                     if !skip_cursor_fg && cell.character != ' ' {
                         let is_wide = cell.flags.contains(CellFlags::WIDE);
                         let target_w = if is_wide { cell_w * 2 } else { cell_w };
-                        let inv_fg = self.palette.default_bg;
+                        let inv_fg = cursor_text_color;
 
                         if !try_render_primitive(
                             cell.character,

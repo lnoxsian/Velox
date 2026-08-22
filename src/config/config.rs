@@ -52,6 +52,15 @@ pub struct WindowConfig {
     pub cursor_shape: Option<String>,
     #[serde(default)]
     pub cursor_blink: Option<bool>,
+    #[serde(default, alias = "cursor")]
+    pub cursor_color: Option<String>,
+    #[serde(
+        default,
+        alias = "cursor_text",
+        alias = "cursor_fg",
+        alias = "cursor_text_fg"
+    )]
+    pub cursor_text_color: Option<String>,
     #[serde(default, alias = "scroll_to_bottom_on_output")]
     pub scroll_on_output: Option<bool>,
     #[serde(
@@ -192,6 +201,22 @@ pub struct Config {
     pub(crate) cursor_blink_legacy: Option<bool>,
     #[serde(
         default,
+        rename = "cursor_color",
+        alias = "cursor",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) cursor_color_legacy: Option<String>,
+    #[serde(
+        default,
+        rename = "cursor_text_color",
+        alias = "cursor_text",
+        alias = "cursor_fg",
+        alias = "cursor_text_fg",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) cursor_text_color_legacy: Option<String>,
+    #[serde(
+        default,
         rename = "scroll_on_output",
         alias = "scroll_to_bottom_on_output",
         skip_serializing_if = "Option::is_none"
@@ -307,6 +332,20 @@ impl Config {
         self.window.cursor_blink.or(self.cursor_blink_legacy)
     }
 
+    pub fn cursor_color(&self) -> Option<&str> {
+        self.window
+            .cursor_color
+            .as_deref()
+            .or(self.cursor_color_legacy.as_deref())
+    }
+
+    pub fn cursor_text_color(&self) -> Option<&str> {
+        self.window
+            .cursor_text_color
+            .as_deref()
+            .or(self.cursor_text_color_legacy.as_deref())
+    }
+
     pub fn scroll_on_output(&self) -> Option<bool> {
         self.window
             .scroll_on_output
@@ -335,8 +374,17 @@ impl Config {
 }
 
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() == 6 {
+    let hex = hex.strip_prefix('#').unwrap_or(hex).trim();
+    if hex.len() == 3 {
+        let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
+        let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
+        let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
+        Some(Color {
+            r: r * 17,
+            g: g * 17,
+            b: b * 17,
+        })
+    } else if hex.len() == 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
@@ -483,5 +531,78 @@ mod tests {
         "#;
         let cfg_overflow: Config = toml::from_str(toml_overflow).unwrap();
         assert_eq!(cfg_overflow.opacity(), 1.0);
+    }
+
+    #[test]
+    fn test_config_cursor_color_parsing() {
+        // [window] section
+        let toml1 = r##"
+            [window]
+            cursor_color = "#ff0000"
+            cursor_text_color = "#00ff00"
+        "##;
+        let cfg1: Config = toml::from_str(toml1).unwrap();
+        assert_eq!(cfg1.cursor_color(), Some("#ff0000"));
+        assert_eq!(cfg1.cursor_text_color(), Some("#00ff00"));
+
+        // [window] aliases: cursor and cursor_text / cursor_fg
+        let toml2 = r##"
+            [window]
+            cursor = "#fff"
+            cursor_text = "#000"
+        "##;
+        let cfg2: Config = toml::from_str(toml2).unwrap();
+        assert_eq!(cfg2.cursor_color(), Some("#fff"));
+        assert_eq!(cfg2.cursor_text_color(), Some("#000"));
+
+        // [window] section with "inverted" / "default"
+        let toml3 = r##"
+            [window]
+            cursor_color = "inverted"
+            cursor_text_color = "default"
+        "##;
+        let cfg3: Config = toml::from_str(toml3).unwrap();
+        assert_eq!(cfg3.cursor_color(), Some("inverted"));
+        assert_eq!(cfg3.cursor_text_color(), Some("default"));
+
+        // Legacy flat config
+        let toml4 = r##"
+            cursor_color = "#123456"
+            cursor_text_color = "#654321"
+        "##;
+        let cfg4: Config = toml::from_str(toml4).unwrap();
+        assert_eq!(cfg4.cursor_color(), Some("#123456"));
+        assert_eq!(cfg4.cursor_text_color(), Some("#654321"));
+
+        // Legacy flat aliases
+        let toml5 = r##"
+            cursor = "#abcdef"
+            cursor_fg = "#fedcba"
+        "##;
+        let cfg5: Config = toml::from_str(toml5).unwrap();
+        assert_eq!(cfg5.cursor_color(), Some("#abcdef"));
+        assert_eq!(cfg5.cursor_text_color(), Some("#fedcba"));
+    }
+
+    #[test]
+    fn test_parse_hex_color() {
+        assert_eq!(
+            parse_hex_color("#fff"),
+            Some(Color {
+                r: 255,
+                g: 255,
+                b: 255
+            })
+        );
+        assert_eq!(parse_hex_color("000"), Some(Color { r: 0, g: 0, b: 0 }));
+        assert_eq!(
+            parse_hex_color("#ff0000"),
+            Some(Color { r: 255, g: 0, b: 0 })
+        );
+        assert_eq!(
+            parse_hex_color("#00ff00ff"),
+            Some(Color { r: 0, g: 255, b: 0 })
+        );
+        assert_eq!(parse_hex_color("invalid"), None);
     }
 }

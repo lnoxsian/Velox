@@ -128,16 +128,8 @@ fn test_contiguous_scrollback_chunk_representation() {
     let mut chunk = Chunk::new();
     let default_cell = Cell {
         character: 'X',
-        foreground: Color {
-            r: 255,
-            g: 0,
-            b: 0,
-        },
-        background: Color {
-            r: 0,
-            g: 0,
-            b: 0,
-        },
+        foreground: Color { r: 255, g: 0, b: 0 },
+        background: Color { r: 0, g: 0, b: 0 },
         flags: CellFlags::empty(),
     };
 

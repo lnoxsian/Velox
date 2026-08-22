@@ -54,46 +54,7 @@ impl Terminal {
     pub fn new(width: usize, height: usize) -> Self {
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
-        let mut theme = Theme::new();
-        if let Some(fg) = config.default_fg()
-            && let Some(c) = crate::config::config::parse_hex_color(fg)
-        {
-            theme.default_fg = c;
-        }
-        if let Some(bg) = config.default_bg()
-            && let Some(c) = crate::config::config::parse_hex_color(bg)
-        {
-            theme.default_bg = c;
-        }
-        if let Some(colors) = &config.colors {
-            let fields = [
-                (&colors.black, 0),
-                (&colors.red, 1),
-                (&colors.green, 2),
-                (&colors.yellow, 3),
-                (&colors.blue, 4),
-                (&colors.magenta, 5),
-                (&colors.cyan, 6),
-                (&colors.white, 7),
-                (&colors.bright_black, 8),
-                (&colors.bright_red, 9),
-                (&colors.bright_green, 10),
-                (&colors.bright_yellow, 11),
-                (&colors.bright_blue, 12),
-                (&colors.bright_magenta, 13),
-                (&colors.bright_cyan, 14),
-                (&colors.bright_white, 15),
-            ];
-            for (opt, idx) in &fields {
-                if let Some(hex) = opt
-                    && let Some(c) = crate::config::config::parse_hex_color(hex)
-                {
-                    theme.ansi_colors[*idx] = c;
-                }
-            }
-        }
-
-        theme.save_initial_colors();
+        let theme = Theme::from_config(&config);
 
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
