@@ -327,8 +327,23 @@ mod tests {
     #[test]
     fn test_device_attributes() {
         let mut term = Terminal::new(80, 24);
+        // Primary Device Attributes (DA1)
         term.feed(b"\x1b[c");
         assert_eq!(term.outgoing, b"\x1b[?6c");
+
+        // Secondary Device Attributes (DA2) - queried by tmux, vim, etc.
+        term.outgoing.clear();
+        term.feed(b"\x1b[>c");
+        assert_eq!(term.outgoing, b"\x1b[>0;10;0c");
+
+        term.outgoing.clear();
+        term.feed(b"\x1b[>0c");
+        assert_eq!(term.outgoing, b"\x1b[>0;10;0c");
+
+        // XTVERSION query
+        term.outgoing.clear();
+        term.feed(b"\x1b[>0q");
+        assert_eq!(term.outgoing, b"\x1bP>|Velox(0.1.9)\x1b\\");
     }
 
     #[test]

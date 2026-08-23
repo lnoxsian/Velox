@@ -10,6 +10,7 @@ pub struct AnsiParser {
     pub dcs_buf: SmallVec<[u8; 64]>,
     pub utf8_buf: SmallVec<[u8; 4]>,
     pub is_private: bool,
+    pub prefix: Option<u8>,
 }
 
 impl AnsiParser {
@@ -22,6 +23,7 @@ impl AnsiParser {
             dcs_buf: SmallVec::new(),
             utf8_buf: SmallVec::new(),
             is_private: false,
+            prefix: None,
         }
     }
 
@@ -31,6 +33,7 @@ impl AnsiParser {
                 if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
+                    self.prefix = None;
                 } else if matches!(byte, 0x08 | 0x09 | 0x0a | 0x0d | 0x0e | 0x0f) {
                     Self::execute(byte, terminal);
                 } else if byte >= 0x20 {
@@ -43,6 +46,7 @@ impl AnsiParser {
                     self.params.clear();
                     self.param_buf.clear();
                     self.is_private = false;
+                    self.prefix = None;
                 } else if byte == b']' {
                     self.state = ParserState::OSC;
                     self.osc_buf.clear();
@@ -110,18 +114,22 @@ impl AnsiParser {
                 }
             }
             ParserState::CSI => {
-                if byte == b'?' || byte == b'>' || byte == b'<' || byte == b'=' {
+                if byte == b'?' || byte == b'>' || byte == b'<' || byte == b'=' || byte == b'!' {
                     self.is_private = true;
+                    if self.prefix.is_none() && self.param_buf.is_empty() {
+                        self.prefix = Some(byte);
+                    }
                     self.param_buf.push(byte);
                 } else if (0x20..=0x3f).contains(&byte) {
                     self.param_buf.push(byte);
                 } else if (0x40..=0x7e).contains(&byte) {
                     self.parse_params();
-                    crate::ansi::csi::handle_csi(byte, &self.params, self.is_private, terminal);
+                    crate::ansi::csi::handle_csi(byte, &self.params, self.prefix, terminal);
                     self.state = ParserState::Ground;
                 } else if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
+                    self.prefix = None;
                 } else {
                     self.state = ParserState::Ground;
                 }

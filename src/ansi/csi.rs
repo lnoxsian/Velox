@@ -1,11 +1,11 @@
 use crate::screen::cell::{CellFlags, Color};
 use crate::terminal::terminal::Terminal;
 
-pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut Terminal) {
+pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut Terminal) {
     match action {
         b'm' => {
             // Select Graphic Rendition
-            if is_private {
+            if prefix.is_some() {
                 return;
             } // Private sequences (e.g. XTMODKEYS) are not SGR
             if params.is_empty() {
@@ -196,7 +196,7 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
         b'h' | b'l' => {
             // Modes
             let active = action == b'h';
-            if is_private {
+            if prefix == Some(b'?') {
                 for &mode in params {
                     match mode {
                         1 => {
@@ -283,7 +283,20 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
         }
         b'c' => {
             // Device Attributes (DA)
-            terminal.send_to_shell(b"\x1b[?6c");
+            match prefix {
+                Some(b'>') => {
+                    // Secondary Device Attributes (DA2): `CSI > c` or `CSI > 0 c`
+                    // Tmux and other tools probe DA2 on session attach/connect.
+                    terminal.send_to_shell(b"\x1b[>0;10;0c");
+                }
+                Some(b'=') => {
+                    // Tertiary Device Attributes (DA3): `CSI = c`
+                }
+                _ => {
+                    // Primary Device Attributes (DA1): `CSI c` or `CSI 0 c`
+                    terminal.send_to_shell(b"\x1b[?6c");
+                }
+            }
         }
         b's' => {
             // Save Cursor
@@ -355,33 +368,38 @@ pub fn handle_csi(action: u8, params: &[u16], is_private: bool, terminal: &mut T
             terminal.active_grid_mut().delete_lines(n, fg, bg);
         }
         b'q' => {
-            // Set Cursor Style (DECSCUSR)
-            let param = params.first().copied().unwrap_or(0);
-            let default_shape = terminal.configured_cursor_shape;
-            let active = terminal.active_grid_mut();
-            match param {
-                0 => {
-                    active.cursor.shape = default_shape;
-                    active.cursor.visible = true;
+            if prefix == Some(b'>') {
+                // XTVERSION - Query Terminal Name and Version (`\x1b[>q` or `\x1b[>0q`)
+                terminal.send_to_shell(b"\x1bP>|Velox(0.1.9)\x1b\\");
+            } else if prefix.is_none() || prefix == Some(b' ') {
+                // Set Cursor Style (DECSCUSR)
+                let param = params.first().copied().unwrap_or(0);
+                let default_shape = terminal.configured_cursor_shape;
+                let active = terminal.active_grid_mut();
+                match param {
+                    0 => {
+                        active.cursor.shape = default_shape;
+                        active.cursor.visible = true;
+                    }
+                    1 | 2 => {
+                        active.cursor.shape = crate::screen::cursor::CursorShape::Block;
+                        active.cursor.visible = true;
+                    }
+                    3 | 4 => {
+                        active.cursor.shape = crate::screen::cursor::CursorShape::Underline;
+                        active.cursor.visible = true;
+                    }
+                    5 | 6 => {
+                        active.cursor.shape = crate::screen::cursor::CursorShape::Beam;
+                        active.cursor.visible = true;
+                    }
+                    _ => {}
                 }
-                1 | 2 => {
-                    active.cursor.shape = crate::screen::cursor::CursorShape::Block;
-                    active.cursor.visible = true;
-                }
-                3 | 4 => {
-                    active.cursor.shape = crate::screen::cursor::CursorShape::Underline;
-                    active.cursor.visible = true;
-                }
-                5 | 6 => {
-                    active.cursor.shape = crate::screen::cursor::CursorShape::Beam;
-                    active.cursor.visible = true;
-                }
-                _ => {}
             }
         }
         b'p'
             // DECRPM - DEC Private Mode Report
-            if is_private && params.first() == Some(&2026) => {
+            if prefix == Some(b'?') && params.first() == Some(&2026) => {
                 let status = if terminal.synchronized_output { 1 } else { 2 };
                 let response = format!("\x1b[?2026;{}$y", status);
                 terminal.send_to_shell(response.as_bytes());
