@@ -64,7 +64,7 @@ impl GlyphKey {
     }
 
     #[inline(always)]
-    pub fn ascii_index(&self) -> Option<usize> {
+    pub fn ascii_index(self) -> Option<usize> {
         let cp = self.codepoint as u32;
         if cp < 128 {
             let style = (self.bold as usize) | ((self.italic as usize) << 1);
@@ -249,21 +249,21 @@ impl GlyphCache {
     }
 
     #[inline(always)]
-    pub fn get(&self, key: &GlyphKey) -> Option<GlyphRef> {
+    pub fn get(&self, key: GlyphKey) -> Option<GlyphRef> {
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx]
         } else {
-            self.unicode_table.get(key).copied()
+            self.unicode_table.get(&key).copied()
         }
     }
 
     /// Get cached glyph or rasterize and store into atlas.
     pub fn get_or_rasterize(&mut self, key: GlyphKey) -> Option<GlyphRef> {
-        if let Some(g_ref) = self.get(&key) {
+        if let Some(g_ref) = self.get(key) {
             return Some(g_ref);
         }
 
-        let g_ref = self.rasterize_glyph(&key)?;
+        let g_ref = self.rasterize_glyph(key)?;
 
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx] = Some(g_ref);
@@ -282,7 +282,7 @@ impl GlyphCache {
         Some(g_ref)
     }
 
-    fn rasterize_glyph(&mut self, key: &GlyphKey) -> Option<GlyphRef> {
+    fn rasterize_glyph(&mut self, key: GlyphKey) -> Option<GlyphRef> {
         let base_target_width = if key.wide {
             self.cell_width * 2
         } else {

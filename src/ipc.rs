@@ -19,6 +19,12 @@ pub enum IpcMessage {
         title: Option<String>,
         hold: Option<bool>,
     },
+    CreateTab {
+        working_directory: Option<String>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        hold: Option<bool>,
+    },
     Ping,
 }
 
@@ -192,6 +198,24 @@ fn handle_client_stream(
             hold,
         } => {
             let event = CustomEvent::IpcCreateWindow {
+                working_directory,
+                command,
+                title,
+                hold,
+            };
+            if proxy.send_event(event).is_ok() {
+                IpcResponse::Ok
+            } else {
+                IpcResponse::Error("Event loop shut down".to_string())
+            }
+        }
+        IpcMessage::CreateTab {
+            working_directory,
+            command,
+            title,
+            hold,
+        } => {
+            let event = CustomEvent::IpcCreateTab {
                 working_directory,
                 command,
                 title,

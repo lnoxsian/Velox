@@ -32,7 +32,7 @@ impl AnsiParser {
                     self.state = ParserState::Escape;
                     self.is_private = false;
                 } else if matches!(byte, 0x08 | 0x09 | 0x0a | 0x0d | 0x0e | 0x0f) {
-                    self.execute(byte, terminal);
+                    Self::execute(byte, terminal);
                 } else if byte >= 0x20 {
                     self.handle_char_byte(byte, terminal);
                 }
@@ -149,7 +149,7 @@ impl AnsiParser {
         }
     }
 
-    pub fn execute(&mut self, byte: u8, terminal: &mut crate::terminal::terminal::Terminal) {
+    pub fn execute(byte: u8, terminal: &mut crate::terminal::terminal::Terminal) {
         match byte {
             0x0a => {
                 let bg = terminal.active_grid().default_bg;

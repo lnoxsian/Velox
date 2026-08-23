@@ -6,14 +6,11 @@ pub mod framebuffer;
 pub mod glyph;
 pub mod primitives;
 pub mod raster;
-pub mod stats;
 
-#[allow(unused_imports)]
 pub use color::{PackedColor, PrecomputedPalette};
 pub use damage::DamageMap;
 pub use framebuffer::Framebuffer;
 pub use glyph::{GlyphCache, GlyphKey};
-pub use stats::RenderStats;
 
 use crate::screen::cell::{Cell, CellFlags};
 use crate::screen::cursor::CursorShape;
@@ -32,8 +29,6 @@ pub struct CpuRenderer {
     pub glyph_cache: GlyphCache,
     pub damage: DamageMap,
     pub palette: PrecomputedPalette,
-    pub stats: RenderStats,
-    pub enable_stats: bool,
     pub viewport_width: u32,
     pub viewport_height: u32,
     prev_theme_fg: crate::screen::cell::Color,
@@ -41,12 +36,14 @@ pub struct CpuRenderer {
     prev_ansi_colors: [crate::screen::cell::Color; 16],
     prev_cursor_color: Option<crate::screen::cell::Color>,
     prev_cursor_text_color: Option<crate::screen::cell::Color>,
+    prev_tab_accent_color: Option<crate::screen::cell::Color>,
     bold_is_bright: bool,
     prev_scroll_offset: usize,
     pub start_time: Instant,
     pub prev_blink_on: bool,
     pub opacity: f32,
     prev_opacity: f32,
+    prev_tab_bar_hash: u64,
 }
 
 impl CpuRenderer {
@@ -73,8 +70,6 @@ impl CpuRenderer {
             glyph_cache,
             damage: DamageMap::new(rows),
             palette,
-            stats: RenderStats::default(),
-            enable_stats: false,
             viewport_width: width,
             viewport_height: height,
             prev_theme_fg: theme.default_fg,
@@ -82,12 +77,14 @@ impl CpuRenderer {
             prev_ansi_colors: theme.ansi_colors,
             prev_cursor_color: theme.cursor_color,
             prev_cursor_text_color: theme.cursor_text_color,
+            prev_tab_accent_color: theme.tab_accent_color,
             bold_is_bright,
             prev_scroll_offset: 0,
             start_time: Instant::now(),
             prev_blink_on: true,
             opacity,
             prev_opacity: opacity,
+            prev_tab_bar_hash: 0,
         }
     }
 
@@ -123,7 +120,9 @@ impl CpuRenderer {
         self.damage.mark_all();
     }
 
-    /// Render terminal grid into persistent framebuffer and copy to Softbuffer target slice.
+    /// Backwards-compatible render entry point (no tab bar). Delegates to `render_with_tab_bar`.
+    /// Only used in unit tests.
+    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -139,12 +138,38 @@ impl CpuRenderer {
         opacity: f32,
         target_buffer: &mut [u32],
     ) {
-        let start_time = if self.enable_stats {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        self.render_with_tab_bar(
+            cells,
+            grid,
+            theme,
+            padding_x,
+            padding_y,
+            cursor_visible,
+            cursor_shape,
+            display_cursor_x,
+            is_focused,
+            opacity,
+            target_buffer,
+            None,
+        );
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_tab_bar(
+        &mut self,
+        cells: &[Cell],
+        grid: &Grid,
+        theme: &Theme,
+        padding_x: f32,
+        padding_y: f32,
+        cursor_visible: bool,
+        cursor_shape: CursorShape,
+        display_cursor_x: usize,
+        is_focused: bool,
+        opacity: f32,
+        target_buffer: &mut [u32],
+        tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
+    ) {
         let opacity = opacity.clamp(0.0, 1.0);
 
         // 1. Sync theme updates
@@ -153,6 +178,7 @@ impl CpuRenderer {
             || theme.ansi_colors != self.prev_ansi_colors
             || theme.cursor_color != self.prev_cursor_color
             || theme.cursor_text_color != self.prev_cursor_text_color
+            || theme.tab_accent_color != self.prev_tab_accent_color
             || (opacity - self.prev_opacity).abs() > f32::EPSILON
         {
             self.palette = PrecomputedPalette::new(theme, opacity);
@@ -161,6 +187,7 @@ impl CpuRenderer {
             self.prev_ansi_colors = theme.ansi_colors;
             self.prev_cursor_color = theme.cursor_color;
             self.prev_cursor_text_color = theme.cursor_text_color;
+            self.prev_tab_accent_color = theme.tab_accent_color;
             self.opacity = opacity;
             self.prev_opacity = opacity;
             self.damage.mark_all();
@@ -172,7 +199,8 @@ impl CpuRenderer {
             self.prev_scroll_offset = grid.scroll_offset;
         }
 
-        self.damage.sync_from_grid(&grid.damage.dirty_rows);
+        self.damage
+            .sync_from_grid(&grid.damage.dirty_rows, grid.damage.full_redraw);
         self.damage
             .update_cursor(display_cursor_x, grid.cursor.y, cursor_visible);
 
@@ -204,8 +232,27 @@ impl CpuRenderer {
             }
         }
 
-        // If no damage, directly copy current framebuffer to surface and return
-        if !self.damage.has_damage() {
+        // Compute a lightweight hash of the tab bar state to detect changes
+        let new_tab_bar_hash: u64 = tab_bar_info
+            .map(|tb| {
+                let mut h: u64 = tb.tabs.len() as u64;
+                for t in &tb.tabs {
+                    h = h.wrapping_mul(0x9e3779b97f4a7c15);
+                    h ^= t.is_active as u64
+                        | ((t.is_hovered as u64) << 1)
+                        | ((t.is_close_hovered as u64) << 2);
+                    h ^= t.title.len() as u64;
+                    for &b in t.title.as_bytes().iter().take(16) {
+                        h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(b as u64);
+                    }
+                }
+                h ^ (tb.is_new_tab_hovered as u64)
+            })
+            .unwrap_or(0);
+        let tab_bar_dirty = new_tab_bar_hash != self.prev_tab_bar_hash;
+
+        // If no damage and tab bar unchanged, directly copy framebuffer to surface
+        if !self.damage.has_damage() && !tab_bar_dirty {
             if target_buffer.len() == self.framebuffer.pixels.len() {
                 target_buffer.copy_from_slice(self.framebuffer.as_slice());
             }
@@ -214,22 +261,23 @@ impl CpuRenderer {
 
         let cell_w = self.glyph_cache.cell_width;
         let cell_h = self.glyph_cache.cell_height;
+        let bar_h = if let Some(tb) = tab_bar_info {
+            tb.height as u32
+        } else {
+            0
+        };
         let px_offset = padding_x as u32;
-        let py_offset = padding_y as u32;
+        let py_offset = padding_y as u32 + bar_h;
 
         if self.damage.full_redraw {
             self.framebuffer.clear(self.palette.default_bg);
         }
-
-        let mut dirty_rows_count = 0;
-        let mut dirty_cells_count = 0;
 
         // 3. Render each dirty row
         for y in 0..grid_h {
             if !self.damage.is_dirty(y) {
                 continue;
             }
-            dirty_rows_count += 1;
 
             let abs_y = y + history_len;
             let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
@@ -256,7 +304,6 @@ impl CpuRenderer {
             let mut in_span = false;
 
             for (col, cell) in row_cells.iter().enumerate() {
-                dirty_cells_count += 1;
                 let is_selected = if is_row_in_selection {
                     if sel_min_abs_y == sel_max_abs_y {
                         col >= sel_min_x && col <= sel_max_x
@@ -483,6 +530,184 @@ impl CpuRenderer {
             }
         }
 
+        // 4.5. Render Tab Bar (only when content changed or full redraw forced)
+        if (tab_bar_dirty || self.damage.full_redraw)
+            && let Some(tab_bar) = tab_bar_info
+        {
+            let bar_h = tab_bar.height as u32;
+            let tab_count = tab_bar.tabs.len();
+            if tab_count > 0 && bar_h > 0 {
+                let tab_w = tab_bar.compute_tab_width(self.viewport_width as f32);
+
+                let tab_bar_bg = self.palette.tab_bar_bg;
+                self.framebuffer
+                    .fill_span(0, 0, self.viewport_width, bar_h, tab_bar_bg);
+
+                for (i, tab) in tab_bar.tabs.iter().enumerate() {
+                    let tab_x = (i as f32 * tab_w) as u32;
+                    let actual_w = (tab_w - 2.0).max(1.0) as u32;
+
+                    let tab_bg = if tab.is_active {
+                        self.palette.default_bg
+                    } else if tab.is_hovered {
+                        self.palette.tab_hover_bg
+                    } else {
+                        self.palette.tab_inactive_bg
+                    };
+                    self.framebuffer
+                        .fill_span(tab_x, 0, actual_w, bar_h, tab_bg);
+
+                    if tab.is_active {
+                        let accent = self.palette.tab_accent;
+                        self.framebuffer.fill_span(tab_x, 0, actual_w, 2, accent);
+                    }
+
+                    // Text title
+                    let text_fg = if tab.is_active {
+                        self.palette.default_fg
+                    } else {
+                        self.palette.tab_inactive_fg
+                    };
+
+                    let close_space = if tab_bar.show_close_button { 24.0 } else { 8.0 };
+                    let max_text_w = (actual_w as f32 - 16.0 - close_space).max(0.0);
+                    let max_chars = (max_text_w / (cell_w as f32)).floor() as usize;
+
+                    let text_start_x = tab_x + 8;
+                    let text_start_y = (bar_h.saturating_sub(cell_h)) / 2;
+
+                    let char_count = tab.title.chars().count();
+                    if char_count <= max_chars {
+                        for (c_idx, ch_char) in tab.title.chars().enumerate() {
+                            let char_px = text_start_x + (c_idx as u32) * cell_w;
+                            let key = GlyphKey::new(ch_char, false, false, false);
+                            if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                                blit_alpha_glyph(
+                                    &mut self.framebuffer,
+                                    char_px,
+                                    text_start_y,
+                                    mask,
+                                    glyph_ref.width,
+                                    glyph_ref.height,
+                                    text_fg,
+                                );
+                            }
+                        }
+                    } else if max_chars > 1 {
+                        for (c_idx, ch_char) in tab.title.chars().take(max_chars - 1).enumerate() {
+                            let char_px = text_start_x + (c_idx as u32) * cell_w;
+                            let key = GlyphKey::new(ch_char, false, false, false);
+                            if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                                blit_alpha_glyph(
+                                    &mut self.framebuffer,
+                                    char_px,
+                                    text_start_y,
+                                    mask,
+                                    glyph_ref.width,
+                                    glyph_ref.height,
+                                    text_fg,
+                                );
+                            }
+                        }
+                        let char_px = text_start_x + ((max_chars - 1) as u32) * cell_w;
+                        let key = GlyphKey::new('…', false, false, false);
+                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                            let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                            blit_alpha_glyph(
+                                &mut self.framebuffer,
+                                char_px,
+                                text_start_y,
+                                mask,
+                                glyph_ref.width,
+                                glyph_ref.height,
+                                text_fg,
+                            );
+                        }
+                    } else if max_chars == 1
+                        && let Some(ch_char) = tab.title.chars().next()
+                    {
+                        let char_px = text_start_x;
+                        let key = GlyphKey::new(ch_char, false, false, false);
+                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                            let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                            blit_alpha_glyph(
+                                &mut self.framebuffer,
+                                char_px,
+                                text_start_y,
+                                mask,
+                                glyph_ref.width,
+                                glyph_ref.height,
+                                text_fg,
+                            );
+                        }
+                    }
+
+                    // Close button
+                    if tab_bar.show_close_button {
+                        let close_x = tab_x + actual_w.saturating_sub(20);
+                        let close_y = (bar_h.saturating_sub(cell_h)) / 2;
+                        let close_fg = if tab.is_close_hovered {
+                            self.palette.ansi_colors[1]
+                        } else {
+                            self.palette.tab_close_fg
+                        };
+                        let key = GlyphKey::new('×', false, false, false);
+                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                            let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                            blit_alpha_glyph(
+                                &mut self.framebuffer,
+                                close_x,
+                                close_y,
+                                mask,
+                                glyph_ref.width,
+                                glyph_ref.height,
+                                close_fg,
+                            );
+                        }
+                    }
+                }
+
+                // New tab button '+'
+                if tab_bar.show_new_tab {
+                    let btn_x = (tab_count as f32 * tab_w + 4.0) as u32;
+                    let btn_w = 24u32;
+                    let btn_h = bar_h.saturating_sub(4);
+                    let btn_y = 2u32;
+
+                    if tab_bar.is_new_tab_hovered {
+                        self.framebuffer
+                            .fill_span(btn_x, btn_y, btn_w, btn_h, self.palette.tab_hover_bg);
+                    }
+
+                    let plus_x = btn_x + (btn_w.saturating_sub(cell_w)) / 2;
+                    let plus_y = (bar_h.saturating_sub(cell_h)) / 2;
+                    let plus_fg = if tab_bar.is_new_tab_hovered {
+                        self.palette.default_fg
+                    } else {
+                        self.palette.tab_inactive_fg
+                    };
+                    let key = GlyphKey::new('+', false, false, false);
+                    if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
+                        let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                        blit_alpha_glyph(
+                            &mut self.framebuffer,
+                            plus_x,
+                            plus_y,
+                            mask,
+                            glyph_ref.width,
+                            glyph_ref.height,
+                            plus_fg,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Update tab bar hash for next frame
+        self.prev_tab_bar_hash = new_tab_bar_hash;
+
         // 5. Present to Softbuffer target slice
         if target_buffer.len() == self.framebuffer.pixels.len() {
             target_buffer.copy_from_slice(self.framebuffer.as_slice());
@@ -490,11 +715,5 @@ impl CpuRenderer {
 
         // 6. Clear damage
         self.damage.clear();
-
-        if let Some(start) = start_time {
-            self.stats.frame_time_ns = start.elapsed().as_nanos() as u64;
-            self.stats.dirty_rows = dirty_rows_count;
-            self.stats.dirty_cells = dirty_cells_count;
-        }
     }
 }

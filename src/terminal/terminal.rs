@@ -229,7 +229,10 @@ impl Terminal {
     }
 
     pub fn set_alt_screen(&mut self, active: bool) {
-        self.is_alt_screen = active;
+        if self.is_alt_screen != active {
+            self.is_alt_screen = active;
+            self.active_grid_mut().mark_all_dirty();
+        }
     }
 
     pub fn active_grid(&self) -> &Grid {
@@ -806,5 +809,31 @@ mod tests {
         term.feed(b"Another line\n");
         // scroll_offset should not be reset to 0; it should increase to track new scrollback lines
         assert!(term.grid.scroll_offset >= 3);
+    }
+
+    #[test]
+    fn test_alt_screen_damage_tracking() {
+        let mut term = Terminal::new(80, 24);
+
+        // Clear initial damage on primary grid
+        term.grid.clear_damage();
+        assert!(!term.grid.damage.full_redraw);
+        assert!(!term.grid.damage.dirty_rows.iter().any(|&d| d));
+
+        // Enter alternate screen (e.g. Neovim startup via CSI ? 1049 h)
+        term.feed(b"\x1b[?1049h");
+        assert!(term.is_alt_screen);
+        assert!(term.alt_grid.damage.full_redraw);
+        assert!(term.alt_grid.damage.dirty_rows.iter().all(|&d| d));
+
+        // Clear damage on alt grid while inside app
+        term.alt_grid.clear_damage();
+        assert!(!term.alt_grid.damage.full_redraw);
+
+        // Exit alternate screen (e.g. Neovim exit via CSI ? 1049 l)
+        term.feed(b"\x1b[?1049l");
+        assert!(!term.is_alt_screen);
+        assert!(term.grid.damage.full_redraw);
+        assert!(term.grid.damage.dirty_rows.iter().all(|&d| d));
     }
 }

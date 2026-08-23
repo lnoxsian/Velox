@@ -53,10 +53,15 @@ impl DamageMap {
     }
 
     /// Ingest damage flags from the active terminal grid.
-    pub fn sync_from_grid(&mut self, grid_dirty: &[bool]) {
-        for (dst, &src) in self.dirty_rows.iter_mut().zip(grid_dirty.iter()) {
-            if src {
-                *dst = true;
+    pub fn sync_from_grid(&mut self, grid_dirty: &[bool], grid_full_redraw: bool) {
+        if grid_full_redraw {
+            self.full_redraw = true;
+            self.dirty_rows.fill(true);
+        } else {
+            for (dst, &src) in self.dirty_rows.iter_mut().zip(grid_dirty.iter()) {
+                if src {
+                    *dst = true;
+                }
             }
         }
     }

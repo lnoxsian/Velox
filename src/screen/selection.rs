@@ -44,9 +44,9 @@ impl Selection {
         }
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
-    pub fn contains_fast(
-        &self,
+    pub fn contains_coords(
         min_x: usize,
         min_y: usize,
         max_x: usize,
@@ -76,7 +76,7 @@ impl Selection {
         }
 
         let ((min_x, min_y), (max_x, max_y)) = self.normalized_bounds();
-        self.contains_fast(min_x, min_y, max_x, max_y, x, y)
+        Self::contains_coords(min_x, min_y, max_x, max_y, x, y)
     }
 }
 

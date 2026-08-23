@@ -84,6 +84,16 @@ impl Grid {
         }
     }
 
+    #[inline(always)]
+    pub fn clear_damage(&mut self) {
+        self.damage.clear();
+    }
+
+    #[inline(always)]
+    pub fn mark_all_dirty(&mut self) {
+        self.damage.mark_all();
+    }
+
     pub fn clamp_cursor(&mut self) {
         if self.height > 0 {
             self.cursor.y = self.cursor.y.min(self.height - 1);
@@ -375,8 +385,8 @@ impl Grid {
                 for cell in &mut self.cells {
                     *cell = default_cell;
                 }
+                self.damage.mark_all();
                 for y in 0..self.height {
-                    self.damage.mark_dirty(y);
                     if y < self.row_wrapped.len() {
                         self.row_wrapped[y] = false;
                     }

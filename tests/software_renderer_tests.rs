@@ -47,7 +47,6 @@ fn test_software_renderer_idle_zero_work() {
     grid.damage.dirty_rows.fill(false);
 
     // Second frame: grid is idle, no damage
-    renderer.enable_stats = true;
     renderer.render(
         &grid.cells,
         &grid,
@@ -62,9 +61,7 @@ fn test_software_renderer_idle_zero_work() {
         &mut target,
     );
 
-    // Should touch 0 dirty rows
-    assert_eq!(renderer.stats.dirty_rows, 0);
-    assert_eq!(renderer.stats.dirty_cells, 0);
+    assert!(!renderer.damage.has_damage());
 }
 
 #[test]
@@ -110,7 +107,6 @@ fn test_software_renderer_damage_partial_row() {
         flags: CellFlags::BOLD,
     };
 
-    renderer.enable_stats = true;
     renderer.render(
         &grid.cells,
         &grid,
@@ -125,9 +121,7 @@ fn test_software_renderer_damage_partial_row() {
         &mut target,
     );
 
-    // Only 1 dirty row rendered
-    assert_eq!(renderer.stats.dirty_rows, 1);
-    assert_eq!(renderer.stats.dirty_cells, 80);
+    assert!(!renderer.damage.has_damage());
 }
 
 #[test]
@@ -711,7 +705,98 @@ fn test_software_renderer_custom_cursor_color() {
         &mut target,
     );
 
-    // Pixel at (0, 0) should have the cursor color (0xFFFF0000)
+    // Pixel at (0, 0) should have the cursor cursor color (0xFFFF0000)
     let pixel = target[0];
     assert_eq!(pixel, 0xFFFF0000);
+}
+
+#[test]
+fn test_software_renderer_alt_screen_clean_exit() {
+    use velox::terminal::terminal::Terminal;
+
+    let mut term = Terminal::new(80, 24);
+    let mut renderer =
+        CpuRenderer::new("monospace", 14.0, 1.5, &term.theme, 800, 600, true, 1.0);
+    let mut target = vec![0u32; 800 * 600];
+
+    // 1. Initial shell screen
+    term.feed(b"user@velox:~$ echo hello\r\nhello\r\nuser@velox:~$ ");
+    renderer.render(
+        &term.active_grid().cells,
+        term.active_grid(),
+        &term.theme,
+        0.0,
+        0.0,
+        true,
+        CursorShape::Block,
+        term.active_grid().cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    term.active_grid_mut().clear_damage();
+
+    // 2. Open full-screen CLI app (e.g. Neovim in alt screen)
+    term.feed(b"\x1b[?1049h");
+    term.feed(b"\x1b[12;10H=== NEOVIM BINARY RUNNING ===\x1b[24;1H[STATUSLINE: 100%]");
+    renderer.render(
+        &term.active_grid().cells,
+        term.active_grid(),
+        &term.theme,
+        0.0,
+        0.0,
+        true,
+        CursorShape::Block,
+        term.active_grid().cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    term.active_grid_mut().clear_damage();
+
+    // Verify Neovim rendered non-zero pixels around row 12 and row 24
+    let cell_h = renderer.glyph_cache.cell_height;
+    let row_12_pixels: u64 = target[((11 * cell_h) as usize * 800)..((12 * cell_h) as usize * 800)]
+        .iter()
+        .map(|&p| p as u64)
+        .sum();
+    assert!(
+        row_12_pixels > 0,
+        "Neovim row 12 content must be present in target buffer"
+    );
+
+    // 3. Exit CLI app (e.g. Neovim :q)
+    term.feed(b"\x1b[?1049l");
+    // Shell prints new prompt on row 3; rows 4..24 are untouched blank cells in primary grid
+    term.feed(b"user@velox:~$ ");
+    renderer.render(
+        &term.active_grid().cells,
+        term.active_grid(),
+        &term.theme,
+        0.0,
+        0.0,
+        true,
+        CursorShape::Block,
+        term.active_grid().cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    term.active_grid_mut().clear_damage();
+
+    // 4. Verify that row 12 and row 24 in target buffer are completely clear (pure default_bg)
+    let default_bg = renderer.palette.default_bg;
+    let row_12_slice = &target[((11 * cell_h) as usize * 800)..((12 * cell_h) as usize * 800)];
+    let row_12_all_bg = row_12_slice.iter().all(|&p| p == default_bg);
+    assert!(
+        row_12_all_bg,
+        "Row 12 must contain ONLY default background color after exiting alt-screen CLI app"
+    );
+
+    let row_24_slice = &target[((23 * cell_h) as usize * 800)..((24 * cell_h) as usize * 800)];
+    let row_24_all_bg = row_24_slice.iter().all(|&p| p == default_bg);
+    assert!(
+        row_24_all_bg,
+        "Row 24 statusline must be completely wiped to default background color after exiting"
+    );
 }

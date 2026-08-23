@@ -11,7 +11,7 @@ pub fn handle_escape(byte: u8, terminal: &mut Terminal) {
         b'c' => {
             // RIS - Full Reset
             terminal.reset_attrs();
-            terminal.is_alt_screen = false;
+            terminal.set_alt_screen(false);
             terminal.bracketed_paste_mode = false;
             terminal.set_synchronized_output(false);
             terminal.focus_tracking = false;

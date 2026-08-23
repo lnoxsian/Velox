@@ -120,12 +120,60 @@ pub struct ConfigColors {
     pub bright_white: Option<String>,
 }
 
+/// Controls when the tab bar is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub enum TabBarVisibility {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+impl<'de> serde::Deserialize<'de> for TabBarVisibility {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.to_ascii_lowercase().as_str() {
+            "always" | "true" | "show" => Self::Always,
+            "never" | "false" | "hide" => Self::Never,
+            _ => Self::Auto,
+        })
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TabsConfig {
+    #[serde(default)]
+    pub show_tab_bar: TabBarVisibility,
+    #[serde(default)]
+    pub tab_bar_height: Option<f32>,
+    #[serde(default = "default_true")]
+    pub show_close_button: bool,
+    #[serde(default)]
+    pub show_new_tab_button: bool,
+    #[serde(
+        default,
+        alias = "tab_accent",
+        alias = "accent_color",
+        alias = "accent",
+        alias = "tab_active_accent",
+        alias = "active_tab_accent",
+        alias = "active_tab_accent_color"
+    )]
+    pub tab_accent_color: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Config {
     #[serde(default)]
     pub font: FontConfig,
     #[serde(default)]
     pub window: WindowConfig,
+    #[serde(default)]
+    pub tabs: TabsConfig,
     #[serde(default)]
     pub colors: Option<ConfigColors>,
 
@@ -253,6 +301,15 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) opacity_legacy: Option<f32>,
+    #[serde(
+        default,
+        rename = "tab_accent_color",
+        alias = "tab_accent",
+        alias = "accent_color",
+        alias = "accent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) tab_accent_color_legacy: Option<String>,
 }
 
 impl Config {
@@ -356,6 +413,29 @@ impl Config {
         self.window
             .scroll_on_keystroke
             .or(self.scroll_on_keystroke_legacy)
+    }
+
+    pub fn show_tab_bar(&self) -> TabBarVisibility {
+        self.tabs.show_tab_bar
+    }
+
+    pub fn tab_bar_height(&self) -> Option<f32> {
+        self.tabs.tab_bar_height
+    }
+
+    pub fn show_close_button(&self) -> bool {
+        self.tabs.show_close_button
+    }
+
+    pub fn show_new_tab_button(&self) -> bool {
+        self.tabs.show_new_tab_button
+    }
+
+    pub fn tab_accent_color(&self) -> Option<&str> {
+        self.tabs
+            .tab_accent_color
+            .as_deref()
+            .or(self.tab_accent_color_legacy.as_deref())
     }
 
     pub fn default_fg(&self) -> Option<&str> {
@@ -582,6 +662,38 @@ mod tests {
         let cfg5: Config = toml::from_str(toml5).unwrap();
         assert_eq!(cfg5.cursor_color(), Some("#abcdef"));
         assert_eq!(cfg5.cursor_text_color(), Some("#fedcba"));
+    }
+
+    #[test]
+    fn test_config_tab_accent_color_parsing() {
+        // [tabs] section with tab_accent_color
+        let toml1 = r##"
+            [tabs]
+            tab_accent_color = "#3b8eea"
+        "##;
+        let cfg1: Config = toml::from_str(toml1).unwrap();
+        assert_eq!(cfg1.tab_accent_color(), Some("#3b8eea"));
+
+        // [tabs] section with alias tab_accent
+        let toml2 = r##"
+            [tabs]
+            tab_accent = "#f38ba8"
+        "##;
+        let cfg2: Config = toml::from_str(toml2).unwrap();
+        assert_eq!(cfg2.tab_accent_color(), Some("#f38ba8"));
+
+        // Legacy top-level flat TOML
+        let toml3 = r##"
+            tab_accent = "#cba6f7"
+        "##;
+        let cfg3: Config = toml::from_str(toml3).unwrap();
+        assert_eq!(cfg3.tab_accent_color(), Some("#cba6f7"));
+
+        // Generated default config from defaults.rs
+        let default_cfg = crate::config::defaults::default_config();
+        assert_eq!(default_cfg.tab_accent_color(), Some("blue"));
+        let serialized = toml::to_string_pretty(&default_cfg).unwrap();
+        assert!(serialized.contains("tab_accent_color = \"blue\""));
     }
 
     #[test]

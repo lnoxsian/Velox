@@ -474,9 +474,15 @@ impl Renderer {
         padding_x: f32,
         padding_y: f32,
         opacity: f32,
+        tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
     ) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
+        let effective_padding_y = if let Some(tb) = tab_bar_info {
+            padding_y + tb.height
+        } else {
+            padding_y
+        };
 
         // Reuse the vertex buffer allocation across frames
         let mut vertices = std::mem::take(&mut self.vertices);
@@ -559,7 +565,7 @@ impl Renderer {
                 // because gl.clear_color already cleared the entire window (including margins) with default_bg + opacity.
                 if bg != theme.default_bg || is_inverted || is_block_cursor {
                     let px = padding_x + x as f32 * cw;
-                    let py = padding_y + y as f32 * ch;
+                    let py = effective_padding_y + y as f32 * ch;
                     let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
                     push_quad(
                         &mut vertices,
@@ -639,7 +645,7 @@ impl Renderer {
                 }
 
                 let px = padding_x + x as f32 * cw;
-                let py = padding_y + y as f32 * ch;
+                let py = effective_padding_y + y as f32 * ch;
                 let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
 
                 // ── Glyph ─────────────────────────────────────────────────────
@@ -877,6 +883,263 @@ impl Renderer {
                 }
 
                 x += if is_wide { 2 } else { 1 };
+            }
+        }
+
+        // ── Pass 3: Tab Bar (if visible) ───────────────────────────────────────
+        if let Some(tab_bar) = tab_bar_info {
+            let bar_h = tab_bar.height;
+            let tab_count = tab_bar.tabs.len();
+            if tab_count > 0 {
+                let tab_w = tab_bar.compute_tab_width(self.viewport_width as f32);
+
+                // 1. Tab bar background strip
+                let tab_bar_bg = Color {
+                    r: (theme.default_bg.r as f32 * 0.6) as u8,
+                    g: (theme.default_bg.g as f32 * 0.6) as u8,
+                    b: (theme.default_bg.b as f32 * 0.6) as u8,
+                };
+                push_quad(
+                    &mut vertices,
+                    0.0,
+                    0.0,
+                    self.viewport_width as f32,
+                    bar_h,
+                    wu,
+                    wv,
+                    wu,
+                    wv,
+                    tab_bar_bg,
+                    false,
+                );
+
+                // 2. Render each tab
+                for (i, tab) in tab_bar.tabs.iter().enumerate() {
+                    let tab_x = (i as f32) * tab_w;
+                    let actual_w = tab_w - 2.0;
+
+                    let tab_bg = if tab.is_active {
+                        theme.default_bg
+                    } else if tab.is_hovered {
+                        Color {
+                            r: (theme.default_bg.r as f32 * 0.85) as u8,
+                            g: (theme.default_bg.g as f32 * 0.85) as u8,
+                            b: (theme.default_bg.b as f32 * 0.85) as u8,
+                        }
+                    } else {
+                        Color {
+                            r: (theme.default_bg.r as f32 * 0.72) as u8,
+                            g: (theme.default_bg.g as f32 * 0.72) as u8,
+                            b: (theme.default_bg.b as f32 * 0.72) as u8,
+                        }
+                    };
+
+                    push_quad(
+                        &mut vertices,
+                        tab_x,
+                        0.0,
+                        actual_w,
+                        bar_h,
+                        wu,
+                        wv,
+                        wu,
+                        wv,
+                        tab_bg,
+                        false,
+                    );
+
+                    // Active tab accent line at top
+                    if tab.is_active {
+                        let accent = theme.resolve_tab_accent_color();
+                        push_quad(
+                            &mut vertices,
+                            tab_x,
+                            0.0,
+                            actual_w,
+                            2.0,
+                            wu,
+                            wv,
+                            wu,
+                            wv,
+                            accent,
+                            false,
+                        );
+                    }
+
+                    // Tab title text
+                    let text_fg = if tab.is_active {
+                        theme.default_fg
+                    } else {
+                        Color {
+                            r: (theme.default_fg.r as f32 * 0.7) as u8,
+                            g: (theme.default_fg.g as f32 * 0.7) as u8,
+                            b: (theme.default_fg.b as f32 * 0.7) as u8,
+                        }
+                    };
+
+                    let close_space = if tab_bar.show_close_button { 24.0 } else { 8.0 };
+                    let max_text_w = (actual_w - 16.0 - close_space).max(0.0);
+                    let max_chars = (max_text_w / cw).floor() as usize;
+
+                    let text_start_x = tab_x + 8.0;
+                    let text_start_y = (bar_h - ch) / 2.0;
+
+                    let char_count = tab.title.chars().count();
+                    if char_count <= max_chars {
+                        for (c_idx, ch_char) in tab.title.chars().enumerate() {
+                            let char_x = text_start_x + (c_idx as f32) * cw;
+                            let uv = self.font_loader.get_glyph_uv(ch_char, false, false, false);
+                            push_quad(
+                                &mut vertices,
+                                char_x,
+                                text_start_y,
+                                cw * uv.width_mult,
+                                ch,
+                                uv.u_min,
+                                uv.v_min,
+                                uv.u_max,
+                                uv.v_max,
+                                text_fg,
+                                uv.is_color,
+                            );
+                        }
+                    } else if max_chars > 1 {
+                        for (c_idx, ch_char) in tab.title.chars().take(max_chars - 1).enumerate() {
+                            let char_x = text_start_x + (c_idx as f32) * cw;
+                            let uv = self.font_loader.get_glyph_uv(ch_char, false, false, false);
+                            push_quad(
+                                &mut vertices,
+                                char_x,
+                                text_start_y,
+                                cw * uv.width_mult,
+                                ch,
+                                uv.u_min,
+                                uv.v_min,
+                                uv.u_max,
+                                uv.v_max,
+                                text_fg,
+                                uv.is_color,
+                            );
+                        }
+                        let char_x = text_start_x + ((max_chars - 1) as f32) * cw;
+                        let uv = self.font_loader.get_glyph_uv('…', false, false, false);
+                        push_quad(
+                            &mut vertices,
+                            char_x,
+                            text_start_y,
+                            cw * uv.width_mult,
+                            ch,
+                            uv.u_min,
+                            uv.v_min,
+                            uv.u_max,
+                            uv.v_max,
+                            text_fg,
+                            uv.is_color,
+                        );
+                    } else if max_chars == 1
+                        && let Some(ch_char) = tab.title.chars().next()
+                    {
+                        let char_x = text_start_x;
+                        let uv = self.font_loader.get_glyph_uv(ch_char, false, false, false);
+                        push_quad(
+                            &mut vertices,
+                            char_x,
+                            text_start_y,
+                            cw * uv.width_mult,
+                            ch,
+                            uv.u_min,
+                            uv.v_min,
+                            uv.u_max,
+                            uv.v_max,
+                            text_fg,
+                            uv.is_color,
+                        );
+                    }
+
+                    // Close button
+                    if tab_bar.show_close_button {
+                        let close_x = tab_x + actual_w - 20.0;
+                        let close_y = (bar_h - ch) / 2.0;
+                        let close_fg = if tab.is_close_hovered {
+                            theme.ansi_colors[1]
+                        } else {
+                            Color {
+                                r: (theme.default_fg.r as f32 * 0.6) as u8,
+                                g: (theme.default_fg.g as f32 * 0.6) as u8,
+                                b: (theme.default_fg.b as f32 * 0.6) as u8,
+                            }
+                        };
+                        let uv = self.font_loader.get_glyph_uv('×', false, false, false);
+                        push_quad(
+                            &mut vertices,
+                            close_x,
+                            close_y,
+                            cw * uv.width_mult,
+                            ch,
+                            uv.u_min,
+                            uv.v_min,
+                            uv.u_max,
+                            uv.v_max,
+                            close_fg,
+                            uv.is_color,
+                        );
+                    }
+                }
+
+                // 3. New Tab Button '+'
+                if tab_bar.show_new_tab {
+                    let btn_x = (tab_count as f32) * tab_w + 4.0;
+                    let btn_w = 24.0;
+                    let btn_h = bar_h - 4.0;
+                    let btn_y = 2.0;
+
+                    if tab_bar.is_new_tab_hovered {
+                        let hover_bg = Color {
+                            r: (theme.default_bg.r as f32 * 0.85) as u8,
+                            g: (theme.default_bg.g as f32 * 0.85) as u8,
+                            b: (theme.default_bg.b as f32 * 0.85) as u8,
+                        };
+                        push_quad(
+                            &mut vertices,
+                            btn_x,
+                            btn_y,
+                            btn_w,
+                            btn_h,
+                            wu,
+                            wv,
+                            wu,
+                            wv,
+                            hover_bg,
+                            false,
+                        );
+                    }
+
+                    let plus_fg = if tab_bar.is_new_tab_hovered {
+                        theme.default_fg
+                    } else {
+                        Color {
+                            r: (theme.default_fg.r as f32 * 0.7) as u8,
+                            g: (theme.default_fg.g as f32 * 0.7) as u8,
+                            b: (theme.default_fg.b as f32 * 0.7) as u8,
+                        }
+                    };
+                    let plus_x = btn_x + (btn_w - cw) / 2.0;
+                    let plus_y = (bar_h - ch) / 2.0;
+                    let uv = self.font_loader.get_glyph_uv('+', false, false, false);
+                    push_quad(
+                        &mut vertices,
+                        plus_x,
+                        plus_y,
+                        cw * uv.width_mult,
+                        ch,
+                        uv.u_min,
+                        uv.v_min,
+                        uv.u_max,
+                        uv.v_max,
+                        plus_fg,
+                        uv.is_color,
+                    );
+                }
             }
         }
 

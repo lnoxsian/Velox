@@ -28,6 +28,9 @@ scroll_on_output = true
 scroll_on_keystroke = true
 opacity = 1.0                 # Value between 0.0 (transparent) and 1.0 (opaque)
 
+[tabs]
+tab_accent_color = "blue"      # Options: theme color names ("red", "green", "yellow", "blue", "magenta", "cyan", "white", "black", "default_fg", "default_bg", "cursor"), hex color like "#2472c8", or "default"
+
 [colors]
 default_fg = "#d4d4d4"
 default_bg = "#181818"

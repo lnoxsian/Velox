@@ -52,12 +52,15 @@ impl PackedColor {
 pub struct PrecomputedPalette {
     pub ansi_colors: [u32; 16],
     pub ansi_colors_raw: [Color; 16],
-    #[allow(dead_code)]
     pub default_fg: u32,
     pub default_bg: u32,
     pub raw_default_bg: Color,
-    #[allow(dead_code)]
-    pub opacity: f32,
+    pub tab_accent: u32,
+    pub tab_bar_bg: u32,
+    pub tab_inactive_bg: u32,
+    pub tab_hover_bg: u32,
+    pub tab_inactive_fg: u32,
+    pub tab_close_fg: u32,
 }
 
 impl PrecomputedPalette {
@@ -70,13 +73,45 @@ impl PrecomputedPalette {
             ansi_colors[i] = PackedColor::from_color(theme.ansi_colors[i]).to_u32();
             ansi_colors_raw[i] = theme.ansi_colors[i];
         }
+
+        let tab_bar_bg_raw = Color {
+            r: (theme.default_bg.r as f32 * 0.6) as u8,
+            g: (theme.default_bg.g as f32 * 0.6) as u8,
+            b: (theme.default_bg.b as f32 * 0.6) as u8,
+        };
+        let tab_inactive_bg_raw = Color {
+            r: (theme.default_bg.r as f32 * 0.72) as u8,
+            g: (theme.default_bg.g as f32 * 0.72) as u8,
+            b: (theme.default_bg.b as f32 * 0.72) as u8,
+        };
+        let tab_hover_bg_raw = Color {
+            r: (theme.default_bg.r as f32 * 0.85) as u8,
+            g: (theme.default_bg.g as f32 * 0.85) as u8,
+            b: (theme.default_bg.b as f32 * 0.85) as u8,
+        };
+        let tab_inactive_fg_raw = Color {
+            r: (theme.default_fg.r as f32 * 0.7) as u8,
+            g: (theme.default_fg.g as f32 * 0.7) as u8,
+            b: (theme.default_fg.b as f32 * 0.7) as u8,
+        };
+        let tab_close_fg_raw = Color {
+            r: (theme.default_fg.r as f32 * 0.6) as u8,
+            g: (theme.default_fg.g as f32 * 0.6) as u8,
+            b: (theme.default_fg.b as f32 * 0.6) as u8,
+        };
+
         Self {
             ansi_colors,
             ansi_colors_raw,
             default_fg: PackedColor::from_color(theme.default_fg).to_u32(),
             default_bg: PackedColor::from_premultiplied(theme.default_bg, alpha).to_u32(),
             raw_default_bg: theme.default_bg,
-            opacity,
+            tab_accent: PackedColor::from_color(theme.resolve_tab_accent_color()).to_u32(),
+            tab_bar_bg: PackedColor::from_premultiplied(tab_bar_bg_raw, alpha).to_u32(),
+            tab_inactive_bg: PackedColor::from_premultiplied(tab_inactive_bg_raw, alpha).to_u32(),
+            tab_hover_bg: PackedColor::from_premultiplied(tab_hover_bg_raw, alpha).to_u32(),
+            tab_inactive_fg: PackedColor::from_color(tab_inactive_fg_raw).to_u32(),
+            tab_close_fg: PackedColor::from_color(tab_close_fg_raw).to_u32(),
         }
     }
 

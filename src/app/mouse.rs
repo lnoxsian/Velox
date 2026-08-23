@@ -1,4 +1,5 @@
 use crate::app::app::WindowState;
+use crate::app::tab::TabBarHitResult;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta};
 use winit::keyboard::ModifiersState;
@@ -12,22 +13,91 @@ impl WindowState {
         self.mouse_x = position.x;
         self.mouse_y = position.y;
 
+        let tab_bar_h = self.tab_bar_height() as f64;
+
+        // ── Tab Bar Hover & Hit-Testing ──────────────────────────────────────
+        if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
+            let win_w = self.window.inner_size().width as f32;
+            let hit = self.tab_bar.hit_test(
+                self.mouse_x as f32,
+                self.mouse_y as f32,
+                win_w,
+                self.cell_height(),
+                self.tabs.len(),
+            );
+
+            let old_hovered_tab = self.tab_bar.hovered_tab;
+            let old_hovered_close = self.tab_bar.hovered_close;
+            let old_hovered_new = self.tab_bar.hovered_new_tab;
+
+            match hit {
+                TabBarHitResult::Tab(idx) => {
+                    self.tab_bar.hovered_tab = Some(idx);
+                    self.tab_bar.hovered_close = None;
+                    self.tab_bar.hovered_new_tab = false;
+                    self.window.set_cursor(winit::window::CursorIcon::Pointer);
+                }
+                TabBarHitResult::CloseTab(idx) => {
+                    self.tab_bar.hovered_tab = Some(idx);
+                    self.tab_bar.hovered_close = Some(idx);
+                    self.tab_bar.hovered_new_tab = false;
+                    self.window.set_cursor(winit::window::CursorIcon::Pointer);
+                }
+                TabBarHitResult::NewTab => {
+                    self.tab_bar.hovered_tab = None;
+                    self.tab_bar.hovered_close = None;
+                    self.tab_bar.hovered_new_tab = true;
+                    self.window.set_cursor(winit::window::CursorIcon::Pointer);
+                }
+                _ => {
+                    self.tab_bar.hovered_tab = None;
+                    self.tab_bar.hovered_close = None;
+                    self.tab_bar.hovered_new_tab = false;
+                    self.window.set_cursor(winit::window::CursorIcon::Default);
+                }
+            }
+
+            if old_hovered_tab != self.tab_bar.hovered_tab
+                || old_hovered_close != self.tab_bar.hovered_close
+                || old_hovered_new != self.tab_bar.hovered_new_tab
+            {
+                self.tab_bar_dirty = true;
+                self.needs_redraw = true;
+            }
+            return;
+        } else if self.tab_bar.hovered_tab.is_some()
+            || self.tab_bar.hovered_close.is_some()
+            || self.tab_bar.hovered_new_tab
+        {
+            self.tab_bar.hovered_tab = None;
+            self.tab_bar.hovered_close = None;
+            self.tab_bar.hovered_new_tab = false;
+            self.tab_bar_dirty = true;
+            self.needs_redraw = true;
+        }
+
+        // ── Active Terminal Grid Hover & Selection ───────────────────────────
         let px = self.padding_x as f64;
-        let py = self.padding_y as f64;
+        let py = (self.padding_y + self.tab_bar_height()) as f64;
         let cw = self.cell_width() as f64;
         let ch = self.cell_height() as f64;
+
+        let grid_width = self.active_tab().terminal.grid.width;
+        let grid_height = self.active_tab().terminal.grid.height;
+
         let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-            .min(self.terminal.grid.width.saturating_sub(1));
+            .min(grid_width.saturating_sub(1));
         let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-            .min(self.terminal.grid.height.saturating_sub(1));
+            .min(grid_height.saturating_sub(1));
 
         if (col_idx, row_idx) != self.last_mouse_cell {
             self.last_mouse_cell = (col_idx, row_idx);
 
-            let active_grid = if self.terminal.is_alt_screen {
-                &self.terminal.alt_grid
+            let active_tab = self.active_tab();
+            let active_grid = if active_tab.terminal.is_alt_screen {
+                &active_tab.terminal.alt_grid
             } else {
-                &self.terminal.grid
+                &active_tab.terminal.grid
             };
             let offset = active_grid.scroll_offset;
             let history_len = active_grid.scrollback.len();
@@ -60,20 +130,22 @@ impl WindowState {
                 }
             });
 
+            let mouse_mode = self.active_tab().terminal.mouse_mode;
             if is_link {
                 self.window.set_cursor(winit::window::CursorIcon::Pointer);
-            } else if self.terminal.mouse_mode > 0 {
+            } else if mouse_mode > 0 {
                 self.window.set_cursor(winit::window::CursorIcon::Default);
             } else {
                 self.window.set_cursor(winit::window::CursorIcon::Text);
             }
 
             if self.is_mouse_down {
-                let should_report_motion = self.terminal.mouse_mode == 1003
-                    || (self.terminal.mouse_mode == 1002 && self.is_mouse_down);
+                let active_tab = self.active_tab();
+                let should_report_motion = active_tab.terminal.mouse_mode == 1003
+                    || (active_tab.terminal.mouse_mode == 1002 && self.is_mouse_down);
                 if should_report_motion && !modifiers.shift_key() {
                     let btn_code = if self.is_mouse_down { 32 } else { 35 };
-                    let seq = if self.terminal.mouse_sgr {
+                    let seq = if active_tab.terminal.mouse_sgr {
                         format!("\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1)
                     } else {
                         let cb = 32 + btn_code;
@@ -89,10 +161,11 @@ impl WindowState {
                         }
                     };
                     if !seq.is_empty() {
-                        let _ = self.pty_master.write(seq.as_bytes());
+                        let _ = active_tab.pty_master.write(seq.as_bytes());
                     }
                 } else {
-                    let active_grid = self.terminal.active_grid_mut();
+                    let active_tab = self.active_tab_mut();
+                    let active_grid = active_tab.terminal.active_grid_mut();
                     if active_grid.selection.active {
                         let offset = active_grid.scroll_offset;
                         let history_len = active_grid.scrollback.len();
@@ -112,17 +185,30 @@ impl WindowState {
         };
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
+            let tab_bar_h = self.tab_bar_height() as f64;
+
+            // Scroll over tab bar switches tabs
+            if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
+                if lines > 0 {
+                    self.prev_tab();
+                } else {
+                    self.next_tab();
+                }
+                return;
+            }
+
             let px = self.padding_x as f64;
-            let py = self.padding_y as f64;
+            let py = (self.padding_y + self.tab_bar_height()) as f64;
             let cw = self.cell_width() as f64;
             let ch = self.cell_height() as f64;
             let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
             let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
 
-            if self.terminal.mouse_mode > 0 {
+            let active_tab = self.active_tab();
+            if active_tab.terminal.mouse_mode > 0 {
                 let btn = if lines > 0 { 64 } else { 65 };
                 for _ in 0..lines.abs() {
-                    let seq = if self.terminal.mouse_sgr {
+                    let seq = if active_tab.terminal.mouse_sgr {
                         format!("\x1b[<{};{};{}M", btn, col, row)
                     } else {
                         let cb = 32 + btn;
@@ -138,31 +224,32 @@ impl WindowState {
                         }
                     };
                     if !seq.is_empty() {
-                        let _ = self.pty_master.write(seq.as_bytes());
+                        let _ = active_tab.pty_master.write(seq.as_bytes());
                     }
                 }
-            } else if self.terminal.is_alt_screen {
+            } else if active_tab.terminal.is_alt_screen {
                 let key_seq = if lines > 0 {
-                    if self.terminal.cursor_keys_mode {
+                    if active_tab.terminal.cursor_keys_mode {
                         b"\x1bOA"
                     } else {
                         b"\x1b[A"
                     }
                 } else {
-                    if self.terminal.cursor_keys_mode {
+                    if active_tab.terminal.cursor_keys_mode {
                         b"\x1bOB"
                     } else {
                         b"\x1b[B"
                     }
                 };
                 for _ in 0..lines.abs() {
-                    let _ = self.pty_master.write(key_seq);
+                    let _ = active_tab.pty_master.write(key_seq);
                 }
             } else {
-                let active_grid = if self.terminal.is_alt_screen {
-                    &mut self.terminal.alt_grid
+                let active_tab = self.active_tab_mut();
+                let active_grid = if active_tab.terminal.is_alt_screen {
+                    &mut active_tab.terminal.alt_grid
                 } else {
-                    &mut self.terminal.grid
+                    &mut active_tab.terminal.grid
                 };
                 let history_len = active_grid.scrollback.len();
                 if lines > 0 {
@@ -184,20 +271,77 @@ impl WindowState {
         button: MouseButton,
         modifiers: ModifiersState,
     ) {
+        let tab_bar_h = self.tab_bar_height() as f64;
+
+        // ── Tab Bar Mouse Clicks ─────────────────────────────────────────────
+        if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
+            if state.is_pressed() {
+                let win_w = self.window.inner_size().width as f32;
+                let hit = self.tab_bar.hit_test(
+                    self.mouse_x as f32,
+                    self.mouse_y as f32,
+                    win_w,
+                    self.cell_height(),
+                    self.tabs.len(),
+                );
+
+                match hit {
+                    TabBarHitResult::Tab(idx) => {
+                        if button == MouseButton::Left {
+                            self.switch_tab(idx);
+                        } else if button == MouseButton::Middle {
+                            self.close_tab(idx);
+                        }
+                    }
+                    TabBarHitResult::CloseTab(idx) => {
+                        if button == MouseButton::Left || button == MouseButton::Middle {
+                            self.close_tab(idx);
+                        }
+                    }
+                    TabBarHitResult::NewTab => {
+                        if button == MouseButton::Left {
+                            self.create_tab(None, None, None, None);
+                        }
+                    }
+                    TabBarHitResult::EmptyArea => {
+                        if button == MouseButton::Left {
+                            let now = std::time::Instant::now();
+                            let is_double_click = if let Some(last_time) = self.last_click_instant {
+                                self.last_click_pos == (0, 0)
+                                    && last_time.elapsed().as_millis() < 400
+                            } else {
+                                false
+                            };
+                            self.last_click_instant = Some(now);
+                            self.last_click_pos = (0, 0);
+                            if is_double_click {
+                                self.create_tab(None, None, None, None);
+                            }
+                        }
+                    }
+                    TabBarHitResult::None => {}
+                }
+            }
+            return;
+        }
+
+        // ── Terminal Content Area Clicks ─────────────────────────────────────
         let px = self.padding_x as f64;
-        let py = self.padding_y as f64;
+        let py = (self.padding_y + self.tab_bar_height()) as f64;
         let cw = self.cell_width() as f64;
         let ch = self.cell_height() as f64;
+
+        let grid_width = self.active_tab().terminal.grid.width;
+        let grid_height = self.active_tab().terminal.grid.height;
+
         let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-            .min(self.terminal.grid.width.saturating_sub(1));
+            .min(grid_width.saturating_sub(1));
         let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-            .min(self.terminal.grid.height.saturating_sub(1));
+            .min(grid_height.saturating_sub(1));
 
-        let mouse_mode = self.terminal.mouse_mode;
-        let mouse_sgr = self.terminal.mouse_sgr;
+        let mouse_mode = self.active_tab().terminal.mouse_mode;
+        let mouse_sgr = self.active_tab().terminal.mouse_sgr;
 
-        // Determine standard X11/Xterm button code:
-        // 0: Left, 1: Middle, 2: Right
         let btn_code = match button {
             MouseButton::Left => Some(0),
             MouseButton::Middle => Some(1),
@@ -205,10 +349,10 @@ impl WindowState {
             _ => None,
         };
 
-        // 1. Terminal Application Mouse Reporting (X10 / Normal / Button-event / Any-event)
-        // When mouse reporting is active and Shift is NOT held, send mouse sequences to PTY.
+        // 1. Application Mouse Reporting (when mouse tracking is active and Shift is NOT held)
         if mouse_mode > 0 && !modifiers.shift_key() {
             if let Some(btn) = btn_code {
+                let pty_master = self.active_tab().pty_master.clone();
                 if state.is_pressed() {
                     let seq = if mouse_sgr {
                         format!("\x1b[<{};{};{}M", btn, col_idx + 1, row_idx + 1)
@@ -226,13 +370,13 @@ impl WindowState {
                         }
                     };
                     if !seq.is_empty() {
-                        let _ = self.pty_master.write(seq.as_bytes());
+                        let _ = pty_master.write(seq.as_bytes());
                     }
                 } else {
                     let seq = if mouse_sgr {
                         format!("\x1b[<{};{};{}m", btn, col_idx + 1, row_idx + 1)
                     } else {
-                        let cb = 32 + 3; // Release code in standard xterm mode
+                        let cb = 32 + 3;
                         let cx = 32 + col_idx + 1;
                         let cy = 32 + row_idx + 1;
                         if cx <= 255 && cy <= 255 {
@@ -245,22 +389,18 @@ impl WindowState {
                         }
                     };
                     if !seq.is_empty() {
-                        let _ = self.pty_master.write(seq.as_bytes());
+                        let _ = pty_master.write(seq.as_bytes());
                     }
                 }
             }
             return;
         }
 
-        // 2. Terminal Local Mouse Behavior (when mouse tracking is inactive or Shift is held)
+        // 2. Terminal Local Mouse Behavior (Selection / URL clicking / Middle-paste)
         match button {
             MouseButton::Left => {
                 if state.is_pressed() {
                     self.is_mouse_down = true;
-                    let active_grid = self.terminal.active_grid_mut();
-                    let grid_width = active_grid.width;
-                    let grid_height = active_grid.height;
-
                     if col_idx < grid_width && row_idx < grid_height {
                         let now = std::time::Instant::now();
                         let is_double_click = if let Some(last_time) = self.last_click_instant {
@@ -277,8 +417,11 @@ impl WindowState {
                         }
                         self.last_click_instant = Some(now);
                         self.last_click_pos = (col_idx, row_idx);
+                        let click_count = self.click_count;
 
                         let mut url_opened = false;
+                        let active_tab = self.active_tab_mut();
+                        let active_grid = active_tab.terminal.active_grid_mut();
                         let offset = active_grid.scroll_offset;
                         let history_len = active_grid.scrollback.len();
                         let y_offset = (row_idx + history_len).saturating_sub(offset);
@@ -313,7 +456,7 @@ impl WindowState {
                         }
 
                         if !url_opened {
-                            match self.click_count {
+                            match click_count {
                                 1 => {
                                     if modifiers.shift_key() && active_grid.selection.active {
                                         active_grid.selection.update_selection(col_idx, y_offset);
@@ -338,16 +481,17 @@ impl WindowState {
                                 _ => {}
                             }
 
-                            if self.click_count == 1 && row_idx == active_grid.cursor.y {
+                            if click_count == 1 && row_idx == active_grid.cursor.y {
                                 let cursor_x = active_grid.cursor.x;
+                                let pty_master = active_tab.pty_master.clone();
                                 if col_idx < cursor_x {
                                     let diff = cursor_x - col_idx;
                                     let seq = b"\x1b[D".repeat(diff);
-                                    let _ = self.pty_master.write(&seq);
+                                    let _ = pty_master.write(&seq);
                                 } else if col_idx > cursor_x {
                                     let diff = col_idx - cursor_x;
                                     let seq = b"\x1b[C".repeat(diff);
-                                    let _ = self.pty_master.write(&seq);
+                                    let _ = pty_master.write(&seq);
                                 }
                             }
                         }
@@ -356,7 +500,8 @@ impl WindowState {
                     }
                 } else {
                     self.is_mouse_down = false;
-                    let active_grid = self.terminal.active_grid_mut();
+                    let active_tab = self.active_tab_mut();
+                    let active_grid = active_tab.terminal.active_grid_mut();
                     if active_grid.selection.active {
                         let text = active_grid.extract_selection_text();
                         if !text.is_empty()
@@ -370,29 +515,28 @@ impl WindowState {
             }
             MouseButton::Middle => {
                 if state.is_pressed() {
-                    // Middle click paste: prefer primary selection (Linux standard), fallback to clipboard
                     let mut text = crate::clipboard::clipboard::primary_selection();
                     if text.is_empty() {
                         text = crate::clipboard::clipboard::paste();
                     }
                     if !text.is_empty() {
-                        let formatted = self.terminal.format_paste(&text);
-                        if self.terminal.scroll_on_keystroke {
-                            self.terminal.active_grid_mut().scroll_offset = 0;
+                        let scroll_on_keystroke = self.active_tab().terminal.scroll_on_keystroke;
+                        let formatted = self.active_tab().terminal.format_paste(&text);
+                        let active_tab = self.active_tab_mut();
+                        if scroll_on_keystroke {
+                            active_tab.terminal.active_grid_mut().scroll_offset = 0;
                         }
+                        let _ = active_tab.pty_master.write(formatted.as_bytes());
                         self.needs_redraw = true;
-                        let _ = self.pty_master.write(formatted.as_bytes());
                     }
                 }
             }
-            MouseButton::Right => {
-                // Right click behavior (when mouse mode is off): can clear selection or reserved for contextual operations
-                if state.is_pressed() {
-                    let active_grid = self.terminal.active_grid_mut();
-                    if active_grid.selection.active {
-                        active_grid.selection.active = false;
-                        self.needs_redraw = true;
-                    }
+            MouseButton::Right if state.is_pressed() => {
+                let active_tab = self.active_tab_mut();
+                let active_grid = active_tab.terminal.active_grid_mut();
+                if active_grid.selection.active {
+                    active_grid.selection.active = false;
+                    self.needs_redraw = true;
                 }
             }
             _ => {}

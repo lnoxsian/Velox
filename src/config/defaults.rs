@@ -1,4 +1,6 @@
-use crate::config::config::{Config, ConfigColors, FontConfig, WindowConfig};
+use crate::config::config::{
+    Config, ConfigColors, FontConfig, TabBarVisibility, TabsConfig, WindowConfig,
+};
 
 pub fn default_config() -> Config {
     Config {
@@ -24,6 +26,14 @@ pub fn default_config() -> Config {
             scroll_on_keystroke: Some(true),
             opacity: Some(1.0),
         },
+        tabs: TabsConfig {
+            show_tab_bar: TabBarVisibility::Auto,
+            tab_bar_height: None,
+            show_close_button: true,
+            show_new_tab_button: false,
+            tab_accent_color: Some("blue".to_string()),
+        },
+
         colors: Some(ConfigColors {
             default_fg: Some("#d4d4d4".to_string()),
             default_bg: Some("#181818".to_string()),
