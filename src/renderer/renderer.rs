@@ -725,7 +725,7 @@ impl Renderer {
                             );
                         }
                         CursorShape::HollowBlock => {
-                            let thick = 1.5f32;
+                            let thick = 1.0f32;
                             let block_w = cw * cell_w_mult;
                             // Top border
                             push_quad(
