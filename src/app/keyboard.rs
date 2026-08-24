@@ -60,7 +60,7 @@ impl WindowState {
                         }
                         "+" | "=" => {
                             let active_size = self.active_tab().font_size;
-                            let new_size = (active_size + 1.0).min(72.0);
+                            let new_size = active_size + 1.0;
                             if (new_size - active_size).abs() > 0.01 {
                                 self.set_font_size(new_size);
                             }
@@ -145,7 +145,7 @@ impl WindowState {
                         }
                         "+" | "=" => {
                             let active_size = self.active_tab().font_size;
-                            let new_size = (active_size + 1.0).min(72.0);
+                            let new_size = active_size + 1.0;
                             if (new_size - active_size).abs() > 0.01 {
                                 self.set_font_size(new_size);
                             }
@@ -153,7 +153,7 @@ impl WindowState {
                         }
                         "-" => {
                             let active_size = self.active_tab().font_size;
-                            let new_size = (active_size - 1.0).max(4.0);
+                            let new_size = (active_size - 1.0).max(1.0);
                             if (new_size - active_size).abs() > 0.01 {
                                 self.set_font_size(new_size);
                             }

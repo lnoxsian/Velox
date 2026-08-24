@@ -24,6 +24,7 @@ pub struct CacheKey {
 }
 
 pub const MAX_DYNAMIC_GLYPHS: usize = 2048;
+pub const GLYPH_PADDING: u32 = 2;
 
 pub struct FontLoader {
     gl: Arc<glow::Context>,
@@ -43,6 +44,7 @@ pub struct FontLoader {
     dynamic_cache: HashMap<CacheKey, GlyphUv>,
     next_x: u32,
     next_y: u32,
+    current_row_height: u32,
     scratch_png: Vec<u8>,
     scratch_pixels: Vec<u8>,
     scratch_rgba: Vec<u8>,
@@ -243,6 +245,7 @@ impl FontLoader {
             dynamic_cache: HashMap::new(),
             next_x: 4,
             next_y: 0,
+            current_row_height: 0,
             scratch_png: Vec::with_capacity(32 * 1024),
             scratch_pixels: Vec::with_capacity(4096),
             scratch_rgba: Vec::with_capacity(4096 * 4),
@@ -326,6 +329,7 @@ impl FontLoader {
             dynamic_cache: HashMap::with_capacity(32),
             next_x: 4,
             next_y: 0,
+            current_row_height: 0,
             scratch_png: Vec::new(),
             scratch_pixels: Vec::new(),
             scratch_rgba: Vec::with_capacity(1024),
@@ -356,28 +360,17 @@ impl FontLoader {
         }
     }
 
-    pub fn update_font_size(&mut self, font_size: f32) {
-        self.font_size = font_size;
-        let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
-        let scale = PxScale::from(px_size);
-        let scaled_font = self.font.as_scaled(scale);
-        self.cell_width = scaled_font
-            .h_advance(self.font.glyph_id('A'))
-            .ceil()
-            .max(1.0) as u32;
-        self.cell_height = (scaled_font.ascent() - scaled_font.descent()
-            + scaled_font.line_gap().max(0.0))
-        .ceil()
-        .max(1.0) as u32;
-
+    pub fn reset_atlas_allocator(&mut self) {
         self.ascii_cache.fill(None);
         self.dynamic_cache.clear();
         self.next_x = 4;
         self.next_y = 0;
+        self.current_row_height = 0;
 
         unsafe {
             self.gl
                 .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             self.gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
@@ -403,7 +396,86 @@ impl FontLoader {
                 glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
             );
         }
+    }
 
+    pub fn grow_atlas(&mut self) -> bool {
+        if self.atlas_width >= 4096 || self.atlas_height >= 4096 {
+            return false;
+        }
+
+        let new_width = (self.atlas_width * 2).min(4096);
+        let new_height = (self.atlas_height * 2).min(4096);
+
+        unsafe {
+            if let Ok(new_tex) = self.gl.create_texture() {
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(new_tex));
+                self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                self.gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA as i32,
+                    new_width as i32,
+                    new_height as i32,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                self.gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::LINEAR as i32,
+                );
+                self.gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::LINEAR as i32,
+                );
+
+                let white_pixels = [255u8; 2 * 2 * 4];
+                self.gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    2,
+                    2,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
+                );
+
+                self.gl.delete_texture(self.atlas_texture);
+                self.atlas_texture = new_tex;
+                self.atlas_width = new_width;
+                self.atlas_height = new_height;
+                self.ascii_cache.fill(None);
+                self.dynamic_cache.clear();
+                self.next_x = 4;
+                self.next_y = 0;
+                self.current_row_height = 0;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn update_font_size(&mut self, font_size: f32) {
+        self.font_size = font_size;
+        let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
+        let scale = PxScale::from(px_size);
+        let scaled_font = self.font.as_scaled(scale);
+        self.cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        self.cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
+        self.reset_atlas_allocator();
         self.preload_ascii();
     }
 
@@ -827,37 +899,32 @@ impl FontLoader {
             }
         }
 
-        let pad = 2;
-        if self.next_x + target_width + pad > self.atlas_width {
-            self.next_x = 0;
-            self.next_y += self.cell_height + pad;
+        let pad = GLYPH_PADDING;
+        let glyph_w = target_width;
+        let glyph_h = self.cell_height;
+
+        // 1. Advance to next row if horizontal space is exceeded
+        if self.next_x + glyph_w + pad > self.atlas_width {
+            self.next_x = pad;
+            self.next_y += self.current_row_height + pad;
+            self.current_row_height = 0;
         }
 
-        if self.next_y + self.cell_height + pad > self.atlas_height {
-            self.ascii_cache.fill(None);
-            self.dynamic_cache.clear();
-            self.next_x = 4;
-            self.next_y = 0;
-            unsafe {
-                self.gl
-                    .bind_texture(glow::TEXTURE_2D, Some(self.atlas_texture));
-                let white_pixels = [255u8; 2 * 2 * 4];
-                self.gl.tex_sub_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    2,
-                    2,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
-                );
+        // 2. If vertical space is exceeded, dynamically grow atlas up to 4096 or safely reset
+        if self.next_y + glyph_h + pad > self.atlas_height {
+            if !self.grow_atlas() {
+                self.reset_atlas_allocator();
+            }
+            if self.next_x + glyph_w + pad > self.atlas_width {
+                self.next_x = pad;
+                self.next_y += self.current_row_height + pad;
+                self.current_row_height = 0;
             }
         }
 
         let ox = self.next_x;
         let oy = self.next_y;
+        self.current_row_height = self.current_row_height.max(glyph_h);
 
         unsafe {
             self.gl
@@ -868,21 +935,21 @@ impl FontLoader {
                 0,
                 ox as i32,
                 oy as i32,
-                target_width as i32,
-                self.cell_height as i32,
+                glyph_w as i32,
+                glyph_h as i32,
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(&self.scratch_rgba[..needed_rgba])),
             );
         }
 
-        self.next_x += target_width + pad;
+        self.next_x += glyph_w + pad;
 
         let uv = GlyphUv {
             u_min: ox as f32 / self.atlas_width as f32,
             v_min: oy as f32 / self.atlas_height as f32,
-            u_max: (ox + target_width) as f32 / self.atlas_width as f32,
-            v_max: (oy + self.cell_height) as f32 / self.atlas_height as f32,
+            u_max: (ox + glyph_w) as f32 / self.atlas_width as f32,
+            v_max: (oy + glyph_h) as f32 / self.atlas_height as f32,
             is_color,
             width_mult: target_width as f32 / self.cell_width as f32,
         };

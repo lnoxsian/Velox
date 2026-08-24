@@ -290,6 +290,7 @@ impl WindowState {
     }
 
     pub fn set_font_size(&mut self, size: f32) {
+        let size = size.max(1.0);
         self.current_font_size = size;
         if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
             tab.font_size = size;
