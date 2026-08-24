@@ -134,7 +134,26 @@ impl FallbackManager {
     }
 
     pub fn find_fallback_for_char(&mut self, c: char) -> Option<usize> {
+        let emoji = crate::font::loader::is_emoji(c);
+
         // 1. Check existing loaded fallback fonts first and update LRU timestamp
+        // If it is an emoji, prefer loaded fallbacks that have a color image for `c`
+        if emoji {
+            for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
+                let id = fallback.font.glyph_id(c);
+                if id.0 != 0
+                    && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), 0)
+                    && face
+                        .glyph_raster_image(owned_ttf_parser::GlyphId(id.0), 32)
+                        .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
+                {
+                    self.usage_counter = self.usage_counter.wrapping_add(1);
+                    fallback.last_used = self.usage_counter;
+                    return Some(idx);
+                }
+            }
+        }
+
         for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
             if fallback.font.glyph_id(c).0 != 0 {
                 self.usage_counter = self.usage_counter.wrapping_add(1);
@@ -150,10 +169,46 @@ impl FallbackManager {
 
         self.ensure_db_loaded();
 
-        // 3. Check popular Nerd Font & Symbol families directly
-        let is_symbol_or_pua = ('\u{e000}'..='\u{f8ff}').contains(&c)
-            || ('\u{f0000}'..='\u{ffffd}').contains(&c)
-            || ('\u{2300}'..='\u{2bff}').contains(&c);
+        // 3. If emoji, check popular color emoji families FIRST
+        if emoji {
+            let emoji_families = [
+                "Noto Color Emoji",
+                "Apple Color Emoji",
+                "Segoe UI Emoji",
+                "Twemoji Mozilla",
+                "Twitter Color Emoji",
+                "EmojiOne Color",
+                "JoyPixels",
+                "OpenMoji Color",
+                "Noto Emoji",
+            ];
+
+            for family in &emoji_families {
+                let query = fontdb::Query {
+                    families: &[fontdb::Family::Name(family)],
+                    weight: fontdb::Weight::NORMAL,
+                    stretch: fontdb::Stretch::Normal,
+                    style: fontdb::Style::Normal,
+                };
+                if let Some(id) = self.db.query(&query)
+                    && let Some(face) = self.db.face(id)
+                    && let fontdb::Source::File(path) = &face.source
+                    && !self.loaded_paths.contains(path)
+                    && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
+                    && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
+                    && font.glyph_id(c).0 != 0
+                {
+                    let idx = self.insert_fallback(path.clone(), font, storage);
+                    return Some(idx);
+                }
+            }
+        }
+
+        // 4. Check popular Nerd Font & Symbol families directly
+        let is_symbol_or_pua = !emoji
+            && (('\u{e000}'..='\u{f8ff}').contains(&c)
+                || ('\u{f0000}'..='\u{ffffd}').contains(&c)
+                || ('\u{2300}'..='\u{2bff}').contains(&c));
 
         if is_symbol_or_pua {
             let nerd_families = [
@@ -188,7 +243,7 @@ impl FallbackManager {
             }
         }
 
-        // 4. Scan system font faces in fontdb with mmap
+        // 5. Scan system font faces in fontdb with mmap
         let candidate_paths: Vec<(PathBuf, u32)> = self
             .db
             .faces()
@@ -202,6 +257,24 @@ impl FallbackManager {
                 }
             })
             .collect();
+
+        // If emoji, prioritize faces with embedded color images
+        if emoji {
+            for (path, face_index) in &candidate_paths {
+                if !self.loaded_paths.contains(path)
+                    && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
+                    && let Ok(font) = create_font_arc(Arc::clone(&storage), *face_index)
+                    && font.glyph_id(c).0 != 0
+                    && let Ok(face) = owned_ttf_parser::Face::parse(storage.as_bytes(), *face_index)
+                    && face
+                        .glyph_raster_image(owned_ttf_parser::GlyphId(font.glyph_id(c).0), 32)
+                        .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
+                {
+                    let idx = self.insert_fallback(path.clone(), font, storage);
+                    return Some(idx);
+                }
+            }
+        }
 
         for (path, face_index) in candidate_paths {
             if !self.loaded_paths.contains(&path)
@@ -245,5 +318,53 @@ mod tests {
         let _ = manager.find_fallback_for_char('中');
         manager.prune_to_budget();
         assert!(manager.fallbacks.len() <= 2);
+    }
+
+    #[test]
+    fn test_emoji_vs_nerd_font_classification() {
+        use crate::font::loader::{is_emoji, is_nerd_font_or_pua};
+
+        // Unicode emoji codepoints
+        assert!(is_emoji('\u{1f4e6}')); // 📦 Package
+        assert!(is_emoji('\u{1f980}')); // 🦀 Crab
+        assert!(is_emoji('\u{1f600}')); // 😀 Grinning Face
+        assert!(is_emoji('\u{1f680}')); // 🚀 Rocket
+        assert!(is_emoji('\u{2728}')); // ✨ Sparkles
+        assert!(is_emoji('\u{26a0}')); // ⚠️ Warning
+
+        // Emojis must NOT be classified as Nerd Font PUA
+        assert!(!is_nerd_font_or_pua('\u{1f4e6}'));
+        assert!(!is_nerd_font_or_pua('\u{1f980}'));
+        assert!(!is_nerd_font_or_pua('\u{1f600}'));
+        assert!(!is_nerd_font_or_pua('\u{1f680}'));
+
+        // Nerd Font PUA codepoints
+        assert!(is_nerd_font_or_pua('\u{e0b0}')); //  Powerline arrow
+        assert!(is_nerd_font_or_pua('\u{e702}')); //  Git icon
+        assert!(is_nerd_font_or_pua('\u{f07b}')); //  Folder icon
+        assert!(is_nerd_font_or_pua('\u{f113}')); //  Github octicon
+        assert!(is_nerd_font_or_pua('\u{f0001}')); // PUA-A
+
+        // Nerd Fonts must NOT be classified as Emoji
+        assert!(!is_emoji('\u{e0b0}'));
+        assert!(!is_emoji('\u{e702}'));
+        assert!(!is_emoji('\u{f07b}'));
+        assert!(!is_emoji('\u{f113}'));
+    }
+
+    #[test]
+    fn test_emoji_fallback_finds_color_font_for_package_and_crab() {
+        let mut manager = FallbackManager::new();
+        // If system has color emoji (e.g. Noto Color Emoji), both 📦 and 🦀 resolve successfully
+        if let Some(idx_package) = manager.find_fallback_for_char('\u{1f4e6}') {
+            let fallback = &manager.fallbacks[idx_package];
+            let id = fallback.font.glyph_id('\u{1f4e6}');
+            assert_ne!(id.0, 0);
+        }
+        if let Some(idx_crab) = manager.find_fallback_for_char('\u{1f980}') {
+            let fallback = &manager.fallbacks[idx_crab];
+            let id = fallback.font.glyph_id('\u{1f980}');
+            assert_ne!(id.0, 0);
+        }
     }
 }

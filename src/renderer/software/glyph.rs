@@ -591,7 +591,8 @@ impl GlyphCache {
     }
 
     fn extract_color_png(&mut self, c: char) -> Option<(u32, u32)> {
-        if self.font.glyph_id(c).0 == 0
+        let is_emoji_char = crate::font::loader::is_emoji(c);
+        if (is_emoji_char || self.font.glyph_id(c).0 == 0)
             && let Some(idx) = self.fallback_manager.find_fallback_for_char(c)
         {
             let fallback = &self.fallback_manager.fallbacks[idx];

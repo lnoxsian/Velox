@@ -92,15 +92,33 @@ pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<Fo
     None
 }
 
+pub fn is_emoji(c: char) -> bool {
+    matches!(c,
+        '\u{1f300}'..='\u{1faff}' | // Misc Symbols & Pictographs, Emoticons, Transport, Supplemental, Extended-A
+        '\u{1f1e6}'..='\u{1f1ff}' | // Regional indicator symbols (Flags)
+        '\u{1f004}' | '\u{1f0cf}' | // Mahjong, Playing Card Joker
+        '\u{2600}'..='\u{27bf}'   | // Misc Symbols & Dingbats
+        '\u{2b50}' | '\u{2b55}' | '\u{2b1b}' | '\u{2b1c}' | // Star, Circle, Large Squares
+        '\u{231a}' | '\u{231b}'   | // Watch, Hourglass
+        '\u{23e9}'..='\u{23ec}'   | // Fast-forward, Rewind, Up, Down
+        '\u{23f0}' | '\u{23f3}'   | // Alarm clock, Hourglass done
+        '\u{23f8}'..='\u{23fa}'   | // Pause, Stop, Record
+        '\u{25aa}'..='\u{25ab}'   | // Black/white small square
+        '\u{25fb}'..='\u{25fe}'   | // Medium squares
+        '\u{2934}'..='\u{2935}'   | // Arrow curving up/down
+        '\u{3030}' | '\u{303d}'   | // Wavy dash, part alternation mark
+        '\u{3297}' | '\u{3299}'     // Circled ideographs
+    )
+}
+
 pub fn is_nerd_font_or_pua(c: char) -> bool {
     matches!(c,
         '\u{2300}'..='\u{24ff}' |   // Misc Technical, Control Pictures, OCR, Enclosed Alphanumerics
         '\u{25a0}'..='\u{2bff}' |   // Geometric Shapes, Misc Symbols, Dingbats, Arrows (EXCLUDES 0x2500..=0x259F Box/Block)
         '\u{e000}'..='\u{f8ff}' |   // Private Use Area (Nerd Fonts, Powerline, Devicons, FontAwesome, Octicons)
         '\u{f0000}'..='\u{ffffd}' | // Supplementary Private Use Area A
-        '\u{100000}'..='\u{10fffd}'|// Supplementary Private Use Area B
-        '\u{1f300}'..='\u{1f9ff}'   // Emojis & Pictographs
-    )
+        '\u{100000}'..='\u{10fffd}' // Supplementary Private Use Area B
+    ) && !is_emoji(c)
 }
 
 pub fn is_powerline(c: char) -> bool {
@@ -566,9 +584,10 @@ impl FontLoader {
             (false, true) => self.font_italic.as_ref().unwrap_or(&self.font),
             (false, false) => &self.font,
         };
+        let is_emoji_char = is_emoji(base_c);
         let mut color_img_size = None;
 
-        if active_font.glyph_id(base_c).0 == 0
+        if (is_emoji_char || active_font.glyph_id(base_c).0 == 0)
             && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c)
         {
             let fallback = &self.fallback_manager.fallbacks[idx];

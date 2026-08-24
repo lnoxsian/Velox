@@ -40,7 +40,22 @@ fn compute_cell_colors(
     }
 
     let (mut fg, bg) = if is_inverted {
-        (cell.background, cell_fg)
+        let mut inv_fg = cell.background;
+        let mut inv_bg = cell_fg;
+
+        let lum_fg = 0.299 * inv_fg.r as f32 + 0.587 * inv_fg.g as f32 + 0.114 * inv_fg.b as f32;
+        let lum_bg = 0.299 * inv_bg.r as f32 + 0.587 * inv_bg.g as f32 + 0.114 * inv_bg.b as f32;
+
+        // When both colors are dark (e.g. dark text + reverse on dark theme) or both are light
+        if lum_fg < 128.0 && lum_bg < 128.0 {
+            inv_bg = theme.default_fg;
+            inv_fg = cell_fg;
+        } else if lum_fg >= 128.0 && lum_bg >= 128.0 {
+            inv_bg = theme.default_fg;
+            inv_fg = cell_fg;
+        }
+
+        (inv_fg, inv_bg)
     } else {
         (cell_fg, cell.background)
     };
