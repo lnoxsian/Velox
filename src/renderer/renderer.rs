@@ -47,10 +47,7 @@ fn compute_cell_colors(
         let lum_bg = 0.299 * inv_bg.r as f32 + 0.587 * inv_bg.g as f32 + 0.114 * inv_bg.b as f32;
 
         // When both colors are dark (e.g. dark text + reverse on dark theme) or both are light
-        if lum_fg < 128.0 && lum_bg < 128.0 {
-            inv_bg = theme.default_fg;
-            inv_fg = cell_fg;
-        } else if lum_fg >= 128.0 && lum_bg >= 128.0 {
+        if (lum_fg < 128.0 && lum_bg < 128.0) || (lum_fg >= 128.0 && lum_bg >= 128.0) {
             inv_bg = theme.default_fg;
             inv_fg = cell_fg;
         }
@@ -95,13 +92,10 @@ fn push_quad(
 
     let quad = [
         // Triangle 1
-        x, y, u_min, v_min, cr, cg, cb, alpha,
-        x2, y, u_max, v_min, cr, cg, cb, alpha,
-        x, y2, u_min, v_max, cr, cg, cb, alpha,
-        // Triangle 2
-        x, y2, u_min, v_max, cr, cg, cb, alpha,
-        x2, y, u_max, v_min, cr, cg, cb, alpha,
-        x2, y2, u_max, v_max, cr, cg, cb, alpha,
+        x, y, u_min, v_min, cr, cg, cb, alpha, x2, y, u_max, v_min, cr, cg, cb, alpha, x, y2, u_min,
+        v_max, cr, cg, cb, alpha, // Triangle 2
+        x, y2, u_min, v_max, cr, cg, cb, alpha, x2, y, u_max, v_min, cr, cg, cb, alpha, x2, y2,
+        u_max, v_max, cr, cg, cb, alpha,
     ];
     vertices.extend_from_slice(&quad);
 }
@@ -1008,7 +1002,9 @@ impl Renderer {
                     if char_count <= max_chars {
                         for (c_idx, ch_char) in tab.title.chars().enumerate() {
                             let char_x = (text_start_x + (c_idx as f32) * tab_cw).round();
-                            let uv = self.tab_font_loader.get_glyph_uv(ch_char, false, false, false);
+                            let uv = self
+                                .tab_font_loader
+                                .get_glyph_uv(ch_char, false, false, false);
                             push_quad(
                                 &mut vertices,
                                 char_x,
@@ -1026,7 +1022,9 @@ impl Renderer {
                     } else if max_chars > 1 {
                         for (c_idx, ch_char) in tab.title.chars().take(max_chars - 1).enumerate() {
                             let char_x = (text_start_x + (c_idx as f32) * tab_cw).round();
-                            let uv = self.tab_font_loader.get_glyph_uv(ch_char, false, false, false);
+                            let uv = self
+                                .tab_font_loader
+                                .get_glyph_uv(ch_char, false, false, false);
                             push_quad(
                                 &mut vertices,
                                 char_x,
@@ -1060,7 +1058,9 @@ impl Renderer {
                         && let Some(ch_char) = tab.title.chars().next()
                     {
                         let char_x = text_start_x;
-                        let uv = self.tab_font_loader.get_glyph_uv(ch_char, false, false, false);
+                        let uv = self
+                            .tab_font_loader
+                            .get_glyph_uv(ch_char, false, false, false);
                         push_quad(
                             &mut vertices,
                             char_x,
@@ -1230,8 +1230,11 @@ impl Renderer {
                 self.gl.active_texture(glow::TEXTURE0);
                 self.gl
                     .bind_texture(glow::TEXTURE_2D, Some(self.tab_font_loader.atlas_texture));
-                self.gl
-                    .draw_arrays(glow::TRIANGLES, terminal_count, total_count - terminal_count);
+                self.gl.draw_arrays(
+                    glow::TRIANGLES,
+                    terminal_count,
+                    total_count - terminal_count,
+                );
             }
         }
 

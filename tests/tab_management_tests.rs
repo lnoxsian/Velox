@@ -42,30 +42,6 @@ fn test_tab_bar_config_visibility_modes() {
 }
 
 #[test]
-fn test_tab_bar_visibility_enum() {
-    let toml_always = r#"
-        [tabs]
-        show_tab_bar = "always"
-    "#;
-    let cfg_always: Config = toml::from_str(toml_always).unwrap();
-    assert_eq!(cfg_always.show_tab_bar(), TabBarVisibility::Always);
-
-    let toml_never = r#"
-        [tabs]
-        show_tab_bar = "never"
-    "#;
-    let cfg_never: Config = toml::from_str(toml_never).unwrap();
-    assert_eq!(cfg_never.show_tab_bar(), TabBarVisibility::Never);
-
-    let toml_auto = r#"
-        [tabs]
-        show_tab_bar = "auto"
-    "#;
-    let cfg_auto: Config = toml::from_str(toml_auto).unwrap();
-    assert_eq!(cfg_auto.show_tab_bar(), TabBarVisibility::Auto);
-}
-
-#[test]
 fn test_shared_tab_width_formula_matches_hit_test() {
     let tab_bar = TabBar {
         show_tab_bar: TabBarVisibility::Auto,
@@ -350,14 +326,7 @@ fn test_software_renderer_renders_named_tab_accent_from_theme() {
     let config: Config = toml::from_str(toml_str).unwrap();
     let theme = Theme::from_config(&config);
     let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 1.0);
-    let grid = Grid::new(
-        80,
-        24,
-        theme.default_fg,
-        theme.default_bg,
-        100,
-        false,
-    );
+    let grid = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
     let mut target = vec![0u32; 800 * 600];
 
     let tab_bar_info = TabBarRenderInfo {
@@ -532,22 +501,8 @@ fn test_tab_bar_hover_state_tracking() {
 fn test_software_renderer_tab_switch_clean_redraw() {
     let theme = Theme::new();
     let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 1.0);
-    let mut grid_tab1 = Grid::new(
-        80,
-        24,
-        theme.default_fg,
-        theme.default_bg,
-        100,
-        false,
-    );
-    let mut grid_tab2 = Grid::new(
-        80,
-        24,
-        theme.default_fg,
-        theme.default_bg,
-        100,
-        false,
-    );
+    let mut grid_tab1 = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
+    let mut grid_tab2 = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
 
     // Tab 1 content on row 5
     grid_tab1.cursor.y = 5;

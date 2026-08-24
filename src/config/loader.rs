@@ -21,6 +21,29 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 fn config_path() -> Option<PathBuf> {
+    if let Ok(val) = std::env::var("VELOX_CONFIG") {
+        let p = PathBuf::from(val);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        let global_path = PathBuf::from(&h)
+            .join(".config")
+            .join("velox")
+            .join("config.toml");
+        if global_path.exists() {
+            return Some(global_path);
+        }
+    }
+    let local_path = PathBuf::from("config.toml");
+    if local_path.exists() {
+        return Some(local_path);
+    }
+    let local_velox = PathBuf::from("velox.toml");
+    if local_velox.exists() {
+        return Some(local_velox);
+    }
     std::env::var("HOME").ok().map(|h| {
         PathBuf::from(h)
             .join(".config")

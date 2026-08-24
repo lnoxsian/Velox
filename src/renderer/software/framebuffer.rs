@@ -68,7 +68,6 @@ impl Framebuffer {
     }
 
     /// Optimized vertical row shift in memory using `copy_within`.
-    #[allow(dead_code)]
     pub fn scroll_region_up(
         &mut self,
         top_px: u32,
@@ -98,7 +97,6 @@ impl Framebuffer {
     }
 
     /// Optimized vertical row shift down in memory using `copy_within`.
-    #[allow(dead_code)]
     pub fn scroll_region_down(
         &mut self,
         top_px: u32,

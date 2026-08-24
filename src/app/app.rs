@@ -106,14 +106,6 @@ impl WindowRendererBackend {
     }
 
     #[inline(always)]
-    pub fn base_cell_width(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.tab_font_loader.cell_width,
-            Self::Software { renderer, .. } => renderer.tab_glyph_cache.cell_width,
-        }
-    }
-
-    #[inline(always)]
     pub fn base_cell_height(&self) -> u32 {
         match self {
             Self::OpenGL { renderer, .. } => renderer.tab_font_loader.cell_height,
@@ -148,8 +140,6 @@ pub struct WindowState {
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
-    #[allow(dead_code)]
-    pub base_cell_width: u32,
     pub base_cell_height: u32,
     pub padding_x: f32,
     pub padding_y: f32,
@@ -251,17 +241,6 @@ impl WindowState {
         let cols = ((avail_w as u32) / self.cell_width()).max(20);
         let rows = ((avail_h as u32) / self.cell_height()).max(10);
         (cols, rows)
-    }
-
-    #[allow(dead_code)]
-    pub fn resize_all_tabs(&mut self) {
-        let (cols, rows) = self.recalculate_grid_size();
-        for tab in &mut self.tabs {
-            tab.terminal.resize(cols, rows);
-            let _ = tab.pty_master.resize(cols as u16, rows as u16);
-        }
-        self.needs_redraw = true;
-        self.content_dirty = true;
     }
 
     pub fn resize_active_tab(&mut self) {
@@ -430,8 +409,7 @@ impl WindowState {
             }
             let (cols, rows) = self.recalculate_grid_size();
             let tab = &mut self.tabs[index];
-            if tab.terminal.grid.width != cols as usize
-                || tab.terminal.grid.height != rows as usize
+            if tab.terminal.grid.width != cols as usize || tab.terminal.grid.height != rows as usize
             {
                 tab.terminal.resize(cols, rows);
                 let _ = tab.pty_master.resize(cols as u16, rows as u16);
@@ -835,7 +813,6 @@ impl App {
 
         let tab_font_size = config.tab_font_size();
         backend.set_tab_font_size(tab_font_size);
-        let base_cell_width = backend.base_cell_width();
         let base_cell_height = backend.base_cell_height();
 
         let tab_bar = TabBar::from_config(&config);
@@ -898,7 +875,6 @@ impl App {
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
-            base_cell_width,
             base_cell_height,
             padding_x,
             padding_y,

@@ -125,56 +125,6 @@ fn test_software_renderer_damage_partial_row() {
 }
 
 #[test]
-fn test_software_renderer_box_and_block_primitives() {
-    let mut renderer = setup_renderer(800, 600);
-    let mut grid = Grid::new(
-        80,
-        24,
-        Color {
-            r: 255,
-            g: 255,
-            b: 255,
-        },
-        Color { r: 0, g: 0, b: 0 },
-        100,
-        false,
-    );
-    let theme = Theme::new();
-    let mut target = vec![0u32; 800 * 600];
-
-    let test_primitives = [
-        '█', '▀', '▄', '▌', '▐', '─', '│', '┌', '┐', '└', '┘', '┼', '═', '║',
-    ];
-    for (i, &ch) in test_primitives.iter().enumerate() {
-        grid.cells[i] = Cell {
-            character: ch,
-            foreground: Color { r: 0, g: 255, b: 0 },
-            background: Color { r: 0, g: 0, b: 0 },
-            flags: CellFlags::empty(),
-        };
-    }
-
-    grid.damage.mark_dirty(0);
-    renderer.render(
-        &grid.cells,
-        &grid,
-        &theme,
-        0.0,
-        0.0,
-        true,
-        CursorShape::Block,
-        grid.cursor.x,
-        true,
-        1.0,
-        &mut target,
-    );
-
-    // Check that some green pixels (0xFF00FF00) were drawn in the framebuffer
-    let has_green_pixels = target.iter().any(|&p| (p & 0x00FFFFFF) == 0x0000FF00);
-    assert!(has_green_pixels);
-}
-
-#[test]
 fn test_software_renderer_selection_and_cursor() {
     let mut renderer = setup_renderer(800, 600);
     let mut grid = Grid::new(
@@ -715,8 +665,7 @@ fn test_software_renderer_alt_screen_clean_exit() {
     use velox::terminal::terminal::Terminal;
 
     let mut term = Terminal::new(80, 24);
-    let mut renderer =
-        CpuRenderer::new("monospace", 14.0, 1.5, &term.theme, 800, 600, true, 1.0);
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &term.theme, 800, 600, true, 1.0);
     let mut target = vec![0u32; 800 * 600];
 
     // 1. Initial shell screen

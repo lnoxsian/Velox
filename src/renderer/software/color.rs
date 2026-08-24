@@ -11,12 +11,6 @@ impl PackedColor {
         Self((0xFF << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
     }
 
-    #[allow(dead_code)]
-    #[inline(always)]
-    pub const fn from_argb(a: u8, r: u8, g: u8, b: u8) -> Self {
-        Self(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32))
-    }
-
     #[inline(always)]
     pub const fn from_color(c: Color) -> Self {
         Self::from_rgb(c.r, c.g, c.b)
@@ -157,10 +151,7 @@ impl PrecomputedPalette {
             let lum_bg = 0.299 * r_bg as f32 + 0.587 * g_bg as f32 + 0.114 * b_bg as f32;
 
             // When both colors are dark (e.g. dark text + reverse on dark theme) or both are light
-            if lum_fg < 128.0 && lum_bg < 128.0 {
-                inv_bg = self.default_fg;
-                inv_fg = cell_fg;
-            } else if lum_fg >= 128.0 && lum_bg >= 128.0 {
+            if (lum_fg < 128.0 && lum_bg < 128.0) || (lum_fg >= 128.0 && lum_bg >= 128.0) {
                 inv_bg = self.default_fg;
                 inv_fg = cell_fg;
             }
@@ -214,8 +205,16 @@ mod tests {
     #[test]
     fn test_dark_theme_and_light_theme_inversion() {
         let theme_dark = Theme {
-            default_fg: Color { r: 205, g: 214, b: 244 }, // Light
-            default_bg: Color { r: 30, g: 30, b: 46 },    // Dark
+            default_fg: Color {
+                r: 205,
+                g: 214,
+                b: 244,
+            }, // Light
+            default_bg: Color {
+                r: 30,
+                g: 30,
+                b: 46,
+            }, // Dark
             ..Theme::new()
         };
         let palette_dark = PrecomputedPalette::new(&theme_dark, 1.0);
@@ -231,12 +230,19 @@ mod tests {
         // bg must be inverted to light default_fg
         assert_eq!(bg, PackedColor::from_color(theme_dark.default_fg).to_u32());
         // fg must be dark and have high contrast
-        assert_eq!(fg, PackedColor::from_color(Color { r: 6, g: 6, b: 6 }).to_u32());
+        assert_eq!(
+            fg,
+            PackedColor::from_color(Color { r: 6, g: 6, b: 6 }).to_u32()
+        );
 
         // Light theme: dark text on white background
         let theme_light = Theme {
             default_fg: Color { r: 0, g: 0, b: 0 },
-            default_bg: Color { r: 255, g: 255, b: 255 },
+            default_bg: Color {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
             ..Theme::new()
         };
         let palette_light = PrecomputedPalette::new(&theme_light, 1.0);
@@ -247,7 +253,13 @@ mod tests {
             flags: CellFlags::REVERSE,
         };
         let (fg_l, bg_l) = palette_light.resolve_cell_colors(&cell_light, true, false);
-        assert_eq!(bg_l, PackedColor::from_color(Color { r: 6, g: 6, b: 6 }).to_u32());
-        assert_eq!(fg_l, PackedColor::from_color(theme_light.default_bg).to_u32());
+        assert_eq!(
+            bg_l,
+            PackedColor::from_color(Color { r: 6, g: 6, b: 6 }).to_u32()
+        );
+        assert_eq!(
+            fg_l,
+            PackedColor::from_color(theme_light.default_bg).to_u32()
+        );
     }
 }

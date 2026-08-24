@@ -88,9 +88,11 @@ impl Terminal {
             infinite_scrollback,
         );
         grid.cursor.shape = initial_shape;
+        grid.saved_cursor.shape = initial_shape;
 
         let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0, false);
         alt_grid.cursor.shape = initial_shape;
+        alt_grid.saved_cursor.shape = initial_shape;
 
         let scroll_on_output = config.scroll_on_output().unwrap_or(true);
         let scroll_on_keystroke = config.scroll_on_keystroke().unwrap_or(true);
@@ -568,6 +570,40 @@ mod tests {
 
         term.feed(b"\x1b[2q"); // Block
         assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+
+        // Reset to default configured shape
+        term.feed(b"\x1b[0q");
+        assert_eq!(
+            term.active_grid().cursor.shape,
+            term.configured_cursor_shape
+        );
+    }
+
+    #[test]
+    fn test_cursor_restore_and_ris_preserves_configured_shape() {
+        let mut term = Terminal::new(80, 24);
+        term.configured_cursor_shape = crate::screen::cursor::CursorShape::Beam;
+        term.grid.cursor.shape = crate::screen::cursor::CursorShape::Beam;
+        term.grid.saved_cursor.shape = crate::screen::cursor::CursorShape::Beam;
+
+        // Un-saved restore should preserve beam shape
+        term.restore_cursor();
+        assert_eq!(
+            term.active_grid().cursor.shape,
+            crate::screen::cursor::CursorShape::Beam
+        );
+
+        // Full reset (RIS) should restore to configured shape
+        term.feed(b"\x1b[2q"); // Block
+        assert_eq!(
+            term.active_grid().cursor.shape,
+            crate::screen::cursor::CursorShape::Block
+        );
+        term.feed(b"\x1bc"); // RIS
+        assert_eq!(
+            term.active_grid().cursor.shape,
+            crate::screen::cursor::CursorShape::Beam
+        );
     }
 
     #[test]

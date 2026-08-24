@@ -273,7 +273,9 @@ impl FontLoader {
     /// Create an optimized, lightweight FontLoader for tab bar text.
     /// Reuses already loaded FontArc handles and allocates a compact 256x256 atlas (75% less VRAM/RAM).
     pub fn create_tab_loader(&self, tab_font_size: f32) -> Self {
-        let px_size = (tab_font_size * self.font_scale_multiplier).round().max(1.0);
+        let px_size = (tab_font_size * self.font_scale_multiplier)
+            .round()
+            .max(1.0);
         let scale = PxScale::from(px_size);
         let scaled_font = self.font.as_scaled(scale);
         let cell_width = scaled_font
@@ -683,7 +685,9 @@ impl FontLoader {
             }
 
             if char_glyph_id.0 != 0 {
-                let font_scale = (self.font_size * self.font_scale_multiplier).round().max(1.0);
+                let font_scale = (self.font_size * self.font_scale_multiplier)
+                    .round()
+                    .max(1.0);
                 let scale: PxScale;
 
                 if is_pw_sep {
@@ -873,7 +877,9 @@ impl FontLoader {
                     }
 
                     if char_glyph_id.0 != 0 {
-                        let px_size = (self.font_size * self.font_scale_multiplier).round().max(1.0);
+                        let px_size = (self.font_size * self.font_scale_multiplier)
+                            .round()
+                            .max(1.0);
                         let scale = PxScale::from(px_size);
                         let glyph = char_glyph_id.with_scale(scale);
                         let scaled_font = char_font.as_scaled(scale);

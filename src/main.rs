@@ -1,21 +1,7 @@
-mod ansi;
-mod app;
-mod cli;
-mod clipboard;
-mod config;
-mod font;
-mod hyperlink;
-mod input;
-mod ipc;
-mod memory;
-mod pty;
-mod renderer;
-mod screen;
-mod terminal;
-mod theme;
-
-use crate::app::app::{App, CustomEvent};
-use crate::cli::CliOptions;
+use velox::app::app::{App, CustomEvent};
+use velox::cli::CliOptions;
+use velox::config;
+use velox::ipc;
 use winit::event_loop::EventLoop;
 
 fn main() {
@@ -34,8 +20,7 @@ fn main() {
     }
 
     // Load user configuration
-    let config =
-        crate::config::loader::load().unwrap_or_else(|_| crate::config::defaults::default_config());
+    let config = config::loader::load().unwrap_or_else(|_| config::defaults::default_config());
 
     let single_instance = cli_opts.single_instance || config.single_instance.unwrap_or(true);
 

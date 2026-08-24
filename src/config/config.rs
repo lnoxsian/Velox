@@ -160,19 +160,11 @@ where
         }
 
         fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-            if v > 0 {
-                Ok(Some(v as f32))
-            } else {
-                Ok(None)
-            }
+            if v > 0 { Ok(Some(v as f32)) } else { Ok(None) }
         }
 
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-            if v > 0 {
-                Ok(Some(v as f32))
-            } else {
-                Ok(None)
-            }
+            if v > 0 { Ok(Some(v as f32)) } else { Ok(None) }
         }
 
         fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
@@ -188,11 +180,7 @@ where
             if trimmed.eq_ignore_ascii_case("default") {
                 Ok(None)
             } else if let Ok(sz) = trimmed.parse::<f32>() {
-                if sz > 0.0 {
-                    Ok(Some(sz))
-                } else {
-                    Ok(None)
-                }
+                if sz > 0.0 { Ok(Some(sz)) } else { Ok(None) }
             } else {
                 Ok(None)
             }
@@ -202,7 +190,10 @@ where
             Ok(None)
         }
 
-        fn visit_some<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        fn visit_some<D: de::Deserializer<'de>>(
+            self,
+            deserializer: D,
+        ) -> Result<Self::Value, D::Error> {
             deserializer.deserialize_any(self)
         }
     }

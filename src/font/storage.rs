@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub enum FontStorage {
     Mmap(Arc<memmap2::Mmap>),
-    #[allow(dead_code)]
+    #[cfg(test)]
     Owned(Arc<[u8]>),
     Shared(Arc<dyn AsRef<[u8]> + Send + Sync>),
 }
@@ -23,7 +23,7 @@ impl FontStorage {
     }
 
     /// Construct from owned bytes in memory.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self::Owned(Arc::from(bytes.into_boxed_slice()))
     }
@@ -38,6 +38,7 @@ impl FontStorage {
     pub fn as_bytes(&self) -> &[u8] {
         match self {
             Self::Mmap(mmap) => mmap.as_ref(),
+            #[cfg(test)]
             Self::Owned(bytes) => bytes.as_ref(),
             Self::Shared(shared) => shared.as_ref().as_ref(),
         }
@@ -49,10 +50,9 @@ impl FontStorage {
         self.as_bytes().len()
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.as_bytes().is_empty()
+        self.len() == 0
     }
 }
 

@@ -25,9 +25,13 @@ pub fn handle_escape(byte: u8, terminal: &mut Terminal) {
             terminal.grid.erase_display(3, fg, bg);
             terminal.grid.cursor.x = 0;
             terminal.grid.cursor.y = 0;
+            terminal.grid.cursor.shape = terminal.configured_cursor_shape;
+            terminal.grid.saved_cursor.shape = terminal.configured_cursor_shape;
             terminal.alt_grid.erase_display(3, fg, bg);
             terminal.alt_grid.cursor.x = 0;
             terminal.alt_grid.cursor.y = 0;
+            terminal.alt_grid.cursor.shape = terminal.configured_cursor_shape;
+            terminal.alt_grid.saved_cursor.shape = terminal.configured_cursor_shape;
         }
         b'D' => {
             // Index (IND)

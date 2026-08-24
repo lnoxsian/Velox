@@ -310,11 +310,10 @@ impl Theme {
                 .cursor_color
                 .or(self.initial_cursor_color)
                 .unwrap_or(self.default_fg),
-            TabAccentColorConfig::Default => {
-                self.tab_accent_color
-                    .or(self.cursor_color)
-                    .unwrap_or(self.ansi_colors[4])
-            }
+            TabAccentColorConfig::Default => self
+                .tab_accent_color
+                .or(self.cursor_color)
+                .unwrap_or(self.ansi_colors[4]),
         }
     }
 
@@ -605,14 +604,78 @@ mod tests {
 
         // Test all other named color aliases:
         let color_tests = [
-            ("black", 0, Color { r: 69, g: 71, b: 90 }),
-            ("green", 2, Color { r: 166, g: 227, b: 161 }),
-            ("yellow", 3, Color { r: 249, g: 226, b: 175 }),
-            ("blue", 4, Color { r: 137, g: 180, b: 250 }),
-            ("magenta", 5, Color { r: 245, g: 194, b: 231 }),
-            ("purple", 5, Color { r: 245, g: 194, b: 231 }),
-            ("cyan", 6, Color { r: 148, g: 226, b: 213 }),
-            ("white", 7, Color { r: 186, g: 194, b: 222 }),
+            (
+                "black",
+                0,
+                Color {
+                    r: 69,
+                    g: 71,
+                    b: 90,
+                },
+            ),
+            (
+                "green",
+                2,
+                Color {
+                    r: 166,
+                    g: 227,
+                    b: 161,
+                },
+            ),
+            (
+                "yellow",
+                3,
+                Color {
+                    r: 249,
+                    g: 226,
+                    b: 175,
+                },
+            ),
+            (
+                "blue",
+                4,
+                Color {
+                    r: 137,
+                    g: 180,
+                    b: 250,
+                },
+            ),
+            (
+                "magenta",
+                5,
+                Color {
+                    r: 245,
+                    g: 194,
+                    b: 231,
+                },
+            ),
+            (
+                "purple",
+                5,
+                Color {
+                    r: 245,
+                    g: 194,
+                    b: 231,
+                },
+            ),
+            (
+                "cyan",
+                6,
+                Color {
+                    r: 148,
+                    g: 226,
+                    b: 213,
+                },
+            ),
+            (
+                "white",
+                7,
+                Color {
+                    r: 186,
+                    g: 194,
+                    b: 222,
+                },
+            ),
         ];
         for (name, idx, expected_color) in color_tests {
             let toml = format!(
@@ -652,7 +715,11 @@ mod tests {
         assert_eq!(th_fg.tab_accent_color_mode, TabAccentColorConfig::DefaultFg);
         assert_eq!(
             th_fg.resolve_tab_accent_color(),
-            Color { r: 17, g: 34, b: 51 }
+            Color {
+                r: 17,
+                g: 34,
+                b: 51
+            }
         );
 
         let toml_bg = r##"
@@ -667,7 +734,11 @@ mod tests {
         assert_eq!(th_bg.tab_accent_color_mode, TabAccentColorConfig::DefaultBg);
         assert_eq!(
             th_bg.resolve_tab_accent_color(),
-            Color { r: 68, g: 85, b: 102 }
+            Color {
+                r: 68,
+                g: 85,
+                b: 102
+            }
         );
 
         let toml_cur = r##"
@@ -681,7 +752,11 @@ mod tests {
         assert_eq!(th_cur.tab_accent_color_mode, TabAccentColorConfig::Cursor);
         assert_eq!(
             th_cur.resolve_tab_accent_color(),
-            Color { r: 255, g: 85, b: 0 }
+            Color {
+                r: 255,
+                g: 85,
+                b: 0
+            }
         );
     }
 }

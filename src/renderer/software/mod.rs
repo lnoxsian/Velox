@@ -91,15 +91,6 @@ impl CpuRenderer {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn set_opacity(&mut self, opacity: f32) {
-        let opacity = opacity.clamp(0.0, 1.0);
-        if (self.opacity - opacity).abs() > f32::EPSILON {
-            self.opacity = opacity;
-            self.damage.mark_all();
-        }
-    }
-
     pub fn resize(&mut self, width: u32, height: u32) {
         self.viewport_width = width;
         self.viewport_height = height;
@@ -130,7 +121,6 @@ impl CpuRenderer {
 
     /// Backwards-compatible render entry point (no tab bar). Delegates to `render_with_tab_bar`.
     /// Only used in unit tests.
-    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -687,8 +677,13 @@ impl CpuRenderer {
                     let btn_y = 2u32;
 
                     if tab_bar.is_new_tab_hovered {
-                        self.framebuffer
-                            .fill_span(btn_x, btn_y, btn_w, btn_h, self.palette.tab_hover_bg);
+                        self.framebuffer.fill_span(
+                            btn_x,
+                            btn_y,
+                            btn_w,
+                            btn_h,
+                            self.palette.tab_hover_bg,
+                        );
                     }
 
                     let plus_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;

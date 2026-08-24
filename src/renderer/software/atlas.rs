@@ -67,7 +67,6 @@ impl GlyphAtlas {
     }
 
     /// Total capacity in bytes allocated on the heap.
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn total_capacity_bytes(&self) -> usize {
         self.alpha_pixels.capacity() + (self.color_pixels.capacity() * 4)

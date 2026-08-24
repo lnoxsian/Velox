@@ -44,7 +44,7 @@ impl Selection {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     #[inline(always)]
     pub fn contains_coords(
         min_x: usize,
@@ -69,7 +69,7 @@ impl Selection {
         true
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn contains(&self, x: usize, y: usize) -> bool {
         if !self.active {
             return false;

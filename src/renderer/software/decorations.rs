@@ -78,8 +78,8 @@ pub fn draw_cursor(
     is_focused: bool,
     color: u32,
 ) {
-    if !is_focused {
-        // Unfocused windows display a hollow rectangular border
+    if !is_focused && (shape == CursorShape::Block || shape == CursorShape::HollowBlock) {
+        // Unfocused windows display a hollow rectangular border for block cursor
         draw_hollow_block(fb, px, py, cell_w, cell_h, color);
         return;
     }
@@ -114,4 +114,79 @@ fn draw_hollow_block(fb: &mut Framebuffer, px: u32, py: u32, cell_w: u32, cell_h
     fb.fill_span(px, py, t, cell_h, color);
     // Right border
     fb.fill_span(px + cell_w.saturating_sub(t), py, t, cell_h, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unfocused_cursor_rendering() {
+        let mut fb = Framebuffer::new(40, 40);
+        let cursor_color = 0xFFFFFFFF;
+
+        let cell_w = 12;
+        let cell_h = 24;
+        // Beam when unfocused should render a vertical beam, NOT a hollow block
+        draw_cursor(
+            &mut fb,
+            0,
+            0,
+            cell_w,
+            cell_h,
+            CursorShape::Beam,
+            false,
+            cursor_color,
+        );
+        let beam_w = (cell_w / 6).max(2);
+        // Left column within beam_w should be filled
+        for y in 0..cell_h {
+            for x in 0..beam_w {
+                assert_eq!(fb.pixels[y as usize * fb.stride + x as usize], cursor_color);
+            }
+        }
+        // Right side should NOT have hollow block border
+        assert_eq!(fb.pixels[10 * fb.stride + 11], 0);
+
+        // Underline when unfocused should render an underline, NOT a hollow block
+        let mut fb_under = Framebuffer::new(40, 40);
+        draw_cursor(
+            &mut fb_under,
+            0,
+            0,
+            cell_w,
+            cell_h,
+            CursorShape::Underline,
+            false,
+            cursor_color,
+        );
+        let underline_h = (cell_h / 6).max(2);
+        let under_y = cell_h - underline_h;
+        for x in 0..cell_w {
+            assert_eq!(
+                fb_under.pixels[under_y as usize * fb_under.stride + x as usize],
+                cursor_color
+            );
+        }
+        // Top border should NOT be drawn
+        assert_eq!(fb_under.pixels[5], 0);
+
+        // Block when unfocused should render hollow block
+        let mut fb_block = Framebuffer::new(40, 40);
+        draw_cursor(
+            &mut fb_block,
+            0,
+            0,
+            cell_w,
+            cell_h,
+            CursorShape::Block,
+            false,
+            cursor_color,
+        );
+        // Top border and right border should be drawn
+        assert_eq!(fb_block.pixels[5], cursor_color);
+        assert_eq!(fb_block.pixels[10 * fb_block.stride + 11], cursor_color);
+        // Center should be hollow (0)
+        assert_eq!(fb_block.pixels[10 * fb_block.stride + 5], 0);
+    }
 }

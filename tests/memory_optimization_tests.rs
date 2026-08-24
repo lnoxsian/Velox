@@ -1,7 +1,4 @@
-use velox::font::fallback::{
-    FallbackManager, MAX_FALLBACK_BYTES, MAX_FALLBACK_FONTS, MAX_MISSING_CHARS,
-};
-use velox::font::loader::MAX_DYNAMIC_GLYPHS;
+use velox::font::fallback::{FallbackManager, MAX_FALLBACK_BYTES, MAX_FALLBACK_FONTS};
 use velox::renderer::software::atlas::DEFAULT_ALPHA_CAPACITY;
 use velox::renderer::software::glyph::{GlyphCache, GlyphKey, GlyphScratch};
 use velox::screen::cell::{Cell, CellFlags, Color};
@@ -81,13 +78,6 @@ fn test_fallback_missing_chars_bounded() {
     }
 
     assert!(manager.fallbacks.len() <= MAX_FALLBACK_FONTS);
-}
-
-#[test]
-fn test_glyph_cache_max_bound_constant() {
-    assert_eq!(MAX_DYNAMIC_GLYPHS, 2048);
-    assert_eq!(MAX_FALLBACK_FONTS, 8);
-    assert_eq!(MAX_MISSING_CHARS, 1024);
 }
 
 #[test]

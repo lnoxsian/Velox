@@ -54,7 +54,10 @@ fn main() {
         let lines_per_sec = (500.0 * total_iterations as f64) / elapsed.as_secs_f64();
         println!(
             "2. ANSI SGR 24-bit Color Stream ({} MB): {:?} total -> {:.2} MB/s ({:.2} thousand lines/sec)",
-            total_bytes / 1_048_576, elapsed, mb_per_sec, lines_per_sec / 1000.0
+            total_bytes / 1_048_576,
+            elapsed,
+            mb_per_sec,
+            lines_per_sec / 1000.0
         );
     }
 
@@ -79,7 +82,9 @@ fn main() {
         let ops_per_sec = (total_ops as f64) / elapsed.as_secs_f64();
         println!(
             "3. CSI Cursor Jump & Line Erase ({} ops): {:?} total -> {:.2} million ops/sec",
-            total_ops, elapsed, ops_per_sec / 1_000_000.0
+            total_ops,
+            elapsed,
+            ops_per_sec / 1_000_000.0
         );
     }
 
@@ -97,14 +102,18 @@ fn main() {
         let lines_per_sec = (lines_to_scroll as f64) / elapsed.as_secs_f64();
         println!(
             "4. Grid Scroll & Scrollback Push ({} lines): {:?} total -> {:.2} thousand lines/sec",
-            lines_to_scroll, elapsed, lines_per_sec / 1000.0
+            lines_to_scroll,
+            elapsed,
+            lines_per_sec / 1000.0
         );
     }
 
     // 5. UTF-8 Multi-byte Characters (CJK, Symbols, Emojis)
     {
         let mut term = Terminal::new(120, 40);
-        let utf8_payload = "Velox 终端模拟器 🦀 🚀 高性能 Rust Terminal 🌟 [中文字符测试] \u{f07b} 📁\r\n".as_bytes();
+        let utf8_payload =
+            "Velox 终端模拟器 🦀 🚀 高性能 Rust Terminal 🌟 [中文字符测试] \u{f07b} 📁\r\n"
+                .as_bytes();
         let iterations = 50_000;
 
         let start = Instant::now();
@@ -115,7 +124,9 @@ fn main() {
         let lines_per_sec = (iterations as f64) / elapsed.as_secs_f64();
         println!(
             "5. UTF-8 CJK & Emoji Stream ({} lines): {:?} total -> {:.2} thousand lines/sec",
-            iterations, elapsed, lines_per_sec / 1000.0
+            iterations,
+            elapsed,
+            lines_per_sec / 1000.0
         );
     }
 

@@ -302,14 +302,14 @@ impl Scrollback {
     }
 
     pub fn len(&self) -> usize {
-        let storage_lines = match &self.storage {
-            Some(s) => s.total_disk_lines as usize + s.pending_chunk.len(),
-            None => 0,
-        };
+        let storage_lines = self
+            .storage
+            .as_ref()
+            .map_or(0, |s| s.total_disk_lines as usize + s.pending_chunk.len());
         storage_lines + self.hot_rows.len()
     }
 
-    #[allow(dead_code)]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -352,7 +352,6 @@ impl Scrollback {
         self.hot_rows.get(index).map(|r| f(&r.cells, r.wrapped))
     }
 
-    #[allow(dead_code)]
     pub fn get_row(&self, index: usize) -> Option<Row> {
         self.with_row_slice(index, |cells, wrapped| Row {
             cells: cells.to_vec(),
@@ -395,7 +394,6 @@ impl Scrollback {
     }
 
     /// Number of rows currently resident in RAM (hot rows + pending chunk + cache).
-    #[allow(dead_code)]
     pub fn resident_row_count(&self) -> usize {
         let hot = self.hot_rows.len();
         let pending = self.storage.as_ref().map_or(0, |s| s.pending_chunk.len());
@@ -407,13 +405,11 @@ impl Scrollback {
     }
 
     /// Number of rows committed to disk.
-    #[allow(dead_code)]
     pub fn disk_rows(&self) -> u64 {
         self.storage.as_ref().map_or(0, |s| s.total_disk_lines)
     }
 
     /// Total number of chunk index entries.
-    #[allow(dead_code)]
     pub fn chunk_count(&self) -> usize {
         self.storage.as_ref().map_or(0, |s| s.chunks.len())
     }
