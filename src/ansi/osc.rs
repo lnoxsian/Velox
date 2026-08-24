@@ -17,7 +17,7 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
             if params.len() >= 2
                 && let Ok(title) = std::str::from_utf8(params[1])
             {
-                terminal.app_title = Some(title.to_string());
+                terminal.osc_title = Some(title.to_string());
             }
         }
 

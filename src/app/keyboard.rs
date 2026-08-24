@@ -59,9 +59,9 @@ impl WindowState {
                             return;
                         }
                         "+" | "=" => {
-                            let new_size = (self.current_font_size + 1.0).min(72.0);
-                            if (new_size - self.current_font_size).abs() > 0.01 {
-                                self.current_font_size = new_size;
+                            let active_size = self.active_tab().font_size;
+                            let new_size = (active_size + 1.0).min(72.0);
+                            if (new_size - active_size).abs() > 0.01 {
                                 self.set_font_size(new_size);
                             }
                             return;
@@ -143,18 +143,26 @@ impl WindowState {
                             }
                             return;
                         }
+                        "+" | "=" => {
+                            let active_size = self.active_tab().font_size;
+                            let new_size = (active_size + 1.0).min(72.0);
+                            if (new_size - active_size).abs() > 0.01 {
+                                self.set_font_size(new_size);
+                            }
+                            return;
+                        }
                         "-" => {
-                            let new_size = (self.current_font_size - 1.0).max(4.0);
-                            if (new_size - self.current_font_size).abs() > 0.01 {
-                                self.current_font_size = new_size;
+                            let active_size = self.active_tab().font_size;
+                            let new_size = (active_size - 1.0).max(4.0);
+                            if (new_size - active_size).abs() > 0.01 {
                                 self.set_font_size(new_size);
                             }
                             return;
                         }
                         "0" => {
+                            let active_size = self.active_tab().font_size;
                             let new_size = self.default_font_size;
-                            if (new_size - self.current_font_size).abs() > 0.01 {
-                                self.current_font_size = new_size;
+                            if (new_size - active_size).abs() > 0.01 {
                                 self.set_font_size(new_size);
                             }
                             return;

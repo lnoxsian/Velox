@@ -104,6 +104,36 @@ impl WindowRendererBackend {
             Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
         }
     }
+
+    #[inline(always)]
+    pub fn base_cell_width(&self) -> u32 {
+        match self {
+            Self::OpenGL { renderer, .. } => renderer.tab_font_loader.cell_width,
+            Self::Software { renderer, .. } => renderer.tab_glyph_cache.cell_width,
+        }
+    }
+
+    #[inline(always)]
+    pub fn base_cell_height(&self) -> u32 {
+        match self {
+            Self::OpenGL { renderer, .. } => renderer.tab_font_loader.cell_height,
+            Self::Software { renderer, .. } => renderer.tab_glyph_cache.cell_height,
+        }
+    }
+
+    pub fn set_tab_font_size(&mut self, size: f32) {
+        match self {
+            Self::OpenGL {
+                renderer,
+                gl_surface,
+                gl_context,
+            } => {
+                let _ = gl_context.make_current(gl_surface);
+                renderer.set_tab_font_size(size);
+            }
+            Self::Software { renderer, .. } => renderer.set_tab_font_size(size),
+        }
+    }
 }
 
 pub struct WindowState {
@@ -118,6 +148,9 @@ pub struct WindowState {
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
+    #[allow(dead_code)]
+    pub base_cell_width: u32,
+    pub base_cell_height: u32,
     pub padding_x: f32,
     pub padding_y: f32,
     pub is_mouse_down: bool,
@@ -202,7 +235,7 @@ impl WindowState {
     #[inline(always)]
     pub fn tab_bar_height(&self) -> f32 {
         if self.tab_bar.is_visible(self.tabs.len()) {
-            self.tab_bar.height(self.cell_height())
+            self.tab_bar.height(self.base_cell_height)
         } else {
             0.0
         }
@@ -220,6 +253,7 @@ impl WindowState {
         (cols, rows)
     }
 
+    #[allow(dead_code)]
     pub fn resize_all_tabs(&mut self) {
         let (cols, rows) = self.recalculate_grid_size();
         for tab in &mut self.tabs {
@@ -230,7 +264,16 @@ impl WindowState {
         self.content_dirty = true;
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
+    pub fn resize_active_tab(&mut self) {
+        let (cols, rows) = self.recalculate_grid_size();
+        let tab = self.active_tab_mut();
+        tab.terminal.resize(cols, rows);
+        let _ = tab.pty_master.resize(cols as u16, rows as u16);
+        self.needs_redraw = true;
+        self.content_dirty = true;
+    }
+
+    pub fn set_renderer_font_size(&mut self, size: f32) {
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
                 renderer,
@@ -244,7 +287,15 @@ impl WindowState {
                 renderer.update_font_size(size);
             }
         }
-        self.resize_all_tabs();
+    }
+
+    pub fn set_font_size(&mut self, size: f32) {
+        self.current_font_size = size;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            tab.font_size = size;
+        }
+        self.set_renderer_font_size(size);
+        self.resize_active_tab();
     }
 
     pub fn resize_renderer(&mut self, width: u32, height: u32) {
@@ -267,7 +318,7 @@ impl WindowState {
                 renderer.resize(width, height);
             }
         }
-        self.resize_all_tabs();
+        self.resize_active_tab();
     }
 
     pub fn create_tab(
@@ -291,6 +342,12 @@ impl WindowState {
             .unwrap(),
         );
 
+        let tab_font_size = self.default_font_size;
+        if (self.current_font_size - tab_font_size).abs() > 0.01 {
+            self.current_font_size = tab_font_size;
+            self.set_renderer_font_size(tab_font_size);
+        }
+
         let (cols, rows) = self.recalculate_grid_size();
         let _ = pty_master.resize(cols as u16, rows as u16);
 
@@ -311,6 +368,7 @@ impl WindowState {
             custom_title,
             initial_title,
             hold.unwrap_or(false),
+            tab_font_size,
         );
 
         self.tabs.push(tab);
@@ -318,7 +376,7 @@ impl WindowState {
 
         let is_now_visible = self.tab_bar.is_visible(self.tabs.len());
         if was_visible != is_now_visible {
-            self.resize_all_tabs();
+            self.resize_active_tab();
         }
 
         self.tab_bar_dirty = true;
@@ -332,7 +390,6 @@ impl WindowState {
             return false;
         }
 
-        let was_visible = self.tab_bar.is_visible(self.tabs.len());
         self.tabs.remove(index);
 
         if self.tabs.is_empty() {
@@ -343,10 +400,13 @@ impl WindowState {
             self.active_tab_index = self.tabs.len() - 1;
         }
 
-        let is_now_visible = self.tab_bar.is_visible(self.tabs.len());
-        if was_visible != is_now_visible {
-            self.resize_all_tabs();
+        let active_font_size = self.tabs[self.active_tab_index].font_size;
+        if (self.current_font_size - active_font_size).abs() > 0.01 {
+            self.current_font_size = active_font_size;
+            self.set_renderer_font_size(active_font_size);
         }
+
+        self.resize_active_tab();
 
         crate::memory::trim_allocator_memory();
         self.tab_bar_dirty = true;
@@ -362,6 +422,19 @@ impl WindowState {
     pub fn switch_tab(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.active_tab_index {
             self.active_tab_index = index;
+            let tab_font_size = self.tabs[index].font_size;
+            if (self.current_font_size - tab_font_size).abs() > 0.01 {
+                self.current_font_size = tab_font_size;
+                self.set_renderer_font_size(tab_font_size);
+            }
+            let (cols, rows) = self.recalculate_grid_size();
+            let tab = &mut self.tabs[index];
+            if tab.terminal.grid.width != cols as usize
+                || tab.terminal.grid.height != rows as usize
+            {
+                tab.terminal.resize(cols, rows);
+                let _ = tab.pty_master.resize(cols as u16, rows as u16);
+            }
             self.window.set_title(&self.tabs[index].current_title);
             self.current_title = self.tabs[index].current_title.clone();
             self.tab_bar_dirty = true;
@@ -400,7 +473,16 @@ impl WindowState {
     pub fn draw(&mut self) {
         self.last_frame_instant = std::time::Instant::now();
 
-        // 1. Update title for active tab (and window title)
+        // 1. Ensure renderer font size matches the active tab's isolated font size
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+            let tab_font_size = active_tab.font_size;
+            if (self.current_font_size - tab_font_size).abs() > 0.01 {
+                self.current_font_size = tab_font_size;
+                self.set_renderer_font_size(tab_font_size);
+            }
+        }
+
+        // 2. Update title for active tab (and window title)
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index)
             && (active_tab.update_title() || self.current_title != active_tab.current_title)
         {
@@ -409,7 +491,7 @@ impl WindowState {
             self.tab_bar_dirty = true; // title changed → rebuild cache
         }
 
-        // 2. Prepare tab bar render info (lazily cached; rebuilt only when state changes)
+        // 3. Prepare tab bar render info (lazily cached; rebuilt only when state changes)
         let is_tab_bar_visible = self.tab_bar.is_visible(self.tabs.len());
         if is_tab_bar_visible && (self.tab_bar_dirty || self.tab_bar_render_cache.is_none()) {
             for tab in &mut self.tabs {
@@ -427,7 +509,7 @@ impl WindowState {
                 })
                 .collect();
             self.tab_bar_render_cache = Some(TabBarRenderInfo {
-                height: self.tab_bar.height(self.cell_height()),
+                height: self.tab_bar.height(self.base_cell_height),
                 tabs: headers,
                 show_new_tab: self.tab_bar.show_new_tab_button,
                 is_new_tab_hovered: self.tab_bar.hovered_new_tab,
@@ -683,7 +765,7 @@ impl App {
         let win_width = size.width.max(1);
         let win_height = size.height.max(1);
 
-        let backend = if gpu
+        let mut backend = if gpu
             && let (Some(gl_config), Some(gl_display), Some(gl)) = (
                 self.gl_config.as_ref(),
                 self.gl_display.as_ref(),
@@ -750,9 +832,14 @@ impl App {
             WindowRendererBackend::Software { renderer, surface }
         };
 
+        let tab_font_size = config.tab_font_size();
+        backend.set_tab_font_size(tab_font_size);
+        let base_cell_width = backend.base_cell_width();
+        let base_cell_height = backend.base_cell_height();
+
         let tab_bar = TabBar::from_config(&config);
         let tab_bar_h = if tab_bar.is_visible(1) {
-            tab_bar.height(backend.cell_height())
+            tab_bar.height(base_cell_height)
         } else {
             0.0
         };
@@ -795,6 +882,7 @@ impl App {
             custom_title,
             initial_title.clone(),
             hold.unwrap_or(false),
+            font_size,
         );
 
         let window_state = WindowState {
@@ -809,6 +897,8 @@ impl App {
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
+            base_cell_width,
+            base_cell_height,
             padding_x,
             padding_y,
             is_mouse_down: false,

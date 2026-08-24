@@ -27,6 +27,7 @@ use std::time::Instant;
 pub struct CpuRenderer {
     pub framebuffer: Framebuffer,
     pub glyph_cache: GlyphCache,
+    pub tab_glyph_cache: GlyphCache,
     pub damage: DamageMap,
     pub palette: PrecomputedPalette,
     pub viewport_width: u32,
@@ -60,6 +61,7 @@ impl CpuRenderer {
     ) -> Self {
         let glyph_cache =
             GlyphCache::from_font_family(font_family, font_size, font_scale_multiplier);
+        let tab_glyph_cache = glyph_cache.create_tab_cache(font_size);
         let framebuffer = Framebuffer::new(width, height);
         let opacity = opacity.clamp(0.0, 1.0);
         let palette = PrecomputedPalette::new(theme, opacity);
@@ -68,6 +70,7 @@ impl CpuRenderer {
         Self {
             framebuffer,
             glyph_cache,
+            tab_glyph_cache,
             damage: DamageMap::new(rows),
             palette,
             viewport_width: width,
@@ -114,9 +117,14 @@ impl CpuRenderer {
         self.damage.mark_all();
     }
 
+    pub fn set_tab_font_size(&mut self, font_size: f32) {
+        self.tab_glyph_cache.update_font_size(font_size);
+    }
+
     /// Full memory cleanup: compacts glyph atlas, prunes fallback fonts, and shrinks scratch buffers.
     pub fn release_memory(&mut self) {
         self.glyph_cache.release_memory();
+        self.tab_glyph_cache.release_memory();
         self.damage.mark_all();
     }
 
@@ -538,6 +546,8 @@ impl CpuRenderer {
             let tab_count = tab_bar.tabs.len();
             if tab_count > 0 && bar_h > 0 {
                 let tab_w = tab_bar.compute_tab_width(self.viewport_width as f32);
+                let tab_cw = self.tab_glyph_cache.cell_width;
+                let tab_ch = self.tab_glyph_cache.cell_height;
 
                 let tab_bar_bg = self.palette.tab_bar_bg;
                 self.framebuffer
@@ -571,18 +581,18 @@ impl CpuRenderer {
 
                     let close_space = if tab_bar.show_close_button { 24.0 } else { 8.0 };
                     let max_text_w = (actual_w as f32 - 16.0 - close_space).max(0.0);
-                    let max_chars = (max_text_w / (cell_w as f32)).floor() as usize;
+                    let max_chars = (max_text_w / (tab_cw as f32)).floor() as usize;
 
                     let text_start_x = tab_x + 8;
-                    let text_start_y = (bar_h.saturating_sub(cell_h)) / 2;
+                    let text_start_y = (bar_h.saturating_sub(tab_ch)) / 2;
 
                     let char_count = tab.title.chars().count();
                     if char_count <= max_chars {
                         for (c_idx, ch_char) in tab.title.chars().enumerate() {
-                            let char_px = text_start_x + (c_idx as u32) * cell_w;
+                            let char_px = text_start_x + (c_idx as u32) * tab_cw;
                             let key = GlyphKey::new(ch_char, false, false, false);
-                            if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                            if let Some(glyph_ref) = self.tab_glyph_cache.get_or_rasterize(key) {
+                                let mask = self.tab_glyph_cache.atlas.get_alpha(&glyph_ref);
                                 blit_alpha_glyph(
                                     &mut self.framebuffer,
                                     char_px,
@@ -596,10 +606,10 @@ impl CpuRenderer {
                         }
                     } else if max_chars > 1 {
                         for (c_idx, ch_char) in tab.title.chars().take(max_chars - 1).enumerate() {
-                            let char_px = text_start_x + (c_idx as u32) * cell_w;
+                            let char_px = text_start_x + (c_idx as u32) * tab_cw;
                             let key = GlyphKey::new(ch_char, false, false, false);
-                            if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                            if let Some(glyph_ref) = self.tab_glyph_cache.get_or_rasterize(key) {
+                                let mask = self.tab_glyph_cache.atlas.get_alpha(&glyph_ref);
                                 blit_alpha_glyph(
                                     &mut self.framebuffer,
                                     char_px,
@@ -611,10 +621,10 @@ impl CpuRenderer {
                                 );
                             }
                         }
-                        let char_px = text_start_x + ((max_chars - 1) as u32) * cell_w;
+                        let char_px = text_start_x + ((max_chars - 1) as u32) * tab_cw;
                         let key = GlyphKey::new('…', false, false, false);
-                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                            let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                        if let Some(glyph_ref) = self.tab_glyph_cache.get_or_rasterize(key) {
+                            let mask = self.tab_glyph_cache.atlas.get_alpha(&glyph_ref);
                             blit_alpha_glyph(
                                 &mut self.framebuffer,
                                 char_px,
@@ -630,8 +640,8 @@ impl CpuRenderer {
                     {
                         let char_px = text_start_x;
                         let key = GlyphKey::new(ch_char, false, false, false);
-                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                            let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                        if let Some(glyph_ref) = self.tab_glyph_cache.get_or_rasterize(key) {
+                            let mask = self.tab_glyph_cache.atlas.get_alpha(&glyph_ref);
                             blit_alpha_glyph(
                                 &mut self.framebuffer,
                                 char_px,
@@ -647,15 +657,15 @@ impl CpuRenderer {
                     // Close button
                     if tab_bar.show_close_button {
                         let close_x = tab_x + actual_w.saturating_sub(20);
-                        let close_y = (bar_h.saturating_sub(cell_h)) / 2;
+                        let close_y = (bar_h.saturating_sub(tab_ch)) / 2;
                         let close_fg = if tab.is_close_hovered {
                             self.palette.ansi_colors[1]
                         } else {
                             self.palette.tab_close_fg
                         };
                         let key = GlyphKey::new('×', false, false, false);
-                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                            let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                        if let Some(glyph_ref) = self.tab_glyph_cache.get_or_rasterize(key) {
+                            let mask = self.tab_glyph_cache.atlas.get_alpha(&glyph_ref);
                             blit_alpha_glyph(
                                 &mut self.framebuffer,
                                 close_x,
@@ -681,16 +691,16 @@ impl CpuRenderer {
                             .fill_span(btn_x, btn_y, btn_w, btn_h, self.palette.tab_hover_bg);
                     }
 
-                    let plus_x = btn_x + (btn_w.saturating_sub(cell_w)) / 2;
-                    let plus_y = (bar_h.saturating_sub(cell_h)) / 2;
+                    let plus_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;
+                    let plus_y = (bar_h.saturating_sub(tab_ch)) / 2;
                     let plus_fg = if tab_bar.is_new_tab_hovered {
                         self.palette.default_fg
                     } else {
                         self.palette.tab_inactive_fg
                     };
                     let key = GlyphKey::new('+', false, false, false);
-                    if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                        let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
+                    if let Some(glyph_ref) = self.tab_glyph_cache.get_or_rasterize(key) {
+                        let mask = self.tab_glyph_cache.atlas.get_alpha(&glyph_ref);
                         blit_alpha_glyph(
                             &mut self.framebuffer,
                             plus_x,

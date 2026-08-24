@@ -32,6 +32,13 @@ impl GlyphAtlas {
         }
     }
 
+    pub fn with_capacity(alpha_capacity: usize, color_capacity: usize) -> Self {
+        Self {
+            alpha_pixels: Vec::with_capacity(alpha_capacity),
+            color_pixels: Vec::with_capacity(color_capacity),
+        }
+    }
+
     /// Clear length while retaining allocated capacity for fast frame reuse.
     pub fn clear(&mut self) {
         self.alpha_pixels.clear();

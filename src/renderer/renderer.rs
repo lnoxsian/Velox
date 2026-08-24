@@ -11,6 +11,7 @@ pub struct Renderer {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     pub font_loader: FontLoader,
+    pub tab_font_loader: FontLoader,
     viewport_width: u32,
     viewport_height: u32,
     start_time: std::time::Instant,
@@ -423,6 +424,7 @@ impl Renderer {
 
             let font_loader =
                 FontLoader::new(gl.clone(), font_family, font_size, font_scale_multiplier);
+            let tab_font_loader = font_loader.create_tab_loader(font_size);
 
             let viewport_width = viewport_width.max(1);
             let viewport_height = viewport_height.max(1);
@@ -434,6 +436,7 @@ impl Renderer {
                 vao,
                 vbo,
                 font_loader,
+                tab_font_loader,
                 viewport_width,
                 viewport_height,
                 start_time: std::time::Instant::now(),
@@ -454,6 +457,10 @@ impl Renderer {
 
     pub fn set_font_size(&mut self, font_size: f32) {
         self.font_loader.update_font_size(font_size);
+    }
+
+    pub fn set_tab_font_size(&mut self, font_size: f32) {
+        self.tab_font_loader.update_font_size(font_size);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -887,11 +894,15 @@ impl Renderer {
         }
 
         // ── Pass 3: Tab Bar (if visible) ───────────────────────────────────────
+        let terminal_vertex_len = vertices.len();
         if let Some(tab_bar) = tab_bar_info {
             let bar_h = tab_bar.height;
             let tab_count = tab_bar.tabs.len();
             if tab_count > 0 {
+                let (wu, wv) = self.tab_font_loader.white_pixel_uv();
                 let tab_w = tab_bar.compute_tab_width(self.viewport_width as f32);
+                let tab_cw = self.tab_font_loader.cell_width as f32;
+                let tab_ch = self.tab_font_loader.cell_height as f32;
 
                 // 1. Tab bar background strip
                 let tab_bar_bg = Color {
@@ -953,9 +964,9 @@ impl Renderer {
                         let accent = theme.resolve_tab_accent_color();
                         push_quad(
                             &mut vertices,
-                            tab_x,
+                            tab_x.round(),
                             0.0,
-                            actual_w,
+                            actual_w.round(),
                             2.0,
                             wu,
                             wv,
@@ -979,22 +990,22 @@ impl Renderer {
 
                     let close_space = if tab_bar.show_close_button { 24.0 } else { 8.0 };
                     let max_text_w = (actual_w - 16.0 - close_space).max(0.0);
-                    let max_chars = (max_text_w / cw).floor() as usize;
+                    let max_chars = (max_text_w / tab_cw).floor() as usize;
 
-                    let text_start_x = tab_x + 8.0;
-                    let text_start_y = (bar_h - ch) / 2.0;
+                    let text_start_x = (tab_x + 8.0).round();
+                    let text_start_y = ((bar_h - tab_ch) / 2.0).round();
 
                     let char_count = tab.title.chars().count();
                     if char_count <= max_chars {
                         for (c_idx, ch_char) in tab.title.chars().enumerate() {
-                            let char_x = text_start_x + (c_idx as f32) * cw;
-                            let uv = self.font_loader.get_glyph_uv(ch_char, false, false, false);
+                            let char_x = (text_start_x + (c_idx as f32) * tab_cw).round();
+                            let uv = self.tab_font_loader.get_glyph_uv(ch_char, false, false, false);
                             push_quad(
                                 &mut vertices,
                                 char_x,
                                 text_start_y,
-                                cw * uv.width_mult,
-                                ch,
+                                tab_cw * uv.width_mult,
+                                tab_ch,
                                 uv.u_min,
                                 uv.v_min,
                                 uv.u_max,
@@ -1005,14 +1016,14 @@ impl Renderer {
                         }
                     } else if max_chars > 1 {
                         for (c_idx, ch_char) in tab.title.chars().take(max_chars - 1).enumerate() {
-                            let char_x = text_start_x + (c_idx as f32) * cw;
-                            let uv = self.font_loader.get_glyph_uv(ch_char, false, false, false);
+                            let char_x = (text_start_x + (c_idx as f32) * tab_cw).round();
+                            let uv = self.tab_font_loader.get_glyph_uv(ch_char, false, false, false);
                             push_quad(
                                 &mut vertices,
                                 char_x,
                                 text_start_y,
-                                cw * uv.width_mult,
-                                ch,
+                                tab_cw * uv.width_mult,
+                                tab_ch,
                                 uv.u_min,
                                 uv.v_min,
                                 uv.u_max,
@@ -1021,14 +1032,14 @@ impl Renderer {
                                 uv.is_color,
                             );
                         }
-                        let char_x = text_start_x + ((max_chars - 1) as f32) * cw;
-                        let uv = self.font_loader.get_glyph_uv('…', false, false, false);
+                        let char_x = (text_start_x + ((max_chars - 1) as f32) * tab_cw).round();
+                        let uv = self.tab_font_loader.get_glyph_uv('…', false, false, false);
                         push_quad(
                             &mut vertices,
                             char_x,
                             text_start_y,
-                            cw * uv.width_mult,
-                            ch,
+                            tab_cw * uv.width_mult,
+                            tab_ch,
                             uv.u_min,
                             uv.v_min,
                             uv.u_max,
@@ -1040,13 +1051,13 @@ impl Renderer {
                         && let Some(ch_char) = tab.title.chars().next()
                     {
                         let char_x = text_start_x;
-                        let uv = self.font_loader.get_glyph_uv(ch_char, false, false, false);
+                        let uv = self.tab_font_loader.get_glyph_uv(ch_char, false, false, false);
                         push_quad(
                             &mut vertices,
                             char_x,
                             text_start_y,
-                            cw * uv.width_mult,
-                            ch,
+                            tab_cw * uv.width_mult,
+                            tab_ch,
                             uv.u_min,
                             uv.v_min,
                             uv.u_max,
@@ -1058,8 +1069,8 @@ impl Renderer {
 
                     // Close button
                     if tab_bar.show_close_button {
-                        let close_x = tab_x + actual_w - 20.0;
-                        let close_y = (bar_h - ch) / 2.0;
+                        let close_x = (tab_x + actual_w - 20.0).round();
+                        let close_y = ((bar_h - tab_ch) / 2.0).round();
                         let close_fg = if tab.is_close_hovered {
                             theme.ansi_colors[1]
                         } else {
@@ -1069,13 +1080,13 @@ impl Renderer {
                                 b: (theme.default_fg.b as f32 * 0.6) as u8,
                             }
                         };
-                        let uv = self.font_loader.get_glyph_uv('×', false, false, false);
+                        let uv = self.tab_font_loader.get_glyph_uv('×', false, false, false);
                         push_quad(
                             &mut vertices,
                             close_x,
                             close_y,
-                            cw * uv.width_mult,
-                            ch,
+                            tab_cw * uv.width_mult,
+                            tab_ch,
                             uv.u_min,
                             uv.v_min,
                             uv.u_max,
@@ -1088,7 +1099,7 @@ impl Renderer {
 
                 // 3. New Tab Button '+'
                 if tab_bar.show_new_tab {
-                    let btn_x = (tab_count as f32) * tab_w + 4.0;
+                    let btn_x = ((tab_count as f32) * tab_w + 4.0).round();
                     let btn_w = 24.0;
                     let btn_h = bar_h - 4.0;
                     let btn_y = 2.0;
@@ -1123,15 +1134,15 @@ impl Renderer {
                             b: (theme.default_fg.b as f32 * 0.7) as u8,
                         }
                     };
-                    let plus_x = btn_x + (btn_w - cw) / 2.0;
-                    let plus_y = (bar_h - ch) / 2.0;
-                    let uv = self.font_loader.get_glyph_uv('+', false, false, false);
+                    let plus_x = btn_x + (btn_w - tab_cw) / 2.0;
+                    let plus_y = (bar_h - tab_ch) / 2.0;
+                    let uv = self.tab_font_loader.get_glyph_uv('+', false, false, false);
                     push_quad(
                         &mut vertices,
                         plus_x,
                         plus_y,
-                        cw * uv.width_mult,
-                        ch,
+                        tab_cw * uv.width_mult,
+                        tab_ch,
                         uv.u_min,
                         uv.v_min,
                         uv.u_max,
@@ -1185,9 +1196,6 @@ impl Renderer {
             self.gl
                 .uniform_matrix_4_f32_slice(proj_loc.as_ref(), false, &ortho);
 
-            self.gl.active_texture(glow::TEXTURE0);
-            self.gl
-                .bind_texture(glow::TEXTURE_2D, Some(self.font_loader.atlas_texture));
             let sampler_loc = self.gl.get_uniform_location(self.program, "u_atlas");
             self.gl.uniform_1_i32(sampler_loc.as_ref(), 0);
 
@@ -1198,8 +1206,24 @@ impl Renderer {
                 bytemuck::cast_slice(&vertices),
                 glow::DYNAMIC_DRAW,
             );
-            self.gl
-                .draw_arrays(glow::TRIANGLES, 0, (vertices.len() / 8) as i32);
+
+            let terminal_count = (terminal_vertex_len / 8) as i32;
+            let total_count = (vertices.len() / 8) as i32;
+
+            if terminal_count > 0 {
+                self.gl.active_texture(glow::TEXTURE0);
+                self.gl
+                    .bind_texture(glow::TEXTURE_2D, Some(self.font_loader.atlas_texture));
+                self.gl.draw_arrays(glow::TRIANGLES, 0, terminal_count);
+            }
+
+            if total_count > terminal_count {
+                self.gl.active_texture(glow::TEXTURE0);
+                self.gl
+                    .bind_texture(glow::TEXTURE_2D, Some(self.tab_font_loader.atlas_texture));
+                self.gl
+                    .draw_arrays(glow::TRIANGLES, terminal_count, total_count - terminal_count);
+            }
         }
 
         // Retain the vertex buffer if within 2x the current viewport needs;
@@ -1222,6 +1246,7 @@ impl Renderer {
             self.vertices.clear();
         }
         self.font_loader.release_memory();
+        self.tab_font_loader.release_memory();
     }
 }
 

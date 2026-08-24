@@ -30,6 +30,7 @@ opacity = 1.0                 # Value between 0.0 (transparent) and 1.0 (opaque)
 
 [tabs]
 tab_accent_color = "blue"      # Options: theme color names ("red", "green", "yellow", "blue", "magenta", "cyan", "white", "black", "default_fg", "default_bg", "cursor"), hex color like "#2472c8", or "default"
+font_size = "default"         # Options: number (e.g. 11, 11.0) or "default" (inherits [font] font_size)
 
 [colors]
 default_fg = "#d4d4d4"

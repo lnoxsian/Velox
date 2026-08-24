@@ -85,13 +85,9 @@ update-version:
 update:
     cargo update
 
-# Display terminal color palette (ANSI, 256-color, Truecolor)
-colors:
-    bash scripts/colors.sh
-
 # Alias for colors
 palette:
-    bash scripts/colors.sh
+    bash scripts/colortest
 
 # Clean build artifacts
 clean:

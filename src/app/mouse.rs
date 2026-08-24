@@ -22,7 +22,7 @@ impl WindowState {
                 self.mouse_x as f32,
                 self.mouse_y as f32,
                 win_w,
-                self.cell_height(),
+                self.base_cell_height,
                 self.tabs.len(),
             );
 
@@ -178,13 +178,23 @@ impl WindowState {
         }
     }
 
-    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta, _modifiers: ModifiersState) {
+    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta, modifiers: ModifiersState) {
         let lines_f = match delta {
             MouseScrollDelta::LineDelta(_, y) => y as f64,
             MouseScrollDelta::PixelDelta(pos) => pos.y / 15.0,
         };
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
+            if modifiers.control_key() {
+                let current_size = self.current_font_size;
+                let step = if lines > 0 { 1.0 } else { -1.0 };
+                let new_size = (current_size + step).clamp(4.0, 72.0);
+                if (new_size - current_size).abs() > 0.01 {
+                    self.set_font_size(new_size);
+                }
+                return;
+            }
+
             let tab_bar_h = self.tab_bar_height() as f64;
 
             // Scroll over tab bar switches tabs
@@ -281,7 +291,7 @@ impl WindowState {
                     self.mouse_x as f32,
                     self.mouse_y as f32,
                     win_w,
-                    self.cell_height(),
+                    self.base_cell_height,
                     self.tabs.len(),
                 );
 

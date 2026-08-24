@@ -181,7 +181,7 @@ impl GlyphCache {
 
         let fallback_manager = FallbackManager::with_database(db);
 
-        let px_size = font_size * font_scale_multiplier;
+        let px_size = (font_size * font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
         let scaled_font = font.as_scaled(scale);
         let cell_width = scaled_font.h_advance(font.glyph_id('A')).ceil().max(1.0) as u32;
@@ -203,9 +203,55 @@ impl GlyphCache {
         )
     }
 
+    /// Create an optimized, lightweight GlyphCache for tab bar text.
+    /// Reuses already loaded FontArc handles and uses compact atlas and table capacities.
+    pub fn create_tab_cache(&self, tab_font_size: f32) -> Self {
+        let px_size = (tab_font_size * self.font_scale_multiplier).round().max(1.0);
+        let scale = PxScale::from(px_size);
+        let scaled_font = self.font.as_scaled(scale);
+        let cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        let cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
+        let mut cache = Self {
+            font: self.font.clone(),
+            font_bold: None,
+            font_italic: None,
+            font_bold_italic: None,
+            fallback_manager: FallbackManager::new(),
+            cell_width,
+            cell_height,
+            font_size: tab_font_size,
+            font_scale_multiplier: self.font_scale_multiplier,
+            atlas: GlyphAtlas::with_capacity(16 * 1024, 0),
+            scratch: GlyphScratch::new(),
+            ascii_table: [None; 512],
+            unicode_table: HashMap::with_capacity(16),
+            max_unicode_entries: 32,
+        };
+        cache.preload_tab_glyphs();
+        cache
+    }
+
+    /// Preload printable ASCII characters and common tab symbols in regular style only.
+    pub fn preload_tab_glyphs(&mut self) {
+        for c in 32u8..=126u8 {
+            let ch = c as char;
+            self.get_or_rasterize(GlyphKey::new(ch, false, false, false));
+        }
+        self.get_or_rasterize(GlyphKey::new('…', false, false, false));
+        self.get_or_rasterize(GlyphKey::new('×', false, false, false));
+        self.get_or_rasterize(GlyphKey::new('+', false, false, false));
+    }
+
     pub fn update_font_size(&mut self, font_size: f32) {
         self.font_size = font_size;
-        let px_size = font_size * self.font_scale_multiplier;
+        let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
         let scaled_font = self.font.as_scaled(scale);
         self.cell_width = scaled_font
@@ -349,7 +395,7 @@ impl GlyphCache {
             }
 
             if char_glyph_id.0 != 0 {
-                let font_scale = self.font_size * self.font_scale_multiplier;
+                let font_scale = (self.font_size * self.font_scale_multiplier).round().max(1.0);
                 let scale: PxScale;
 
                 if is_pw_sep {

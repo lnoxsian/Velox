@@ -144,6 +144,72 @@ fn default_true() -> bool {
     true
 }
 
+fn deserialize_tab_font_size<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct TabFontSizeVisitor;
+
+    impl<'de> de::Visitor<'de> for TabFontSizeVisitor {
+        type Value = Option<f32>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a float, integer, or \"default\"")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            if v > 0 {
+                Ok(Some(v as f32))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            if v > 0 {
+                Ok(Some(v as f32))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+            if v > 0.0 {
+                Ok(Some(v as f32))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let trimmed = v.trim();
+            if trimmed.eq_ignore_ascii_case("default") {
+                Ok(None)
+            } else if let Ok(sz) = trimmed.parse::<f32>() {
+                if sz > 0.0 {
+                    Ok(Some(sz))
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D: de::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+            deserializer.deserialize_any(self)
+        }
+    }
+
+    deserializer.deserialize_any(TabFontSizeVisitor)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TabsConfig {
     #[serde(default)]
@@ -154,6 +220,12 @@ pub struct TabsConfig {
     pub show_close_button: bool,
     #[serde(default)]
     pub show_new_tab_button: bool,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_tab_font_size",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub font_size: Option<f32>,
     #[serde(
         default,
         alias = "tab_accent",
@@ -310,6 +382,13 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) tab_accent_color_legacy: Option<String>,
+    #[serde(
+        default,
+        rename = "tab_font_size",
+        deserialize_with = "deserialize_tab_font_size",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) tab_font_size_legacy: Option<f32>,
 }
 
 impl Config {
@@ -436,6 +515,13 @@ impl Config {
             .tab_accent_color
             .as_deref()
             .or(self.tab_accent_color_legacy.as_deref())
+    }
+
+    pub fn tab_font_size(&self) -> f32 {
+        self.tabs
+            .font_size
+            .or(self.tab_font_size_legacy)
+            .unwrap_or_else(|| self.font_size())
     }
 
     pub fn default_fg(&self) -> Option<&str> {
@@ -716,5 +802,56 @@ mod tests {
             Some(Color { r: 0, g: 255, b: 0 })
         );
         assert_eq!(parse_hex_color("invalid"), None);
+    }
+
+    #[test]
+    fn test_config_tab_font_size_parsing() {
+        // [tabs] with float font_size
+        let toml1 = r##"
+            [font]
+            font_size = 14.0
+            [tabs]
+            font_size = 11.0
+        "##;
+        let cfg1: Config = toml::from_str(toml1).unwrap();
+        assert_eq!(cfg1.tab_font_size(), 11.0);
+
+        // [tabs] with integer font_size
+        let toml2 = r##"
+            [font]
+            font_size = 14.0
+            [tabs]
+            font_size = 11
+        "##;
+        let cfg2: Config = toml::from_str(toml2).unwrap();
+        assert_eq!(cfg2.tab_font_size(), 11.0);
+
+        // [tabs] with "default" string
+        let toml3 = r##"
+            [font]
+            font_size = 14.0
+            [tabs]
+            font_size = "default"
+        "##;
+        let cfg3: Config = toml::from_str(toml3).unwrap();
+        assert_eq!(cfg3.tab_font_size(), 14.0);
+
+        // [tabs] with string number "11"
+        let toml4 = r##"
+            [font]
+            font_size = 14.0
+            [tabs]
+            font_size = "11"
+        "##;
+        let cfg4: Config = toml::from_str(toml4).unwrap();
+        assert_eq!(cfg4.tab_font_size(), 11.0);
+
+        // [tabs] omitted - defaults to [font] font_size
+        let toml5 = r##"
+            [font]
+            font_size = 13.5
+        "##;
+        let cfg5: Config = toml::from_str(toml5).unwrap();
+        assert_eq!(cfg5.tab_font_size(), 13.5);
     }
 }

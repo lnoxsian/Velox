@@ -31,6 +31,7 @@ pub fn default_config() -> Config {
             tab_bar_height: None,
             show_close_button: true,
             show_new_tab_button: false,
+            font_size: None,
             tab_accent_color: Some("blue".to_string()),
         },
 

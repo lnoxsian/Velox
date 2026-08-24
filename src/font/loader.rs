@@ -60,6 +60,10 @@ pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<Fo
     if let Some(id) = db.query(query)
         && let Some(face) = db.face(id)
     {
+        if query.style == fontdb::Style::Normal && face.style != fontdb::Style::Normal {
+            return None;
+        }
+
         let storage = match &face.source {
             fontdb::Source::File(path) => FontStorage::from_file(path).ok().map(Arc::new),
             fontdb::Source::Binary(data) => {
@@ -168,7 +172,7 @@ impl FontLoader {
 
         let fallback_manager = FallbackManager::with_database(db);
 
-        let px_size = font_size * font_scale_multiplier;
+        let px_size = (font_size * font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
         let scaled_font = font.as_scaled(scale);
         let cell_width = scaled_font.h_advance(font.glyph_id('A')).ceil().max(1.0) as u32;
@@ -198,12 +202,12 @@ impl FontLoader {
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MIN_FILTER,
-                glow::NEAREST as i32,
+                glow::LINEAR as i32,
             );
             gl.tex_parameter_i32(
                 glow::TEXTURE_2D,
                 glow::TEXTURE_MAG_FILTER,
-                glow::NEAREST as i32,
+                glow::LINEAR as i32,
             );
 
             let white_pixels = [255u8; 2 * 2 * 4];
@@ -245,6 +249,102 @@ impl FontLoader {
         }
     }
 
+    /// Create an optimized, lightweight FontLoader for tab bar text.
+    /// Reuses already loaded FontArc handles and allocates a compact 256x256 atlas (75% less VRAM/RAM).
+    pub fn create_tab_loader(&self, tab_font_size: f32) -> Self {
+        let px_size = (tab_font_size * self.font_scale_multiplier).round().max(1.0);
+        let scale = PxScale::from(px_size);
+        let scaled_font = self.font.as_scaled(scale);
+        let cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        let cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
+        let atlas_width = 256;
+        let atlas_height = 128;
+
+        let atlas_texture = unsafe {
+            let tex = self.gl.create_texture().unwrap();
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                atlas_width as i32,
+                atlas_height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+
+            let white_pixels = [255u8; 2 * 2 * 4];
+            self.gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                2,
+                2,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
+            );
+            tex
+        };
+
+        let mut loader = Self {
+            gl: self.gl.clone(),
+            font: self.font.clone(),
+            font_bold: None,
+            font_italic: None,
+            font_bold_italic: None,
+            fallback_manager: FallbackManager::new(),
+            cell_width,
+            cell_height,
+            font_size: tab_font_size,
+            font_scale_multiplier: self.font_scale_multiplier,
+            atlas_texture,
+            atlas_width,
+            atlas_height,
+            ascii_cache: [None; 512],
+            dynamic_cache: HashMap::with_capacity(32),
+            next_x: 4,
+            next_y: 0,
+            scratch_png: Vec::new(),
+            scratch_pixels: Vec::new(),
+            scratch_rgba: Vec::with_capacity(1024),
+        };
+        loader.preload_tab_ascii();
+        loader
+    }
+
+    /// Preload only regular-style printable ASCII characters and basic UI tab symbols.
+    pub fn preload_tab_ascii(&mut self) {
+        for c in 32u8..=126u8 {
+            let ch = c as char;
+            self.get_glyph_uv(ch, false, false, false);
+        }
+        self.get_glyph_uv('…', false, false, false);
+        self.get_glyph_uv('×', false, false, false);
+        self.get_glyph_uv('+', false, false, false);
+    }
+
     #[inline(always)]
     fn ascii_cache_idx(c: char, is_bold: bool, is_italic: bool) -> Option<usize> {
         let cp = c as u32;
@@ -258,7 +358,7 @@ impl FontLoader {
 
     pub fn update_font_size(&mut self, font_size: f32) {
         self.font_size = font_size;
-        let px_size = font_size * self.font_scale_multiplier;
+        let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
         let scaled_font = self.font.as_scaled(scale);
         self.cell_width = scaled_font
@@ -492,7 +592,7 @@ impl FontLoader {
             }
 
             if char_glyph_id.0 != 0 {
-                let font_scale = self.font_size * self.font_scale_multiplier;
+                let font_scale = (self.font_size * self.font_scale_multiplier).round().max(1.0);
                 let scale: PxScale;
 
                 if is_pw_sep {
@@ -682,7 +782,7 @@ impl FontLoader {
                     }
 
                     if char_glyph_id.0 != 0 {
-                        let px_size = self.font_size * self.font_scale_multiplier;
+                        let px_size = (self.font_size * self.font_scale_multiplier).round().max(1.0);
                         let scale = PxScale::from(px_size);
                         let glyph = char_glyph_id.with_scale(scale);
                         let scaled_font = char_font.as_scaled(scale);

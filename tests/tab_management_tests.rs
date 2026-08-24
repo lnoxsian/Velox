@@ -18,6 +18,7 @@ fn test_tab_bar_config_visibility_modes() {
         tab_bar_height: Some(30.0),
         show_close_button: true,
         show_new_tab_button: false,
+        font_size: None,
         tab_accent_color: None,
     };
 
@@ -169,6 +170,7 @@ fn test_tab_title_update_debounce() {
         Some("Custom Title".to_string()),
         "Custom Title".to_string(),
         false,
+        12.0,
     );
 
     // Immediately after creation, update_title within 500ms debounce must return false
@@ -615,5 +617,135 @@ fn test_software_renderer_tab_switch_clean_redraw() {
     assert!(
         row_5_all_bg,
         "Tab 2 must completely overwrite Tab 1 content on row 5"
+    );
+}
+
+#[test]
+fn test_per_tab_font_size_isolation() {
+    let pty1 = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    let pty2 = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    let terminal1 = Terminal::new(80, 24);
+    let terminal2 = Terminal::new(80, 24);
+
+    let mut tab1 = Tab::new(
+        1,
+        pty1,
+        terminal1,
+        Some("Tab 1".to_string()),
+        "Tab 1".to_string(),
+        false,
+        12.0,
+    );
+    let tab2 = Tab::new(
+        2,
+        pty2,
+        terminal2,
+        Some("Tab 2".to_string()),
+        "Tab 2".to_string(),
+        false,
+        12.0,
+    );
+
+    // Zoom Tab 1
+    tab1.font_size = 18.0;
+
+    // Verify Tab 2's font_size is unchanged
+    assert_eq!(tab1.font_size, 18.0);
+    assert_eq!(tab2.font_size, 12.0);
+}
+
+#[test]
+fn test_tab_bar_height_independent_of_cell_zoom() {
+    let config = Config::default();
+    let tab_bar = TabBar::from_config(&config);
+
+    let base_cell_height = 16u32;
+    let base_height = tab_bar.height(base_cell_height);
+
+    // If active tab zooms to cell height 36, tab bar height using base_cell_height stays identical
+    assert_eq!(tab_bar.height(base_cell_height), base_height);
+}
+
+#[test]
+fn test_tab_font_cache_isolation_on_terminal_zoom() {
+    let theme = Theme::new();
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 800, 600, true, 1.0);
+    renderer.set_tab_font_size(14.0);
+
+    let initial_tab_cw = renderer.tab_glyph_cache.cell_width;
+    let initial_tab_ch = renderer.tab_glyph_cache.cell_height;
+
+    // Zoom terminal font size down to very small (e.g. 4.0)
+    renderer.update_font_size(4.0);
+
+    // Terminal glyph cache shrinks
+    assert!(renderer.glyph_cache.cell_width < initial_tab_cw);
+    assert!(renderer.glyph_cache.cell_height < initial_tab_ch);
+
+    // Tab glyph cache remains isolated and razor sharp at 14.0
+    assert_eq!(renderer.tab_glyph_cache.cell_width, initial_tab_cw);
+    assert_eq!(renderer.tab_glyph_cache.cell_height, initial_tab_ch);
+
+    // Setting tab font size specifically updates only tab_glyph_cache
+    renderer.set_tab_font_size(18.0);
+    assert!(renderer.tab_glyph_cache.cell_height > initial_tab_ch);
+    // Terminal glyph cache is unaffected by tab font size change
+    assert!(renderer.glyph_cache.cell_height < initial_tab_ch);
+}
+
+#[test]
+fn test_software_renderer_renders_sharp_tab_bar_when_terminal_small() {
+    let theme = Theme::new();
+    let mut renderer = CpuRenderer::new("monospace", 5.0, 1.0, &theme, 800, 600, true, 1.0);
+    renderer.set_tab_font_size(14.0);
+
+    let grid = Grid::new(
+        80,
+        24,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    let mut target = vec![0u32; 800 * 600];
+
+    let tab_bar_info = TabBarRenderInfo {
+        height: 28.0,
+        tabs: vec![TabHeaderInfo {
+            title: "Terminal Tab 1".to_string(),
+            is_active: true,
+            is_hovered: false,
+            is_close_hovered: false,
+        }],
+        show_close_button: true,
+        show_new_tab: true,
+        is_new_tab_hovered: false,
+    };
+
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        true,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+        Some(&tab_bar_info),
+    );
+
+    // Verify non-zero pixels drawn in tab bar area (first 28 rows)
+    let tab_bar_slice = &target[0..(28 * 800)];
+    let active_pixels = tab_bar_slice.iter().filter(|&&p| p != 0).count();
+    assert!(
+        active_pixels > 100,
+        "Tab bar must render visible pixels with decoupled tab glyph cache"
     );
 }

@@ -60,6 +60,7 @@ pub struct Tab {
     pub last_activity: Instant,
     pub last_cleanup: Instant,
     pub hold: bool,
+    pub font_size: f32,
 }
 
 impl Tab {
@@ -70,6 +71,7 @@ impl Tab {
         custom_title: Option<String>,
         initial_title: String,
         hold: bool,
+        font_size: f32,
     ) -> Self {
         let now = Instant::now();
         Self {
@@ -82,6 +84,7 @@ impl Tab {
             last_activity: now,
             last_cleanup: now,
             hold,
+            font_size,
         }
     }
 
@@ -93,7 +96,7 @@ impl Tab {
         }
         self.last_title_check = Instant::now();
 
-        // Custom title: no process polling needed — compare in-place.
+        // 1. Custom title: no process polling needed — compare in-place.
         if let Some(ref t) = self.custom_title {
             if self.current_title == *t {
                 return false;
@@ -102,22 +105,29 @@ impl Tab {
             return true;
         }
 
-        let program = self
-            .pty_master
-            .get_foreground_process_name()
-            .unwrap_or_else(|| "velox".to_string());
-
-        let new_title = match &self.terminal.app_title {
-            Some(tpl) => tpl.replace("{program}", &program),
-            None => program,
-        };
-
-        if self.current_title != new_title {
-            self.current_title = new_title;
-            true
-        } else {
-            false
+        // 2. OSC title explicitly set by shell/program (OSC 0 / OSC 2)
+        if let Some(ref osc) = self.terminal.osc_title {
+            if self.current_title == *osc {
+                return false;
+            }
+            self.current_title = osc.clone();
+            return true;
         }
+
+        // 3. Foreground process name polling
+        if let Some(program) = self.pty_master.get_foreground_process_name() {
+            let new_title = match &self.terminal.app_title {
+                Some(tpl) => tpl.replace("{program}", &program),
+                None => program,
+            };
+
+            if self.current_title != new_title {
+                self.current_title = new_title;
+                return true;
+            }
+        }
+
+        false
     }
 }
 
