@@ -180,11 +180,41 @@ impl Terminal {
         if self.scroll_on_output {
             self.grid.scroll_offset = 0;
         }
-        // Feed bytes one by one. Note: We temporarily take ownership or borrow
-        // to avoid duplicate mutable borrows on Self.
         let mut parser = std::mem::take(&mut self.parser);
-        for &byte in data {
+        let mut i = 0;
+        let len = data.len();
+
+        while i < len {
+            let byte = data[i];
+            // Fast path for printable ASCII when in Ground state with default ASCII charset
+            if parser.state == crate::ansi::state::ParserState::Ground
+                && parser.utf8_buf.is_empty()
+                && (0x20..=0x7e).contains(&byte)
+            {
+                let active_charset = self.active_charset;
+                let charset = if active_charset == 0 {
+                    self.g0_charset
+                } else {
+                    self.g1_charset
+                };
+
+                if charset == 0 {
+                    let fg = self.current_fg;
+                    let bg = self.current_bg;
+                    let flags = self.current_flags;
+                    let grid = if self.is_alt_screen {
+                        &mut self.alt_grid
+                    } else {
+                        &mut self.grid
+                    };
+                    grid.put_ascii(byte as char, fg, bg, flags);
+                    i += 1;
+                    continue;
+                }
+            }
+
             parser.feed(byte, self);
+            i += 1;
         }
         self.parser = parser;
     }

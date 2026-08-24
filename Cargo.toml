@@ -31,6 +31,10 @@ memmap2 = "0.9"
 name = "software_renderer"
 harness = false
 
+[[bench]]
+name = "terminal_throughput"
+harness = false
+
 [profile.optimized-release]
 inherits = "release"
 opt-level = 3

@@ -89,9 +89,7 @@ impl Grid {
         };
         let clear_start = (bottom + 1 - u_delta) * self.width;
         let clear_end = (bottom + 1) * self.width;
-        for cell in &mut self.cells[clear_start..clear_end] {
-            *cell = default_cell;
-        }
+        self.cells[clear_start..clear_end].fill(default_cell);
 
         let clear_start_y = bottom + 1 - u_delta;
         for y in clear_start_y..=bottom {
@@ -136,9 +134,7 @@ impl Grid {
         };
         let clear_start = top * self.width;
         let clear_end = (top + u_delta) * self.width;
-        for cell in &mut self.cells[clear_start..clear_end] {
-            *cell = default_cell;
-        }
+        self.cells[clear_start..clear_end].fill(default_cell);
 
         for y in top..(top + u_delta) {
             if y < self.row_wrapped.len() {

@@ -71,30 +71,24 @@ fn push_quad(
     color: Color,
     is_color: bool,
 ) {
-    // alpha == 0 signals the fragment shader to render the texture as-is (emoji/color glyphs).
-    // alpha == 1 uses the texture red channel as coverage mask tinted by color.
     let alpha = if is_color { 0.0 } else { 1.0 };
-    let c = [
-        color.r as f32 / 255.0,
-        color.g as f32 / 255.0,
-        color.b as f32 / 255.0,
-        alpha,
-    ];
+    let cr = color.r as f32 / 255.0;
+    let cg = color.g as f32 / 255.0;
+    let cb = color.b as f32 / 255.0;
+    let x2 = x + w;
+    let y2 = y + h;
 
-    // Triangle 1
-    vertices.extend_from_slice(&[x, y, u_min, v_min]);
-    vertices.extend_from_slice(&c);
-    vertices.extend_from_slice(&[x + w, y, u_max, v_min]);
-    vertices.extend_from_slice(&c);
-    vertices.extend_from_slice(&[x, y + h, u_min, v_max]);
-    vertices.extend_from_slice(&c);
-    // Triangle 2
-    vertices.extend_from_slice(&[x, y + h, u_min, v_max]);
-    vertices.extend_from_slice(&c);
-    vertices.extend_from_slice(&[x + w, y, u_max, v_min]);
-    vertices.extend_from_slice(&c);
-    vertices.extend_from_slice(&[x + w, y + h, u_max, v_max]);
-    vertices.extend_from_slice(&c);
+    let quad = [
+        // Triangle 1
+        x, y, u_min, v_min, cr, cg, cb, alpha,
+        x2, y, u_max, v_min, cr, cg, cb, alpha,
+        x, y2, u_min, v_max, cr, cg, cb, alpha,
+        // Triangle 2
+        x, y2, u_min, v_max, cr, cg, cb, alpha,
+        x2, y, u_max, v_min, cr, cg, cb, alpha,
+        x2, y2, u_max, v_max, cr, cg, cb, alpha,
+    ];
+    vertices.extend_from_slice(&quad);
 }
 
 #[inline(always)]
@@ -494,7 +488,7 @@ impl Renderer {
         // Reuse the vertex buffer allocation across frames
         let mut vertices = std::mem::take(&mut self.vertices);
         vertices.clear();
-        let needed = cells.len() * 6 * 8;
+        let needed = cells.len() * 12 * 8;
         if vertices.capacity() < needed {
             vertices.reserve(needed);
         }

@@ -107,7 +107,47 @@ impl Grid {
         }
     }
 
+    #[inline(always)]
+    pub fn put_ascii(&mut self, c: char, fg: Color, bg: Color, flags: CellFlags) {
+        if self.cursor.x >= self.width {
+            let row_start = self.cursor.y * self.width;
+            let start = (row_start + self.cursor.x).min(self.cells.len());
+            let end = (row_start + self.width).min(self.cells.len());
+            if start < end {
+                self.cells[start..end].fill(Cell {
+                    character: ' ',
+                    foreground: fg,
+                    background: bg,
+                    flags: CellFlags::empty(),
+                });
+            }
+            if self.cursor.y < self.row_wrapped.len() {
+                self.row_wrapped[self.cursor.y] = true;
+            }
+            self.cursor.x = 0;
+            self.scroll_or_move_down(bg);
+        }
+
+        let idx = self.cursor.y * self.width + self.cursor.x;
+        if idx < self.cells.len() {
+            self.cells[idx] = Cell {
+                character: c,
+                foreground: fg,
+                background: bg,
+                flags,
+            };
+        }
+        self.cursor.x += 1;
+        self.damage.mark_dirty(self.cursor.y);
+    }
+
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, mut flags: CellFlags) {
+        let cp = c as u32;
+        if (0x20..0x7f).contains(&cp) {
+            self.put_ascii(c, fg, bg, flags);
+            return;
+        }
+
         self.clamp_cursor();
         if self.width == 0 || self.height == 0 {
             return;
@@ -158,16 +198,16 @@ impl Grid {
 
         if self.cursor.x + w > self.width {
             // Fill rest of the row with spaces, then wrap
-            for x in self.cursor.x..self.width {
-                let idx = self.cursor.y * self.width + x;
-                if idx < self.cells.len() {
-                    self.cells[idx] = Cell {
-                        character: ' ',
-                        foreground: fg,
-                        background: bg,
-                        flags: CellFlags::empty(),
-                    };
-                }
+            let row_start = self.cursor.y * self.width;
+            let start = (row_start + self.cursor.x).min(self.cells.len());
+            let end = (row_start + self.width).min(self.cells.len());
+            if start < end {
+                self.cells[start..end].fill(Cell {
+                    character: ' ',
+                    foreground: fg,
+                    background: bg,
+                    flags: CellFlags::empty(),
+                });
             }
             if self.cursor.y < self.row_wrapped.len() {
                 self.row_wrapped[self.cursor.y] = true;
@@ -229,9 +269,7 @@ impl Grid {
             background: bg,
             flags: CellFlags::empty(),
         };
-        for cell in &mut self.cells[start..end] {
-            *cell = default_cell;
-        }
+        self.cells[start..end].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
     }
 
@@ -256,9 +294,7 @@ impl Grid {
             flags: CellFlags::empty(),
         };
         let fill_start = row_start + self.width - n;
-        for cell in &mut self.cells[fill_start..row_start + self.width] {
-            *cell = default_cell;
-        }
+        self.cells[fill_start..row_start + self.width].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
     }
 
@@ -282,9 +318,7 @@ impl Grid {
             background: bg,
             flags: CellFlags::empty(),
         };
-        for cell in &mut self.cells[move_start..move_start + n] {
-            *cell = default_cell;
-        }
+        self.cells[move_start..move_start + n].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
     }
 
@@ -307,9 +341,7 @@ impl Grid {
                 let start_idx = row_start + cur_x;
                 let end_idx = (row_start + self.width).min(self.cells.len());
                 if start_idx < end_idx {
-                    for cell in &mut self.cells[start_idx..end_idx] {
-                        *cell = default_cell;
-                    }
+                    self.cells[start_idx..end_idx].fill(default_cell);
                 }
             }
             1 => {
@@ -317,9 +349,7 @@ impl Grid {
                 let start_idx = row_start;
                 let end_idx = (row_start + cur_x + 1).min(self.cells.len());
                 if start_idx < end_idx {
-                    for cell in &mut self.cells[start_idx..end_idx] {
-                        *cell = default_cell;
-                    }
+                    self.cells[start_idx..end_idx].fill(default_cell);
                 }
             }
             2 => {
@@ -327,9 +357,7 @@ impl Grid {
                 let start_idx = row_start;
                 let end_idx = (row_start + self.width).min(self.cells.len());
                 if start_idx < end_idx {
-                    for cell in &mut self.cells[start_idx..end_idx] {
-                        *cell = default_cell;
-                    }
+                    self.cells[start_idx..end_idx].fill(default_cell);
                 }
             }
             _ => {}
@@ -354,9 +382,7 @@ impl Grid {
             0 => {
                 // Cursor to end of display
                 let start = (cur_y * self.width + cur_x).min(self.cells.len());
-                for cell in &mut self.cells[start..] {
-                    *cell = default_cell;
-                }
+                self.cells[start..].fill(default_cell);
                 for y in cur_y..self.height {
                     self.damage.mark_dirty(y);
                     if y < self.row_wrapped.len() {
@@ -369,9 +395,7 @@ impl Grid {
                 let len = self.cells.len();
                 if len > 0 {
                     let end = (cur_y * self.width + cur_x).min(len - 1);
-                    for cell in &mut self.cells[0..=end] {
-                        *cell = default_cell;
-                    }
+                    self.cells[0..=end].fill(default_cell);
                     for y in 0..=cur_y {
                         self.damage.mark_dirty(y);
                         if y < self.row_wrapped.len() {
@@ -382,15 +406,9 @@ impl Grid {
             }
             2 | 3 => {
                 // Entire screen + scrollback buffer
-                for cell in &mut self.cells {
-                    *cell = default_cell;
-                }
+                self.cells.fill(default_cell);
                 self.damage.mark_all();
-                for y in 0..self.height {
-                    if y < self.row_wrapped.len() {
-                        self.row_wrapped[y] = false;
-                    }
-                }
+                self.row_wrapped.fill(false);
                 self.scrollback.clear();
                 self.scroll_offset = 0;
                 self.selection.clear();

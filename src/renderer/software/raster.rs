@@ -62,17 +62,17 @@ pub fn blit_alpha_glyph(
         let src_row = y * gw;
         let dst_row = ((py as usize) + y) * stride + (px as usize);
 
-        for x in 0..max_x {
-            let alpha = mask[src_row + x];
+        let src_slice = &mask[src_row..src_row + max_x];
+        let dst_slice = &mut pixels[dst_row..dst_row + max_x];
+
+        for (dst_pix, &alpha) in dst_slice.iter_mut().zip(src_slice.iter()) {
             if alpha == 0 {
                 continue;
             }
-
-            let dst_idx = dst_row + x;
             if alpha == 255 {
-                pixels[dst_idx] = fg;
+                *dst_pix = fg;
             } else {
-                pixels[dst_idx] = blend_alpha(pixels[dst_idx], fg, alpha);
+                *dst_pix = blend_alpha(*dst_pix, fg, alpha);
             }
         }
     }
@@ -126,7 +126,9 @@ pub fn blit_alpha_glyph_scaled(
         let r0 = gy0 * gw;
         let r1 = gy1 * gw;
 
-        for x in 0..max_x {
+        let dst_slice = &mut pixels[dst_row..dst_row + max_x];
+
+        for (x, dst_pix) in dst_slice.iter_mut().enumerate() {
             let gx = (x as f32 + 0.5) * (gw as f32 / tw as f32) - 0.5;
             let gx0 = (gx.floor() as isize).clamp(0, gw as isize - 1) as usize;
             let gx1 = (gx0 + 1).min(gw - 1);
@@ -145,11 +147,10 @@ pub fn blit_alpha_glyph_scaled(
                 continue;
             }
 
-            let dst_idx = dst_row + x;
             if alpha == 255 {
-                pixels[dst_idx] = fg;
+                *dst_pix = fg;
             } else {
-                pixels[dst_idx] = blend_alpha(pixels[dst_idx], fg, alpha);
+                *dst_pix = blend_alpha(*dst_pix, fg, alpha);
             }
         }
     }
@@ -184,18 +185,18 @@ pub fn blit_color_glyph(
         let src_row = y * gw;
         let dst_row = ((py as usize) + y) * stride + (px as usize);
 
-        for x in 0..max_x {
-            let src_px = color_pixels[src_row + x];
+        let src_slice = &color_pixels[src_row..src_row + max_x];
+        let dst_slice = &mut pixels[dst_row..dst_row + max_x];
+
+        for (dst_pix, &src_px) in dst_slice.iter_mut().zip(src_slice.iter()) {
             let alpha = (src_px >> 24) as u8;
             if alpha == 0 {
                 continue;
             }
-
-            let dst_idx = dst_row + x;
             if alpha == 255 {
-                pixels[dst_idx] = src_px;
+                *dst_pix = src_px;
             } else {
-                pixels[dst_idx] = blend_alpha(pixels[dst_idx], src_px, alpha);
+                *dst_pix = blend_alpha(*dst_pix, src_px, alpha);
             }
         }
     }
