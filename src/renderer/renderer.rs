@@ -46,10 +46,36 @@ fn compute_cell_colors(
         let lum_fg = 0.299 * inv_fg.r as f32 + 0.587 * inv_fg.g as f32 + 0.114 * inv_fg.b as f32;
         let lum_bg = 0.299 * inv_bg.r as f32 + 0.587 * inv_bg.g as f32 + 0.114 * inv_bg.b as f32;
 
-        // When both colors are dark (e.g. dark text + reverse on dark theme) or both are light
-        if (lum_fg < 128.0 && lum_bg < 128.0) || (lum_fg >= 128.0 && lum_bg >= 128.0) {
-            inv_bg = theme.default_fg;
-            inv_fg = cell_fg;
+        let lum_theme_bg = 0.299 * theme.default_bg.r as f32
+            + 0.587 * theme.default_bg.g as f32
+            + 0.114 * theme.default_bg.b as f32;
+
+        // When both colors are dark, both are light, or contrast is too low
+        if (lum_fg < 128.0 && lum_bg < 128.0)
+            || (lum_fg >= 128.0 && lum_bg >= 128.0)
+            || (lum_fg - lum_bg).abs() < 30.0
+        {
+            if lum_theme_bg < 128.0 {
+                // Dark theme: invert to light background
+                inv_bg = theme.default_fg;
+                let lum_orig_fg =
+                    0.299 * cell_fg.r as f32 + 0.587 * cell_fg.g as f32 + 0.114 * cell_fg.b as f32;
+                inv_fg = if lum_orig_fg < 120.0 {
+                    cell_fg
+                } else {
+                    theme.default_bg
+                };
+            } else {
+                // Light theme: invert to dark background
+                inv_bg = theme.default_fg;
+                let lum_orig_fg =
+                    0.299 * cell_fg.r as f32 + 0.587 * cell_fg.g as f32 + 0.114 * cell_fg.b as f32;
+                inv_fg = if lum_orig_fg >= 135.0 {
+                    cell_fg
+                } else {
+                    theme.default_bg
+                };
+            }
         }
 
         (inv_fg, inv_bg)
@@ -553,7 +579,7 @@ impl Renderer {
                     false
                 };
                 let is_reversed = cell.flags.contains(CellFlags::REVERSE);
-                let is_inverted = is_selected || is_reversed;
+                let is_inverted = is_selected ^ is_reversed;
 
                 let (_fg, mut bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
 
@@ -635,7 +661,7 @@ impl Renderer {
                     false
                 };
                 let is_reversed = cell.flags.contains(CellFlags::REVERSE);
-                let is_inverted = is_selected || is_reversed;
+                let is_inverted = is_selected ^ is_reversed;
 
                 let (mut fg, _bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
 

@@ -3,11 +3,23 @@ use ab_glyph::{Font, FontArc};
 use fontdb::Database;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub const MAX_FALLBACK_FONTS: usize = 8;
 pub const MAX_FALLBACK_BYTES: usize = 64 * 1024 * 1024; // 64 MB virtual/resident fallback budget
 pub const MAX_MISSING_CHARS: usize = 1024;
+
+static SYSTEM_FONT_DB: OnceLock<Arc<Database>> = OnceLock::new();
+
+/// Returns the shared, lazily-initialized system font database.
+/// Avoids loading and parsing font directories multiple times across loaders and fallback managers.
+pub fn get_system_font_db() -> &'static Arc<Database> {
+    SYSTEM_FONT_DB.get_or_init(|| {
+        let mut db = Database::new();
+        db.load_system_fonts();
+        Arc::new(db)
+    })
+}
 
 pub struct FallbackFont {
     pub font: FontArc,
@@ -18,8 +30,7 @@ pub struct FallbackFont {
 }
 
 pub struct FallbackManager {
-    db: Database,
-    db_loaded: bool,
+    db: Option<Arc<Database>>,
     loaded_paths: HashSet<PathBuf>,
     pub fallbacks: Vec<FallbackFont>,
     missing_chars: HashSet<char>,
@@ -38,8 +49,7 @@ impl Default for FallbackManager {
 impl FallbackManager {
     pub fn new() -> Self {
         Self {
-            db: Database::new(),
-            db_loaded: false,
+            db: None,
             loaded_paths: HashSet::new(),
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
@@ -52,8 +62,7 @@ impl FallbackManager {
 
     pub fn with_database(db: Database) -> Self {
         Self {
-            db,
-            db_loaded: true,
+            db: Some(Arc::new(db)),
             loaded_paths: HashSet::new(),
             fallbacks: Vec::new(),
             missing_chars: HashSet::new(),
@@ -64,11 +73,25 @@ impl FallbackManager {
         }
     }
 
-    fn ensure_db_loaded(&mut self) {
-        if !self.db_loaded {
-            self.db.load_system_fonts();
-            self.db_loaded = true;
+    pub fn with_shared_database(db: Arc<Database>) -> Self {
+        Self {
+            db: Some(db),
+            loaded_paths: HashSet::new(),
+            fallbacks: Vec::new(),
+            missing_chars: HashSet::new(),
+            usage_counter: 0,
+            resident_bytes: 0,
+            max_fallback_fonts: MAX_FALLBACK_FONTS,
+            max_fallback_bytes: MAX_FALLBACK_BYTES,
         }
+    }
+
+    #[inline]
+    fn ensure_db(&mut self) -> Arc<Database> {
+        Arc::clone(
+            self.db
+                .get_or_insert_with(|| Arc::clone(get_system_font_db())),
+        )
     }
 
     /// Prune cached fallback fonts so total resident bytes and count stay within budget limits.
@@ -167,7 +190,7 @@ impl FallbackManager {
             return None;
         }
 
-        self.ensure_db_loaded();
+        let db = self.ensure_db();
 
         // 3. If emoji, check popular color emoji families FIRST
         if emoji {
@@ -190,8 +213,8 @@ impl FallbackManager {
                     stretch: fontdb::Stretch::Normal,
                     style: fontdb::Style::Normal,
                 };
-                if let Some(id) = self.db.query(&query)
-                    && let Some(face) = self.db.face(id)
+                if let Some(id) = db.query(&query)
+                    && let Some(face) = db.face(id)
                     && let fontdb::Source::File(path) = &face.source
                     && !self.loaded_paths.contains(path)
                     && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
@@ -229,8 +252,8 @@ impl FallbackManager {
                     stretch: fontdb::Stretch::Normal,
                     style: fontdb::Style::Normal,
                 };
-                if let Some(id) = self.db.query(&query)
-                    && let Some(face) = self.db.face(id)
+                if let Some(id) = db.query(&query)
+                    && let Some(face) = db.face(id)
                     && let fontdb::Source::File(path) = &face.source
                     && !self.loaded_paths.contains(path)
                     && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
@@ -243,30 +266,17 @@ impl FallbackManager {
             }
         }
 
-        // 5. Scan system font faces in fontdb with mmap
-        let candidate_paths: Vec<(PathBuf, u32)> = self
-            .db
-            .faces()
-            .filter_map(|face| {
+        // 5. Scan system font faces directly via iterator (zero Vec/PathBuf heap allocations)
+        if emoji {
+            for face in db.faces() {
                 if let fontdb::Source::File(path) = &face.source
                     && !self.loaded_paths.contains(path)
-                {
-                    Some((path.clone(), face.index))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // If emoji, prioritize faces with embedded color images
-        if emoji {
-            for (path, face_index) in &candidate_paths {
-                if !self.loaded_paths.contains(path)
                     && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
-                    && let Ok(font) = create_font_arc(Arc::clone(&storage), *face_index)
+                    && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
                     && font.glyph_id(c).0 != 0
-                    && let Ok(face) = owned_ttf_parser::Face::parse(storage.as_bytes(), *face_index)
-                    && face
+                    && let Ok(face_parsed) =
+                        owned_ttf_parser::Face::parse(storage.as_bytes(), face.index)
+                    && face_parsed
                         .glyph_raster_image(owned_ttf_parser::GlyphId(font.glyph_id(c).0), 32)
                         .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
                 {
@@ -276,13 +286,14 @@ impl FallbackManager {
             }
         }
 
-        for (path, face_index) in candidate_paths {
-            if !self.loaded_paths.contains(&path)
-                && let Ok(storage) = FontStorage::from_file(&path).map(Arc::new)
-                && let Ok(font) = create_font_arc(Arc::clone(&storage), face_index)
+        for face in db.faces() {
+            if let fontdb::Source::File(path) = &face.source
+                && !self.loaded_paths.contains(path)
+                && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
+                && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
                 && font.glyph_id(c).0 != 0
             {
-                let idx = self.insert_fallback(path, font, storage);
+                let idx = self.insert_fallback(path.clone(), font, storage);
                 return Some(idx);
             }
         }

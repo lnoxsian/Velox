@@ -8,8 +8,10 @@ use unicode_width::UnicodeWidthChar;
 
 static COMBINING_REGISTRY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
+pub const MAX_COMBINING_SEQUENCES: usize = 4096;
+
 pub fn get_combining_registry() -> &'static Mutex<Vec<String>> {
-    COMBINING_REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+    COMBINING_REGISTRY.get_or_init(|| Mutex::new(Vec::with_capacity(64)))
 }
 
 pub struct Grid {
@@ -180,10 +182,12 @@ impl Grid {
                         // Deduplicate: reuse existing registry entry if this sequence was seen before
                         if let Some(pos) = registry.iter().position(|s| *s == seq) {
                             char::from_u32(0x100000 + pos as u32).unwrap_or(base_char)
-                        } else {
+                        } else if registry.len() < MAX_COMBINING_SEQUENCES {
                             let reg_idx = registry.len();
                             registry.push(seq);
                             char::from_u32(0x100000 + reg_idx as u32).unwrap_or(base_char)
+                        } else {
+                            base_char
                         }
                     } else {
                         base_char

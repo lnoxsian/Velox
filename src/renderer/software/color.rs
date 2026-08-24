@@ -48,6 +48,7 @@ pub struct PrecomputedPalette {
     pub ansi_colors_raw: [Color; 16],
     pub default_fg: u32,
     pub default_bg: u32,
+    pub raw_default_fg: Color,
     pub raw_default_bg: Color,
     pub tab_accent: u32,
     pub tab_bar_bg: u32,
@@ -99,6 +100,7 @@ impl PrecomputedPalette {
             ansi_colors_raw,
             default_fg: PackedColor::from_color(theme.default_fg).to_u32(),
             default_bg: PackedColor::from_premultiplied(theme.default_bg, alpha).to_u32(),
+            raw_default_fg: theme.default_fg,
             raw_default_bg: theme.default_bg,
             tab_accent: PackedColor::from_color(theme.resolve_tab_accent_color()).to_u32(),
             tab_bar_bg: PackedColor::from_premultiplied(tab_bar_bg_raw, alpha).to_u32(),
@@ -118,47 +120,77 @@ impl PrecomputedPalette {
         bold_is_bright: bool,
     ) -> (u32, u32) {
         let cell_fg_color = cell.foreground;
-        let mut cell_fg = PackedColor::from_color(cell_fg_color).to_u32();
+        let mut cell_fg_raw = cell_fg_color;
 
         // Bold-bright: remap base 8 ANSI colors to bright variants (8..15)
         if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
             for i in 0..8 {
                 if cell_fg_color == self.ansi_colors_raw[i] {
-                    cell_fg = self.ansi_colors[i + 8];
+                    cell_fg_raw = self.ansi_colors_raw[i + 8];
                     break;
                 }
             }
         }
 
-        let cell_bg = if cell.background == self.raw_default_bg {
-            self.default_bg
-        } else {
-            PackedColor::from_color(cell.background).to_u32()
-        };
+        let cell_bg_raw = cell.background;
 
         let (mut fg, bg) = if is_inverted {
-            let mut inv_fg = cell_bg;
-            let mut inv_bg = cell_fg;
+            let mut inv_fg_raw = cell_bg_raw;
+            let mut inv_bg_raw = cell_fg_raw;
 
-            let r_fg = (inv_fg >> 16) & 0xFF;
-            let g_fg = (inv_fg >> 8) & 0xFF;
-            let b_fg = inv_fg & 0xFF;
-            let lum_fg = 0.299 * r_fg as f32 + 0.587 * g_fg as f32 + 0.114 * b_fg as f32;
+            let lum_fg = 0.299 * inv_fg_raw.r as f32
+                + 0.587 * inv_fg_raw.g as f32
+                + 0.114 * inv_fg_raw.b as f32;
+            let lum_bg = 0.299 * inv_bg_raw.r as f32
+                + 0.587 * inv_bg_raw.g as f32
+                + 0.114 * inv_bg_raw.b as f32;
 
-            let r_bg = (inv_bg >> 16) & 0xFF;
-            let g_bg = (inv_bg >> 8) & 0xFF;
-            let b_bg = inv_bg & 0xFF;
-            let lum_bg = 0.299 * r_bg as f32 + 0.587 * g_bg as f32 + 0.114 * b_bg as f32;
+            let lum_theme_bg = 0.299 * self.raw_default_bg.r as f32
+                + 0.587 * self.raw_default_bg.g as f32
+                + 0.114 * self.raw_default_bg.b as f32;
 
-            // When both colors are dark (e.g. dark text + reverse on dark theme) or both are light
-            if (lum_fg < 128.0 && lum_bg < 128.0) || (lum_fg >= 128.0 && lum_bg >= 128.0) {
-                inv_bg = self.default_fg;
-                inv_fg = cell_fg;
+            // When both colors are dark, both are light, or contrast is too low
+            if (lum_fg < 128.0 && lum_bg < 128.0)
+                || (lum_fg >= 128.0 && lum_bg >= 128.0)
+                || (lum_fg - lum_bg).abs() < 30.0
+            {
+                if lum_theme_bg < 128.0 {
+                    // Dark theme: invert to light background
+                    inv_bg_raw = self.raw_default_fg;
+                    let lum_orig_fg = 0.299 * cell_fg_raw.r as f32
+                        + 0.587 * cell_fg_raw.g as f32
+                        + 0.114 * cell_fg_raw.b as f32;
+                    inv_fg_raw = if lum_orig_fg < 120.0 {
+                        cell_fg_raw
+                    } else {
+                        self.raw_default_bg
+                    };
+                } else {
+                    // Light theme: invert to dark background
+                    inv_bg_raw = self.raw_default_fg;
+                    let lum_orig_fg = 0.299 * cell_fg_raw.r as f32
+                        + 0.587 * cell_fg_raw.g as f32
+                        + 0.114 * cell_fg_raw.b as f32;
+                    inv_fg_raw = if lum_orig_fg >= 135.0 {
+                        cell_fg_raw
+                    } else {
+                        self.raw_default_bg
+                    };
+                }
             }
 
-            (inv_fg, inv_bg)
+            // Both foreground text and selection background must be solid, full-alpha colors
+            let fg_packed = PackedColor::from_color(inv_fg_raw).to_u32();
+            let bg_packed = PackedColor::from_color(inv_bg_raw).to_u32();
+            (fg_packed, bg_packed)
         } else {
-            (cell_fg, cell_bg)
+            let fg_packed = PackedColor::from_color(cell_fg_raw).to_u32();
+            let bg_packed = if cell_bg_raw == self.raw_default_bg {
+                self.default_bg
+            } else {
+                PackedColor::from_color(cell_bg_raw).to_u32()
+            };
+            (fg_packed, bg_packed)
         };
 
         if cell.flags.contains(CellFlags::DIM) {

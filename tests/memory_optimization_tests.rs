@@ -172,3 +172,18 @@ fn test_multicycle_unicode_memory_stability() {
                 + (velox::renderer::software::atlas::DEFAULT_COLOR_CAPACITY * 4)
     );
 }
+
+#[test]
+fn test_shared_system_font_database_identity() {
+    let db1 = velox::font::fallback::get_system_font_db();
+    let db2 = velox::font::fallback::get_system_font_db();
+    // Verify both pointers point to the exact same shared Arc<Database>
+    assert!(std::sync::Arc::ptr_eq(db1, db2));
+}
+
+#[test]
+fn test_combining_registry_bounded_capacity() {
+    let registry = velox::screen::grid::get_combining_registry();
+    assert!(registry.lock().is_ok());
+    assert_eq!(velox::screen::grid::MAX_COMBINING_SEQUENCES, 4096);
+}

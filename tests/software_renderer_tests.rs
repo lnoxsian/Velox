@@ -165,6 +165,18 @@ fn test_software_renderer_selection_and_cursor() {
         &mut target,
     );
     assert!(!renderer.damage.has_damage());
+    // Verify that selected cell at (3, 2) has inverted background (grid.default_fg)
+    let cell_w = renderer.glyph_cache.cell_width;
+    let cell_h = renderer.glyph_cache.cell_height;
+    let sample_x = 8 + 3 * cell_w + 2;
+    let sample_y = 4 + 2 * cell_h + 2;
+    let expected_inverted_bg =
+        velox::renderer::software::color::PackedColor::from_color(grid.default_fg).to_u32();
+    assert_eq!(
+        target[(sample_y as usize) * 800 + (sample_x as usize)],
+        expected_inverted_bg,
+        "Selected cell background must be inverted to grid.default_fg"
+    );
 }
 
 #[test]

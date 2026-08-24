@@ -140,8 +140,7 @@ impl FontLoader {
         font_size: f32,
         font_scale_multiplier: f32,
     ) -> Self {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
+        let db = crate::font::fallback::get_system_font_db();
 
         let query = fontdb::Query {
             families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
@@ -150,7 +149,7 @@ impl FontLoader {
             style: fontdb::Style::Normal,
         };
 
-        let font = load_font_face(&db, &query).expect("Could not load any system monospace font");
+        let font = load_font_face(db, &query).expect("Could not load any system monospace font");
 
         let query_bold = fontdb::Query {
             families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
@@ -158,7 +157,7 @@ impl FontLoader {
             stretch: fontdb::Stretch::Normal,
             style: fontdb::Style::Normal,
         };
-        let font_bold = load_font_face(&db, &query_bold);
+        let font_bold = load_font_face(db, &query_bold);
 
         // Query italic and bold-italic faces.
         let regular_id = db.query(&query);
@@ -171,7 +170,7 @@ impl FontLoader {
         };
         let italic_id = db.query(&query_italic);
         let font_italic = if italic_id.is_some() && italic_id != regular_id {
-            load_font_face(&db, &query_italic)
+            load_font_face(db, &query_italic)
         } else {
             None // No distinct italic face — synthetic italic will be applied
         };
@@ -185,12 +184,12 @@ impl FontLoader {
         };
         let bold_italic_id = db.query(&query_bold_italic);
         let font_bold_italic = if bold_italic_id.is_some() && bold_italic_id != query_bold_id {
-            load_font_face(&db, &query_bold_italic)
+            load_font_face(db, &query_bold_italic)
         } else {
             None // No distinct bold-italic face — synthetic italic will be applied on bold
         };
 
-        let fallback_manager = FallbackManager::with_database(db);
+        let fallback_manager = FallbackManager::with_shared_database(Arc::clone(db));
 
         let px_size = (font_size * font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
@@ -828,24 +827,45 @@ impl FontLoader {
                     && let Some(outlined) = cf.outline_glyph(the_glyph)
                 {
                     outlined.draw(|gx, gy, alpha| {
-                        let slant_shift = if is_synthetic_italic {
+                        if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
                             let cell_y = y_offset + gy as f32;
-                            (ascent - cell_y) * SHEAR_FACTOR
-                        } else {
-                            0.0
-                        };
-                        let px = (x_offset + gx as f32 + slant_shift).round() as i32;
-                        let py = (y_offset + gy as f32).round() as i32;
+                            let slant_shift = (ascent - cell_y) * SHEAR_FACTOR;
+                            let exact_x = x_offset + gx as f32 + slant_shift;
+                            let py = (y_offset + gy as f32).round() as i32;
 
-                        if px >= 0
-                            && px < target_width as i32
-                            && py >= 0
-                            && py < self.cell_height as i32
-                        {
-                            let idx = py as usize * target_width as usize + px as usize;
-                            let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
-                            let new_alpha = old_alpha.max(alpha);
-                            self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
+                            if py >= 0 && py < self.cell_height as i32 {
+                                let x0 = exact_x.floor() as i32;
+                                let frac_x = exact_x - x0 as f32;
+                                let x1 = x0 + 1;
+
+                                let a0 = (alpha * (1.0 - frac_x) * 255.0).round() as u8;
+                                let a1 = (alpha * frac_x * 255.0).round() as u8;
+
+                                if x0 >= 0 && x0 < target_width as i32 && a0 > 0 {
+                                    let idx0 = py as usize * target_width as usize + x0 as usize;
+                                    self.scratch_pixels[idx0] =
+                                        self.scratch_pixels[idx0].saturating_add(a0);
+                                }
+                                if x1 >= 0 && x1 < target_width as i32 && a1 > 0 {
+                                    let idx1 = py as usize * target_width as usize + x1 as usize;
+                                    self.scratch_pixels[idx1] =
+                                        self.scratch_pixels[idx1].saturating_add(a1);
+                                }
+                            }
+                        } else {
+                            let px = (x_offset + gx as f32).round() as i32;
+                            let py = (y_offset + gy as f32).round() as i32;
+
+                            if px >= 0
+                                && px < target_width as i32
+                                && py >= 0
+                                && py < self.cell_height as i32
+                            {
+                                let idx = py as usize * target_width as usize + px as usize;
+                                let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
+                                let new_alpha = old_alpha.max(alpha);
+                                self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
+                            }
                         }
                     });
                 }
