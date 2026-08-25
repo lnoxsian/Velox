@@ -761,3 +761,114 @@ fn test_software_renderer_alt_screen_clean_exit() {
         "Row 24 statusline must be completely wiped to default background color after exiting"
     );
 }
+
+#[test]
+fn test_software_renderer_unfocused_dim() {
+    let mut renderer = setup_renderer(800, 600);
+    let theme = Theme::new();
+    let mut grid = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
+
+    // Populate cell with bright text 'A'
+    grid.cells[0] = Cell {
+        character: 'A',
+        foreground: Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        background: Color { r: 50, g: 50, b: 50 },
+        flags: CellFlags::empty(),
+    };
+    grid.damage.mark_dirty(0);
+
+    let mut focused_target = vec![0u32; 800 * 600];
+    let mut unfocused_target = vec![0u32; 800 * 600];
+
+    // Render focused with window_dim = 0.5 (effective_dim = 0.0)
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true, // is_focused
+        1.0,
+        0.5, // window_dim
+        &mut focused_target,
+        None,
+    );
+
+    // Render unfocused with window_dim = 0.5 (effective_dim = 0.5)
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        false, // is_focused = false -> dims by 50%
+        1.0,
+        0.5, // window_dim
+        &mut unfocused_target,
+        None,
+    );
+
+    // 1. Verify that the background pixel remains undimmed (50, 50, 50) in both focused and unfocused modes
+    let focused_bg = focused_target[0];
+    let unfocused_bg = unfocused_target[0];
+
+    let focused_r = (focused_bg >> 16) & 0xFF;
+    let focused_g = (focused_bg >> 8) & 0xFF;
+    let focused_b = focused_bg & 0xFF;
+
+    let unfocused_r = (unfocused_bg >> 16) & 0xFF;
+    let unfocused_g = (unfocused_bg >> 8) & 0xFF;
+    let unfocused_b = unfocused_bg & 0xFF;
+
+    assert_eq!(focused_r, 50);
+    assert_eq!(focused_g, 50);
+    assert_eq!(focused_b, 50);
+
+    // Background remains undimmed!
+    assert_eq!(unfocused_r, 50);
+    assert_eq!(unfocused_g, 50);
+    assert_eq!(unfocused_b, 50);
+
+    // 2. Verify that text glyph pixels (character 'A') are dimmed from 255 to ~128
+    let cell_w = renderer.glyph_cache.cell_width as usize;
+    let cell_h = renderer.glyph_cache.cell_height as usize;
+
+    let mut max_focused_text_r = 0u32;
+    let mut max_unfocused_text_r = 0u32;
+
+    for y in 0..cell_h {
+        for x in 0..cell_w {
+            let f_px = focused_target[y * 800 + x];
+            let u_px = unfocused_target[y * 800 + x];
+            let f_r = (f_px >> 16) & 0xFF;
+            let u_r = (u_px >> 16) & 0xFF;
+            if f_r > max_focused_text_r {
+                max_focused_text_r = f_r;
+            }
+            if u_r > max_unfocused_text_r {
+                max_unfocused_text_r = u_r;
+            }
+        }
+    }
+
+    assert!(
+        max_focused_text_r >= 240,
+        "Focused text should have full brightness (got {})",
+        max_focused_text_r
+    );
+    assert!(
+        max_unfocused_text_r <= 135 && max_unfocused_text_r >= 100,
+        "Unfocused text must be dimmed to ~125 (got {})",
+        max_unfocused_text_r
+    );
+}

@@ -19,6 +19,7 @@ pub enum TabAccentColorConfig {
     Custom(Color),
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     pub default_fg: Color,
     pub default_bg: Color,
@@ -39,6 +40,43 @@ pub struct Theme {
 }
 
 impl Theme {
+    pub fn dimmed(&self, amount: f32) -> Self {
+        if amount <= 0.0 {
+            return self.clone();
+        }
+        let mut ansi_colors = self.ansi_colors;
+        for c in &mut ansi_colors {
+            *c = c.dim(amount);
+        }
+        let mut initial_ansi_colors = self.initial_ansi_colors;
+        for c in &mut initial_ansi_colors {
+            *c = c.dim(amount);
+        }
+        Self {
+            default_fg: self.default_fg.dim(amount),
+            default_bg: self.default_bg,
+            ansi_colors,
+            initial_fg: self.initial_fg.dim(amount),
+            initial_bg: self.initial_bg,
+            initial_ansi_colors,
+            cursor_color: self.cursor_color.map(|c| c.dim(amount)),
+            cursor_text_color: self.cursor_text_color.map(|c| c.dim(amount)),
+            cursor_color_mode: match self.cursor_color_mode {
+                CursorColorConfig::Custom(c) => CursorColorConfig::Custom(c.dim(amount)),
+                other => other,
+            },
+            cursor_text_color_mode: match self.cursor_text_color_mode {
+                CursorColorConfig::Custom(c) => CursorColorConfig::Custom(c.dim(amount)),
+                other => other,
+            },
+            initial_cursor_color: self.initial_cursor_color.map(|c| c.dim(amount)),
+            initial_cursor_text_color: self.initial_cursor_text_color.map(|c| c.dim(amount)),
+            tab_accent_color: self.tab_accent_color,
+            tab_accent_color_mode: self.tab_accent_color_mode,
+            initial_tab_accent_color: self.initial_tab_accent_color,
+            initial_tab_accent_color_mode: self.initial_tab_accent_color_mode,
+        }
+    }
     pub fn new() -> Self {
         let default_fg = Color {
             r: 248,

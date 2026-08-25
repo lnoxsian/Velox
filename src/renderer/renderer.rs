@@ -27,9 +27,12 @@ fn compute_cell_colors(
     is_inverted: bool,
     bold_is_bright: bool,
     theme: &Theme,
+    dim: f32,
 ) -> (Color, Color) {
-    // Bold-bright: remap dim ANSI fg to its bright counterpart
     let mut cell_fg = cell.foreground;
+    let cell_bg = cell.background;
+
+    // Bold-bright: remap dim ANSI fg to its bright counterpart
     if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
         for i in 0..8 {
             if cell_fg == theme.ansi_colors[i] {
@@ -40,7 +43,7 @@ fn compute_cell_colors(
     }
 
     let (mut fg, bg) = if is_inverted {
-        let mut inv_fg = cell.background;
+        let mut inv_fg = cell_bg;
         let mut inv_bg = cell_fg;
 
         let lum_fg = 0.299 * inv_fg.r as f32 + 0.587 * inv_fg.g as f32 + 0.114 * inv_fg.b as f32;
@@ -78,9 +81,9 @@ fn compute_cell_colors(
             }
         }
 
-        (inv_fg, inv_bg)
+        (inv_fg.dim(dim), inv_bg)
     } else {
-        (cell_fg, cell.background)
+        (cell_fg.dim(dim), cell_bg)
     };
 
     // Dim: attenuate foreground to 60%
@@ -510,6 +513,7 @@ impl Renderer {
         padding_x: f32,
         padding_y: f32,
         opacity: f32,
+        window_dim: f32,
         tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
     ) {
         let cw = self.font_loader.cell_width as f32;
@@ -519,6 +523,14 @@ impl Renderer {
         } else {
             padding_y
         };
+
+        let effective_dim = window_dim.clamp(0.0, 1.0);
+        let effective_theme = if effective_dim > 0.0 {
+            theme.dimmed(effective_dim)
+        } else {
+            theme.clone()
+        };
+        let theme = &effective_theme;
 
         // Reuse the vertex buffer allocation across frames
         let mut vertices = std::mem::take(&mut self.vertices);
@@ -581,11 +593,11 @@ impl Renderer {
                 let is_reversed = cell.flags.contains(CellFlags::REVERSE);
                 let is_inverted = is_selected ^ is_reversed;
 
-                let (_fg, mut bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
+                let (_fg, mut bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme, effective_dim);
 
                 let is_block_cursor = is_cursor && cursor_shape == CursorShape::Block;
                 if is_block_cursor {
-                    let mut cell_fg = cell.foreground;
+                    let mut cell_fg = cell.foreground.dim(effective_dim);
                     if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
                         for i in 0..8 {
                             if cell_fg == theme.ansi_colors[i] {
@@ -663,10 +675,10 @@ impl Renderer {
                 let is_reversed = cell.flags.contains(CellFlags::REVERSE);
                 let is_inverted = is_selected ^ is_reversed;
 
-                let (mut fg, _bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme);
+                let (mut fg, _bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme, effective_dim);
 
                 // Bold-bright cell_fg needed for cursor color (pre-dim value)
-                let mut cell_fg = cell.foreground;
+                let mut cell_fg = cell.foreground.dim(effective_dim);
                 if bold_is_bright && is_bold {
                     for i in 0..8 {
                         if cell_fg == theme.ansi_colors[i] {
@@ -677,7 +689,7 @@ impl Renderer {
                 }
 
                 if is_cursor && cursor_shape == CursorShape::Block {
-                    fg = theme.resolve_cursor_text_color(cell.background);
+                    fg = theme.resolve_cursor_text_color(cell.background).dim(effective_dim);
                 }
 
                 let px = padding_x + x as f32 * cw;

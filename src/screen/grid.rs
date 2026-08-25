@@ -143,10 +143,11 @@ impl Grid {
             self.scroll_or_move_down(bg);
         }
 
-        let abs_row = self.scrollback.len() + self.cursor.y;
         if let Some(ref link) = self.current_hyperlink {
+            let abs_row = self.scrollback.len() + self.cursor.y;
             self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
-        } else {
+        } else if !self.hyperlinks.rows.is_empty() {
+            let abs_row = self.scrollback.len() + self.cursor.y;
             self.hyperlinks.remove_cell(abs_row, self.cursor.x);
         }
 
@@ -161,6 +162,67 @@ impl Grid {
         }
         self.cursor.x += 1;
         self.damage.mark_dirty(self.cursor.y);
+    }
+
+    pub fn put_ascii_slice(&mut self, mut text: &[u8], fg: Color, bg: Color, flags: CellFlags) {
+        while !text.is_empty() {
+            if self.cursor.x >= self.width {
+                let row_start = self.cursor.y * self.width;
+                let start = (row_start + self.cursor.x).min(self.cells.len());
+                let end = (row_start + self.width).min(self.cells.len());
+                if start < end {
+                    self.cells[start..end].fill(Cell {
+                        character: ' ',
+                        foreground: fg,
+                        background: bg,
+                        flags: CellFlags::empty(),
+                    });
+                }
+                if self.cursor.y < self.row_wrapped.len() {
+                    self.row_wrapped[self.cursor.y] = true;
+                }
+                self.cursor.x = 0;
+                self.scroll_or_move_down(bg);
+            }
+
+            let available_in_row = self.width.saturating_sub(self.cursor.x);
+            if available_in_row == 0 {
+                continue;
+            }
+
+            let chunk_len = text.len().min(available_in_row);
+            let chunk = &text[..chunk_len];
+            let row_start = self.cursor.y * self.width;
+            let dest_start = row_start + self.cursor.x;
+            let dest_end = (dest_start + chunk_len).min(self.cells.len());
+
+            for (i, &b) in chunk.iter().enumerate() {
+                if dest_start + i < dest_end {
+                    self.cells[dest_start + i] = Cell {
+                        character: b as char,
+                        foreground: fg,
+                        background: bg,
+                        flags,
+                    };
+                }
+            }
+
+            if let Some(ref link) = self.current_hyperlink {
+                let abs_row = self.scrollback.len() + self.cursor.y;
+                for col in self.cursor.x..self.cursor.x + chunk_len {
+                    self.hyperlinks.insert(abs_row, col, link.clone());
+                }
+            } else if !self.hyperlinks.rows.is_empty() {
+                let abs_row = self.scrollback.len() + self.cursor.y;
+                for col in self.cursor.x..self.cursor.x + chunk_len {
+                    self.hyperlinks.remove_cell(abs_row, col);
+                }
+            }
+
+            self.cursor.x += chunk_len;
+            self.damage.mark_dirty(self.cursor.y);
+            text = &text[chunk_len..];
+        }
     }
 
     pub fn put_char(&mut self, c: char, fg: Color, bg: Color, mut flags: CellFlags) {
@@ -240,15 +302,15 @@ impl Grid {
             self.scroll_or_move_down(bg);
         }
 
-        let abs_row = self.scrollback.len() + self.cursor.y;
-
         if w == 2 {
             flags.insert(CellFlags::WIDE);
             if let Some(ref link) = self.current_hyperlink {
+                let abs_row = self.scrollback.len() + self.cursor.y;
                 self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
                 self.hyperlinks
                     .insert(abs_row, self.cursor.x + 1, link.clone());
-            } else {
+            } else if !self.hyperlinks.rows.is_empty() {
+                let abs_row = self.scrollback.len() + self.cursor.y;
                 self.hyperlinks.remove_cell(abs_row, self.cursor.x);
                 self.hyperlinks.remove_cell(abs_row, self.cursor.x + 1);
             }
@@ -276,8 +338,10 @@ impl Grid {
             self.cursor.x += 1;
         } else {
             if let Some(ref link) = self.current_hyperlink {
+                let abs_row = self.scrollback.len() + self.cursor.y;
                 self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
-            } else {
+            } else if !self.hyperlinks.rows.is_empty() {
+                let abs_row = self.scrollback.len() + self.cursor.y;
                 self.hyperlinks.remove_cell(abs_row, self.cursor.x);
             }
 

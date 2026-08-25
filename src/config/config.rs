@@ -78,6 +78,13 @@ pub struct WindowConfig {
         alias = "window_opacity"
     )]
     pub opacity: Option<f32>,
+    #[serde(
+        default,
+        alias = "dim",
+        alias = "unfocused_dim",
+        alias = "unfocus_dim"
+    )]
+    pub window_dim: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -366,6 +373,15 @@ pub struct Config {
     pub(crate) opacity_legacy: Option<f32>,
     #[serde(
         default,
+        rename = "window_dim",
+        alias = "dim",
+        alias = "unfocused_dim",
+        alias = "unfocus_dim",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) window_dim_legacy: Option<f32>,
+    #[serde(
+        default,
         rename = "tab_accent_color",
         alias = "tab_accent",
         alias = "accent_color",
@@ -390,6 +406,15 @@ impl Config {
             .unwrap_or(1.0)
             .clamp(0.0, 1.0)
     }
+
+    pub fn window_dim(&self) -> f32 {
+        self.window
+            .window_dim
+            .or(self.window_dim_legacy)
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
+    }
+
     pub fn font_family(&self) -> &str {
         if let Some(ref ff) = self.font_family_legacy {
             ff.as_str()
@@ -844,5 +869,54 @@ mod tests {
         "##;
         let cfg5: Config = toml::from_str(toml5).unwrap();
         assert_eq!(cfg5.tab_font_size(), 13.5);
+    }
+
+    #[test]
+    fn test_config_window_dim_parsing() {
+        // Default when omitted
+        let toml_default = r##"
+            [window]
+            opacity = 0.9
+        "##;
+        let cfg_default: Config = toml::from_str(toml_default).unwrap();
+        assert_eq!(cfg_default.window_dim(), 0.0);
+
+        // Under [window] table
+        let toml_window = r##"
+            [window]
+            window_dim = 0.35
+        "##;
+        let cfg_window: Config = toml::from_str(toml_window).unwrap();
+        assert!((cfg_window.window_dim() - 0.35).abs() < f32::EPSILON);
+
+        // Aliases under [window] table
+        let toml_dim_alias = r##"
+            [window]
+            dim = 0.45
+        "##;
+        let cfg_dim: Config = toml::from_str(toml_dim_alias).unwrap();
+        assert!((cfg_dim.window_dim() - 0.45).abs() < f32::EPSILON);
+
+        let toml_unfocused_dim = r##"
+            [window]
+            unfocused_dim = 0.6
+        "##;
+        let cfg_unfocused: Config = toml::from_str(toml_unfocused_dim).unwrap();
+        assert!((cfg_unfocused.window_dim() - 0.6).abs() < f32::EPSILON);
+
+        // Clamping behavior
+        let toml_overflow = r##"
+            [window]
+            window_dim = 1.5
+        "##;
+        let cfg_overflow: Config = toml::from_str(toml_overflow).unwrap();
+        assert_eq!(cfg_overflow.window_dim(), 1.0);
+
+        let toml_underflow = r##"
+            [window]
+            window_dim = -0.5
+        "##;
+        let cfg_underflow: Config = toml::from_str(toml_underflow).unwrap();
+        assert_eq!(cfg_underflow.window_dim(), 0.0);
     }
 }

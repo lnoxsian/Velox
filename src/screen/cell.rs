@@ -8,6 +8,24 @@ pub struct Color {
     pub b: u8,
 }
 
+impl Color {
+    #[inline(always)]
+    pub fn dim(&self, amount: f32) -> Self {
+        if amount <= 0.0 {
+            *self
+        } else if amount >= 1.0 {
+            Self { r: 0, g: 0, b: 0 }
+        } else {
+            let mult = ((1.0 - amount) * 256.0).round() as u32;
+            Self {
+                r: ((self.r as u32 * mult) >> 8).min(255) as u8,
+                g: ((self.g as u32 * mult) >> 8).min(255) as u8,
+                b: ((self.b as u32 * mult) >> 8).min(255) as u8,
+            }
+        }
+    }
+}
+
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct CellFlags: u16 {
@@ -32,4 +50,36 @@ pub struct Cell {
     pub foreground: Color,
     pub background: Color,
     pub flags: CellFlags,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_dim() {
+        let white = Color {
+            r: 200,
+            g: 100,
+            b: 50,
+        };
+
+        // 0.0 dim -> unchanged
+        assert_eq!(white.dim(0.0), white);
+        assert_eq!(white.dim(-0.5), white);
+
+        // 0.5 dim -> halved
+        let half = white.dim(0.5);
+        assert_eq!(half.r, 100);
+        assert_eq!(half.g, 50);
+        assert_eq!(half.b, 25);
+
+        // 1.0 dim -> 0
+        let full = white.dim(1.0);
+        assert_eq!(full, Color { r: 0, g: 0, b: 0 });
+
+        // > 1.0 dim -> clamped to 0
+        let over = white.dim(1.5);
+        assert_eq!(over, Color { r: 0, g: 0, b: 0 });
+    }
 }

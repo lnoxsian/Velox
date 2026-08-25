@@ -213,6 +213,7 @@ fn test_software_renderer_renders_tab_bar() {
         grid.cursor.x,
         true,
         1.0,
+        0.0,
         &mut target,
         Some(&tab_bar_info),
     );
@@ -298,6 +299,7 @@ fn test_software_renderer_renders_custom_tab_accent() {
         grid.cursor.x,
         true,
         1.0,
+        0.0,
         &mut target,
         Some(&tab_bar_info),
     );
@@ -353,6 +355,7 @@ fn test_software_renderer_renders_named_tab_accent_from_theme() {
         grid.cursor.x,
         true,
         1.0,
+        0.0,
         &mut target,
         Some(&tab_bar_info),
     );
@@ -415,6 +418,7 @@ fn test_software_renderer_inactive_tab_dim_colors() {
         grid.cursor.x,
         true,
         1.0,
+        0.0,
         &mut target,
         Some(&tab_bar_info),
     );
@@ -692,6 +696,7 @@ fn test_software_renderer_renders_sharp_tab_bar_when_terminal_small() {
         0,
         true,
         1.0,
+        0.0,
         &mut target,
         Some(&tab_bar_info),
     );

@@ -35,25 +35,25 @@ impl WindowState {
                     self.tab_bar.hovered_tab = Some(idx);
                     self.tab_bar.hovered_close = None;
                     self.tab_bar.hovered_new_tab = false;
-                    self.window.set_cursor(winit::window::CursorIcon::Pointer);
+                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
                 }
                 TabBarHitResult::CloseTab(idx) => {
                     self.tab_bar.hovered_tab = Some(idx);
                     self.tab_bar.hovered_close = Some(idx);
                     self.tab_bar.hovered_new_tab = false;
-                    self.window.set_cursor(winit::window::CursorIcon::Pointer);
+                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
                 }
                 TabBarHitResult::NewTab => {
                     self.tab_bar.hovered_tab = None;
                     self.tab_bar.hovered_close = None;
                     self.tab_bar.hovered_new_tab = true;
-                    self.window.set_cursor(winit::window::CursorIcon::Pointer);
+                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
                 }
                 _ => {
                     self.tab_bar.hovered_tab = None;
                     self.tab_bar.hovered_close = None;
                     self.tab_bar.hovered_new_tab = false;
-                    self.window.set_cursor(winit::window::CursorIcon::Default);
+                    self.set_cursor_cached(winit::window::CursorIcon::Default);
                 }
             }
 
@@ -93,87 +93,118 @@ impl WindowState {
         if (col_idx, row_idx) != self.last_mouse_cell {
             self.last_mouse_cell = (col_idx, row_idx);
 
-            let active_tab = self.active_tab();
-            let active_grid = if active_tab.terminal.is_alt_screen {
-                &active_tab.terminal.alt_grid
-            } else {
-                &active_tab.terminal.grid
-            };
-            let offset = active_grid.scroll_offset;
-            let history_len = active_grid.scrollback.len();
-            let y_offset = (row_idx + history_len).saturating_sub(offset);
-            let mut is_link = active_grid.hyperlink_at(col_idx, y_offset).is_some();
-            if !is_link {
-                let line_text: String = if y_offset < history_len {
-                    active_grid
-                        .scrollback
-                        .with_row_slice(y_offset, |cells, _| {
-                            cells.iter().map(|c| c.character).collect()
-                        })
-                        .unwrap_or_default()
-                } else {
-                    let y = y_offset - history_len;
-                    if y < active_grid.height {
-                        let src_start = y * active_grid.width;
-                        let src_end = src_start + active_grid.width;
-                        active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
-                            .iter()
-                            .map(|c| c.character)
-                            .collect()
+            let (mouse_mode, mouse_sgr, is_link) = {
+                let active_tab = self.active_tab();
+                let mouse_mode = active_tab.terminal.mouse_mode;
+                let mouse_sgr = active_tab.terminal.mouse_sgr;
+
+                let is_link = if mouse_mode == 0 {
+                    let active_grid = if active_tab.terminal.is_alt_screen {
+                        &active_tab.terminal.alt_grid
                     } else {
-                        String::new()
+                        &active_tab.terminal.grid
+                    };
+                    let offset = active_grid.scroll_offset;
+                    let history_len = active_grid.scrollback.len();
+                    let y_offset = (row_idx + history_len).saturating_sub(offset);
+                    let mut link_found = active_grid.hyperlink_at(col_idx, y_offset).is_some();
+                    if !link_found {
+                        let line_text: String = if y_offset < history_len {
+                            active_grid
+                                .scrollback
+                                .with_row_slice(y_offset, |cells, _| {
+                                    cells.iter().map(|c| c.character).collect()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            let y = y_offset - history_len;
+                            if y < active_grid.height {
+                                let src_start = y * active_grid.width;
+                                let src_end = src_start + active_grid.width;
+                                active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
+                                    .iter()
+                                    .map(|c| c.character)
+                                    .collect()
+                            } else {
+                                String::new()
+                            }
+                        };
+                        crate::hyperlink::detector::for_each_url(&line_text, |start_col, end_col| {
+                            if col_idx >= start_col && col_idx < end_col {
+                                link_found = true;
+                            }
+                        });
+                    }
+                    link_found
+                } else {
+                    false
+                };
+                (mouse_mode, mouse_sgr, is_link)
+            };
+
+            if mouse_mode == 0 {
+                if is_link {
+                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
+                } else {
+                    self.set_cursor_cached(winit::window::CursorIcon::Text);
+                }
+            } else {
+                self.set_cursor_cached(winit::window::CursorIcon::Default);
+            }
+
+            let should_report_motion = mouse_mode == 1003
+                || (mouse_mode == 1002 && self.is_mouse_down);
+
+            if should_report_motion && !modifiers.shift_key() {
+                let base_code = if self.is_mouse_down {
+                    32 + self.last_mouse_button
+                } else {
+                    35
+                };
+                let mut btn_code = base_code;
+                if modifiers.shift_key() {
+                    btn_code += 4;
+                }
+                if modifiers.alt_key() {
+                    btn_code += 8;
+                }
+                if modifiers.control_key() {
+                    btn_code += 16;
+                }
+
+                let mut buf = [0u8; 32];
+                let written = if mouse_sgr {
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1);
+                    cur.position() as usize
+                } else {
+                    let cb = 32 + btn_code;
+                    let cx = 32 + col_idx + 1;
+                    let cy = 32 + row_idx + 1;
+                    if cx <= 255 && cy <= 255 {
+                        buf[0] = 0x1b;
+                        buf[1] = b'M';
+                        buf[2] = cb as u8;
+                        buf[3] = cx as u8;
+                        buf[4] = cy as u8;
+                        5
+                    } else {
+                        0
                     }
                 };
-                crate::hyperlink::detector::for_each_url(&line_text, |start_col, end_col| {
-                    if col_idx >= start_col && col_idx < end_col {
-                        is_link = true;
-                    }
-                });
-            }
-
-            let mouse_mode = self.active_tab().terminal.mouse_mode;
-            if is_link {
-                self.window.set_cursor(winit::window::CursorIcon::Pointer);
-            } else if mouse_mode > 0 {
-                self.window.set_cursor(winit::window::CursorIcon::Default);
-            } else {
-                self.window.set_cursor(winit::window::CursorIcon::Text);
-            }
-
-            if self.is_mouse_down {
-                let active_tab = self.active_tab();
-                let should_report_motion = active_tab.terminal.mouse_mode == 1003
-                    || (active_tab.terminal.mouse_mode == 1002 && self.is_mouse_down);
-                if should_report_motion && !modifiers.shift_key() {
-                    let btn_code = if self.is_mouse_down { 32 } else { 35 };
-                    let seq = if active_tab.terminal.mouse_sgr {
-                        format!("\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1)
-                    } else {
-                        let cb = 32 + btn_code;
-                        let cx = 32 + col_idx + 1;
-                        let cy = 32 + row_idx + 1;
-                        if cx <= 255 && cy <= 255 {
-                            format!(
-                                "\x1b[M{}{}{}",
-                                cb as u8 as char, cx as u8 as char, cy as u8 as char
-                            )
-                        } else {
-                            String::new()
-                        }
-                    };
-                    if !seq.is_empty() {
-                        let _ = active_tab.pty_master.write(seq.as_bytes());
-                    }
-                } else {
-                    let active_tab = self.active_tab_mut();
-                    let active_grid = active_tab.terminal.active_grid_mut();
-                    if active_grid.selection.active {
-                        let offset = active_grid.scroll_offset;
-                        let history_len = active_grid.scrollback.len();
-                        let abs_y = (history_len + row_idx).saturating_sub(offset);
-                        active_grid.selection.update_selection(col_idx, abs_y);
-                        self.needs_redraw = true;
-                    }
+                if written > 0 {
+                    let _ = self.active_tab().pty_master.write(&buf[..written]);
+                }
+            } else if self.is_mouse_down {
+                let active_tab = self.active_tab_mut();
+                let active_grid = active_tab.terminal.active_grid_mut();
+                if active_grid.selection.active {
+                    let offset = active_grid.scroll_offset;
+                    let history_len = active_grid.scrollback.len();
+                    let abs_y = (history_len + row_idx).saturating_sub(offset);
+                    active_grid.selection.update_selection(col_idx, abs_y);
+                    self.needs_redraw = true;
                 }
             }
         }
@@ -218,24 +249,30 @@ impl WindowState {
             let active_tab = self.active_tab();
             if active_tab.terminal.mouse_mode > 0 {
                 let btn = if lines > 0 { 64 } else { 65 };
-                for _ in 0..lines.abs() {
-                    let seq = if active_tab.terminal.mouse_sgr {
-                        format!("\x1b[<{};{};{}M", btn, col, row)
+                let mut buf = [0u8; 32];
+                let written = if active_tab.terminal.mouse_sgr {
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1b[<{};{};{}M", btn, col, row);
+                    cur.position() as usize
+                } else {
+                    let cb = 32 + btn;
+                    let cx = 32 + col;
+                    let cy = 32 + row;
+                    if cx <= 255 && cy <= 255 {
+                        buf[0] = 0x1b;
+                        buf[1] = b'M';
+                        buf[2] = cb as u8;
+                        buf[3] = cx as u8;
+                        buf[4] = cy as u8;
+                        5
                     } else {
-                        let cb = 32 + btn;
-                        let cx = 32 + col;
-                        let cy = 32 + row;
-                        if cx <= 255 && cy <= 255 {
-                            format!(
-                                "\x1b[M{}{}{}",
-                                cb as u8 as char, cx as u8 as char, cy as u8 as char
-                            )
-                        } else {
-                            String::new()
-                        }
-                    };
-                    if !seq.is_empty() {
-                        let _ = active_tab.pty_master.write(seq.as_bytes());
+                        0
+                    }
+                };
+                if written > 0 {
+                    for _ in 0..lines.abs() {
+                        let _ = active_tab.pty_master.write(&buf[..written]);
                     }
                 }
             } else if active_tab.terminal.is_alt_screen {
@@ -363,45 +400,51 @@ impl WindowState {
         // 1. Application Mouse Reporting (when mouse tracking is active and Shift is NOT held)
         if mouse_mode > 0 && !modifiers.shift_key() {
             if let Some(btn) = btn_code {
-                let pty_master = self.active_tab().pty_master.clone();
+                self.is_mouse_down = state.is_pressed();
                 if state.is_pressed() {
-                    let seq = if mouse_sgr {
-                        format!("\x1b[<{};{};{}M", btn, col_idx + 1, row_idx + 1)
-                    } else {
-                        let cb = 32 + btn;
-                        let cx = 32 + col_idx + 1;
-                        let cy = 32 + row_idx + 1;
-                        if cx <= 255 && cy <= 255 {
-                            format!(
-                                "\x1b[M{}{}{}",
-                                cb as u8 as char, cx as u8 as char, cy as u8 as char
-                            )
-                        } else {
-                            String::new()
-                        }
-                    };
-                    if !seq.is_empty() {
-                        let _ = pty_master.write(seq.as_bytes());
-                    }
+                    self.last_mouse_button = btn;
+                }
+
+                let mut report_btn = btn;
+                if modifiers.shift_key() {
+                    report_btn += 4;
+                }
+                if modifiers.alt_key() {
+                    report_btn += 8;
+                }
+                if modifiers.control_key() {
+                    report_btn += 16;
+                }
+
+                let pty_master = self.active_tab().pty_master.clone();
+                let mut buf = [0u8; 32];
+                let written = if mouse_sgr {
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let terminator = if state.is_pressed() { 'M' } else { 'm' };
+                    let _ = write!(cur, "\x1b[<{};{};{}{}", report_btn, col_idx + 1, row_idx + 1, terminator);
+                    cur.position() as usize
                 } else {
-                    let seq = if mouse_sgr {
-                        format!("\x1b[<{};{};{}m", btn, col_idx + 1, row_idx + 1)
+                    let cb = if state.is_pressed() {
+                        32 + report_btn
                     } else {
-                        let cb = 32 + 3;
-                        let cx = 32 + col_idx + 1;
-                        let cy = 32 + row_idx + 1;
-                        if cx <= 255 && cy <= 255 {
-                            format!(
-                                "\x1b[M{}{}{}",
-                                cb as u8 as char, cx as u8 as char, cy as u8 as char
-                            )
-                        } else {
-                            String::new()
-                        }
+                        32 + 3
                     };
-                    if !seq.is_empty() {
-                        let _ = pty_master.write(seq.as_bytes());
+                    let cx = 32 + col_idx + 1;
+                    let cy = 32 + row_idx + 1;
+                    if cx <= 255 && cy <= 255 {
+                        buf[0] = 0x1b;
+                        buf[1] = b'M';
+                        buf[2] = cb as u8;
+                        buf[3] = cx as u8;
+                        buf[4] = cy as u8;
+                        5
+                    } else {
+                        0
                     }
+                };
+                if written > 0 {
+                    let _ = pty_master.write(&buf[..written]);
                 }
             }
             return;
@@ -533,6 +576,8 @@ impl WindowState {
             }
             MouseButton::Middle => {
                 if state.is_pressed() {
+                    self.is_mouse_down = true;
+                    self.last_mouse_button = 1;
                     let mut text = crate::clipboard::clipboard::primary_selection();
                     if text.is_empty() {
                         text = crate::clipboard::clipboard::paste();
@@ -547,14 +592,22 @@ impl WindowState {
                         let _ = active_tab.pty_master.write(formatted.as_bytes());
                         self.needs_redraw = true;
                     }
+                } else {
+                    self.is_mouse_down = false;
                 }
             }
-            MouseButton::Right if state.is_pressed() => {
-                let active_tab = self.active_tab_mut();
-                let active_grid = active_tab.terminal.active_grid_mut();
-                if active_grid.selection.active {
-                    active_grid.selection.active = false;
-                    self.needs_redraw = true;
+            MouseButton::Right => {
+                if state.is_pressed() {
+                    self.is_mouse_down = true;
+                    self.last_mouse_button = 2;
+                    let active_tab = self.active_tab_mut();
+                    let active_grid = active_tab.terminal.active_grid_mut();
+                    if active_grid.selection.active {
+                        active_grid.selection.active = false;
+                        self.needs_redraw = true;
+                    }
+                } else {
+                    self.is_mouse_down = false;
                 }
             }
             _ => {}

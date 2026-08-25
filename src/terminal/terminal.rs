@@ -201,6 +201,12 @@ impl Terminal {
                 };
 
                 if charset == 0 {
+                    let start = i;
+                    i += 1;
+                    while i < len && (0x20..=0x7e).contains(&data[i]) {
+                        i += 1;
+                    }
+                    let ascii_slice = &data[start..i];
                     let fg = self.current_fg;
                     let bg = self.current_bg;
                     let flags = self.current_flags;
@@ -209,8 +215,7 @@ impl Terminal {
                     } else {
                         &mut self.grid
                     };
-                    grid.put_ascii(byte as char, fg, bg, flags);
-                    i += 1;
+                    grid.put_ascii_slice(ascii_slice, fg, bg, flags);
                     continue;
                 }
             }
@@ -746,6 +751,16 @@ mod tests {
         // Disable mouse tracking via CSI ? 1003 l
         term.feed(b"\x1b[?1003l");
         assert_eq!(term.mouse_mode, 0);
+
+        // Enable button-event mouse tracking via CSI ? 1002 h and SGR mode via CSI ? 1006 h
+        term.feed(b"\x1b[?1002h\x1b[?1006h");
+        assert_eq!(term.mouse_mode, 1002);
+        assert!(term.mouse_sgr);
+
+        // Disable SGR mode and 1002 mode
+        term.feed(b"\x1b[?1002l\x1b[?1006l");
+        assert_eq!(term.mouse_mode, 0);
+        assert!(!term.mouse_sgr);
     }
 
     #[test]

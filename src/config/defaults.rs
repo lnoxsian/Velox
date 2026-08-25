@@ -25,6 +25,7 @@ pub fn default_config() -> Config {
             scroll_on_output: Some(true),
             scroll_on_keystroke: Some(true),
             opacity: Some(1.0),
+            window_dim: Some(0.0),
         },
         tabs: TabsConfig {
             show_tab_bar: TabBarVisibility::Auto,

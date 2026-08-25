@@ -44,6 +44,7 @@ pub struct CpuRenderer {
     pub prev_blink_on: bool,
     pub opacity: f32,
     prev_opacity: f32,
+    prev_dim: f32,
     prev_tab_bar_hash: u64,
 }
 
@@ -87,6 +88,7 @@ impl CpuRenderer {
             prev_blink_on: true,
             opacity,
             prev_opacity: opacity,
+            prev_dim: 0.0,
             prev_tab_bar_hash: 0,
         }
     }
@@ -147,6 +149,7 @@ impl CpuRenderer {
             display_cursor_x,
             is_focused,
             opacity,
+            0.0,
             target_buffer,
             None,
         );
@@ -165,10 +168,22 @@ impl CpuRenderer {
         display_cursor_x: usize,
         is_focused: bool,
         opacity: f32,
+        window_dim: f32,
         target_buffer: &mut [u32],
         tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
     ) {
         let opacity = opacity.clamp(0.0, 1.0);
+        let effective_dim = if !is_focused {
+            window_dim.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let effective_theme = if effective_dim > 0.0 {
+            theme.dimmed(effective_dim)
+        } else {
+            theme.clone()
+        };
+        let theme = &effective_theme;
 
         // 1. Sync theme updates
         if theme.default_fg != self.prev_theme_fg
@@ -178,6 +193,7 @@ impl CpuRenderer {
             || theme.cursor_text_color != self.prev_cursor_text_color
             || theme.tab_accent_color != self.prev_tab_accent_color
             || (opacity - self.prev_opacity).abs() > f32::EPSILON
+            || (effective_dim - self.prev_dim).abs() > f32::EPSILON
         {
             self.palette = PrecomputedPalette::new(theme, opacity);
             self.prev_theme_fg = theme.default_fg;
@@ -188,6 +204,7 @@ impl CpuRenderer {
             self.prev_tab_accent_color = theme.tab_accent_color;
             self.opacity = opacity;
             self.prev_opacity = opacity;
+            self.prev_dim = effective_dim;
             self.damage.mark_all();
         }
 
@@ -320,7 +337,7 @@ impl CpuRenderer {
 
                 let (_, bg) =
                     self.palette
-                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright);
+                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright, effective_dim);
 
                 if !in_span {
                     span_start_col = col;
@@ -374,7 +391,7 @@ impl CpuRenderer {
 
                 let (fg, _) =
                     self.palette
-                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright);
+                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright, effective_dim);
 
                 // Render character (skip if HIDDEN or BLINK during off phase)
                 let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
@@ -455,7 +472,7 @@ impl CpuRenderer {
                     &grid.cells[0]
                 };
 
-                let cell_fg_color = cell.foreground;
+                let cell_fg_color = cell.foreground.dim(effective_dim);
                 let mut cell_fg = cell_fg_color;
                 if self.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
                     for i in 0..8 {
@@ -469,7 +486,7 @@ impl CpuRenderer {
                 let cursor_color =
                     PackedColor::from_color(theme.resolve_cursor_color(cell_fg)).to_u32();
                 let cursor_text_color =
-                    PackedColor::from_color(theme.resolve_cursor_text_color(cell.background))
+                    PackedColor::from_color(theme.resolve_cursor_text_color(cell.background).dim(effective_dim))
                         .to_u32();
 
                 if is_focused && cursor_shape == CursorShape::Block {

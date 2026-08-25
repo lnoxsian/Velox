@@ -118,6 +118,7 @@ impl PrecomputedPalette {
         cell: &Cell,
         is_inverted: bool,
         bold_is_bright: bool,
+        dim: f32,
     ) -> (u32, u32) {
         let cell_fg_color = cell.foreground;
         let mut cell_fg_raw = cell_fg_color;
@@ -180,11 +181,11 @@ impl PrecomputedPalette {
             }
 
             // Both foreground text and selection background must be solid, full-alpha colors
-            let fg_packed = PackedColor::from_color(inv_fg_raw).to_u32();
+            let fg_packed = PackedColor::from_color(inv_fg_raw.dim(dim)).to_u32();
             let bg_packed = PackedColor::from_color(inv_bg_raw).to_u32();
             (fg_packed, bg_packed)
         } else {
-            let fg_packed = PackedColor::from_color(cell_fg_raw).to_u32();
+            let fg_packed = PackedColor::from_color(cell_fg_raw.dim(dim)).to_u32();
             let bg_packed = if cell_bg_raw == self.raw_default_bg {
                 self.default_bg
             } else {
@@ -258,7 +259,7 @@ mod tests {
             background: theme_dark.default_bg,
             flags: CellFlags::REVERSE,
         };
-        let (fg, bg) = palette_dark.resolve_cell_colors(&cell, true, false);
+        let (fg, bg) = palette_dark.resolve_cell_colors(&cell, true, false, 0.0);
         // bg must be inverted to light default_fg
         assert_eq!(bg, PackedColor::from_color(theme_dark.default_fg).to_u32());
         // fg must be dark and have high contrast
@@ -284,7 +285,7 @@ mod tests {
             background: theme_light.default_bg,
             flags: CellFlags::REVERSE,
         };
-        let (fg_l, bg_l) = palette_light.resolve_cell_colors(&cell_light, true, false);
+        let (fg_l, bg_l) = palette_light.resolve_cell_colors(&cell_light, true, false, 0.0);
         assert_eq!(
             bg_l,
             PackedColor::from_color(Color { r: 6, g: 6, b: 6 }).to_u32()

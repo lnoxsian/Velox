@@ -23,7 +23,7 @@ fn spawn_pty_reader(
     tab_id: u64,
 ) {
     std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 65536];
         loop {
             match pty_reader.read(&mut buf) {
                 Ok(0) => {
@@ -144,17 +144,20 @@ pub struct WindowState {
     pub padding_x: f32,
     pub padding_y: f32,
     pub is_mouse_down: bool,
+    pub last_mouse_button: u8,
     pub last_click_instant: Option<std::time::Instant>,
     pub last_click_pos: (usize, usize),
     pub click_count: u8,
     pub last_mouse_cell: (usize, usize),
     pub is_focused: bool,
+    pub current_cursor_icon: winit::window::CursorIcon,
     pub needs_redraw: bool,
     pub content_dirty: bool,
     pub cursor_blink_enabled: bool,
     pub cursor_blink_on: bool,
     pub last_cursor_blink: std::time::Instant,
     pub opacity: f32,
+    pub window_dim: f32,
     pub shell_path: String,
     pub tabs: Vec<Tab>,
     pub active_tab_index: usize,
@@ -220,6 +223,14 @@ impl WindowState {
     #[inline(always)]
     pub fn active_tab_mut(&mut self) -> &mut Tab {
         &mut self.tabs[self.active_tab_index]
+    }
+
+    #[inline(always)]
+    pub fn set_cursor_cached(&mut self, icon: winit::window::CursorIcon) {
+        if self.current_cursor_icon != icon {
+            self.current_cursor_icon = icon;
+            self.window.set_cursor(icon);
+        }
     }
 
     #[inline(always)]
@@ -581,6 +592,12 @@ impl WindowState {
             active_grid.cursor.shape
         };
 
+        let effective_dim = if !self.is_focused {
+            self.window_dim
+        } else {
+            0.0
+        };
+
         let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
 
         match &mut self.backend {
@@ -606,6 +623,7 @@ impl WindowState {
                     self.padding_x,
                     self.padding_y,
                     self.opacity,
+                    effective_dim,
                     tab_bar_info,
                 );
                 let _ = gl_surface.swap_buffers(gl_context);
@@ -623,6 +641,7 @@ impl WindowState {
                         display_cursor_x,
                         self.is_focused,
                         self.opacity,
+                        self.window_dim,
                         &mut buffer,
                         tab_bar_info,
                     );
@@ -689,6 +708,7 @@ impl App {
 
         let icon = load_app_icon();
         let opacity = config.opacity();
+        let window_dim = config.window_dim();
 
         let mut window_attributes = Window::default_attributes()
             .with_title(&initial_title)
@@ -860,17 +880,20 @@ impl App {
             padding_x,
             padding_y,
             is_mouse_down: false,
+            last_mouse_button: 0,
             last_click_instant: None,
             last_click_pos: (0, 0),
             click_count: 0,
             last_mouse_cell: (0, 0),
             is_focused: true,
+            current_cursor_icon: winit::window::CursorIcon::Default,
             needs_redraw: true,
             content_dirty: true,
             cursor_blink_enabled,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
             opacity,
+            window_dim,
             shell_path,
             tabs: vec![tab],
             active_tab_index: 0,
@@ -1035,11 +1058,16 @@ impl ApplicationHandler<CustomEvent> for App {
             match event {
                 WindowEvent::Focused(focused) => {
                     ws.is_focused = focused;
+                    if !focused {
+                        ws.is_mouse_down = false;
+                    }
                     let active_tab = ws.active_tab();
                     if active_tab.terminal.focus_tracking {
                         let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
                         let _ = active_tab.pty_master.write(seq);
                     }
+                    ws.content_dirty = true;
+                    ws.tab_bar_dirty = true;
                     ws.needs_redraw = true;
                 }
                 WindowEvent::Resized(size) => {
