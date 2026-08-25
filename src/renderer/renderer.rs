@@ -825,7 +825,7 @@ impl Renderer {
                 }
 
                 // ── Text decorations ──────────────────────────────────────────
-                let deco_thick = 1.0f32.max((ch * 0.08).round());
+                let deco_thick = 1.0f32.max((ch * 0.045).floor());
 
                 if cell.flags.contains(CellFlags::UNDERLINE) {
                     let line_y = py + ch - deco_thick - 1.0;
@@ -845,14 +845,16 @@ impl Renderer {
                 }
 
                 if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                    let line_y2 = py + ch - deco_thick - 1.0;
-                    let line_y1 = line_y2 - deco_thick - 1.5;
+                    let double_thick = 1.0f32.max((ch * 0.035).floor());
+                    let gap = 1.0f32.max((ch * 0.045).floor()) + 1.0;
+                    let line_y2 = py + ch - double_thick - 1.0;
+                    let line_y1 = line_y2 - gap - double_thick;
                     push_quad(
                         &mut vertices,
                         px,
                         line_y1,
                         cw * cell_w_mult,
-                        deco_thick,
+                        double_thick,
                         wu,
                         wv,
                         wu,
@@ -865,7 +867,7 @@ impl Renderer {
                         px,
                         line_y2,
                         cw * cell_w_mult,
-                        deco_thick,
+                        double_thick,
                         wu,
                         wv,
                         wu,
@@ -876,18 +878,21 @@ impl Renderer {
                 }
 
                 if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                    let line_y = py + ch - deco_thick - 1.0;
+                    let wave_period = (cw * 0.75).clamp(6.0, 10.0);
+                    let wave_amp = (ch * 0.08).clamp(1.5, 2.5);
+                    let base_y = py + ch - wave_amp - deco_thick - 1.0;
                     let wave_w = cw * cell_w_mult;
-                    let step = 2.0f32;
+                    let step = 1.0f32;
                     let mut sx = 0.0f32;
                     while sx < wave_w {
-                        let angle = (sx / wave_w) * std::f32::consts::PI * 4.0;
-                        let wave_offset = angle.sin() * deco_thick * 0.5;
+                        let global_x = px + sx;
+                        let angle = (global_x / wave_period) * std::f32::consts::TAU;
+                        let wave_offset = angle.sin() * wave_amp;
                         let draw_w = step.min(wave_w - sx);
                         push_quad(
                             &mut vertices,
-                            px + sx,
-                            line_y + wave_offset,
+                            global_x,
+                            base_y + wave_offset,
                             draw_w,
                             deco_thick,
                             wu,

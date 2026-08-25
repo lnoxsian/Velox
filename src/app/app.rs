@@ -565,25 +565,6 @@ impl WindowState {
             }
         }
 
-        // Auto-detect URLs in visible rows and apply UNDERLINE styling
-        let mut line_buf = String::with_capacity(width);
-        for y in 0..height {
-            let row_start = y * width;
-            line_buf.clear();
-            for x in 0..width {
-                line_buf.push(self.render_cells_buf[row_start + x].character);
-            }
-            if line_buf.contains(':') {
-                crate::hyperlink::detector::for_each_url(&line_buf, |start_col, end_col| {
-                    for col in start_col..end_col.min(width) {
-                        self.render_cells_buf[row_start + col]
-                            .flags
-                            .insert(CellFlags::UNDERLINE);
-                    }
-                });
-            }
-        }
-
         let cursor_visible = if offset > 0 {
             false
         } else if self.cursor_blink_enabled {

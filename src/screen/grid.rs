@@ -35,6 +35,8 @@ pub struct Grid {
     pub scroll_region_top: usize,
     pub scroll_region_bottom: usize,
     pub scroll_offset: usize,
+    pub hyperlinks: crate::hyperlink::osc8::HyperlinkStore,
+    pub current_hyperlink: Option<std::sync::Arc<crate::hyperlink::osc8::Hyperlink>>,
 }
 
 impl Grid {
@@ -83,7 +85,18 @@ impl Grid {
             scroll_region_top: 0,
             scroll_region_bottom: height.saturating_sub(1),
             scroll_offset: 0,
+            hyperlinks: crate::hyperlink::osc8::HyperlinkStore::new(),
+            current_hyperlink: None,
         }
+    }
+
+    #[inline(always)]
+    pub fn hyperlink_at(
+        &self,
+        col: usize,
+        abs_row: usize,
+    ) -> Option<std::sync::Arc<crate::hyperlink::osc8::Hyperlink>> {
+        self.hyperlinks.get(abs_row, col)
     }
 
     #[inline(always)]
@@ -128,6 +141,13 @@ impl Grid {
             }
             self.cursor.x = 0;
             self.scroll_or_move_down(bg);
+        }
+
+        let abs_row = self.scrollback.len() + self.cursor.y;
+        if let Some(ref link) = self.current_hyperlink {
+            self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
+        } else {
+            self.hyperlinks.remove_cell(abs_row, self.cursor.x);
         }
 
         let idx = self.cursor.y * self.width + self.cursor.x;
@@ -220,8 +240,19 @@ impl Grid {
             self.scroll_or_move_down(bg);
         }
 
+        let abs_row = self.scrollback.len() + self.cursor.y;
+
         if w == 2 {
             flags.insert(CellFlags::WIDE);
+            if let Some(ref link) = self.current_hyperlink {
+                self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
+                self.hyperlinks
+                    .insert(abs_row, self.cursor.x + 1, link.clone());
+            } else {
+                self.hyperlinks.remove_cell(abs_row, self.cursor.x);
+                self.hyperlinks.remove_cell(abs_row, self.cursor.x + 1);
+            }
+
             let idx = self.cursor.y * self.width + self.cursor.x;
             if idx < self.cells.len() {
                 self.cells[idx] = Cell {
@@ -244,6 +275,12 @@ impl Grid {
             }
             self.cursor.x += 1;
         } else {
+            if let Some(ref link) = self.current_hyperlink {
+                self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
+            } else {
+                self.hyperlinks.remove_cell(abs_row, self.cursor.x);
+            }
+
             let idx = self.cursor.y * self.width + self.cursor.x;
             if idx < self.cells.len() {
                 self.cells[idx] = Cell {
@@ -416,6 +453,7 @@ impl Grid {
                 self.scrollback.clear();
                 self.scroll_offset = 0;
                 self.selection.clear();
+                self.hyperlinks.clear();
             }
             _ => {}
         }

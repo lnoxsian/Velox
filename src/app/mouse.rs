@@ -101,34 +101,35 @@ impl WindowState {
             };
             let offset = active_grid.scroll_offset;
             let history_len = active_grid.scrollback.len();
-
-            let mut is_link = false;
             let y_offset = (row_idx + history_len).saturating_sub(offset);
-            let line_text: String = if y_offset < history_len {
-                active_grid
-                    .scrollback
-                    .with_row_slice(y_offset, |cells, _| {
-                        cells.iter().map(|c| c.character).collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                let y = y_offset - history_len;
-                if y < active_grid.height {
-                    let src_start = y * active_grid.width;
-                    let src_end = src_start + active_grid.width;
-                    active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
-                        .iter()
-                        .map(|c| c.character)
-                        .collect()
+            let mut is_link = active_grid.hyperlink_at(col_idx, y_offset).is_some();
+            if !is_link {
+                let line_text: String = if y_offset < history_len {
+                    active_grid
+                        .scrollback
+                        .with_row_slice(y_offset, |cells, _| {
+                            cells.iter().map(|c| c.character).collect()
+                        })
+                        .unwrap_or_default()
                 } else {
-                    String::new()
-                }
-            };
-            crate::hyperlink::detector::for_each_url(&line_text, |start_col, end_col| {
-                if col_idx >= start_col && col_idx < end_col {
-                    is_link = true;
-                }
-            });
+                    let y = y_offset - history_len;
+                    if y < active_grid.height {
+                        let src_start = y * active_grid.width;
+                        let src_end = src_start + active_grid.width;
+                        active_grid.cells[src_start..src_end.min(active_grid.cells.len())]
+                            .iter()
+                            .map(|c| c.character)
+                            .collect()
+                    } else {
+                        String::new()
+                    }
+                };
+                crate::hyperlink::detector::for_each_url(&line_text, |start_col, end_col| {
+                    if col_idx >= start_col && col_idx < end_col {
+                        is_link = true;
+                    }
+                });
+            }
 
             let mouse_mode = self.active_tab().terminal.mouse_mode;
             if is_link {
@@ -456,12 +457,19 @@ impl WindowState {
                                 String::new()
                             }
                         };
-                        let urls = crate::hyperlink::detector::detect(&line_text);
-                        for (start, end, url) in urls {
-                            if col_idx >= start && col_idx < end {
-                                let _ = crate::hyperlink::detector::open(url);
+                        if modifiers.control_key() {
+                            if let Some(link) = active_grid.hyperlink_at(col_idx, y_offset) {
+                                let _ = crate::hyperlink::detector::open(&link.url);
                                 url_opened = true;
-                                break;
+                            } else {
+                                let urls = crate::hyperlink::detector::detect(&line_text);
+                                for (start, end, url) in urls {
+                                    if col_idx >= start && col_idx < end {
+                                        let _ = crate::hyperlink::detector::open(url);
+                                        url_opened = true;
+                                        break;
+                                    }
+                                }
                             }
                         }
 

@@ -192,7 +192,18 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
 
         // OSC 8: Hyperlinks
         "8" => {
-            let _ = crate::hyperlink::osc8::parse(params);
+            if let Some((id, url)) = crate::hyperlink::osc8::parse(params) {
+                let link = if url.is_empty() {
+                    None
+                } else {
+                    Some(std::sync::Arc::new(crate::hyperlink::osc8::Hyperlink {
+                        id,
+                        url,
+                    }))
+                };
+                terminal.grid.current_hyperlink = link.clone();
+                terminal.alt_grid.current_hyperlink = link;
+            }
         }
 
         // OSC 133: Shell Integration / Semantic Prompt Marking (FinalTerm / FTCS)

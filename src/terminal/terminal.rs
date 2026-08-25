@@ -919,4 +919,41 @@ mod tests {
         assert!(term.grid.damage.full_redraw);
         assert!(term.grid.damage.dirty_rows.iter().all(|&d| d));
     }
+
+    #[test]
+    fn test_osc8_explicit_hyperlink_lifecycle() {
+        let mut term = Terminal::new(80, 24);
+
+        // Feed OSC 8 with ST terminator (ESC \)
+        term.feed(b"\x1b]8;id=link1;https://github.com/rust-lang/rust\x1b\\Rust Repo\x1b]8;;\x1b\\ - Official");
+
+        // Verify "Rust Repo" (cols 0..9) has explicit hyperlink
+        for col in 0..9 {
+            let link = term
+                .grid
+                .hyperlink_at(col, 0)
+                .expect("Must have explicit hyperlink");
+            assert_eq!(link.url, "https://github.com/rust-lang/rust");
+            assert_eq!(link.id, "link1");
+        }
+
+        // Verify " - Official" (cols 9..20) does not have hyperlink
+        for col in 9..20 {
+            assert_eq!(term.grid.hyperlink_at(col, 0), None);
+        }
+
+        // Feed OSC 8 with BEL terminator (\x07)
+        term.feed(b"\r\n\x1b]8;;https://velox.dev\x07Velox Terminal\x1b]8;;\x07");
+
+        // Row 1: "Velox Terminal" (cols 0..14)
+        for col in 0..14 {
+            let link = term
+                .grid
+                .hyperlink_at(col, 1)
+                .expect("Must have explicit hyperlink");
+            assert_eq!(link.url, "https://velox.dev");
+            assert_eq!(link.id, "");
+        }
+        assert_eq!(term.grid.hyperlink_at(14, 1), None);
+    }
 }
