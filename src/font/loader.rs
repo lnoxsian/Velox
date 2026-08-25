@@ -1,4 +1,8 @@
 use crate::font::fallback::FallbackManager;
+pub use crate::font::resolved::{
+    ResolvedFont, ResolvedFontSet, SYNTHETIC_ITALIC_SHEAR, get_or_create_outlined_glyph,
+    shear_outline,
+};
 use crate::font::storage::{FontStorage, create_font_arc};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use glow::HasContext;
@@ -28,10 +32,11 @@ pub const GLYPH_PADDING: u32 = 2;
 
 pub struct FontLoader {
     gl: Arc<glow::Context>,
-    font: FontArc,
-    font_bold: Option<FontArc>,
-    font_italic: Option<FontArc>,
-    font_bold_italic: Option<FontArc>,
+    pub font_set: ResolvedFontSet,
+    pub font: FontArc,
+    pub font_bold: Option<FontArc>,
+    pub font_italic: Option<FontArc>,
+    pub font_bold_italic: Option<FontArc>,
     pub fallback_manager: FallbackManager,
     pub cell_width: u32,
     pub cell_height: u32,
@@ -141,52 +146,22 @@ impl FontLoader {
         font_scale_multiplier: f32,
     ) -> Self {
         let db = crate::font::fallback::get_system_font_db();
-
-        let query = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::NORMAL,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Normal,
-        };
-
-        let font = load_font_face(db, &query).expect("Could not load any system monospace font");
-
-        let query_bold = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::BOLD,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Normal,
-        };
-        let font_bold = load_font_face(db, &query_bold);
-
-        // Query italic and bold-italic faces.
-        let regular_id = db.query(&query);
-
-        let query_italic = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::NORMAL,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Italic,
-        };
-        let italic_id = db.query(&query_italic);
-        let font_italic = if italic_id.is_some() && italic_id != regular_id {
-            load_font_face(db, &query_italic)
+        let font_set = ResolvedFontSet::resolve(db, font_family);
+        let font = font_set.regular.font.clone();
+        let font_bold = if !font_set.bold.synthetic_bold {
+            Some(font_set.bold.font.clone())
         } else {
-            None // No distinct italic face — synthetic italic will be applied
+            None
         };
-
-        let query_bold_id = db.query(&query_bold);
-        let query_bold_italic = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::BOLD,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Italic,
-        };
-        let bold_italic_id = db.query(&query_bold_italic);
-        let font_bold_italic = if bold_italic_id.is_some() && bold_italic_id != query_bold_id {
-            load_font_face(db, &query_bold_italic)
+        let font_italic = if !font_set.italic.synthetic_italic {
+            Some(font_set.italic.font.clone())
         } else {
-            None // No distinct bold-italic face — synthetic italic will be applied on bold
+            None
+        };
+        let font_bold_italic = if !font_set.bold_italic.synthetic_italic && !font_set.bold_italic.synthetic_bold {
+            Some(font_set.bold_italic.font.clone())
+        } else {
+            None
         };
 
         let fallback_manager = FallbackManager::with_shared_database(Arc::clone(db));
@@ -246,6 +221,7 @@ impl FontLoader {
 
         Self {
             gl,
+            font_set,
             font,
             font_bold,
             font_italic,
@@ -332,6 +308,7 @@ impl FontLoader {
 
         let mut loader = Self {
             gl: self.gl.clone(),
+            font_set: self.font_set.clone(),
             font: self.font.clone(),
             font_bold: None,
             font_italic: None,
@@ -574,17 +551,11 @@ impl FontLoader {
         };
         let base_c = seq.chars().next().unwrap_or(c);
 
-        let active_font = match (is_bold, is_italic) {
-            (true, true) => self
-                .font_bold_italic
-                .as_ref()
-                .or(self.font_bold.as_ref())
-                .or(self.font_italic.as_ref())
-                .unwrap_or(&self.font),
-            (true, false) => self.font_bold.as_ref().unwrap_or(&self.font),
-            (false, true) => self.font_italic.as_ref().unwrap_or(&self.font),
-            (false, false) => &self.font,
-        };
+        let resolved_font = self.font_set.get(is_bold, is_italic);
+        let mut char_font = &resolved_font.font;
+        let mut is_synthetic_italic = resolved_font.synthetic_italic;
+
+        let active_font = char_font;
         let is_emoji_char = is_emoji(base_c);
         let mut color_img_size = None;
 
@@ -629,48 +600,12 @@ impl FontLoader {
         let mut bounds_min_y = 0.0f32;
         let mut ascent = 0.0f32;
         let mut has_outline = false;
+        let mut the_outlined: Option<ab_glyph::OutlinedGlyph> = None;
         let is_nerd_or_pua = is_nerd_font_or_pua(base_c);
         let is_pw_sep = is_powerline(base_c);
-
-        let mut is_synthetic_italic = false;
-        let mut char_font_arc: Option<FontArc> = None;
-        let mut the_glyph: ab_glyph::Glyph = ab_glyph::Glyph {
-            id: ab_glyph::GlyphId(0),
-            scale: PxScale::from(0.0),
-            position: ab_glyph::point(0.0, 0.0),
-        };
+        let is_box = is_box_drawing_or_pipe(base_c);
 
         if color_img_size.is_none() {
-            let (mut char_font, synth) = match (is_bold, is_italic) {
-                (true, true) => {
-                    if let Some(ref f) = self.font_bold_italic {
-                        (f, false)
-                    } else if let Some(ref f) = self.font_bold {
-                        (f, true)
-                    } else if let Some(ref f) = self.font_italic {
-                        (f, false)
-                    } else {
-                        (&self.font, true)
-                    }
-                }
-                (true, false) => {
-                    if let Some(ref f) = self.font_bold {
-                        (f, false)
-                    } else {
-                        (&self.font, false)
-                    }
-                }
-                (false, true) => {
-                    if let Some(ref f) = self.font_italic {
-                        (f, false)
-                    } else {
-                        (&self.font, true)
-                    }
-                }
-                (false, false) => (&self.font, false),
-            };
-            is_synthetic_italic = synth;
-
             let mut char_glyph_id = char_font.glyph_id(base_c);
             if char_glyph_id.0 == 0
                 && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_c)
@@ -680,6 +615,9 @@ impl FontLoader {
                 if id.0 != 0 {
                     char_font = &fallback.font;
                     char_glyph_id = id;
+                    if is_italic {
+                        is_synthetic_italic = true;
+                    }
                 }
             }
 
@@ -725,26 +663,31 @@ impl FontLoader {
                     scale = PxScale::from(font_scale);
                 }
 
-                let glyph = char_glyph_id.with_scale(scale);
                 let scaled_font = char_font.as_scaled(scale);
                 ascent = scaled_font.ascent();
 
-                if let Some(outlined) = char_font.outline_glyph(glyph.clone()) {
+                let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+                let outlined_opt = get_or_create_outlined_glyph(
+                    char_font,
+                    char_glyph_id,
+                    scale,
+                    should_shear,
+                );
+
+                if let Some(outlined) = outlined_opt {
                     let bounds = outlined.px_bounds();
                     glyph_w = bounds.width();
                     glyph_h = bounds.height();
                     bounds_min_x = bounds.min.x;
                     bounds_min_y = bounds.min.y;
                     has_outline = true;
-                    char_font_arc = Some(char_font.clone());
-                    the_glyph = glyph;
+                    the_outlined = Some(outlined);
                 }
             }
         }
 
-        const SHEAR_FACTOR: f32 = 0.22;
-        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
-            (ascent * SHEAR_FACTOR).ceil() as u32
+        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box {
+            (ascent * SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
         } else {
             0
         };
@@ -810,7 +753,7 @@ impl FontLoader {
                     let xo = (base_target_width as f32 - glyph_w) / 2.0;
                     let yo = (self.cell_height as f32 - glyph_h) / 2.0;
                     (xo, yo)
-                } else if is_box_drawing_or_pipe(base_c) {
+                } else if is_box {
                     (bounds_min_x, ascent + bounds_min_y)
                 } else {
                     let xo = if glyph_w < base_target_width as f32 {
@@ -823,67 +766,29 @@ impl FontLoader {
                     (xo, yo)
                 };
 
-                if let Some(ref cf) = char_font_arc
-                    && let Some(outlined) = cf.outline_glyph(the_glyph)
-                {
+                if let Some(outlined) = the_outlined {
                     outlined.draw(|gx, gy, alpha| {
-                        if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
-                            let cell_y = y_offset + gy as f32;
-                            let slant_shift = (ascent - cell_y) * SHEAR_FACTOR;
-                            let exact_x = x_offset + gx as f32 + slant_shift;
-                            let py = (y_offset + gy as f32).round() as i32;
+                        let px = (x_offset + gx as f32).round() as i32;
+                        let py = (y_offset + gy as f32).round() as i32;
 
-                            if py >= 0 && py < self.cell_height as i32 {
-                                let x0 = exact_x.floor() as i32;
-                                let frac_x = exact_x - x0 as f32;
-                                let x1 = x0 + 1;
-
-                                let a0 = (alpha * (1.0 - frac_x) * 255.0).round() as u8;
-                                let a1 = (alpha * frac_x * 255.0).round() as u8;
-
-                                if x0 >= 0 && x0 < target_width as i32 && a0 > 0 {
-                                    let idx0 = py as usize * target_width as usize + x0 as usize;
-                                    self.scratch_pixels[idx0] =
-                                        self.scratch_pixels[idx0].saturating_add(a0);
-                                }
-                                if x1 >= 0 && x1 < target_width as i32 && a1 > 0 {
-                                    let idx1 = py as usize * target_width as usize + x1 as usize;
-                                    self.scratch_pixels[idx1] =
-                                        self.scratch_pixels[idx1].saturating_add(a1);
-                                }
-                            }
-                        } else {
-                            let px = (x_offset + gx as f32).round() as i32;
-                            let py = (y_offset + gy as f32).round() as i32;
-
-                            if px >= 0
-                                && px < target_width as i32
-                                && py >= 0
-                                && py < self.cell_height as i32
-                            {
-                                let idx = py as usize * target_width as usize + px as usize;
-                                let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
-                                let new_alpha = old_alpha.max(alpha);
-                                self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
-                            }
+                        if px >= 0
+                            && px < target_width as i32
+                            && py >= 0
+                            && py < self.cell_height as i32
+                        {
+                            let idx = py as usize * target_width as usize + px as usize;
+                            let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
+                            let new_alpha = old_alpha.max(alpha);
+                            self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
                         }
                     });
                 }
 
                 // Also draw combining chars
                 for ch in seq.chars().skip(1) {
-                    let mut char_font = match (is_bold, is_italic) {
-                        (true, true) => self
-                            .font_bold_italic
-                            .as_ref()
-                            .or(self.font_bold.as_ref())
-                            .or(self.font_italic.as_ref())
-                            .unwrap_or(&self.font),
-                        (true, false) => self.font_bold.as_ref().unwrap_or(&self.font),
-                        (false, true) => self.font_italic.as_ref().unwrap_or(&self.font),
-                        (false, false) => &self.font,
-                    };
+                    let mut char_font = &resolved_font.font;
                     let mut char_glyph_id = char_font.glyph_id(ch);
+                    let mut comb_synth_italic = is_synthetic_italic;
 
                     if char_glyph_id.0 == 0
                         && let Some(idx) = self.fallback_manager.find_fallback_for_char(ch)
@@ -893,6 +798,9 @@ impl FontLoader {
                         if id.0 != 0 {
                             char_font = &fallback.font;
                             char_glyph_id = id;
+                            if is_italic {
+                                comb_synth_italic = true;
+                            }
                         }
                     }
 
@@ -901,11 +809,16 @@ impl FontLoader {
                             .round()
                             .max(1.0);
                         let scale = PxScale::from(px_size);
-                        let glyph = char_glyph_id.with_scale(scale);
                         let scaled_font = char_font.as_scaled(scale);
                         let ascent = scaled_font.ascent();
 
-                        if let Some(outlined) = char_font.outline_glyph(glyph) {
+                        let should_shear = comb_synth_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+                        if let Some(outlined) = get_or_create_outlined_glyph(
+                            char_font,
+                            char_glyph_id,
+                            scale,
+                            should_shear,
+                        ) {
                             let bounds = outlined.px_bounds();
                             let mut xo = bounds.min.x;
                             if unicode_width::UnicodeWidthChar::width(ch) == Some(0)
@@ -1008,5 +921,51 @@ impl FontLoader {
             self.dynamic_cache.insert(key, uv);
         }
         uv
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ab_glyph_outline_types() {
+        let db = crate::font::fallback::get_system_font_db();
+        let query = fontdb::Query {
+            families: &[fontdb::Family::Monospace],
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: fontdb::Style::Normal,
+        };
+        if let Some(font) = load_font_face(db, &query) {
+            let scale = ab_glyph::PxScale::from(16.0);
+            let glyph = font.glyph_id('H').with_scale(scale);
+            let scaled = font.as_scaled(scale);
+            let sf = scaled.scale_factor();
+            if let Some(native_outlined) = font.outline_glyph(glyph.clone()) {
+                eprintln!("Native px bounds: {:?}", native_outlined.px_bounds());
+            }
+            if let Some(mut outline) = font.outline(glyph.id) {
+                eprintln!("Original outline bounds: {:?}", outline.bounds);
+                let orig_max_x = outline.bounds.max.x;
+                shear_outline(&mut outline, 0.20);
+                assert!(
+                    outline.bounds.max.x > orig_max_x,
+                    "Sheared outline bounds should extend further right at top"
+                );
+                eprintln!("Outline bounds: {:?}", outline.bounds);
+                eprintln!("Scale factor: {:?}", sf);
+                let outlined = ab_glyph::OutlinedGlyph::new(glyph, outline, sf);
+                eprintln!("Outlined px bounds: {:?}", outlined.px_bounds());
+                let mut drawn_pixels = 0;
+                outlined.draw(|gx, gy, alpha| {
+                    eprintln!("gx: {}, gy: {}, alpha: {}", gx, gy, alpha);
+                    if alpha > 0.0 {
+                        drawn_pixels += 1;
+                    }
+                });
+                assert!(drawn_pixels > 0, "Sheared glyph must rasterize successfully");
+            }
+        }
     }
 }

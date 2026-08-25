@@ -76,6 +76,7 @@ impl GlyphKey {
 }
 
 pub struct GlyphCache {
+    pub font_set: crate::font::resolved::ResolvedFontSet,
     pub font: FontArc,
     pub font_bold: Option<FontArc>,
     pub font_italic: Option<FontArc>,
@@ -107,7 +108,10 @@ impl GlyphCache {
         font_size: f32,
         font_scale_multiplier: f32,
     ) -> Self {
+        let db = crate::font::fallback::get_system_font_db();
+        let font_set = crate::font::resolved::ResolvedFontSet::resolve(db, "Monospace");
         let mut cache = Self {
+            font_set,
             font,
             font_bold,
             font_italic,
@@ -130,50 +134,20 @@ impl GlyphCache {
 
     pub fn from_font_family(font_family: &str, font_size: f32, font_scale_multiplier: f32) -> Self {
         let db = crate::font::fallback::get_system_font_db();
-
-        let query = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::NORMAL,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Normal,
-        };
-
-        let font = crate::font::loader::load_font_face(db, &query)
-            .expect("Could not load any system monospace font");
-
-        let query_bold = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::BOLD,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Normal,
-        };
-        let font_bold = crate::font::loader::load_font_face(db, &query_bold);
-
-        let regular_id = db.query(&query);
-
-        let query_italic = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::NORMAL,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Italic,
-        };
-        let italic_id = db.query(&query_italic);
-        let font_italic = if italic_id.is_some() && italic_id != regular_id {
-            crate::font::loader::load_font_face(db, &query_italic)
+        let font_set = crate::font::resolved::ResolvedFontSet::resolve(db, font_family);
+        let font = font_set.regular.font.clone();
+        let font_bold = if !font_set.bold.synthetic_bold {
+            Some(font_set.bold.font.clone())
         } else {
             None
         };
-
-        let query_bold_id = db.query(&query_bold);
-        let query_bold_italic = fontdb::Query {
-            families: &[fontdb::Family::Name(font_family), fontdb::Family::Monospace],
-            weight: fontdb::Weight::BOLD,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Italic,
+        let font_italic = if !font_set.italic.synthetic_italic {
+            Some(font_set.italic.font.clone())
+        } else {
+            None
         };
-        let bold_italic_id = db.query(&query_bold_italic);
-        let font_bold_italic = if bold_italic_id.is_some() && bold_italic_id != query_bold_id {
-            crate::font::loader::load_font_face(db, &query_bold_italic)
+        let font_bold_italic = if !font_set.bold_italic.synthetic_italic && !font_set.bold_italic.synthetic_bold {
+            Some(font_set.bold_italic.font.clone())
         } else {
             None
         };
@@ -189,7 +163,8 @@ impl GlyphCache {
         .ceil()
         .max(1.0) as u32;
 
-        Self::new(
+        let mut cache = Self {
+            font_set,
             font,
             font_bold,
             font_italic,
@@ -199,7 +174,14 @@ impl GlyphCache {
             cell_height,
             font_size,
             font_scale_multiplier,
-        )
+            atlas: GlyphAtlas::new(),
+            scratch: GlyphScratch::new(),
+            ascii_table: [None; 512],
+            unicode_table: HashMap::with_capacity(1024),
+            max_unicode_entries: 4096,
+        };
+        cache.preload_common_glyphs();
+        cache
     }
 
     /// Create an optimized, lightweight GlyphCache for tab bar text.
@@ -220,6 +202,7 @@ impl GlyphCache {
         .max(1.0) as u32;
 
         let mut cache = Self {
+            font_set: self.font_set.clone(),
             font: self.font.clone(),
             font_bold: None,
             font_italic: None,
@@ -341,48 +324,21 @@ impl GlyphCache {
 
         let is_pw_sep = is_powerline(key.codepoint);
         let is_nerd_or_pua = is_nerd_font_or_pua(key.codepoint);
+        let is_box = crate::font::loader::is_box_drawing_or_pipe(key.codepoint);
 
         let mut glyph_w = 0.0f32;
         let mut glyph_h = 0.0f32;
         let mut bounds_min_x = 0.0f32;
         let mut bounds_min_y = 0.0f32;
         let mut has_outline = false;
-        let mut char_font_arc: Option<FontArc> = None;
-        let mut the_glyph: Option<ab_glyph::Glyph> = None;
-        let mut is_synthetic_italic = false;
+        let mut the_outlined: Option<ab_glyph::OutlinedGlyph> = None;
         let mut ascent = 0.0f32;
 
-        if color_extract.is_none() {
-            let (mut char_font, synth) = match (key.bold, key.italic) {
-                (true, true) => {
-                    if let Some(ref f) = self.font_bold_italic {
-                        (f, false)
-                    } else if let Some(ref f) = self.font_bold {
-                        (f, true)
-                    } else if let Some(ref f) = self.font_italic {
-                        (f, false)
-                    } else {
-                        (&self.font, true)
-                    }
-                }
-                (true, false) => {
-                    if let Some(ref f) = self.font_bold {
-                        (f, false)
-                    } else {
-                        (&self.font, false)
-                    }
-                }
-                (false, true) => {
-                    if let Some(ref f) = self.font_italic {
-                        (f, false)
-                    } else {
-                        (&self.font, true)
-                    }
-                }
-                (false, false) => (&self.font, false),
-            };
-            is_synthetic_italic = synth;
+        let resolved_font = self.font_set.get(key.bold, key.italic);
+        let mut char_font = &resolved_font.font;
+        let mut is_synthetic_italic = resolved_font.synthetic_italic;
 
+        if color_extract.is_none() {
             let mut char_glyph_id = char_font.glyph_id(key.codepoint);
             if char_glyph_id.0 == 0
                 && let Some(idx) = self.fallback_manager.find_fallback_for_char(key.codepoint)
@@ -392,6 +348,9 @@ impl GlyphCache {
                 if id.0 != 0 {
                     char_font = &fallback.font;
                     char_glyph_id = id;
+                    if key.italic {
+                        is_synthetic_italic = true;
+                    }
                 }
             }
 
@@ -437,26 +396,31 @@ impl GlyphCache {
                     scale = PxScale::from(font_scale);
                 }
 
-                let glyph = char_glyph_id.with_scale(scale);
                 let scaled_font = char_font.as_scaled(scale);
                 ascent = scaled_font.ascent();
 
-                if let Some(outlined) = char_font.outline_glyph(glyph.clone()) {
+                let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+                let outlined_opt = crate::font::resolved::get_or_create_outlined_glyph(
+                    char_font,
+                    char_glyph_id,
+                    scale,
+                    should_shear,
+                );
+
+                if let Some(outlined) = outlined_opt {
                     let bounds = outlined.px_bounds();
                     glyph_w = bounds.width();
                     glyph_h = bounds.height();
                     bounds_min_x = bounds.min.x;
                     bounds_min_y = bounds.min.y;
                     has_outline = true;
-                    char_font_arc = Some(char_font.clone());
-                    the_glyph = Some(glyph);
+                    the_outlined = Some(outlined);
                 }
             }
         }
 
-        const SHEAR_FACTOR: f32 = 0.22;
-        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
-            (ascent * SHEAR_FACTOR).ceil() as u32
+        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box {
+            (ascent * crate::font::resolved::SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
         } else {
             0
         };
@@ -534,7 +498,7 @@ impl GlyphCache {
             self.scratch.alpha_pixels.clear();
             self.scratch.alpha_pixels.resize(needed_alpha, 0);
 
-            if has_outline && let (Some(font), Some(glyph)) = (char_font_arc, the_glyph) {
+            if has_outline && let Some(outlined) = the_outlined {
                 let (x_offset, y_offset) = if is_nerd_or_pua && !is_pw_sep {
                     let xo = (target_width as f32 - glyph_w) / 2.0;
                     let yo = (self.cell_height as f32 - glyph_h) / 2.0;
@@ -543,7 +507,7 @@ impl GlyphCache {
                     let xo = (base_target_width as f32 - glyph_w) / 2.0;
                     let yo = (self.cell_height as f32 - glyph_h) / 2.0;
                     (xo, yo)
-                } else if crate::font::loader::is_box_drawing_or_pipe(key.codepoint) {
+                } else if is_box {
                     (bounds_min_x, ascent + bounds_min_y)
                 } else {
                     let xo = if glyph_w < base_target_width as f32 {
@@ -556,49 +520,22 @@ impl GlyphCache {
                     (xo, yo)
                 };
 
-                if let Some(outlined) = font.outline_glyph(glyph) {
-                    let alpha_slice = &mut self.scratch.alpha_pixels;
-                    outlined.draw(|gx, gy, alpha| {
-                        if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep {
-                            let cell_y = y_offset + gy as f32;
-                            let slant_shift = (ascent - cell_y) * SHEAR_FACTOR;
-                            let exact_x = x_offset + gx as f32 + slant_shift;
-                            let py = (y_offset + gy as f32).round() as i32;
+                let alpha_slice = &mut self.scratch.alpha_pixels;
+                outlined.draw(|gx, gy, alpha| {
+                    let px = (x_offset + gx as f32).round() as i32;
+                    let py = (y_offset + gy as f32).round() as i32;
 
-                            if py >= 0 && py < self.cell_height as i32 {
-                                let x0 = exact_x.floor() as i32;
-                                let frac_x = exact_x - x0 as f32;
-                                let x1 = x0 + 1;
-
-                                let a0 = (alpha * (1.0 - frac_x) * 255.0).round() as u8;
-                                let a1 = (alpha * frac_x * 255.0).round() as u8;
-
-                                if x0 >= 0 && x0 < target_width as i32 && a0 > 0 {
-                                    let idx0 = py as usize * target_width as usize + x0 as usize;
-                                    alpha_slice[idx0] = alpha_slice[idx0].saturating_add(a0);
-                                }
-                                if x1 >= 0 && x1 < target_width as i32 && a1 > 0 {
-                                    let idx1 = py as usize * target_width as usize + x1 as usize;
-                                    alpha_slice[idx1] = alpha_slice[idx1].saturating_add(a1);
-                                }
-                            }
-                        } else {
-                            let px = (x_offset + gx as f32).round() as i32;
-                            let py = (y_offset + gy as f32).round() as i32;
-
-                            if px >= 0
-                                && px < target_width as i32
-                                && py >= 0
-                                && py < self.cell_height as i32
-                            {
-                                let idx = py as usize * target_width as usize + px as usize;
-                                let old_alpha = alpha_slice[idx] as f32 / 255.0;
-                                let new_alpha = old_alpha.max(alpha);
-                                alpha_slice[idx] = (new_alpha * 255.0) as u8;
-                            }
-                        }
-                    });
-                }
+                    if px >= 0
+                        && px < target_width as i32
+                        && py >= 0
+                        && py < self.cell_height as i32
+                    {
+                        let idx = py as usize * target_width as usize + px as usize;
+                        let old_alpha = alpha_slice[idx] as f32 / 255.0;
+                        let new_alpha = old_alpha.max(alpha);
+                        alpha_slice[idx] = (new_alpha * 255.0) as u8;
+                    }
+                });
             }
 
             Some(self.atlas.insert_alpha(
