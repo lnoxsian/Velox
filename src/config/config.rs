@@ -52,38 +52,17 @@ pub struct WindowConfig {
     pub cursor_shape: Option<String>,
     #[serde(default)]
     pub cursor_blink: Option<bool>,
-    #[serde(default, alias = "cursor")]
+    #[serde(default)]
     pub cursor_color: Option<String>,
-    #[serde(
-        default,
-        alias = "cursor_text",
-        alias = "cursor_fg",
-        alias = "cursor_text_fg"
-    )]
+    #[serde(default)]
     pub cursor_text_color: Option<String>,
-    #[serde(default, alias = "scroll_to_bottom_on_output")]
+    #[serde(default)]
     pub scroll_on_output: Option<bool>,
-    #[serde(
-        default,
-        alias = "scroll_on_keystrock",
-        alias = "scroll_to_bottom_on_keystroke",
-        alias = "scroll_on_key",
-        alias = "scroll_to_bottom_on_input"
-    )]
+    #[serde(default)]
     pub scroll_on_keystroke: Option<bool>,
-    #[serde(
-        default,
-        alias = "background_opacity",
-        alias = "alpha",
-        alias = "window_opacity"
-    )]
+    #[serde(default)]
     pub opacity: Option<f32>,
-    #[serde(
-        default,
-        alias = "dim",
-        alias = "unfocused_dim",
-        alias = "unfocus_dim"
-    )]
+    #[serde(default)]
     pub window_dim: Option<f32>,
 }
 
@@ -224,15 +203,7 @@ pub struct TabsConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub font_size: Option<f32>,
-    #[serde(
-        default,
-        alias = "tab_accent",
-        alias = "accent_color",
-        alias = "accent",
-        alias = "tab_active_accent",
-        alias = "active_tab_accent",
-        alias = "active_tab_accent_color"
-    )]
+    #[serde(default)]
     pub tab_accent_color: Option<String>,
 }
 
@@ -320,33 +291,24 @@ pub struct Config {
     #[serde(
         default,
         rename = "cursor_color",
-        alias = "cursor",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) cursor_color_legacy: Option<String>,
     #[serde(
         default,
         rename = "cursor_text_color",
-        alias = "cursor_text",
-        alias = "cursor_fg",
-        alias = "cursor_text_fg",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) cursor_text_color_legacy: Option<String>,
     #[serde(
         default,
         rename = "scroll_on_output",
-        alias = "scroll_to_bottom_on_output",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) scroll_on_output_legacy: Option<bool>,
     #[serde(
         default,
         rename = "scroll_on_keystroke",
-        alias = "scroll_on_keystrock",
-        alias = "scroll_to_bottom_on_keystroke",
-        alias = "scroll_on_key",
-        alias = "scroll_to_bottom_on_input",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) scroll_on_keystroke_legacy: Option<bool>,
@@ -365,27 +327,18 @@ pub struct Config {
     #[serde(
         default,
         rename = "opacity",
-        alias = "background_opacity",
-        alias = "alpha",
-        alias = "window_opacity",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) opacity_legacy: Option<f32>,
     #[serde(
         default,
         rename = "window_dim",
-        alias = "dim",
-        alias = "unfocused_dim",
-        alias = "unfocus_dim",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) window_dim_legacy: Option<f32>,
     #[serde(
         default,
         rename = "tab_accent_color",
-        alias = "tab_accent",
-        alias = "accent_color",
-        alias = "accent",
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) tab_accent_color_legacy: Option<String>,
@@ -684,20 +637,13 @@ mod tests {
         let empty_cfg: Config = toml::from_str("").unwrap();
         assert_eq!(empty_cfg.opacity(), 1.0);
 
-        // Aliases: background_opacity in [window]
-        let toml_alias1 = r#"
+        // Primary opacity in [window]
+        let toml_opacity = r#"
             [window]
-            background_opacity = 0.6
+            opacity = 0.6
         "#;
-        let cfg1: Config = toml::from_str(toml_alias1).unwrap();
+        let cfg1: Config = toml::from_str(toml_opacity).unwrap();
         assert_eq!(cfg1.opacity(), 0.6);
-
-        // Aliases: alpha in flat TOML
-        let toml_alias2 = r#"
-            alpha = 0.4
-        "#;
-        let cfg2: Config = toml::from_str(toml_alias2).unwrap();
-        assert_eq!(cfg2.opacity(), 0.4);
 
         // Clamping: negative clamped to 0.0, > 1.0 clamped to 1.0
         let toml_underflow = r#"
@@ -727,16 +673,6 @@ mod tests {
         assert_eq!(cfg1.cursor_color(), Some("#ff0000"));
         assert_eq!(cfg1.cursor_text_color(), Some("#00ff00"));
 
-        // [window] aliases: cursor and cursor_text / cursor_fg
-        let toml2 = r##"
-            [window]
-            cursor = "#fff"
-            cursor_text = "#000"
-        "##;
-        let cfg2: Config = toml::from_str(toml2).unwrap();
-        assert_eq!(cfg2.cursor_color(), Some("#fff"));
-        assert_eq!(cfg2.cursor_text_color(), Some("#000"));
-
         // [window] section with "inverted" / "default"
         let toml3 = r##"
             [window]
@@ -755,15 +691,6 @@ mod tests {
         let cfg4: Config = toml::from_str(toml4).unwrap();
         assert_eq!(cfg4.cursor_color(), Some("#123456"));
         assert_eq!(cfg4.cursor_text_color(), Some("#654321"));
-
-        // Legacy flat aliases
-        let toml5 = r##"
-            cursor = "#abcdef"
-            cursor_fg = "#fedcba"
-        "##;
-        let cfg5: Config = toml::from_str(toml5).unwrap();
-        assert_eq!(cfg5.cursor_color(), Some("#abcdef"));
-        assert_eq!(cfg5.cursor_text_color(), Some("#fedcba"));
     }
 
     #[test]
@@ -775,21 +702,6 @@ mod tests {
         "##;
         let cfg1: Config = toml::from_str(toml1).unwrap();
         assert_eq!(cfg1.tab_accent_color(), Some("#3b8eea"));
-
-        // [tabs] section with alias tab_accent
-        let toml2 = r##"
-            [tabs]
-            tab_accent = "#f38ba8"
-        "##;
-        let cfg2: Config = toml::from_str(toml2).unwrap();
-        assert_eq!(cfg2.tab_accent_color(), Some("#f38ba8"));
-
-        // Legacy top-level flat TOML
-        let toml3 = r##"
-            tab_accent = "#cba6f7"
-        "##;
-        let cfg3: Config = toml::from_str(toml3).unwrap();
-        assert_eq!(cfg3.tab_accent_color(), Some("#cba6f7"));
 
         // Generated default config from defaults.rs
         let default_cfg = crate::config::defaults::default_config();
@@ -888,21 +800,6 @@ mod tests {
         "##;
         let cfg_window: Config = toml::from_str(toml_window).unwrap();
         assert!((cfg_window.window_dim() - 0.35).abs() < f32::EPSILON);
-
-        // Aliases under [window] table
-        let toml_dim_alias = r##"
-            [window]
-            dim = 0.45
-        "##;
-        let cfg_dim: Config = toml::from_str(toml_dim_alias).unwrap();
-        assert!((cfg_dim.window_dim() - 0.45).abs() < f32::EPSILON);
-
-        let toml_unfocused_dim = r##"
-            [window]
-            unfocused_dim = 0.6
-        "##;
-        let cfg_unfocused: Config = toml::from_str(toml_unfocused_dim).unwrap();
-        assert!((cfg_unfocused.window_dim() - 0.6).abs() < f32::EPSILON);
 
         // Clamping behavior
         let toml_overflow = r##"
