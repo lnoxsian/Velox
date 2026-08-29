@@ -858,7 +858,7 @@ impl Renderer {
 
                 if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
                     let double_thick = 1.0f32.max((ch * 0.035).floor());
-                    let gap = 1.0f32.max((ch * 0.045).floor()) + 1.0;
+                    let gap = 1.0f32.max((ch * 0.045).floor());
                     let line_y2 = py + ch - double_thick - 1.0;
                     let line_y1 = line_y2 - gap - double_thick;
                     push_quad(
@@ -890,9 +890,10 @@ impl Renderer {
                 }
 
                 if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                    let curly_thick = 2.0f32.max((ch * 0.08).floor());
                     let wave_period = (cw * 0.75).clamp(6.0, 10.0);
-                    let wave_amp = (ch * 0.08).clamp(1.5, 2.5);
-                    let base_y = py + ch - wave_amp - deco_thick - 1.0;
+                    let wave_amp = (ch * 0.05).clamp(1.0, 1.8);
+                    let base_y = py + ch - wave_amp - curly_thick;
                     let wave_w = cw * cell_w_mult;
                     let step = 1.0f32;
                     let mut sx = 0.0f32;
@@ -906,7 +907,7 @@ impl Renderer {
                             global_x,
                             base_y + wave_offset,
                             draw_w,
-                            deco_thick,
+                            curly_thick,
                             wu,
                             wv,
                             wu,

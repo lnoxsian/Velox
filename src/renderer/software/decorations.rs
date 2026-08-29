@@ -27,7 +27,7 @@ pub fn draw_double_underline(
     color: u32,
 ) {
     let thickness = 1.max(cell_h / 32);
-    let gap = 1.max(cell_h / 24) + 1;
+    let gap = 1.max(cell_h / 24);
     let y2 = py + cell_h.saturating_sub(thickness + 1);
     let y1 = y2.saturating_sub(gap + thickness);
     fb.fill_span(px, y1, cell_w, thickness, color);
@@ -53,15 +53,17 @@ pub fn draw_curly_underline(
     color: u32,
 ) {
     let period = (cell_w as f32 * 0.75).clamp(6.0, 10.0);
-    let amp = (cell_h as f32 * 0.08).clamp(1.5, 2.5);
-    let thickness = 1.max(cell_h / 28);
-    let base_y = (py + cell_h).saturating_sub((amp + thickness as f32 + 1.0) as u32);
+    let amp = (cell_h as f32 * 0.05).clamp(1.0, 1.8);
+    let thickness = 2.max(cell_h / 14);
+    let base_y = (py as f32 + cell_h as f32 - amp - thickness as f32).max(0.0);
 
     for x in 0..cell_w {
         let global_x = (px + x) as f32;
         let angle = (global_x / period) * std::f32::consts::TAU;
-        let y_offset = (angle.sin() * amp).round() as i32;
-        let y = ((base_y as i32 + y_offset).max(0) as u32).min(fb.height.saturating_sub(thickness));
+        let y_offset = (angle.sin() * amp).round();
+        let y = ((base_y + y_offset).round() as i32)
+            .clamp(py as i32, (py + cell_h).saturating_sub(thickness) as i32) as u32;
+        let y = y.min(fb.height.saturating_sub(thickness));
         fb.fill_span(px + x, y, 1, thickness, color);
     }
 }
@@ -211,9 +213,18 @@ mod tests {
             2,
             "Double underline should draw exactly 2 single-pixel lines"
         );
-        assert!(
-            y_drawn[1] - y_drawn[0] >= 2,
-            "There must be a gap between the two underline bars"
+        assert_eq!(
+            y_drawn[1] - y_drawn[0],
+            2,
+            "There must be a 1px gap between the two underline bars"
+        );
+        assert_eq!(
+            y_drawn[0], 20,
+            "Double underline top line must start at y=20 matching curly underline descent separation"
+        );
+        assert_eq!(
+            y_drawn[1], 22,
+            "Double underline bottom line must sit at y=22"
         );
     }
 
@@ -228,15 +239,21 @@ mod tests {
 
         let mut min_y = 24;
         let mut max_y = 0;
+        let mut drawn_pixels_per_col = vec![0; cell_w as usize];
         for y in 0..24 {
             for x in 0..cell_w {
                 if fb.pixels[y as usize * fb.stride + x as usize] == color {
                     min_y = min_y.min(y);
                     max_y = max_y.max(y);
+                    drawn_pixels_per_col[x as usize] += 1;
                 }
             }
         }
         assert!(max_y > min_y, "Curly underline must oscillate vertically");
         assert!(max_y - min_y >= 2, "Curly wave amplitude must be visible");
+        assert!(min_y >= 19, "Curly underline must sit in descent area with separation from baseline");
+        for (x, &count) in drawn_pixels_per_col.iter().enumerate() {
+            assert_eq!(count, 2, "Column {} should have 2px thickness", x);
+        }
     }
 }
