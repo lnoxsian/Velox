@@ -18,32 +18,37 @@ Velox is a modular, high-performance terminal emulator built around focused, dec
 
 ## Component Architecture
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                             winit Event Loop                                │
-└──────────────────────┬───────────────────────────────┬──────────────────────┘
-                       │                               │
-                       ▼                               ▼
-       ┌───────────────────────────────┐     ┌───────────────────┐
-       │           app::App            │◄────┤     src/ipc.rs    │
-       │ (Multi-Window / Global State) │     │ (Unix Socket IPC) │
-       └───────────────┬───────────────┘     └───────────────────┘
-                       │
-                       ▼
-       ┌─────────────────────────────────────────────────────────┐
-       │                    app::WindowState                     │
-       │  ┌─────────────────────┐       ┌─────────────────────┐  │
-       │  │    app::tab::Tab    │ 1..N  │   app::tab::TabBar  │  │
-       │  │ (PTY + Terminal+Grid)│      │  (Hit-test & Visual)│  │
-       │  └──────────┬──────────┘       └─────────────────────┘  │
-       └─────────────┼───────────────────────────────────────────┘
-                     │
-         ┌───────────┴─────────────────────────┐
-         ▼                                     ▼
-┌───────────────────────────────┐   ┌───────────────────────────────────┐
-│ WindowRendererBackend::OpenGL │   │ WindowRendererBackend::Software   │
-│   (glow + GLSL 330 Shaders)   │   │ (softbuffer + CpuRenderer Damage) │
-└───────────────────────────────┘   └───────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph EventSystem["Event & IPC System"]
+        Winit["winit Event Loop"]
+        IPC["src/ipc.rs<br/>(Unix Socket Server)"]
+        Winit -->|Events & Modifiers| App
+        IPC -->|IpcCreateWindow / IpcCreateTab| Winit
+    end
+
+    subgraph AppCore["Application Core (app::App)"]
+        App["app::App<br/>(Multi-Window & Global Orchestration)"]
+    end
+
+    subgraph WindowInstance["Native Window (app::WindowState)"]
+        WS["app::WindowState"]
+        TabBar["app::tab::TabBar<br/>(Hit-Testing & Visual Tabs)"]
+        Tab1["Tab 1<br/>(PTY + Terminal + Grid)"]
+        TabN["Tab N<br/>(PTY + Terminal + Grid)"]
+        WS --> TabBar
+        WS --> Tab1
+        WS --> TabN
+    end
+
+    subgraph DualBackends["Dual Rendering Backends (WindowRendererBackend)"]
+        GLBackend["WindowRendererBackend::OpenGL<br/>(glow + GLSL 330 Shaders)"]
+        SoftBackend["WindowRendererBackend::Software<br/>(softbuffer + CpuRenderer Damage)"]
+    end
+
+    App -->|Manages 1..N Windows| WS
+    WS -->|Hardware Path| GLBackend
+    WS -->|Software Fallback| SoftBackend
 ```
 
 ---
@@ -106,25 +111,61 @@ Velox provides two full-featured renderers sharing identical layout and visual p
 
 ## Data Flow & Lifecycle
 
-### 1. Zero-Flicker Cold Startup
-```text
-1. App::resumed() loads configuration and initializes GL display.
-2. App::create_window() creates window with .with_visible(false) and .with_transparent(opacity < 1.0).
-3. Backend (OpenGL/Software) and Tab/PTY are initialized.
-4. window_state.draw() executes initial clear and paints the first frame synchronously.
-5. window_state.window.set_visible(true) displays the fully-rendered window with zero transparent flicker.
+### 1. Zero-Flicker Cold Startup Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant OS as OS / Compositor
+    participant Winit as winit Event Loop
+    participant App as app::App
+    participant WS as app::WindowState
+    participant Backend as Renderer Backend
+    participant PTY as PTY Process
+
+    Winit->>App: resumed()
+    App->>App: Load config & init GL context
+    App->>OS: create_window(visible: false, transparent: opacity < 1.0)
+    OS-->>App: Window created (Hidden)
+    App->>Backend: Initialize OpenGL / Software surface
+    App->>PTY: Spawn shell & start reader thread
+    App->>WS: Construct WindowState
+    App->>WS: draw() (Synchronous First Paint)
+    WS->>Backend: Clear background & render initial frame
+    Backend->>OS: Swap buffers / Present front buffer
+    App->>OS: window.set_visible(true)
+    Note over OS: Window revealed instantly with zero flicker
 ```
 
-### 2. Runtime Execution Loop
-```text
-┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
-│   PTY Output    │──────►│  EventLoopProxy │──────►│  ansi::Parser   │
-└─────────────────┘       └─────────────────┘       └────────┬────────┘
-                                                             │
-                                                             ▼
-┌─────────────────┐       ┌─────────────────┐       ┌─────────────────┐
-│ Display Surface │◄──────│  Renderer/CPU   │◄──────│ Terminal Grid   │
-└─────────────────┘       └─────────────────┘       └─────────────────┘
+### 2. Runtime Execution Loop & I/O Pipeline
+
+```mermaid
+flowchart LR
+    subgraph PTYStream["PTY Background Stream"]
+        Shell["Shell / Subprocess"]
+        PTYMaster["PTY Master Descriptor"]
+        PTYReader["Dedicated Reader Thread"]
+        Shell <--> PTYMaster
+        PTYMaster --> PTYReader
+    end
+
+    subgraph EventLoop["Main Thread (winit Event Loop)"]
+        Proxy["EventLoopProxy<br/>(CustomEvent::PtyData)"]
+        Parser["ansi::Parser<br/>(VT / CSI / OSC Byte Stream)"]
+        Term["terminal::Terminal<br/>(Grid & Alternate Screen)"]
+        PTYReader -->|Bytes| Proxy
+        Proxy --> Parser
+        Parser --> Term
+    end
+
+    subgraph RenderSubsystem["Rendering & Presentation"]
+        Damage["screen::DamageMap / Dirty Grid"]
+        Renderer["Renderer / CpuRenderer"]
+        Surface["Display Surface<br/>(OpenGL / softbuffer)"]
+        Term --> Damage
+        Damage --> Renderer
+        Renderer --> Surface
+    end
 ```
 
 ---
