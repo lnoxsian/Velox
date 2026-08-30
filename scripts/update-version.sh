@@ -32,4 +32,13 @@ echo "$NEW_VERSION" > "$VERSION_FILE"
 # Update Cargo.toml version field
 sed -i 's/^version = "[^"]*"/version = "'"$NEW_VERSION"'"/' "$CARGO_TOML"
 
-echo "Version updated from $CURRENT_VERSION to $NEW_VERSION."
+# Update README.md version badges and mentions from VERSION
+if [ -f "README.md" ]; then
+    sed -i -E "s/version-v[0-9]+\.[0-9]+\.[0-9]+/version-v$NEW_VERSION/g" README.md
+    sed -i -E "s/alt=\"Version [0-9]+\.[0-9]+\.[0-9]+\"/alt=\"Version $NEW_VERSION\"/g" README.md
+    sed -i -E "s/\*\*Velox v[0-9]+\.[0-9]+\.[0-9]+\*\*/\*\*Velox v$NEW_VERSION\*\*/g" README.md
+    sed -i -E "s/\|\s*\*\*Version\*\*\s*\|\s*`v[0-9]+\.[0-9]+\.[0-9]+`\s*\|/| **Version** | \`v$NEW_VERSION\` |/g" README.md
+fi
+
+echo "Version updated from $CURRENT_VERSION to $NEW_VERSION across VERSION, Cargo.toml, and README.md."
+

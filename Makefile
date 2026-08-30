@@ -34,11 +34,19 @@ lint:
 	cargo clippy --all-targets -- -D warnings
 	cargo fmt --all -- --check
 
-# Update the crate version in Cargo.toml from the VERSION file
+# Update the crate version in Cargo.toml and README.md from the VERSION file
 update-version:
 	@if [ -z "$(VERSION)" ]; then \
 		echo "Error: VERSION file is empty"; \
 		exit 1; \
 	fi
 	sed -i 's/^version = "[^"]*"/version = "$(VERSION)"/' Cargo.toml
+	@if [ -f "README.md" ]; then \
+		sed -i -E 's/version-v[0-9]+\.[0-9]+\.[0-9]+/version-v$(VERSION)/g' README.md; \
+		sed -i -E 's/alt="Version [0-9]+\.[0-9]+\.[0-9]+"/alt="Version $(VERSION)"/g' README.md; \
+		sed -i -E 's/\*\*Velox v[0-9]+\.[0-9]+\.[0-9]+\*\*/\*\*Velox v$(VERSION)\*\*/g' README.md; \
+		sed -i -E 's/\|\s*\*\*Version\*\*\s*\|\s*`v[0-9]+\.[0-9]+\.[0-9]+`\s*\|/| **Version** | `v$(VERSION)` |/g' README.md; \
+	fi
+	@echo "Synchronized version $(VERSION) to Cargo.toml and README.md."
 	cargo check
+

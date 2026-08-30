@@ -76,8 +76,21 @@ lint:
     cargo clippy --all-targets -- -D warnings
     cargo fmt --all -- --check
 
-# Update the crate version using update-version script
+# Update the crate version and README.md from the VERSION file
 update-version:
+    @if [ -z "{{version}}" ]; then echo "Error: VERSION file is empty"; exit 1; fi
+    sed -i 's/^version = "[^"]*"/version = "{{version}}"/' Cargo.toml
+    @if [ -f "README.md" ]; then \
+        sed -i -E 's/version-v[0-9]+\.[0-9]+\.[0-9]+/version-v{{version}}/g' README.md; \
+        sed -i -E 's/alt="Version [0-9]+\.[0-9]+\.[0-9]+"/alt="Version {{version}}"/g' README.md; \
+        sed -i -E 's/\*\*Velox v[0-9]+\.[0-9]+\.[0-9]+\*\*/\*\*Velox v{{version}}\*\*/g' README.md; \
+        sed -i -E 's/\|\s*\*\*Version\*\*\s*\|\s*`v[0-9]+\.[0-9]+\.[0-9]+`\s*\|/| **Version** | `v{{version}}` |/g' README.md; \
+    fi
+    @echo "Synchronized version {{version}} to Cargo.toml and README.md."
+    cargo check
+
+# Interactively prompt and update version across VERSION, Cargo.toml, and README.md
+bump-version:
     bash scripts/update-version.sh
     cargo check
 
