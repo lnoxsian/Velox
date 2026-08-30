@@ -710,9 +710,11 @@ impl App {
         let opacity = config.opacity();
         let window_dim = config.window_dim();
 
+        let is_transparent = opacity < 1.0;
         let mut window_attributes = Window::default_attributes()
             .with_title(&initial_title)
-            .with_transparent(true)
+            .with_transparent(is_transparent)
+            .with_visible(false)
             .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
 
         if let Some(icon) = icon {
@@ -864,7 +866,7 @@ impl App {
             font_size,
         );
 
-        let window_state = WindowState {
+        let mut window_state = WindowState {
             window,
             backend,
             mouse_x: 0.0,
@@ -872,7 +874,9 @@ impl App {
             render_cells_buf: Vec::new(),
             scroll_multiplier,
             fps_limit,
-            last_frame_instant: std::time::Instant::now(),
+            last_frame_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now),
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
@@ -887,8 +891,8 @@ impl App {
             last_mouse_cell: (0, 0),
             is_focused: true,
             current_cursor_icon: winit::window::CursorIcon::Default,
-            needs_redraw: true,
-            content_dirty: true,
+            needs_redraw: false,
+            content_dirty: false,
             cursor_blink_enabled,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
@@ -903,6 +907,11 @@ impl App {
             tab_bar_dirty: true,
             tab_bar_render_cache: None,
         };
+
+        // Render initial frame synchronously to eliminate any cold-start transparent/blank flicker,
+        // then reveal the window.
+        window_state.draw();
+        window_state.window.set_visible(true);
 
         self.windows.insert(window_id, window_state);
     }

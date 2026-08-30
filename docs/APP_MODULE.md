@@ -2,107 +2,138 @@
 
 ## Overview
 
-The `app` module is the runtime orchestrator for Velox. It owns the Winit application handler, initializes graphics and terminal state, starts the shell inside a PTY, and routes input and custom events through the rest of the system.
+The `app` module is the runtime orchestrator for Velox. It implements the Winit `ApplicationHandler` lifecycle, manages multiple native windows and tabs, configures dual rendering backends (OpenGL and CPU Software), routes keyboard and mouse events, executes single-instance IPC requests, and schedules redraws and idle memory trimming.
 
 ## Module Structure
 
 ```text
 src/app/
-├── mod.rs
-├── app.rs
-├── keyboard.rs
-└── mouse.rs
+├── mod.rs        # App module root and re-exports
+├── app.rs        # App, WindowState, WindowRendererBackend & ApplicationHandler
+├── tab.rs        # Tab, TabBar, TabHeaderInfo, TabBarRenderInfo & hit-testing
+├── keyboard.rs   # Winit keyboard event dispatch, shortcuts & tab navigation
+└── mouse.rs      # Mouse tracking, click count, drag selection & tab bar interactions
 ```
 
 ## Main Concepts
 
-### App Struct
+### 1. `App` Struct
 
-`App` stores the live application state used by the event loop and renderer.
+`App` manages top-level application state across all windows and IPC communication:
 
-**Important groups of fields:**
-- Windowing and GL state: window, GL context, display, and surface handles
-- Terminal state: `Terminal`, renderer, PTY master, and reusable render buffers
-- Runtime settings: scroll multiplier, FPS limit, font size, padding, and cursor blink settings
-- Interaction state: mouse position, click tracking, focus state, and modifier keys
-- Scheduling state: redraw flags, title refresh timing, and cursor blink timing
+- **`windows: HashMap<WindowId, WindowState>`**: Map of active application windows.
+- **`gl_display`, `gl_config`, `gl`**: Shared OpenGL display and context resources.
+- **`ipc_listener: Option<IpcListenerHandle>`**: Background thread listener for single-instance Unix domain socket requests.
+- **`modifiers: ModifiersState`**: Current keyboard modifier key states.
+- **`single_instance_mode`, `daemon_mode`**: Process lifecycle configuration.
 
-### CustomEvent
+### 2. `WindowState` & `WindowRendererBackend`
+
+`WindowState` encapsulates all state for a single native window:
+
+- **`backend: WindowRendererBackend`**: Enum dispatching to either:
+  - `WindowRendererBackend::OpenGL`: Owns `Renderer`, `gl_surface`, and `gl_context`.
+  - `WindowRendererBackend::Software`: Owns `CpuRenderer` and `softbuffer::Surface`.
+- **`tabs: Vec<Tab>` & `active_tab_index: usize`**: List of active terminal tabs.
+- **`tab_bar: TabBar`**: Visual configuration, dimensions, accent color, and hit-testing cache.
+- **`render_cells_buf: Vec<Cell>`**: Reused contiguous cell buffer passed to the renderer.
+- **`opacity: f32` & `window_dim: f32`**: Transparency and unfocused dimming factors.
+- **`fps_limit: Option<u32>` & `last_frame_instant: Instant`**: Frame rate throttler.
+- **`needs_redraw: bool` & `content_dirty: bool`**: Redraw flags for synchronized and damaged rendering.
+
+### 3. `Tab` & `TabBar` (`app/tab.rs`)
+
+- **`Tab`**:
+  - `id: u64`: Unique tab identifier.
+  - `pty_master: Arc<PtyMaster>`: PTY master descriptor for reading/writing/resizing.
+  - `terminal: Terminal`: Isolated VT state machine, alternate screen, and character grids.
+  - `font_size: f32`: Per-tab isolated font zoom level.
+  - `custom_title: Option<String>` & `current_title: String`: Dynamically updated process/tab title.
+  - `hold: bool`: Retains tab open on process exit with `[Process exited]` indicator.
+  - `last_activity: Instant` & `last_cleanup: Instant`: Idle memory trimming timestamps.
+- **`TabBar`**:
+  - `show_tab_bar: TabBarVisibility`: `Auto` (visible when > 1 tab), `Always`, or `Never`.
+  - `tab_accent_color: Option<Color>`: Active tab top border color.
+  - `show_close_button: bool` & `show_new_tab_button: bool`: Button toggles.
+  - `hit_test(x, y, ...)`: Hit-testing for tab selection, tab close buttons, and new-tab button.
+
+### 4. `CustomEvent`
 
 ```rust
 pub enum CustomEvent {
-    PtyData(Vec<u8>),
-    PtyExit,
+    PtyData {
+        window_id: WindowId,
+        tab_id: u64,
+        data: Vec<u8>,
+    },
+    PtyExit {
+        window_id: WindowId,
+        tab_id: u64,
+    },
+    IpcCreateWindow {
+        working_directory: Option<String>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        hold: Option<bool>,
+    },
+    IpcCreateTab {
+        working_directory: Option<String>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        hold: Option<bool>,
+    },
 }
 ```
 
-Custom events let the PTY reader thread deliver terminal data back to the main event loop.
+---
 
-## Lifecycle
+## Application Lifecycle
 
-### 1. Creation
+### 1. Resumed (`ApplicationHandler::resumed`)
 
-`App::new()` creates an uninitialized application state with defaults for runtime settings and redraw tracking.
+1. Loads user configuration from `~/.config/velox/config.toml`.
+2. Initializes OpenGL display/context if `gpu_acceleration = true`.
+3. Starts IPC server if in single-instance or daemon mode.
+4. Invokes `create_window()` for initial command-line arguments.
 
-### 2. Resumed
+### 2. Window Creation (`create_window`)
 
-When Winit calls `resumed`, the application:
+1. Creates native window with `.with_visible(false)` and `.with_transparent(opacity < 1.0)`.
+2. Configures rendering backend (`OpenGL` with `glow` or `Software` with `softbuffer`).
+3. Calculates cell dimensions and spawns initial shell process inside PTY.
+4. Spawns dedicated background reader thread (`spawn_pty_reader`).
+5. Constructs `WindowState` with `last_frame_instant` initialized in the past.
+6. **Zero-Flicker Presentation**: Synchronously calls `window_state.draw()` to render background and prompt, then reveals the window via `window_state.window.set_visible(true)`.
 
-- Loads user configuration
-- Builds the window and OpenGL context
-- Creates the renderer
-- Initializes the terminal with an initial grid size
-- Spawns the configured shell inside a PTY
-- Starts the PTY reader thread
-- Applies runtime settings like FPS cap, padding, cursor blinking, and scroll multiplier
+### 3. Event Loop & Routing
 
-### 3. Event Processing
+- **`WindowEvent::KeyboardInput`**: Dispatches to `handle_keyboard_input` for tab shortcuts, clipboard keys (`Ctrl+Shift+C`/`V`), zoom (`Ctrl+Plus`/`Minus`/`0`), and writes translated escape sequences to the active PTY.
+- **`WindowEvent::MouseInput` / `CursorMoved` / `MouseWheel`**: Handled by `app::mouse`, managing tab bar clicking, middle-click close, hyperlink opening (`Ctrl+Click`), text selection, and mouse tracking reporting (SGR 1006).
+- **`WindowEvent::Resized`**: Calls `resize_renderer()`, adjusts viewport surfaces, recalculates grid columns/rows, and sends `TIOCSWINSZ` to the active PTY.
+- **`WindowEvent::RedrawRequested`**: Calls `ws.draw()` to render terminal cells and tab bar.
 
-The event loop routes three main categories of events:
+### 4. Idle Processing (`about_to_wait`)
 
-**Window events**
-- Keyboard input is translated into terminal bytes
-- Mouse input updates selection, click, and drag state
-- Resize events update the viewport and PTY dimensions
-- Close requests and focus changes update application state
+- **Idle Memory Trimming**: Calls `ws.release_memory()` and `malloc_trim` when 2.5 seconds of PTY inactivity elapse following burst terminal output.
+- **Cursor Blinking**: Toggles cursor blink every 500ms when enabled.
+- **Frame Rate Throttling**: Checks `fps_limit` and requests redraws only when `now >= last_frame_instant + frame_duration`.
 
-**Custom events**
-- `PtyData` bytes are parsed and fed into the terminal
-- `PtyExit` triggers shutdown behavior
+---
 
-**Idle processing**
-- Redraws happen when content is dirty or a scheduled refresh is due
-- Cursor blinking and title checks are handled on timing intervals
+## Keyboard Shortcuts
 
-### 4. Shutdown
+| Shortcut | Description |
+| :--- | :--- |
+| `Ctrl + Shift + T` | Open new tab in the active window |
+| `Ctrl + Shift + W` | Close the active tab |
+| `Ctrl + Tab` / `Ctrl + Shift + ]` | Switch to next tab |
+| `Ctrl + Shift + Tab` / `Ctrl + Shift + [` | Switch to previous tab |
+| `Alt + 1` .. `Alt + 9` | Switch directly to tab 1 through 9 |
+| `Ctrl + Shift + C` | Copy current selection to clipboard |
+| `Ctrl + Shift + V` | Paste from system clipboard |
+| `Ctrl + Plus` / `Ctrl + =` | Zoom in font size (isolated to active tab) |
+| `Ctrl + Minus` | Zoom out font size (isolated to active tab) |
+| `Ctrl + 0` | Reset font size to default (isolated to active tab) |
+| `Shift + PageUp` / `PageDown` | Scroll terminal history up / down |
+| `Shift + Home` / `End` | Scroll to top / bottom of history |
 
-When the PTY exits or the window closes, the app tears down the event flow and releases the active graphics and terminal resources through normal Rust drop semantics.
-
-## Input Routing
-
-### Keyboard
-
-Keyboard events are translated through `input::keyboard::translate_key` and then written to the PTY master.
-
-### Mouse
-
-Mouse input is tracked in `app::mouse` and used for selection, drag, and scroll behavior.
-
-## Performance Notes
-
-- The app reuses a single render-cell buffer to reduce allocations
-- PTY reads happen on a dedicated thread
-- Redraws are gated by dirty-state and timing checks
-- Cursor blink and title refresh are handled with lightweight timers
-
-## Testing
-
-The app module can be tested by verifying that event routing updates the terminal and PTY state correctly, especially for keyboard input, resize handling, and custom PTY events.
-
-## Future Improvements
-
-- More elaborate mouse protocol support
-- Multi-window support
-- Tab/session management
-- Configuration hot reload
-- Richer title and focus handling
