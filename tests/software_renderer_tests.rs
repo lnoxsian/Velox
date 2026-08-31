@@ -216,12 +216,31 @@ fn test_software_renderer_scroll_selection() {
 
     assert_eq!(grid.scrollback.len(), 5);
 
-    // Select row 2 (which is in scrollback)
+    // 1. Render at scroll_offset = 0 (showing active grid top row "line-5")
+    grid.scroll_offset = 0;
+    let mut target_live = vec![0u32; 800 * 600];
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target_live,
+    );
+
+    // 2. Select row 2 (which is in scrollback)
     grid.selection.start_selection(0, 2);
     grid.selection.update_selection(5, 2);
 
-    // Scroll up by 3 lines so row 2 is visible at viewport row 0 (since history_len=5, scroll_offset=3, abs_row=5-3+0=2)
+    // 3. Scroll up by 3 lines so row 2 is visible at viewport row 0 (since history_len=5, scroll_offset=3, abs_row=5-3+0=2)
     grid.scroll_offset = 3;
+    grid.damage.mark_all();
+    let mut target_scrollback = vec![0u32; 800 * 600];
 
     renderer.render(
         &grid.cells,
@@ -234,12 +253,21 @@ fn test_software_renderer_scroll_selection() {
         0,
         true,
         1.0,
-        &mut target,
+        &mut target_scrollback,
     );
 
     // Render should succeed with damage resolved
     assert!(!renderer.damage.has_damage());
     assert_eq!(grid.extract_selection_text(), "line-2");
+
+    // Pixels at top row when scrolled up must differ from live active grid top row
+    let cell_h = renderer.glyph_cache.cell_height as usize;
+    let row0_live_pixels: Vec<u32> = target_live[0..800 * cell_h].to_vec();
+    let row0_scroll_pixels: Vec<u32> = target_scrollback[0..800 * cell_h].to_vec();
+    assert_ne!(
+        row0_live_pixels, row0_scroll_pixels,
+        "Top row pixels when scrolled back to history must show scrollback line-2 instead of active grid line-5"
+    );
 }
 
 #[test]
@@ -1012,3 +1040,76 @@ fn test_software_renderer_dynamic_selection_drag_and_scrollback() {
         "Row 2 cell 2 must revert to default background when selection cleared"
     );
 }
+
+#[test]
+fn test_scrollback_background_preserves_theme_background_color() {
+    let mut theme = Theme::new();
+    // Non-black theme background (e.g. Catppuccin Mocha #1e1e2e -> r:30, g:30, b:46)
+    theme.default_bg = Color { r: 30, g: 30, b: 46 };
+    theme.default_fg = Color { r: 205, g: 214, b: 244 };
+
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 1.0);
+    let mut grid = Grid::new(
+        80,
+        10,
+        theme.default_fg,
+        theme.default_bg,
+        100,
+        false,
+    );
+
+    // Write short lines so lines 0..15 have trailing trimmed blank spaces
+    for i in 0..15 {
+        for c in format!("line-{}", i).chars() {
+            grid.put_char(
+                c,
+                grid.default_fg,
+                grid.default_bg,
+                None,
+                CellFlags::empty(),
+            );
+        }
+        if i < 14 {
+            grid.scroll_or_move_down(grid.default_bg);
+            grid.cursor.x = 0;
+        }
+    }
+
+    assert_eq!(grid.scrollback.len(), 5);
+
+    // Scroll up by 4 lines so scrollback lines 1..5 and active grid lines 0..6 are displayed
+    grid.scroll_offset = 4;
+    grid.damage.mark_all();
+    let mut target = vec![0u32; 800 * 600];
+
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+
+    let cell_w = renderer.glyph_cache.cell_width as usize;
+    let cell_h = renderer.glyph_cache.cell_height as usize;
+    let expected_bg_packed =
+        velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
+
+    // Check row 0 (which is in scrollback) at column 40 (beyond text "line-1")
+    let test_x = 40 * cell_w + 2;
+    let test_y = 0 * cell_h + 2;
+    let actual_pixel = target[test_y * 800 + test_x];
+
+    assert_eq!(
+        actual_pixel,
+        expected_bg_packed,
+        "Trailing columns in scrollback must maintain the theme's default background color and not turn black"
+    );
+}
+

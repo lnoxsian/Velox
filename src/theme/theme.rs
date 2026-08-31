@@ -355,6 +355,42 @@ impl Theme {
         }
     }
 
+    pub fn parse_color_spec(&self, spec: &str) -> Option<Color> {
+        let s = spec.trim().to_lowercase();
+        match s.as_str() {
+            "tab_accent" | "tab_bar" | "tab" | "accent" => Some(self.resolve_tab_accent_color()),
+            "default_fg" | "fg" | "foreground" => Some(self.default_fg),
+            "default_bg" | "bg" | "background" => Some(self.default_bg),
+            "cursor" | "cursor_color" => self.cursor_color.or(self.initial_cursor_color).or(Some(self.default_fg)),
+            "black" => Some(self.ansi_colors[0]),
+            "red" => Some(self.ansi_colors[1]),
+            "green" => Some(self.ansi_colors[2]),
+            "yellow" => Some(self.ansi_colors[3]),
+            "blue" => Some(self.ansi_colors[4]),
+            "magenta" | "purple" => Some(self.ansi_colors[5]),
+            "cyan" => Some(self.ansi_colors[6]),
+            "white" => Some(self.ansi_colors[7]),
+            "bright_black" | "gray" | "grey" => Some(self.ansi_colors[8]),
+            "bright_red" => Some(self.ansi_colors[9]),
+            "bright_green" => Some(self.ansi_colors[10]),
+            "bright_yellow" => Some(self.ansi_colors[11]),
+            "bright_blue" => Some(self.ansi_colors[12]),
+            "bright_magenta" | "bright_purple" => Some(self.ansi_colors[13]),
+            "bright_cyan" => Some(self.ansi_colors[14]),
+            "bright_white" => Some(self.ansi_colors[15]),
+            _ => {
+                if let Some(idx_str) = s.strip_prefix("ansi_").or_else(|| s.strip_prefix("ansi")) {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        if idx < 16 {
+                            return Some(self.ansi_colors[idx]);
+                        }
+                    }
+                }
+                crate::config::config::parse_hex_color(&s)
+            }
+        }
+    }
+
     pub fn resolve_cursor_color(&self, cell_fg: Color) -> Color {
         if let Some(c) = self.cursor_color {
             c

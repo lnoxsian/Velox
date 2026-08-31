@@ -2,14 +2,13 @@ use crate::app::pane::{Pane, PaneId};
 use crate::app::split::{FocusDirection, PaneRect, SeparatorRect, SplitDirection, SplitId};
 use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
-use crate::config::config::parse_hex_color;
-use crate::ipc::{IpcListenerHandle, start_ipc_server};
+use crate::ipc::{start_ipc_server, IpcListenerHandle};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_process;
 use crate::renderer::renderer::{PaneRenderData, Renderer, SeparatorRenderData};
 use crate::renderer::software::CpuPaneRenderData;
 use crate::renderer::software::CpuRenderer;
-use crate::screen::cell::{Cell, Color};
+use crate::screen::cell::Cell;
 use crate::terminal::terminal::Terminal;
 use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
@@ -200,8 +199,8 @@ pub struct WindowState {
     pub separator_size: f32,
     pub min_cols: usize,
     pub min_rows: usize,
-    pub separator_color: Option<Color>,
-    pub active_separator_color: Option<Color>,
+    pub separator_color: Option<String>,
+    pub active_separator_color: Option<String>,
 }
 
 impl Drop for WindowState {
@@ -856,6 +855,23 @@ impl WindowState {
             0.0
         };
 
+        let active_tab = &self.tabs[self.active_tab_index];
+        let active_theme = if let Some(active_pane) = active_tab.tree.find_pane(active_pane_id) {
+            &active_pane.terminal.theme
+        } else {
+            &active_tab.tree.panes().first().unwrap().terminal.theme
+        };
+
+        let effective_separator_color = self
+            .separator_color
+            .as_deref()
+            .and_then(|spec| active_theme.parse_color_spec(spec));
+        let effective_active_separator_color = self
+            .active_separator_color
+            .as_deref()
+            .and_then(|spec| active_theme.parse_color_spec(spec))
+            .or_else(|| Some(active_theme.resolve_tab_accent_color()));
+
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
                 renderer,
@@ -895,6 +911,7 @@ impl WindowState {
                         pane_render_datas.push(PaneRenderData {
                             pane_id: pane.id,
                             rect: *rect,
+                            grid: Some(active_grid),
                             cells: &active_grid.cells,
                             row_offset: active_grid.row_offset,
                             cols: width,
@@ -921,8 +938,8 @@ impl WindowState {
                     self.opacity,
                     effective_dim,
                     tab_bar_info,
-                    self.separator_color,
-                    self.active_separator_color,
+                    effective_separator_color,
+                    effective_active_separator_color,
                 );
                 let _ = gl_surface.swap_buffers(gl_context);
             }
@@ -979,8 +996,8 @@ impl WindowState {
                         self.is_focused,
                         &mut buffer,
                         tab_bar_info,
-                        self.separator_color,
-                        self.active_separator_color,
+                        effective_separator_color,
+                        effective_active_separator_color,
                     );
                     let _ = buffer.present();
                 }
@@ -1214,10 +1231,8 @@ impl App {
         let separator_size = config.pane_separator_size();
         let min_cols = config.pane_minimum_columns();
         let min_rows = config.pane_minimum_rows();
-        let separator_color = config.pane_separator_color().and_then(parse_hex_color);
-        let active_separator_color = config
-            .pane_active_separator_color()
-            .and_then(parse_hex_color);
+        let separator_color = config.pane_separator_color().map(String::from);
+        let active_separator_color = config.pane_active_separator_color().map(String::from);
 
         let mut window_state = WindowState {
             window,

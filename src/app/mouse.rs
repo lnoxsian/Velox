@@ -189,7 +189,8 @@ impl WindowState {
                                 } else {
                                     let y = y_offset - history_len;
                                     if y < active_grid.height {
-                                        let src_start = y * active_grid.width;
+                                        let physical_y = active_grid.physical_row(y);
+                                        let src_start = physical_y * active_grid.width;
                                         let src_end = src_start + active_grid.width;
                                         active_grid.cells
                                             [src_start..src_end.min(active_grid.cells.len())]
@@ -408,10 +409,12 @@ impl WindowState {
                             if lines > 0 {
                                 active_grid.scroll_offset =
                                     (active_grid.scroll_offset + lines as usize).min(history_len);
+                                active_grid.damage.mark_all();
                             } else if lines < 0 {
                                 active_grid.scroll_offset = active_grid
                                     .scroll_offset
                                     .saturating_sub(lines.unsigned_abs() as usize);
+                                active_grid.damage.mark_all();
                             }
                             self.needs_redraw = true;
                         }
@@ -671,7 +674,8 @@ impl WindowState {
                             } else {
                                 let y = y_offset - history_len;
                                 if y < active_grid.height {
-                                    let src_start = y * grid_width;
+                                    let physical_y = active_grid.physical_row(y);
+                                    let src_start = physical_y * grid_width;
                                     let src_end = src_start + grid_width;
                                     active_grid.cells
                                         [src_start..src_end.min(active_grid.cells.len())]

@@ -108,6 +108,37 @@ impl Grid {
         }
     }
 
+    #[inline(always)]
+    pub fn with_display_row_slice<R>(
+        &self,
+        y: usize,
+        f: impl FnOnce(&[Cell]) -> R,
+    ) -> Option<R> {
+        let history_len = self.scrollback.len();
+        let abs_y = y + history_len;
+        if abs_y < self.scroll_offset {
+            return None;
+        }
+        let abs_row = abs_y - self.scroll_offset;
+        if abs_row < history_len {
+            self.scrollback.with_row_slice(abs_row, |cells, _| f(cells))
+        } else {
+            let grid_y = abs_row - history_len;
+            if grid_y < self.height {
+                let physical_y = self.physical_row(grid_y);
+                let start = physical_y * self.width;
+                let end = (start + self.width).min(self.cells.len());
+                if start < self.cells.len() {
+                    Some(f(&self.cells[start..end]))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    }
+
     pub fn normalize_row_offset(&mut self) {
         if self.row_offset == 0 || self.height <= 1 {
             return;

@@ -262,6 +262,7 @@ impl WindowState {
                     let history_len = active_grid.scrollback.len();
                     active_grid.scroll_offset =
                         (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                    active_grid.damage.mark_all();
                     self.needs_redraw = true;
                     return;
                 } else if let Key::Named(NamedKey::PageDown) = event.logical_key {
@@ -274,6 +275,7 @@ impl WindowState {
                     active_grid.scroll_offset = active_grid
                         .scroll_offset
                         .saturating_sub(active_grid.height / 2);
+                    active_grid.damage.mark_all();
                     self.needs_redraw = true;
                     return;
                 }
@@ -299,6 +301,7 @@ impl WindowState {
                 }
                 if scroll_on_keystroke && active_grid.scroll_offset > 0 {
                     active_grid.scroll_offset = 0;
+                    active_grid.damage.mark_all();
                     redraw = true;
                 }
                 let _ = active_pane.pty_master.write(&bytes);

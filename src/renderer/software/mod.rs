@@ -397,188 +397,200 @@ impl CpuRenderer {
                     break;
                 }
 
-                let physical_y = (grid.row_offset + y) % grid_h;
-                let row_start = physical_y * grid_w;
-                let row_cells = &cells[row_start..(row_start + grid_w).min(cells.len())];
+                let default_cell = Cell {
+                    character: ' ',
+                    foreground: pane.theme.default_fg,
+                    background: pane.theme.default_bg,
+                    underline_color: None,
+                    flags: CellFlags::empty(),
+                };
 
-                // Pass A: Coalesced Background Spans
-                let mut span_start_col = 0usize;
-                let mut span_bg = 0u32;
-                let mut in_span = false;
+                grid.with_display_row_slice(y, |row_cells| {
+                    // Pass A: Coalesced Background Spans
+                    let mut span_start_col = 0usize;
+                    let mut span_bg = 0u32;
+                    let mut in_span = false;
 
-                for (col, cell) in row_cells.iter().enumerate() {
-                    let is_selected = if is_row_in_selection {
-                        if sel_min_abs_y == sel_max_abs_y {
-                            col >= sel_min_x && col <= sel_max_x
-                        } else if abs_row == sel_min_abs_y {
-                            col >= sel_min_x
-                        } else if abs_row == sel_max_abs_y {
-                            col <= sel_max_x
+                    for col in 0..grid_w {
+                        let cell = if col < row_cells.len() {
+                            &row_cells[col]
                         } else {
-                            true
+                            &default_cell
+                        };
+
+                        let is_selected = if is_row_in_selection {
+                            if sel_min_abs_y == sel_max_abs_y {
+                                col >= sel_min_x && col <= sel_max_x
+                            } else if abs_row == sel_min_abs_y {
+                                col >= sel_min_x
+                            } else if abs_row == sel_max_abs_y {
+                                col <= sel_max_x
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
+                        let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                        let is_inverted = is_selected ^ is_reverse;
+
+                        let (_, bg) = self.palette.resolve_cell_colors(
+                            cell,
+                            is_inverted,
+                            self.bold_is_bright,
+                            pane_effective_dim,
+                        );
+
+                        if !in_span {
+                            span_start_col = col;
+                            span_bg = bg;
+                            in_span = true;
+                        } else if bg != span_bg {
+                            let span_px = px_offset + (span_start_col as u32) * cell_w;
+                            let span_w = ((col - span_start_col) as u32) * cell_w;
+                            self.framebuffer
+                                .fill_span(span_px, py, span_w, cell_h, span_bg);
+                            span_start_col = col;
+                            span_bg = bg;
                         }
-                    } else {
-                        false
-                    };
-                    let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                    let is_inverted = is_selected ^ is_reverse;
+                    }
 
-                    let (_, bg) = self.palette.resolve_cell_colors(
-                        cell,
-                        is_inverted,
-                        self.bold_is_bright,
-                        pane_effective_dim,
-                    );
-
-                    if !in_span {
-                        span_start_col = col;
-                        span_bg = bg;
-                        in_span = true;
-                    } else if bg != span_bg {
+                    if in_span {
                         let span_px = px_offset + (span_start_col as u32) * cell_w;
-                        let span_w = ((col - span_start_col) as u32) * cell_w;
+                        let span_w = ((grid_w - span_start_col) as u32) * cell_w;
                         self.framebuffer
                             .fill_span(span_px, py, span_w, cell_h, span_bg);
-                        span_start_col = col;
-                        span_bg = bg;
-                    }
-                }
-
-                if in_span {
-                    let span_px = px_offset + (span_start_col as u32) * cell_w;
-                    let span_w = ((row_cells.len() - span_start_col) as u32) * cell_w;
-                    self.framebuffer
-                        .fill_span(span_px, py, span_w, cell_h, span_bg);
-                }
-
-                // Pass B: Glyphs, Primitives, Decorations
-                for (col, cell) in row_cells.iter().enumerate() {
-                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
-                        continue;
                     }
 
-                    let px = px_offset + (col as u32) * cell_w;
-                    if px + cell_w > self.framebuffer.width {
-                        break;
-                    }
-
-                    let is_selected = if is_row_in_selection {
-                        if sel_min_abs_y == sel_max_abs_y {
-                            col >= sel_min_x && col <= sel_max_x
-                        } else if abs_row == sel_min_abs_y {
-                            col >= sel_min_x
-                        } else if abs_row == sel_max_abs_y {
-                            col <= sel_max_x
-                        } else {
-                            true
+                    // Pass B: Glyphs, Primitives, Decorations
+                    for (col, cell) in row_cells.iter().enumerate() {
+                        if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                            continue;
                         }
-                    } else {
-                        false
-                    };
-                    let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                    let is_inverted = is_selected ^ is_reverse;
 
-                    let (fg, _) = self.palette.resolve_cell_colors(
-                        cell,
-                        is_inverted,
-                        self.bold_is_bright,
-                        pane_effective_dim,
-                    );
+                        let px = px_offset + (col as u32) * cell_w;
+                        if px + cell_w > self.framebuffer.width {
+                            break;
+                        }
 
-                    let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
-                        || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
+                        let is_selected = if is_row_in_selection {
+                            if sel_min_abs_y == sel_max_abs_y {
+                                col >= sel_min_x && col <= sel_max_x
+                            } else if abs_row == sel_min_abs_y {
+                                col >= sel_min_x
+                            } else if abs_row == sel_max_abs_y {
+                                col <= sel_max_x
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
+                        let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                        let is_inverted = is_selected ^ is_reverse;
 
-                    if !skip_fg && cell.character != ' ' {
-                        let is_wide = cell.flags.contains(CellFlags::WIDE);
-                        let target_w = if is_wide { cell_w * 2 } else { cell_w };
+                        let (fg, _) = self.palette.resolve_cell_colors(
+                            cell,
+                            is_inverted,
+                            self.bold_is_bright,
+                            pane_effective_dim,
+                        );
 
-                        if !try_render_primitive(
-                            cell.character,
-                            px,
-                            py,
-                            target_w,
-                            cell_h,
-                            fg,
-                            &mut self.framebuffer,
-                        ) {
-                            let is_bold = cell.flags.contains(CellFlags::BOLD);
-                            let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                            let glyph_key =
-                                GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
+                        let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
+                            || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
 
-                            let glyph_cache =
-                                if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
-                                    &mut self.glyph_cache
-                                } else {
-                                    let key = (font_size * 100.0).round() as u32;
-                                    if !self.pane_glyph_caches.contains_key(&key) {
-                                        let cache = self.glyph_cache.create_pane_cache(font_size);
-                                        self.pane_glyph_caches.insert(key, cache);
+                        if !skip_fg && cell.character != ' ' {
+                            let is_wide = cell.flags.contains(CellFlags::WIDE);
+                            let target_w = if is_wide { cell_w * 2 } else { cell_w };
+
+                            if !try_render_primitive(
+                                cell.character,
+                                px,
+                                py,
+                                target_w,
+                                cell_h,
+                                fg,
+                                &mut self.framebuffer,
+                            ) {
+                                let is_bold = cell.flags.contains(CellFlags::BOLD);
+                                let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                                let glyph_key =
+                                    GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
+
+                                let glyph_cache =
+                                    if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
+                                        &mut self.glyph_cache
+                                    } else {
+                                        let key = (font_size * 100.0).round() as u32;
+                                        if !self.pane_glyph_caches.contains_key(&key) {
+                                            let cache = self.glyph_cache.create_pane_cache(font_size);
+                                            self.pane_glyph_caches.insert(key, cache);
+                                        }
+                                        self.pane_glyph_caches.get_mut(&key).unwrap()
+                                    };
+
+                                if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
+                                    if glyph_ref.is_color {
+                                        let pixels = glyph_cache.atlas.get_color(&glyph_ref);
+                                        blit_color_glyph(
+                                            &mut self.framebuffer,
+                                            px,
+                                            py,
+                                            pixels,
+                                            glyph_ref.width,
+                                            glyph_ref.height,
+                                        );
+                                    } else {
+                                        let mask = glyph_cache.atlas.get_alpha(&glyph_ref);
+                                        blit_alpha_glyph(
+                                            &mut self.framebuffer,
+                                            px,
+                                            py,
+                                            mask,
+                                            glyph_ref.width,
+                                            glyph_ref.height,
+                                            fg,
+                                        );
                                     }
-                                    self.pane_glyph_caches.get_mut(&key).unwrap()
-                                };
-
-                            if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
-                                if glyph_ref.is_color {
-                                    let pixels = glyph_cache.atlas.get_color(&glyph_ref);
-                                    blit_color_glyph(
-                                        &mut self.framebuffer,
-                                        px,
-                                        py,
-                                        pixels,
-                                        glyph_ref.width,
-                                        glyph_ref.height,
-                                    );
-                                } else {
-                                    let mask = glyph_cache.atlas.get_alpha(&glyph_ref);
-                                    blit_alpha_glyph(
-                                        &mut self.framebuffer,
-                                        px,
-                                        py,
-                                        mask,
-                                        glyph_ref.width,
-                                        glyph_ref.height,
-                                        fg,
-                                    );
                                 }
                             }
                         }
-                    }
 
-                    // Decorations
-                    let ul_color = if let Some(uc) = cell.underline_color {
-                        PackedColor::from_color(uc.dim(pane_effective_dim)).to_u32()
-                    } else {
-                        fg
-                    };
+                        // Decorations
+                        let ul_color = if let Some(uc) = cell.underline_color {
+                            PackedColor::from_color(uc.dim(pane_effective_dim)).to_u32()
+                        } else {
+                            fg
+                        };
 
-                    if cell.flags.contains(CellFlags::UNDERLINE) {
-                        draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
+                        if cell.flags.contains(CellFlags::UNDERLINE) {
+                            draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
+                        }
+                        if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                            draw_double_underline(
+                                &mut self.framebuffer,
+                                px,
+                                py,
+                                cell_w,
+                                cell_h,
+                                ul_color,
+                            );
+                        }
+                        if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                            draw_curly_underline(
+                                &mut self.framebuffer,
+                                px,
+                                py,
+                                cell_w,
+                                cell_h,
+                                ul_color,
+                            );
+                        }
+                        if cell.flags.contains(CellFlags::STRIKE) {
+                            draw_strike(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
+                        }
                     }
-                    if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                        draw_double_underline(
-                            &mut self.framebuffer,
-                            px,
-                            py,
-                            cell_w,
-                            cell_h,
-                            ul_color,
-                        );
-                    }
-                    if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                        draw_curly_underline(
-                            &mut self.framebuffer,
-                            px,
-                            py,
-                            cell_w,
-                            cell_h,
-                            ul_color,
-                        );
-                    }
-                    if cell.flags.contains(CellFlags::STRIKE) {
-                        draw_strike(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
-                    }
-                }
+                });
 
                 // Render Cursor for this row
                 let cursor_y = grid.cursor.y;

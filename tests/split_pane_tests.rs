@@ -8,9 +8,10 @@ use velox::app::tab::Tab;
 use velox::pty::process::spawn_process;
 use velox::renderer::renderer::SeparatorRenderData;
 use velox::renderer::software::{CpuPaneRenderData, CpuRenderer};
+use velox::screen::cell::Color;
 use velox::screen::cursor::CursorShape;
 use velox::terminal::terminal::Terminal;
-use velox::theme::theme::Theme;
+use velox::theme::theme::{TabAccentColorConfig, Theme};
 
 fn create_test_pane(id: PaneId, cols: usize, rows: usize) -> Pane {
     let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
@@ -938,4 +939,58 @@ fn test_multi_pane_independent_font_glyph_cache_stability() {
             idx += 1;
         }
     }
+}
+
+#[test]
+fn test_active_split_separator_accent_color_matches_tab_bar_and_config() {
+    let mut theme = Theme::new();
+    // 1. Default tab accent is blue (ansi_colors[4])
+    let default_tab_accent = theme.resolve_tab_accent_color();
+    assert_eq!(default_tab_accent, theme.ansi_colors[4]);
+
+    // When active_separator_color is "tab_accent" or None, parse_color_spec resolves to tab accent
+    assert_eq!(
+        theme.parse_color_spec("tab_accent"),
+        Some(default_tab_accent)
+    );
+    assert_eq!(
+        theme.parse_color_spec("tab_bar"),
+        Some(default_tab_accent)
+    );
+    assert_eq!(
+        theme.parse_color_spec("accent"),
+        Some(default_tab_accent)
+    );
+
+    // 2. Named color adjustments
+    assert_eq!(
+        theme.parse_color_spec("magenta"),
+        Some(theme.ansi_colors[5])
+    );
+    assert_eq!(
+        theme.parse_color_spec("red"),
+        Some(theme.ansi_colors[1])
+    );
+    assert_eq!(
+        theme.parse_color_spec("green"),
+        Some(theme.ansi_colors[2])
+    );
+    assert_eq!(
+        theme.parse_color_spec("cyan"),
+        Some(theme.ansi_colors[6])
+    );
+    assert_eq!(
+        theme.parse_color_spec("#ff5500"),
+        Some(Color { r: 255, g: 85, b: 0 })
+    );
+
+    // 3. When tab bar accent color is customized in theme (e.g. magenta), separator matches it
+    theme.tab_accent_color = Some(theme.ansi_colors[5]);
+    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(5);
+    let updated_tab_accent = theme.resolve_tab_accent_color();
+    assert_eq!(updated_tab_accent, theme.ansi_colors[5]);
+    assert_eq!(
+        theme.parse_color_spec("tab_accent"),
+        Some(theme.ansi_colors[5])
+    );
 }

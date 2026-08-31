@@ -66,6 +66,19 @@ impl Cell {
     }
 }
 
+impl Default for Cell {
+    #[inline(always)]
+    fn default() -> Self {
+        Self {
+            character: ' ',
+            foreground: Color { r: 255, g: 255, b: 255 },
+            background: Color { r: 0, g: 0, b: 0 },
+            underline_color: None,
+            flags: CellFlags::empty(),
+        }
+    }
+}
+
 const _: () = assert!(std::mem::size_of::<Cell>() == 16);
 
 #[cfg(test)]

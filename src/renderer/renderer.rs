@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub struct PaneRenderData<'a> {
     pub pane_id: PaneId,
     pub rect: PaneRect,
+    pub grid: Option<&'a crate::screen::grid::Grid>,
     pub cells: &'a [Cell],
     pub row_offset: usize,
     pub cols: usize,
@@ -27,6 +28,26 @@ pub struct PaneRenderData<'a> {
     pub scroll_offset: usize,
     pub history_len: usize,
     pub is_active: bool,
+}
+
+#[inline(always)]
+fn with_pane_row_slice<R>(
+    pane: &PaneRenderData,
+    y: usize,
+    f: impl FnOnce(&[Cell]) -> R,
+) -> Option<R> {
+    if let Some(grid) = pane.grid {
+        grid.with_display_row_slice(y, f)
+    } else {
+        let physical_y = (y + pane.row_offset) % pane.rows;
+        let start = physical_y * pane.cols;
+        let end = (start + pane.cols).min(pane.cells.len());
+        if start < pane.cells.len() {
+            Some(f(&pane.cells[start..end]))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -576,6 +597,7 @@ impl Renderer {
         let pane_data = PaneRenderData {
             pane_id: 0,
             rect: pane_rect,
+            grid: None,
             cells,
             row_offset: 0,
             cols,
@@ -713,93 +735,106 @@ impl Renderer {
                 let mut span_end_x: usize = 0;
                 let mut span_bg = pane_theme.default_bg;
 
-                let mut x = 0;
-                while x < cols {
-                    let physical_y = (y + pane.row_offset) % rows;
-                    let cell_idx = physical_y * cols + x;
-                    if cell_idx >= pane.cells.len() {
-                        break;
-                    }
-                    let cell = pane.cells[cell_idx];
-                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
-                        x += 1;
-                        continue;
-                    }
+                let is_active_grid_row = is_row_valid && abs_row >= history_len;
+                let grid_y = if is_active_grid_row { abs_row - history_len } else { 0 };
 
-                    let is_wide = cell.flags.contains(CellFlags::WIDE);
-                    let is_cursor = pane.is_active
-                        && pane.cursor_visible
-                        && x == pane.cursor_x
-                        && y == pane.cursor_y;
-                    let is_selected = if is_row_in_selection {
-                        if sel_min_abs_y == sel_max_abs_y {
-                            x >= sel_min_x && x <= sel_max_x
-                        } else if abs_row == sel_min_abs_y {
-                            x >= sel_min_x
-                        } else if abs_row == sel_max_abs_y {
-                            x <= sel_max_x
+                let default_cell = Cell {
+                    character: ' ',
+                    foreground: pane_theme.default_fg,
+                    background: pane_theme.default_bg,
+                    underline_color: None,
+                    flags: CellFlags::empty(),
+                };
+
+                with_pane_row_slice(pane, y, |row_cells| {
+                    let mut x = 0;
+                    while x < cols {
+                        let cell = if x < row_cells.len() {
+                            row_cells[x]
                         } else {
-                            true
+                            default_cell
+                        };
+                        if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                            x += 1;
+                            continue;
                         }
-                    } else {
-                        false
-                    };
-                    let is_reversed = cell.flags.contains(CellFlags::REVERSE);
-                    let is_inverted = is_selected ^ is_reversed;
 
-                    let (_fg, mut bg) = compute_cell_colors(
-                        &cell,
-                        is_inverted,
-                        pane.bold_is_bright,
-                        pane_theme,
-                        pane_effective_dim,
-                    );
+                        let is_wide = cell.flags.contains(CellFlags::WIDE);
+                        let is_cursor = pane.is_active
+                            && pane.cursor_visible
+                            && is_active_grid_row
+                            && x == pane.cursor_x
+                            && grid_y == pane.cursor_y;
+                        let is_selected = if is_row_in_selection {
+                            if sel_min_abs_y == sel_max_abs_y {
+                                x >= sel_min_x && x <= sel_max_x
+                            } else if abs_row == sel_min_abs_y {
+                                x >= sel_min_x
+                            } else if abs_row == sel_max_abs_y {
+                                x <= sel_max_x
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
+                        let is_reversed = cell.flags.contains(CellFlags::REVERSE);
+                        let is_inverted = is_selected ^ is_reversed;
 
-                    let is_block_cursor =
-                        is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active;
-                    if is_block_cursor {
-                        let mut cell_fg = cell.foreground.dim(pane_effective_dim);
-                        if pane.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
-                            for i in 0..8 {
-                                if cell_fg == pane_theme.ansi_colors[i] {
-                                    cell_fg = pane_theme.ansi_colors[i + 8];
-                                    break;
+                        let (_fg, mut bg) = compute_cell_colors(
+                            &cell,
+                            is_inverted,
+                            pane.bold_is_bright,
+                            pane_theme,
+                            pane_effective_dim,
+                        );
+
+                        let is_block_cursor =
+                            is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active;
+                        if is_block_cursor {
+                            let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                            if pane.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                                for i in 0..8 {
+                                    if cell_fg == pane_theme.ansi_colors[i] {
+                                        cell_fg = pane_theme.ansi_colors[i + 8];
+                                        break;
+                                    }
                                 }
                             }
+                            bg = pane_theme.resolve_cursor_color(cell_fg);
                         }
-                        bg = pane_theme.resolve_cursor_color(cell_fg);
-                    }
 
-                    let next_x = x + if is_wide { 2 } else { 1 };
+                        let next_x = x + if is_wide { 2 } else { 1 };
 
-                    if bg != pane_theme.default_bg || is_inverted || is_block_cursor {
-                        if let Some(start_x) = span_start_x {
-                            if bg == span_bg {
-                                span_end_x = next_x;
+                        if bg != pane_theme.default_bg || is_inverted || is_block_cursor {
+                            if let Some(start_x) = span_start_x {
+                                if bg == span_bg {
+                                    span_end_x = next_x;
+                                } else {
+                                    let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
+                                    let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                                    let span_w = (span_end_x - start_x) as f32 * cw;
+                                    push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
+                                    span_start_x = Some(x);
+                                    span_end_x = next_x;
+                                    span_bg = bg;
+                                }
                             } else {
-                                let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
-                                let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
-                                let span_w = (span_end_x - start_x) as f32 * cw;
-                                push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
                                 span_start_x = Some(x);
                                 span_end_x = next_x;
                                 span_bg = bg;
                             }
-                        } else {
-                            span_start_x = Some(x);
-                            span_end_x = next_x;
-                            span_bg = bg;
+                        } else if let Some(start_x) = span_start_x {
+                            let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
+                            let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                            let span_w = (span_end_x - start_x) as f32 * cw;
+                            push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
+                            span_start_x = None;
                         }
-                    } else if let Some(start_x) = span_start_x {
-                        let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
-                        let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
-                        let span_w = (span_end_x - start_x) as f32 * cw;
-                        push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
-                        span_start_x = None;
-                    }
 
-                    x = next_x;
-                }
+                        x = next_x;
+                    }
+                });
 
                 if let Some(start_x) = span_start_x {
                     let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
@@ -812,15 +847,8 @@ impl Renderer {
 
         // ── Pass 1.5: Separators ──────────────────────────────────────────────
         for sep in separators {
-            let active_color = if sep.is_dragging || sep.is_hovered {
-                active_separator_color_override
-                    .or(base_theme.tab_accent_color)
-                    .unwrap_or(base_theme.ansi_colors[4])
-            } else {
-                active_separator_color_override
-                    .or(base_theme.tab_accent_color)
-                    .unwrap_or(base_theme.ansi_colors[12])
-            };
+            let active_color = active_separator_color_override
+                .unwrap_or_else(|| base_theme.resolve_tab_accent_color());
             let inactive_color = separator_color_override.unwrap_or(base_theme.ansi_colors[8]);
 
             if sep.is_dragging || sep.is_hovered {
@@ -1016,292 +1044,261 @@ impl Renderer {
                     && abs_row >= sel_min_abs_y
                     && abs_row <= sel_max_abs_y;
 
-                let mut x = 0;
-                while x < cols {
-                    let physical_y = (y + pane.row_offset) % rows;
-                    let cell_idx = physical_y * cols + x;
-                    if cell_idx >= pane.cells.len() {
-                        break;
-                    }
-                    let cell = pane.cells[cell_idx];
-                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
-                        x += 1;
-                        continue;
-                    }
+                let is_active_grid_row = is_row_valid && abs_row >= history_len;
+                let grid_y = if is_active_grid_row { abs_row - history_len } else { 0 };
+                let default_cell = Cell {
+                    character: ' ',
+                    foreground: pane_theme.default_fg,
+                    background: pane_theme.default_bg,
+                    underline_color: None,
+                    flags: CellFlags::empty(),
+                };
 
-                    let is_wide = cell.flags.contains(CellFlags::WIDE);
-                    let is_bold = cell.flags.contains(CellFlags::BOLD);
-                    let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                    let is_cursor = pane.is_active
-                        && pane.cursor_visible
-                        && x == pane.cursor_x
-                        && y == pane.cursor_y;
-                    let is_selected = if is_row_in_selection {
-                        if sel_min_abs_y == sel_max_abs_y {
-                            x >= sel_min_x && x <= sel_max_x
-                        } else if abs_row == sel_min_abs_y {
-                            x >= sel_min_x
-                        } else if abs_row == sel_max_abs_y {
-                            x <= sel_max_x
+                with_pane_row_slice(pane, y, |row_cells| {
+                    let mut x = 0;
+                    while x < cols {
+                        let cell = if x < row_cells.len() {
+                            row_cells[x]
                         } else {
-                            true
+                            default_cell
+                        };
+                        if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                            x += 1;
+                            continue;
                         }
-                    } else {
-                        false
-                    };
-                    let is_reversed = cell.flags.contains(CellFlags::REVERSE);
-                    let is_inverted = is_selected ^ is_reversed;
 
-                    let (mut fg, _bg) = compute_cell_colors(
-                        &cell,
-                        is_inverted,
-                        pane.bold_is_bright,
-                        pane_theme,
-                        pane_effective_dim,
-                    );
+                        let is_wide = cell.flags.contains(CellFlags::WIDE);
+                        let is_bold = cell.flags.contains(CellFlags::BOLD);
+                        let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                        let is_cursor = pane.is_active
+                            && pane.cursor_visible
+                            && is_active_grid_row
+                            && x == pane.cursor_x
+                            && grid_y == pane.cursor_y;
+                        let is_selected = if is_row_in_selection {
+                            if sel_min_abs_y == sel_max_abs_y {
+                                x >= sel_min_x && x <= sel_max_x
+                            } else if abs_row == sel_min_abs_y {
+                                x >= sel_min_x
+                            } else if abs_row == sel_max_abs_y {
+                                x <= sel_max_x
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
+                        let is_reversed = cell.flags.contains(CellFlags::REVERSE);
+                        let is_inverted = is_selected ^ is_reversed;
 
-                    let mut cell_fg = cell.foreground.dim(pane_effective_dim);
-                    if pane.bold_is_bright && is_bold {
-                        for i in 0..8 {
-                            if cell_fg == pane_theme.ansi_colors[i] {
-                                cell_fg = pane_theme.ansi_colors[i + 8];
-                                break;
+                        let (mut fg, _bg) = compute_cell_colors(
+                            &cell,
+                            is_inverted,
+                            pane.bold_is_bright,
+                            pane_theme,
+                            pane_effective_dim,
+                        );
+
+                        let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                        if pane.bold_is_bright && is_bold {
+                            for i in 0..8 {
+                                if cell_fg == pane_theme.ansi_colors[i] {
+                                    cell_fg = pane_theme.ansi_colors[i + 8];
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active {
-                        fg = pane_theme
-                            .resolve_cursor_text_color(cell.background)
-                            .dim(pane_effective_dim);
-                    }
+                        if is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active {
+                            fg = pane_theme
+                                .resolve_cursor_text_color(cell.background)
+                                .dim(pane_effective_dim);
+                        }
 
-                    let px = pane.rect.x + pane.rect.padding_x + x as f32 * cw;
-                    let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
-                    let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
+                        let px = pane.rect.x + pane.rect.padding_x + x as f32 * cw;
+                        let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                        let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
 
-                    // ── Glyph ──
-                    let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
-                        || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
+                        // ── Glyph ──
+                        let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
+                            || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
 
-                    if !skip_fg && cell.character != ' ' {
-                        let quad_w = cw * cell_w_mult;
-                        if !try_render_block_element(
-                            cell.character,
-                            px,
-                            py,
-                            quad_w,
-                            ch,
-                            wu,
-                            wv,
-                            fg,
-                            &mut vertices,
-                        ) {
-                            let uv = font_loader.get_glyph_uv(
+                        if !skip_fg && cell.character != ' ' {
+                            let quad_w = cw * cell_w_mult;
+                            if !try_render_block_element(
                                 cell.character,
-                                is_wide,
-                                is_bold,
-                                is_italic,
-                            );
-                            let quad_w_glyph = cw * uv.width_mult;
+                                px,
+                                py,
+                                quad_w,
+                                ch,
+                                wu,
+                                wv,
+                                fg,
+                                &mut vertices,
+                            ) {
+                                let uv = font_loader.get_glyph_uv(
+                                    cell.character,
+                                    is_wide,
+                                    is_bold,
+                                    is_italic,
+                                );
+                                let quad_w_glyph = cw * uv.width_mult;
+                                push_quad(
+                                    &mut vertices,
+                                    px,
+                                    py,
+                                    quad_w_glyph,
+                                    ch,
+                                    uv.u_min,
+                                    uv.v_min,
+                                    uv.u_max,
+                                    uv.v_max,
+                                    fg,
+                                    uv.is_color,
+                                );
+                            }
+                        }
+
+                        // ── Underline ──
+                        if cell.flags.contains(CellFlags::UNDERLINE) {
+                            let thick = (ch * 0.08).max(1.0);
+                            let ul_fg = cell
+                                .underline_color
+                                .map(|c| c.dim(pane_effective_dim))
+                                .unwrap_or(fg);
+                            let line_y = py + ch - thick;
                             push_quad(
                                 &mut vertices,
                                 px,
-                                py,
-                                quad_w_glyph,
-                                ch,
-                                uv.u_min,
-                                uv.v_min,
-                                uv.u_max,
-                                uv.v_max,
-                                fg,
-                                uv.is_color,
+                                line_y,
+                                cw * cell_w_mult,
+                                thick,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                ul_fg,
+                                false,
                             );
                         }
-                    }
 
-                    // ── Underline ──
-                    if cell.flags.contains(CellFlags::UNDERLINE) {
-                        let thick = (ch * 0.08).max(1.0);
-                        let ul_fg = cell
+                        // ── Cursor ──
+                        if is_cursor && pane.is_active {
+                            let cursor_color = pane_theme.resolve_cursor_color(cell_fg);
+                            match pane.cursor_shape {
+                                CursorShape::Block => {}
+                                CursorShape::HollowBlock => {
+                                    let thick = 1.0f32.max((ch * 0.05).floor());
+                                    // Top
+                                    push_quad(
+                                        &mut vertices,
+                                        px,
+                                        py,
+                                        cw * cell_w_mult,
+                                        thick,
+                                        wu,
+                                        wv,
+                                        wu,
+                                        wv,
+                                        cursor_color,
+                                        false,
+                                    );
+                                    // Bottom
+                                    push_quad(
+                                        &mut vertices,
+                                        px,
+                                        py + ch - thick,
+                                        cw * cell_w_mult,
+                                        thick,
+                                        wu,
+                                        wv,
+                                        wu,
+                                        wv,
+                                        cursor_color,
+                                        false,
+                                    );
+                                    // Left
+                                    push_quad(
+                                        &mut vertices,
+                                        px,
+                                        py + thick,
+                                        thick,
+                                        ch - thick * 2.0,
+                                        wu,
+                                        wv,
+                                        wu,
+                                        wv,
+                                        cursor_color,
+                                        false,
+                                    );
+                                    // Right
+                                    push_quad(
+                                        &mut vertices,
+                                        px + cw * cell_w_mult - thick,
+                                        py + thick,
+                                        thick,
+                                        ch - thick * 2.0,
+                                        wu,
+                                        wv,
+                                        wu,
+                                        wv,
+                                        cursor_color,
+                                        false,
+                                    );
+                                }
+                                CursorShape::Beam => {
+                                    let beam_w = 2.0f32.max((cw * 0.1).floor());
+                                    push_quad(
+                                        &mut vertices,
+                                        px,
+                                        py,
+                                        beam_w,
+                                        ch,
+                                        wu,
+                                        wv,
+                                        wu,
+                                        wv,
+                                        cursor_color,
+                                        false,
+                                    );
+                                }
+                                CursorShape::Underline => {
+                                    let thick = 2.0f32.max((ch * 0.1).floor());
+                                    push_quad(
+                                        &mut vertices,
+                                        px,
+                                        py + ch - thick,
+                                        cw * cell_w_mult,
+                                        thick,
+                                        wu,
+                                        wv,
+                                        wu,
+                                        wv,
+                                        cursor_color,
+                                        false,
+                                    );
+                                }
+                            }
+                        }
+
+                        // ── Decorations ──
+                        let deco_thick = 1.0f32.max((ch * 0.045).floor());
+                        let ul_color = cell
                             .underline_color
                             .map(|c| c.dim(pane_effective_dim))
                             .unwrap_or(fg);
-                        let line_y = py + ch - thick;
-                        push_quad(
-                            &mut vertices,
-                            px,
-                            line_y,
-                            cw * cell_w_mult,
-                            thick,
-                            wu,
-                            wv,
-                            wu,
-                            wv,
-                            ul_fg,
-                            false,
-                        );
-                    }
 
-                    // ── Cursor ──
-                    if is_cursor && pane.is_active {
-                        let cursor_color = pane_theme.resolve_cursor_color(cell_fg);
-                        match pane.cursor_shape {
-                            CursorShape::Block => {}
-                            CursorShape::HollowBlock => {
-                                let thick = 1.0f32.max((ch * 0.05).floor());
-                                // Top
-                                push_quad(
-                                    &mut vertices,
-                                    px,
-                                    py,
-                                    cw * cell_w_mult,
-                                    thick,
-                                    wu,
-                                    wv,
-                                    wu,
-                                    wv,
-                                    cursor_color,
-                                    false,
-                                );
-                                // Bottom
-                                push_quad(
-                                    &mut vertices,
-                                    px,
-                                    py + ch - thick,
-                                    cw * cell_w_mult,
-                                    thick,
-                                    wu,
-                                    wv,
-                                    wu,
-                                    wv,
-                                    cursor_color,
-                                    false,
-                                );
-                                // Left
-                                push_quad(
-                                    &mut vertices,
-                                    px,
-                                    py + thick,
-                                    thick,
-                                    ch - thick * 2.0,
-                                    wu,
-                                    wv,
-                                    wu,
-                                    wv,
-                                    cursor_color,
-                                    false,
-                                );
-                                // Right
-                                push_quad(
-                                    &mut vertices,
-                                    px + cw * cell_w_mult - thick,
-                                    py + thick,
-                                    thick,
-                                    ch - thick * 2.0,
-                                    wu,
-                                    wv,
-                                    wu,
-                                    wv,
-                                    cursor_color,
-                                    false,
-                                );
-                            }
-                            CursorShape::Beam => {
-                                let beam_w = 2.0f32.max((cw * 0.1).floor());
-                                push_quad(
-                                    &mut vertices,
-                                    px,
-                                    py,
-                                    beam_w,
-                                    ch,
-                                    wu,
-                                    wv,
-                                    wu,
-                                    wv,
-                                    cursor_color,
-                                    false,
-                                );
-                            }
-                            CursorShape::Underline => {
-                                let thick = 2.0f32.max((ch * 0.1).floor());
-                                push_quad(
-                                    &mut vertices,
-                                    px,
-                                    py + ch - thick,
-                                    cw * cell_w_mult,
-                                    thick,
-                                    wu,
-                                    wv,
-                                    wu,
-                                    wv,
-                                    cursor_color,
-                                    false,
-                                );
-                            }
-                        }
-                    }
-
-                    // ── Decorations ──
-                    let deco_thick = 1.0f32.max((ch * 0.045).floor());
-                    let ul_color = cell
-                        .underline_color
-                        .map(|c| c.dim(pane_effective_dim))
-                        .unwrap_or(fg);
-
-                    if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                        let double_thick = 1.0f32.max((ch * 0.035).floor());
-                        let gap = 1.0f32.max((ch * 0.045).floor());
-                        let line_y2 = py + ch - double_thick - 1.0;
-                        let line_y1 = line_y2 - gap - double_thick;
-                        push_quad(
-                            &mut vertices,
-                            px,
-                            line_y1,
-                            cw * cell_w_mult,
-                            double_thick,
-                            wu,
-                            wv,
-                            wu,
-                            wv,
-                            ul_color,
-                            false,
-                        );
-                        push_quad(
-                            &mut vertices,
-                            px,
-                            line_y2,
-                            cw * cell_w_mult,
-                            double_thick,
-                            wu,
-                            wv,
-                            wu,
-                            wv,
-                            ul_color,
-                            false,
-                        );
-                    }
-
-                    if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                        let curly_thick = 2.0f32.max((ch * 0.08).floor());
-                        let wave_period = (cw * 0.75).clamp(6.0, 10.0);
-                        let wave_amp = (ch * 0.05).clamp(1.0, 1.8);
-                        let base_y = py + ch - wave_amp - curly_thick;
-                        let wave_w = cw * cell_w_mult;
-                        let step = 1.0f32;
-                        let mut wx = 0.0f32;
-                        while wx < wave_w {
-                            let rel_x = px + wx;
-                            let phase = (rel_x / wave_period) * std::f32::consts::TAU;
-                            let wave_offset = phase.sin() * wave_amp;
-                            let wy = base_y + wave_offset;
-                            let segment_w = step.min(wave_w - wx);
+                        if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                            let double_thick = 1.0f32.max((ch * 0.035).floor());
+                            let gap = 1.0f32.max((ch * 0.045).floor());
+                            let line_y2 = py + ch - double_thick - 1.0;
+                            let line_y1 = line_y2 - gap - double_thick;
                             push_quad(
                                 &mut vertices,
-                                rel_x,
-                                wy,
-                                segment_w,
-                                curly_thick,
+                                px,
+                                line_y1,
+                                cw * cell_w_mult,
+                                double_thick,
                                 wu,
                                 wv,
                                 wu,
@@ -1309,29 +1306,72 @@ impl Renderer {
                                 ul_color,
                                 false,
                             );
-                            wx += step;
+                            push_quad(
+                                &mut vertices,
+                                px,
+                                line_y2,
+                                cw * cell_w_mult,
+                                double_thick,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                ul_color,
+                                false,
+                            );
                         }
-                    }
 
-                    if cell.flags.contains(CellFlags::STRIKE) {
-                        let strike_y = py + (ch * 0.5).floor();
-                        push_quad(
-                            &mut vertices,
-                            px,
-                            strike_y,
-                            cw * cell_w_mult,
-                            deco_thick,
-                            wu,
-                            wv,
-                            wu,
-                            wv,
-                            ul_color,
-                            false,
-                        );
-                    }
+                        if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                            let curly_thick = 2.0f32.max((ch * 0.08).floor());
+                            let wave_period = (cw * 0.75).clamp(6.0, 10.0);
+                            let wave_amp = (ch * 0.05).clamp(1.0, 1.8);
+                            let base_y = py + ch - wave_amp - curly_thick;
+                            let wave_w = cw * cell_w_mult;
+                            let step = 1.0f32;
+                            let mut wx = 0.0f32;
+                            while wx < wave_w {
+                                let rel_x = px + wx;
+                                let phase = (rel_x / wave_period) * std::f32::consts::TAU;
+                                let wave_offset = phase.sin() * wave_amp;
+                                let wy = base_y + wave_offset;
+                                let segment_w = step.min(wave_w - wx);
+                                push_quad(
+                                    &mut vertices,
+                                    rel_x,
+                                    wy,
+                                    segment_w,
+                                    curly_thick,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    ul_color,
+                                    false,
+                                );
+                                wx += step;
+                            }
+                        }
 
-                    x += if is_wide { 2 } else { 1 };
-                }
+                        if cell.flags.contains(CellFlags::STRIKE) {
+                            let strike_y = py + (ch * 0.5).floor();
+                            push_quad(
+                                &mut vertices,
+                                px,
+                                strike_y,
+                                cw * cell_w_mult,
+                                deco_thick,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                ul_color,
+                                false,
+                            );
+                        }
+
+                        x += if is_wide { 2 } else { 1 };
+                    }
+                });
             }
 
             let pane_count = (vertices.len() / 8) as i32 - pane_start;
