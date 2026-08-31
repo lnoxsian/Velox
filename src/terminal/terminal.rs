@@ -202,38 +202,89 @@ impl Terminal {
 
         while i < len {
             let byte = data[i];
-            // Fast path for printable ASCII when in Ground state with default ASCII charset
+            // Fast path for printable ASCII and line endings when in Ground state with default ASCII charset
             if parser.state == crate::ansi::state::ParserState::Ground
                 && parser.utf8_buf.is_empty()
-                && (0x20..=0x7e).contains(&byte)
             {
-                let active_charset = self.active_charset;
-                let charset = if active_charset == 0 {
-                    self.g0_charset
-                } else {
-                    self.g1_charset
-                };
+                if (0x20..=0x7e).contains(&byte) {
+                    let active_charset = self.active_charset;
+                    let charset = if active_charset == 0 {
+                        self.g0_charset
+                    } else {
+                        self.g1_charset
+                    };
 
-                if charset == 0 {
-                    let start = i;
-                    i += 1;
-                    while i < len && (0x20..=0x7e).contains(&data[i]) {
+                    if charset == 0 {
+                        let start = i;
                         i += 1;
+                        while i < len && (0x20..=0x7e).contains(&data[i]) {
+                            i += 1;
+                        }
+                        let ascii_slice = &data[start..i];
+                        let fg = self.current_fg;
+                        let bg = self.current_bg;
+                        let uc = self.current_underline_color;
+                        let flags = self.current_flags;
+                        if let Some(&last_b) = ascii_slice.last() {
+                            self.last_char = Some(last_b as char);
+                        }
+                        let grid = if self.is_alt_screen {
+                            &mut self.alt_grid
+                        } else {
+                            &mut self.grid
+                        };
+                        grid.put_ascii_slice(ascii_slice, fg, bg, uc, flags);
+                        continue;
                     }
-                    let ascii_slice = &data[start..i];
-                    let fg = self.current_fg;
+                } else if byte == b'\r' {
                     let bg = self.current_bg;
-                    let uc = self.current_underline_color;
-                    let flags = self.current_flags;
-                    if let Some(&last_b) = ascii_slice.last() {
-                        self.last_char = Some(last_b as char);
-                    }
                     let grid = if self.is_alt_screen {
                         &mut self.alt_grid
                     } else {
                         &mut self.grid
                     };
-                    grid.put_ascii_slice(ascii_slice, fg, bg, uc, flags);
+                    grid.cursor.x = 0;
+                    if i + 1 < len && data[i + 1] == b'\n' {
+                        grid.scroll_or_move_down(bg);
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                    continue;
+                } else if byte == b'\n' {
+                    let bg = self.current_bg;
+                    let grid = if self.is_alt_screen {
+                        &mut self.alt_grid
+                    } else {
+                        &mut self.grid
+                    };
+                    if grid.cursor.x == grid.width {
+                        grid.cursor.x = 0;
+                        grid.scroll_or_move_down(bg);
+                    } else if grid.cursor.x == 0
+                        && grid.cursor.y > 0
+                        && grid.row_wrapped[grid.physical_row(grid.cursor.y - 1)]
+                    {
+                        let physical_y = grid.physical_row(grid.cursor.y);
+                        let row_start = physical_y * grid.width;
+                        let is_empty = grid
+                            .cells
+                            .get(row_start..row_start + grid.width)
+                            .is_some_and(|slice| {
+                                slice.iter().all(|c| {
+                                    c.character == ' ' && c.flags.is_empty() && c.background == bg
+                                })
+                            });
+                        if is_empty {
+                            let prev_physical_y = grid.physical_row(grid.cursor.y - 1);
+                            grid.row_wrapped[prev_physical_y] = false;
+                        } else {
+                            grid.scroll_or_move_down(bg);
+                        }
+                    } else {
+                        grid.scroll_or_move_down(bg);
+                    }
+                    i += 1;
                     continue;
                 }
             }
@@ -1161,6 +1212,7 @@ mod tests {
         // Shift+Tab -> CBT (\x1b[Z)
         let cbt = crate::input::keyboard::translate_key(
             &Key::Named(NamedKey::Tab),
+            None,
             ModifiersState::SHIFT,
             false,
             0,
@@ -1170,6 +1222,7 @@ mod tests {
         // Ctrl+Up -> \x1b[1;5A
         let ctrl_up = crate::input::keyboard::translate_key(
             &Key::Named(NamedKey::ArrowUp),
+            None,
             ModifiersState::CONTROL,
             false,
             0,
@@ -1179,6 +1232,7 @@ mod tests {
         // Alt+Left -> \x1b[1;3D
         let alt_left = crate::input::keyboard::translate_key(
             &Key::Named(NamedKey::ArrowLeft),
+            None,
             ModifiersState::ALT,
             false,
             0,
@@ -1188,6 +1242,7 @@ mod tests {
         // Kitty Keyboard Protocol: Ctrl+A with flags=1 -> \x1b[97;5u (codepoint 97 for 'a', mod=5)
         let kitty_ctrl_a = crate::input::keyboard::translate_key(
             &Key::Character("a".into()),
+            Some("a"),
             ModifiersState::CONTROL,
             false,
             1,
@@ -1197,11 +1252,31 @@ mod tests {
         // Kitty Keyboard Protocol: Shift+Enter with flags=1 -> \x1b[13;2u
         let kitty_shift_enter = crate::input::keyboard::translate_key(
             &Key::Named(NamedKey::Enter),
+            None,
             ModifiersState::SHIFT,
             false,
             1,
         );
         assert_eq!(kitty_shift_enter.as_deref(), Some(&b"\x1b[13;2u"[..]));
+
+        // Symbols with Shift (e.g. Shift+1 -> '!') must NOT be mangled by Kitty disambiguate mode
+        let shift_symbol = crate::input::keyboard::translate_key(
+            &Key::Character("!".into()),
+            Some("!"),
+            ModifiersState::SHIFT,
+            false,
+            1,
+        );
+        assert_eq!(shift_symbol.as_deref(), Some(&b"!"[..]));
+
+        // Dead key symbol (e.g. '~' or '^')
+        let dead_tilde = crate::input::keyboard::translate_key(
+            &Key::Dead(Some('~')),
+            None,
+            ModifiersState::empty(),
+            false,
+            0,
+        );
+        assert_eq!(dead_tilde.as_deref(), Some(&b"~"[..]));
     }
 }
-

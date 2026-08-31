@@ -1,9 +1,42 @@
+use crate::app::pane::PaneId;
+use crate::app::split::{PaneRect, SeparatorRect, SplitDirection};
 use crate::font::loader::FontLoader;
 use crate::screen::cell::{Cell, CellFlags, Color};
 use crate::screen::cursor::CursorShape;
 use crate::theme::theme::Theme;
 use glow::HasContext;
 use std::sync::Arc;
+
+use std::collections::HashMap;
+
+pub struct PaneRenderData<'a> {
+    pub pane_id: PaneId,
+    pub rect: PaneRect,
+    pub cells: &'a [Cell],
+    pub row_offset: usize,
+    pub cols: usize,
+    pub rows: usize,
+    pub font_size: f32,
+    pub cursor_x: usize,
+    pub cursor_y: usize,
+    pub cursor_visible: bool,
+    pub cursor_shape: CursorShape,
+    pub theme: &'a Theme,
+    pub bold_is_bright: bool,
+    pub selection: &'a crate::screen::selection::Selection,
+    pub scroll_offset: usize,
+    pub history_len: usize,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SeparatorRenderData {
+    pub rect: SeparatorRect,
+    pub is_active: bool,
+    pub active_segment: Option<(f32, f32)>,
+    pub is_hovered: bool,
+    pub is_dragging: bool,
+}
 
 pub struct Renderer {
     gl: Arc<glow::Context>,
@@ -12,6 +45,7 @@ pub struct Renderer {
     vbo: glow::Buffer,
     pub font_loader: FontLoader,
     pub tab_font_loader: FontLoader,
+    pub pane_font_loaders: HashMap<u32, FontLoader>,
     viewport_width: u32,
     viewport_height: u32,
     start_time: std::time::Instant,
@@ -469,6 +503,7 @@ impl Renderer {
                 vbo,
                 font_loader,
                 tab_font_loader,
+                pane_font_loaders: HashMap::new(),
                 viewport_width,
                 viewport_height,
                 start_time: std::time::Instant::now(),
@@ -518,398 +553,713 @@ impl Renderer {
     ) {
         let cw = self.font_loader.cell_width as f32;
         let ch = self.font_loader.cell_height as f32;
-        let effective_padding_y = if let Some(tb) = tab_bar_info {
-            padding_y + tb.height
+        let bar_h = if let Some(tb) = tab_bar_info {
+            tb.height
         } else {
-            padding_y
+            0.0
         };
+        let pane_w = (cols as f32 * cw).max(1.0);
+        let pane_h = (rows as f32 * ch).max(1.0);
+        let pane_rect = PaneRect {
+            pane_id: 0,
+            x: 0.0,
+            y: bar_h,
+            width: pane_w + padding_x * 2.0,
+            height: pane_h + padding_y * 2.0,
+            padding_x,
+            padding_y,
+            cols,
+            rows,
+            cell_width: cw,
+            cell_height: ch,
+        };
+        let pane_data = PaneRenderData {
+            pane_id: 0,
+            rect: pane_rect,
+            cells,
+            row_offset: 0,
+            cols,
+            rows,
+            font_size: self.font_loader.font_size,
+            cursor_x,
+            cursor_y,
+            cursor_visible,
+            cursor_shape,
+            theme,
+            bold_is_bright,
+            selection,
+            scroll_offset,
+            history_len,
+            is_active: true,
+        };
+        self.draw_splits(
+            &[pane_data],
+            &[],
+            opacity,
+            window_dim,
+            tab_bar_info,
+            None,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_splits(
+        &mut self,
+        panes: &[PaneRenderData],
+        separators: &[SeparatorRenderData],
+        opacity: f32,
+        window_dim: f32,
+        tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
+        separator_color_override: Option<Color>,
+        active_separator_color_override: Option<Color>,
+    ) {
+        if panes.is_empty() {
+            return;
+        }
 
         let effective_dim = window_dim.clamp(0.0, 1.0);
-        let dimmed_theme;
-        let theme = if effective_dim > 0.0 {
-            dimmed_theme = theme.dimmed(effective_dim);
-            &dimmed_theme
-        } else {
-            theme
-        };
+
+        let active_pane = panes.iter().find(|p| p.is_active).unwrap_or(&panes[0]);
+        let base_theme = active_pane.theme;
 
         // Reuse the vertex buffer allocation across frames
         let mut vertices = std::mem::take(&mut self.vertices);
         vertices.clear();
-        let needed = cells.len() * 12 * 8;
+        let total_cells: usize = panes.iter().map(|p| p.cols * p.rows).sum();
+        let needed = (total_cells + (separators.len() + 10) * 2) * 12 * 8;
         if vertices.capacity() < needed {
             vertices.reserve(needed);
         }
 
+        // Pre-ensure font loaders exist for all panes
+        for pane in panes {
+            let font_size = pane.font_size;
+            let key = (font_size * 100.0).round() as u32;
+            if (self.font_loader.font_size - font_size).abs() >= 0.01
+                && !self.pane_font_loaders.contains_key(&key)
+            {
+                let loader = self.font_loader.create_pane_loader(font_size);
+                self.pane_font_loaders.insert(key, loader);
+            }
+        }
+
+        let mut draw_batches: Vec<(i32, i32, glow::Texture)> = Vec::with_capacity(panes.len() + 2);
+
         // Blink: toggle every 500 ms
         let blink_on = (self.start_time.elapsed().as_millis() / 500).is_multiple_of(2);
-
-        // Pre-compute selection bounds once to avoid re-normalizing per cell
-        let selection_active = selection.active;
-        let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = if selection_active {
-            selection.normalized_bounds()
-        } else {
-            ((0, 0), (0, 0))
-        };
 
         // White pixel UV (top-left 2×2 solid region in the atlas) used for solid quads
         let (wu, wv) = self.font_loader.white_pixel_uv();
 
-        // ── Pass 1: Background quads ──────────────────────────────────────────
-        for y in 0..rows {
-            let abs_y = y + history_len;
-            let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
-                (true, abs_y - scroll_offset)
+        // ── Pass 1: Background quads for all panes ────────────────────────────
+        let pass1_start = (vertices.len() / 8) as i32;
+        for pane in panes {
+            let cw = pane.rect.cell_width;
+            let ch = pane.rect.cell_height;
+            let cols = pane.cols;
+            let rows = pane.rows;
+            let history_len = pane.history_len;
+            let scroll_offset = pane.scroll_offset;
+            let selection_active =
+                pane.is_active && pane.selection.active && !pane.selection.is_empty();
+            let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = if selection_active {
+                pane.selection.normalized_bounds()
             } else {
-                (false, 0)
+                ((0, 0), (0, 0))
             };
-            let is_row_in_selection = selection_active
-                && is_row_valid
-                && abs_row >= sel_min_abs_y
-                && abs_row <= sel_max_abs_y;
 
-            let mut x = 0;
-            while x < cols {
-                let cell = cells[y * cols + x];
-                if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
-                    x += 1;
-                    continue;
+            let pane_effective_dim = if !pane.is_active {
+                (effective_dim * 0.5 + 0.1).clamp(0.0, 1.0)
+            } else {
+                effective_dim
+            };
+            let pane_theme_dimmed;
+            let pane_theme = if pane_effective_dim > 0.0 {
+                pane_theme_dimmed = pane.theme.dimmed(pane_effective_dim);
+                &pane_theme_dimmed
+            } else {
+                pane.theme
+            };
+
+            // Fill entire pane rectangle default background to eliminate gaps
+            push_quad(
+                &mut vertices,
+                pane.rect.x,
+                pane.rect.y,
+                pane.rect.width,
+                pane.rect.height,
+                wu,
+                wv,
+                wu,
+                wv,
+                pane_theme.default_bg,
+                false,
+            );
+
+            for y in 0..rows {
+                let abs_y = y + history_len;
+                let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
+                    (true, abs_y - scroll_offset)
+                } else {
+                    (false, 0)
+                };
+                let is_row_in_selection = selection_active
+                    && is_row_valid
+                    && abs_row >= sel_min_abs_y
+                    && abs_row <= sel_max_abs_y;
+
+                let mut span_start_x: Option<usize> = None;
+                let mut span_end_x: usize = 0;
+                let mut span_bg = pane_theme.default_bg;
+
+                let mut x = 0;
+                while x < cols {
+                    let physical_y = (y + pane.row_offset) % rows;
+                    let cell_idx = physical_y * cols + x;
+                    if cell_idx >= pane.cells.len() {
+                        break;
+                    }
+                    let cell = pane.cells[cell_idx];
+                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                        x += 1;
+                        continue;
+                    }
+
+                    let is_wide = cell.flags.contains(CellFlags::WIDE);
+                    let is_cursor = pane.is_active
+                        && pane.cursor_visible
+                        && x == pane.cursor_x
+                        && y == pane.cursor_y;
+                    let is_selected = if is_row_in_selection {
+                        if sel_min_abs_y == sel_max_abs_y {
+                            x >= sel_min_x && x <= sel_max_x
+                        } else if abs_row == sel_min_abs_y {
+                            x >= sel_min_x
+                        } else if abs_row == sel_max_abs_y {
+                            x <= sel_max_x
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    let is_reversed = cell.flags.contains(CellFlags::REVERSE);
+                    let is_inverted = is_selected ^ is_reversed;
+
+                    let (_fg, mut bg) = compute_cell_colors(
+                        &cell,
+                        is_inverted,
+                        pane.bold_is_bright,
+                        pane_theme,
+                        pane_effective_dim,
+                    );
+
+                    let is_block_cursor =
+                        is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active;
+                    if is_block_cursor {
+                        let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                        if pane.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                            for i in 0..8 {
+                                if cell_fg == pane_theme.ansi_colors[i] {
+                                    cell_fg = pane_theme.ansi_colors[i + 8];
+                                    break;
+                                }
+                            }
+                        }
+                        bg = pane_theme.resolve_cursor_color(cell_fg);
+                    }
+
+                    let next_x = x + if is_wide { 2 } else { 1 };
+
+                    if bg != pane_theme.default_bg || is_inverted || is_block_cursor {
+                        if let Some(start_x) = span_start_x {
+                            if bg == span_bg {
+                                span_end_x = next_x;
+                            } else {
+                                let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
+                                let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                                let span_w = (span_end_x - start_x) as f32 * cw;
+                                push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
+                                span_start_x = Some(x);
+                                span_end_x = next_x;
+                                span_bg = bg;
+                            }
+                        } else {
+                            span_start_x = Some(x);
+                            span_end_x = next_x;
+                            span_bg = bg;
+                        }
+                    } else if let Some(start_x) = span_start_x {
+                        let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
+                        let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                        let span_w = (span_end_x - start_x) as f32 * cw;
+                        push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
+                        span_start_x = None;
+                    }
+
+                    x = next_x;
                 }
 
-                let is_wide = cell.flags.contains(CellFlags::WIDE);
-                let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
-                let is_selected = if is_row_in_selection {
-                    if sel_min_abs_y == sel_max_abs_y {
-                        x >= sel_min_x && x <= sel_max_x
-                    } else if abs_row == sel_min_abs_y {
-                        x >= sel_min_x
-                    } else if abs_row == sel_max_abs_y {
-                        x <= sel_max_x
-                    } else {
-                        true
+                if let Some(start_x) = span_start_x {
+                    let px = pane.rect.x + pane.rect.padding_x + start_x as f32 * cw;
+                    let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                    let span_w = (span_end_x - start_x) as f32 * cw;
+                    push_quad(&mut vertices, px, py, span_w, ch, wu, wv, wu, wv, span_bg, false);
+                }
+            }
+        }
+
+        // ── Pass 1.5: Separators ──────────────────────────────────────────────
+        for sep in separators {
+            let active_color = if sep.is_dragging || sep.is_hovered {
+                active_separator_color_override
+                    .or(base_theme.tab_accent_color)
+                    .unwrap_or(base_theme.ansi_colors[4])
+            } else {
+                active_separator_color_override
+                    .or(base_theme.tab_accent_color)
+                    .unwrap_or(base_theme.ansi_colors[12])
+            };
+            let inactive_color = separator_color_override.unwrap_or(base_theme.ansi_colors[8]);
+
+            if sep.is_dragging || sep.is_hovered {
+                push_quad(
+                    &mut vertices,
+                    sep.rect.x,
+                    sep.rect.y,
+                    sep.rect.width,
+                    sep.rect.height,
+                    wu,
+                    wv,
+                    wu,
+                    wv,
+                    active_color,
+                    false,
+                );
+            } else if let Some((start, end)) = sep.active_segment {
+                match sep.rect.direction {
+                    SplitDirection::Vertical => {
+                        // Inactive top segment
+                        if start > sep.rect.y + 0.5 {
+                            push_quad(
+                                &mut vertices,
+                                sep.rect.x,
+                                sep.rect.y,
+                                sep.rect.width,
+                                start - sep.rect.y,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                inactive_color,
+                                false,
+                            );
+                        }
+                        // Active middle segment
+                        if end > start + 0.5 {
+                            push_quad(
+                                &mut vertices,
+                                sep.rect.x,
+                                start,
+                                sep.rect.width,
+                                end - start,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                active_color,
+                                false,
+                            );
+                        }
+                        // Inactive bottom segment
+                        let bottom_y = sep.rect.y + sep.rect.height;
+                        if bottom_y > end + 0.5 {
+                            push_quad(
+                                &mut vertices,
+                                sep.rect.x,
+                                end,
+                                sep.rect.width,
+                                bottom_y - end,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                inactive_color,
+                                false,
+                            );
+                        }
                     }
+                    SplitDirection::Horizontal => {
+                        // Inactive left segment
+                        if start > sep.rect.x + 0.5 {
+                            push_quad(
+                                &mut vertices,
+                                sep.rect.x,
+                                sep.rect.y,
+                                start - sep.rect.x,
+                                sep.rect.height,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                inactive_color,
+                                false,
+                            );
+                        }
+                        // Active middle segment
+                        if end > start + 0.5 {
+                            push_quad(
+                                &mut vertices,
+                                start,
+                                sep.rect.y,
+                                end - start,
+                                sep.rect.height,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                active_color,
+                                false,
+                            );
+                        }
+                        // Inactive right segment
+                        let right_x = sep.rect.x + sep.rect.width;
+                        if right_x > end + 0.5 {
+                            push_quad(
+                                &mut vertices,
+                                end,
+                                sep.rect.y,
+                                right_x - end,
+                                sep.rect.height,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                inactive_color,
+                                false,
+                            );
+                        }
+                    }
+                }
+            } else {
+                push_quad(
+                    &mut vertices,
+                    sep.rect.x,
+                    sep.rect.y,
+                    sep.rect.width,
+                    sep.rect.height,
+                    wu,
+                    wv,
+                    wu,
+                    wv,
+                    inactive_color,
+                    false,
+                );
+            }
+        }
+
+        let pass1_count = (vertices.len() / 8) as i32 - pass1_start;
+        if pass1_count > 0 {
+            draw_batches.push((pass1_start, pass1_count, self.font_loader.atlas_texture));
+        }
+
+        // ── Pass 2: Foreground glyphs + cursor + decorations for each pane ────
+        for pane in panes {
+            let pane_start = (vertices.len() / 8) as i32;
+            let font_size = pane.font_size;
+            let key = (font_size * 100.0).round() as u32;
+            let font_loader = if (self.font_loader.font_size - font_size).abs() < 0.01 {
+                &mut self.font_loader
+            } else {
+                self.pane_font_loaders.get_mut(&key).unwrap()
+            };
+            let atlas_texture = font_loader.atlas_texture;
+            let (wu, wv) = font_loader.white_pixel_uv();
+
+            let cw = pane.rect.cell_width;
+            let ch = pane.rect.cell_height;
+            let cols = pane.cols;
+            let rows = pane.rows;
+            let history_len = pane.history_len;
+            let scroll_offset = pane.scroll_offset;
+            let selection_active =
+                pane.is_active && pane.selection.active && !pane.selection.is_empty();
+            let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = if selection_active {
+                pane.selection.normalized_bounds()
+            } else {
+                ((0, 0), (0, 0))
+            };
+
+            let pane_effective_dim = if !pane.is_active {
+                (effective_dim * 0.5 + 0.1).clamp(0.0, 1.0)
+            } else {
+                effective_dim
+            };
+            let pane_theme_dimmed;
+            let pane_theme = if pane_effective_dim > 0.0 {
+                pane_theme_dimmed = pane.theme.dimmed(pane_effective_dim);
+                &pane_theme_dimmed
+            } else {
+                pane.theme
+            };
+
+            for y in 0..rows {
+                let abs_y = y + history_len;
+                let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
+                    (true, abs_y - scroll_offset)
                 } else {
-                    false
+                    (false, 0)
                 };
-                let is_reversed = cell.flags.contains(CellFlags::REVERSE);
-                let is_inverted = is_selected ^ is_reversed;
+                let is_row_in_selection = selection_active
+                    && is_row_valid
+                    && abs_row >= sel_min_abs_y
+                    && abs_row <= sel_max_abs_y;
 
-                let (_fg, mut bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme, effective_dim);
+                let mut x = 0;
+                while x < cols {
+                    let physical_y = (y + pane.row_offset) % rows;
+                    let cell_idx = physical_y * cols + x;
+                    if cell_idx >= pane.cells.len() {
+                        break;
+                    }
+                    let cell = pane.cells[cell_idx];
+                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                        x += 1;
+                        continue;
+                    }
 
-                let is_block_cursor = is_cursor && cursor_shape == CursorShape::Block;
-                if is_block_cursor {
-                    let mut cell_fg = cell.foreground.dim(effective_dim);
-                    if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                    let is_wide = cell.flags.contains(CellFlags::WIDE);
+                    let is_bold = cell.flags.contains(CellFlags::BOLD);
+                    let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                    let is_cursor = pane.is_active
+                        && pane.cursor_visible
+                        && x == pane.cursor_x
+                        && y == pane.cursor_y;
+                    let is_selected = if is_row_in_selection {
+                        if sel_min_abs_y == sel_max_abs_y {
+                            x >= sel_min_x && x <= sel_max_x
+                        } else if abs_row == sel_min_abs_y {
+                            x >= sel_min_x
+                        } else if abs_row == sel_max_abs_y {
+                            x <= sel_max_x
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    let is_reversed = cell.flags.contains(CellFlags::REVERSE);
+                    let is_inverted = is_selected ^ is_reversed;
+
+                    let (mut fg, _bg) = compute_cell_colors(
+                        &cell,
+                        is_inverted,
+                        pane.bold_is_bright,
+                        pane_theme,
+                        pane_effective_dim,
+                    );
+
+                    let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                    if pane.bold_is_bright && is_bold {
                         for i in 0..8 {
-                            if cell_fg == theme.ansi_colors[i] {
-                                cell_fg = theme.ansi_colors[i + 8];
+                            if cell_fg == pane_theme.ansi_colors[i] {
+                                cell_fg = pane_theme.ansi_colors[i + 8];
                                 break;
                             }
                         }
                     }
-                    bg = theme.resolve_cursor_color(cell_fg);
-                }
 
-                // Skip background quad if the cell has the default background and is not inverted/selected/cursor,
-                // because gl.clear_color already cleared the entire window (including margins) with default_bg + opacity.
-                if bg != theme.default_bg || is_inverted || is_block_cursor {
-                    let px = padding_x + x as f32 * cw;
-                    let py = effective_padding_y + y as f32 * ch;
-                    let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
-                    push_quad(
-                        &mut vertices,
-                        px,
-                        py,
-                        cw * cell_w_mult,
-                        ch,
-                        wu,
-                        wv,
-                        wu,
-                        wv,
-                        bg,
-                        false,
-                    );
-                }
-
-                x += if is_wide { 2 } else { 1 };
-            }
-        }
-
-        // ── Pass 2: Foreground glyphs + decorations ───────────────────────────
-        for y in 0..rows {
-            let abs_y = y + history_len;
-            let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
-                (true, abs_y - scroll_offset)
-            } else {
-                (false, 0)
-            };
-            let is_row_in_selection = selection_active
-                && is_row_valid
-                && abs_row >= sel_min_abs_y
-                && abs_row <= sel_max_abs_y;
-
-            let mut x = 0;
-            while x < cols {
-                let cell = cells[y * cols + x];
-                if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
-                    x += 1;
-                    continue;
-                }
-
-                let is_wide = cell.flags.contains(CellFlags::WIDE);
-                let is_bold = cell.flags.contains(CellFlags::BOLD);
-                let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                let is_cursor = cursor_visible && x == cursor_x && y == cursor_y;
-                let is_selected = if is_row_in_selection {
-                    if sel_min_abs_y == sel_max_abs_y {
-                        x >= sel_min_x && x <= sel_max_x
-                    } else if abs_row == sel_min_abs_y {
-                        x >= sel_min_x
-                    } else if abs_row == sel_max_abs_y {
-                        x <= sel_max_x
-                    } else {
-                        true
+                    if is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active {
+                        fg = pane_theme
+                            .resolve_cursor_text_color(cell.background)
+                            .dim(pane_effective_dim);
                     }
-                } else {
-                    false
-                };
-                let is_reversed = cell.flags.contains(CellFlags::REVERSE);
-                let is_inverted = is_selected ^ is_reversed;
 
-                let (mut fg, _bg) = compute_cell_colors(&cell, is_inverted, bold_is_bright, theme, effective_dim);
+                    let px = pane.rect.x + pane.rect.padding_x + x as f32 * cw;
+                    let py = pane.rect.y + pane.rect.padding_y + y as f32 * ch;
+                    let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
 
-                // Bold-bright cell_fg needed for cursor color (pre-dim value)
-                let mut cell_fg = cell.foreground.dim(effective_dim);
-                if bold_is_bright && is_bold {
-                    for i in 0..8 {
-                        if cell_fg == theme.ansi_colors[i] {
-                            cell_fg = theme.ansi_colors[i + 8];
-                            break;
+                    // ── Glyph ──
+                    let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
+                        || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
+
+                    if !skip_fg && cell.character != ' ' {
+                        let quad_w = cw * cell_w_mult;
+                        if !try_render_block_element(
+                            cell.character,
+                            px,
+                            py,
+                            quad_w,
+                            ch,
+                            wu,
+                            wv,
+                            fg,
+                            &mut vertices,
+                        ) {
+                            let uv = font_loader.get_glyph_uv(
+                                cell.character,
+                                is_wide,
+                                is_bold,
+                                is_italic,
+                            );
+                            let quad_w_glyph = cw * uv.width_mult;
+                            push_quad(
+                                &mut vertices,
+                                px,
+                                py,
+                                quad_w_glyph,
+                                ch,
+                                uv.u_min,
+                                uv.v_min,
+                                uv.u_max,
+                                uv.v_max,
+                                fg,
+                                uv.is_color,
+                            );
                         }
                     }
-                }
 
-                if is_cursor && cursor_shape == CursorShape::Block {
-                    fg = theme.resolve_cursor_text_color(cell.background).dim(effective_dim);
-                }
-
-                let px = padding_x + x as f32 * cw;
-                let py = effective_padding_y + y as f32 * ch;
-                let cell_w_mult = if is_wide { 2.0 } else { 1.0 };
-
-                // ── Glyph ─────────────────────────────────────────────────────
-                let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
-                    || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
-
-                if !skip_fg && cell.character != ' ' {
-                    let quad_w = cw * cell_w_mult;
-                    if !try_render_block_element(
-                        cell.character,
-                        px,
-                        py,
-                        quad_w,
-                        ch,
-                        wu,
-                        wv,
-                        fg,
-                        &mut vertices,
-                    ) {
-                        let uv = self.font_loader.get_glyph_uv(
-                            cell.character,
-                            is_wide,
-                            is_bold,
-                            is_italic,
-                        );
-                        let quad_w_glyph = cw * uv.width_mult;
+                    // ── Underline ──
+                    if cell.flags.contains(CellFlags::UNDERLINE) {
+                        let thick = (ch * 0.08).max(1.0);
+                        let ul_fg = cell
+                            .underline_color
+                            .map(|c| c.dim(pane_effective_dim))
+                            .unwrap_or(fg);
+                        let line_y = py + ch - thick;
                         push_quad(
                             &mut vertices,
                             px,
-                            py,
-                            quad_w_glyph,
-                            ch,
-                            uv.u_min,
-                            uv.v_min,
-                            uv.u_max,
-                            uv.v_max,
-                            fg,
-                            uv.is_color,
+                            line_y,
+                            cw * cell_w_mult,
+                            thick,
+                            wu,
+                            wv,
+                            wu,
+                            wv,
+                            ul_fg,
+                            false,
                         );
                     }
-                }
 
-                // ── Cursor (non-block shapes) ─────────────────────────────────
-                if is_cursor {
-                    let cursor_color = theme.resolve_cursor_color(cell_fg);
-                    match cursor_shape {
-                        CursorShape::Beam => {
-                            let beam_w = (cw * 0.15).max(2.0);
-                            push_quad(
-                                &mut vertices,
-                                px,
-                                py,
-                                beam_w,
-                                ch,
-                                wu,
-                                wv,
-                                wu,
-                                wv,
-                                cursor_color,
-                                false,
-                            );
+                    // ── Cursor ──
+                    if is_cursor && pane.is_active {
+                        let cursor_color = pane_theme.resolve_cursor_color(cell_fg);
+                        match pane.cursor_shape {
+                            CursorShape::Block => {}
+                            CursorShape::HollowBlock => {
+                                let thick = 1.0f32.max((ch * 0.05).floor());
+                                // Top
+                                push_quad(
+                                    &mut vertices,
+                                    px,
+                                    py,
+                                    cw * cell_w_mult,
+                                    thick,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    cursor_color,
+                                    false,
+                                );
+                                // Bottom
+                                push_quad(
+                                    &mut vertices,
+                                    px,
+                                    py + ch - thick,
+                                    cw * cell_w_mult,
+                                    thick,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    cursor_color,
+                                    false,
+                                );
+                                // Left
+                                push_quad(
+                                    &mut vertices,
+                                    px,
+                                    py + thick,
+                                    thick,
+                                    ch - thick * 2.0,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    cursor_color,
+                                    false,
+                                );
+                                // Right
+                                push_quad(
+                                    &mut vertices,
+                                    px + cw * cell_w_mult - thick,
+                                    py + thick,
+                                    thick,
+                                    ch - thick * 2.0,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    cursor_color,
+                                    false,
+                                );
+                            }
+                            CursorShape::Beam => {
+                                let beam_w = 2.0f32.max((cw * 0.1).floor());
+                                push_quad(
+                                    &mut vertices,
+                                    px,
+                                    py,
+                                    beam_w,
+                                    ch,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    cursor_color,
+                                    false,
+                                );
+                            }
+                            CursorShape::Underline => {
+                                let thick = 2.0f32.max((ch * 0.1).floor());
+                                push_quad(
+                                    &mut vertices,
+                                    px,
+                                    py + ch - thick,
+                                    cw * cell_w_mult,
+                                    thick,
+                                    wu,
+                                    wv,
+                                    wu,
+                                    wv,
+                                    cursor_color,
+                                    false,
+                                );
+                            }
                         }
-                        CursorShape::Underline => {
-                            let thick = (ch * 0.2).max(3.0);
-                            push_quad(
-                                &mut vertices,
-                                px,
-                                py + ch - thick,
-                                cw * cell_w_mult,
-                                thick,
-                                wu,
-                                wv,
-                                wu,
-                                wv,
-                                cursor_color,
-                                false,
-                            );
-                        }
-                        CursorShape::HollowBlock => {
-                            let thick = 1.0f32;
-                            let block_w = cw * cell_w_mult;
-                            // Top border
-                            push_quad(
-                                &mut vertices,
-                                px,
-                                py,
-                                block_w,
-                                thick,
-                                wu,
-                                wv,
-                                wu,
-                                wv,
-                                cursor_color,
-                                false,
-                            );
-                            // Bottom border
-                            push_quad(
-                                &mut vertices,
-                                px,
-                                py + ch - thick,
-                                block_w,
-                                thick,
-                                wu,
-                                wv,
-                                wu,
-                                wv,
-                                cursor_color,
-                                false,
-                            );
-                            // Left border
-                            push_quad(
-                                &mut vertices,
-                                px,
-                                py + thick,
-                                thick,
-                                ch - 2.0 * thick,
-                                wu,
-                                wv,
-                                wu,
-                                wv,
-                                cursor_color,
-                                false,
-                            );
-                            // Right border
-                            push_quad(
-                                &mut vertices,
-                                px + block_w - thick,
-                                py + thick,
-                                thick,
-                                ch - 2.0 * thick,
-                                wu,
-                                wv,
-                                wu,
-                                wv,
-                                cursor_color,
-                                false,
-                            );
-                        }
-                        CursorShape::Block => {} // handled as background in Pass 1
                     }
-                }
 
-                // ── Text decorations ──────────────────────────────────────────
-                let deco_thick = 1.0f32.max((ch * 0.045).floor());
-                let ul_color = cell.underline_color.map(|c| c.dim(effective_dim)).unwrap_or(fg);
+                    // ── Decorations ──
+                    let deco_thick = 1.0f32.max((ch * 0.045).floor());
+                    let ul_color = cell
+                        .underline_color
+                        .map(|c| c.dim(pane_effective_dim))
+                        .unwrap_or(fg);
 
-                if cell.flags.contains(CellFlags::UNDERLINE) {
-                    let line_y = py + ch - deco_thick - 1.0;
-                    push_quad(
-                        &mut vertices,
-                        px,
-                        line_y,
-                        cw * cell_w_mult,
-                        deco_thick,
-                        wu,
-                        wv,
-                        wu,
-                        wv,
-                        ul_color,
-                        false,
-                    );
-                }
-
-                if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                    let double_thick = 1.0f32.max((ch * 0.035).floor());
-                    let gap = 1.0f32.max((ch * 0.045).floor());
-                    let line_y2 = py + ch - double_thick - 1.0;
-                    let line_y1 = line_y2 - gap - double_thick;
-                    push_quad(
-                        &mut vertices,
-                        px,
-                        line_y1,
-                        cw * cell_w_mult,
-                        double_thick,
-                        wu,
-                        wv,
-                        wu,
-                        wv,
-                        ul_color,
-                        false,
-                    );
-                    push_quad(
-                        &mut vertices,
-                        px,
-                        line_y2,
-                        cw * cell_w_mult,
-                        double_thick,
-                        wu,
-                        wv,
-                        wu,
-                        wv,
-                        ul_color,
-                        false,
-                    );
-                }
-
-                if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                    let curly_thick = 2.0f32.max((ch * 0.08).floor());
-                    let wave_period = (cw * 0.75).clamp(6.0, 10.0);
-                    let wave_amp = (ch * 0.05).clamp(1.0, 1.8);
-                    let base_y = py + ch - wave_amp - curly_thick;
-                    let wave_w = cw * cell_w_mult;
-                    let step = 1.0f32;
-                    let mut sx = 0.0f32;
-                    while sx < wave_w {
-                        let global_x = px + sx;
-                        let angle = (global_x / wave_period) * std::f32::consts::TAU;
-                        let wave_offset = angle.sin() * wave_amp;
-                        let draw_w = step.min(wave_w - sx);
+                    if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                        let double_thick = 1.0f32.max((ch * 0.035).floor());
+                        let gap = 1.0f32.max((ch * 0.045).floor());
+                        let line_y2 = py + ch - double_thick - 1.0;
+                        let line_y1 = line_y2 - gap - double_thick;
                         push_quad(
                             &mut vertices,
-                            global_x,
-                            base_y + wave_offset,
-                            draw_w,
-                            curly_thick,
+                            px,
+                            line_y1,
+                            cw * cell_w_mult,
+                            double_thick,
                             wu,
                             wv,
                             wu,
@@ -917,34 +1267,82 @@ impl Renderer {
                             ul_color,
                             false,
                         );
-                        sx += step;
+                        push_quad(
+                            &mut vertices,
+                            px,
+                            line_y2,
+                            cw * cell_w_mult,
+                            double_thick,
+                            wu,
+                            wv,
+                            wu,
+                            wv,
+                            ul_color,
+                            false,
+                        );
                     }
-                }
 
-                if cell.flags.contains(CellFlags::STRIKE) {
-                    let line_y = py + (ch / 2.0).round() - (deco_thick / 2.0).round();
-                    push_quad(
-                        &mut vertices,
-                        px,
-                        line_y,
-                        cw * cell_w_mult,
-                        deco_thick,
-                        wu,
-                        wv,
-                        wu,
-                        wv,
-                        fg,
-                        false,
-                    );
-                }
+                    if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                        let curly_thick = 2.0f32.max((ch * 0.08).floor());
+                        let wave_period = (cw * 0.75).clamp(6.0, 10.0);
+                        let wave_amp = (ch * 0.05).clamp(1.0, 1.8);
+                        let base_y = py + ch - wave_amp - curly_thick;
+                        let wave_w = cw * cell_w_mult;
+                        let step = 1.0f32;
+                        let mut wx = 0.0f32;
+                        while wx < wave_w {
+                            let rel_x = px + wx;
+                            let phase = (rel_x / wave_period) * std::f32::consts::TAU;
+                            let wave_offset = phase.sin() * wave_amp;
+                            let wy = base_y + wave_offset;
+                            let segment_w = step.min(wave_w - wx);
+                            push_quad(
+                                &mut vertices,
+                                rel_x,
+                                wy,
+                                segment_w,
+                                curly_thick,
+                                wu,
+                                wv,
+                                wu,
+                                wv,
+                                ul_color,
+                                false,
+                            );
+                            wx += step;
+                        }
+                    }
 
-                x += if is_wide { 2 } else { 1 };
+                    if cell.flags.contains(CellFlags::STRIKE) {
+                        let strike_y = py + (ch * 0.5).floor();
+                        push_quad(
+                            &mut vertices,
+                            px,
+                            strike_y,
+                            cw * cell_w_mult,
+                            deco_thick,
+                            wu,
+                            wv,
+                            wu,
+                            wv,
+                            ul_color,
+                            false,
+                        );
+                    }
+
+                    x += if is_wide { 2 } else { 1 };
+                }
+            }
+
+            let pane_count = (vertices.len() / 8) as i32 - pane_start;
+            if pane_count > 0 {
+                draw_batches.push((pane_start, pane_count, atlas_texture));
             }
         }
 
-        // ── Pass 3: Tab Bar (if visible) ───────────────────────────────────────
-        let terminal_vertex_len = vertices.len();
         if let Some(tab_bar) = tab_bar_info {
+            let tab_start = (vertices.len() / 8) as i32;
+            let theme = base_theme;
             let bar_h = tab_bar.height;
             let tab_count = tab_bar.tabs.len();
             if tab_count > 0 {
@@ -973,32 +1371,50 @@ impl Renderer {
                     false,
                 );
 
-                // 2. Render each tab
+                // 2. Individual tabs
                 for (i, tab) in tab_bar.tabs.iter().enumerate() {
-                    let tab_x = (i as f32) * tab_w;
-                    let actual_w = tab_w - 2.0;
+                    let tab_x = i as f32 * tab_w;
+                    let is_active = tab.is_active;
+                    let is_hovered = tab.is_hovered;
 
-                    let tab_bg = if tab.is_active {
-                        theme.default_bg
-                    } else if tab.is_hovered {
-                        Color {
+                    let (tab_bg, title_fg) = if is_active {
+                        let active_bg = Color {
+                            r: (theme.default_bg.r as f32 * 1.15).min(255.0) as u8,
+                            g: (theme.default_bg.g as f32 * 1.15).min(255.0) as u8,
+                            b: (theme.default_bg.b as f32 * 1.15).min(255.0) as u8,
+                        };
+                        (active_bg, theme.default_fg)
+                    } else if is_hovered {
+                        let hover_bg = Color {
                             r: (theme.default_bg.r as f32 * 0.85) as u8,
                             g: (theme.default_bg.g as f32 * 0.85) as u8,
                             b: (theme.default_bg.b as f32 * 0.85) as u8,
-                        }
+                        };
+                        let hover_fg = Color {
+                            r: (theme.default_fg.r as f32 * 0.8) as u8,
+                            g: (theme.default_fg.g as f32 * 0.8) as u8,
+                            b: (theme.default_fg.b as f32 * 0.8) as u8,
+                        };
+                        (hover_bg, hover_fg)
                     } else {
-                        Color {
-                            r: (theme.default_bg.r as f32 * 0.72) as u8,
-                            g: (theme.default_bg.g as f32 * 0.72) as u8,
-                            b: (theme.default_bg.b as f32 * 0.72) as u8,
-                        }
+                        let inactive_bg = Color {
+                            r: (theme.default_bg.r as f32 * 0.6) as u8,
+                            g: (theme.default_bg.g as f32 * 0.6) as u8,
+                            b: (theme.default_bg.b as f32 * 0.6) as u8,
+                        };
+                        let inactive_fg = Color {
+                            r: (theme.default_fg.r as f32 * 0.5) as u8,
+                            g: (theme.default_fg.g as f32 * 0.5) as u8,
+                            b: (theme.default_fg.b as f32 * 0.5) as u8,
+                        };
+                        (inactive_bg, inactive_fg)
                     };
 
                     push_quad(
                         &mut vertices,
                         tab_x,
                         0.0,
-                        actual_w,
+                        tab_w,
                         bar_h,
                         wu,
                         wv,
@@ -1008,139 +1424,88 @@ impl Renderer {
                         false,
                     );
 
-                    // Active tab accent line at top
-                    if tab.is_active {
-                        let accent = theme.resolve_tab_accent_color();
+                    if is_active {
+                        let accent_color = theme.tab_accent_color.unwrap_or(theme.ansi_colors[4]);
+                        let line_h = 2.0;
                         push_quad(
                             &mut vertices,
-                            tab_x.round(),
-                            0.0,
-                            actual_w.round(),
-                            2.0,
+                            tab_x,
+                            bar_h - line_h,
+                            tab_w,
+                            line_h,
                             wu,
                             wv,
                             wu,
                             wv,
-                            accent,
+                            accent_color,
                             false,
                         );
                     }
 
-                    // Tab title text
-                    let text_fg = if tab.is_active {
-                        theme.default_fg
+                    let close_btn_w = if tab_bar.show_close_button {
+                        tab_cw * 2.0
                     } else {
-                        Color {
-                            r: (theme.default_fg.r as f32 * 0.7) as u8,
-                            g: (theme.default_fg.g as f32 * 0.7) as u8,
-                            b: (theme.default_fg.b as f32 * 0.7) as u8,
-                        }
+                        0.0
+                    };
+                    let title_max_w = tab_w - close_btn_w - tab_cw * 2.0;
+                    let max_chars = ((title_max_w / tab_cw).floor() as usize).max(1);
+
+                    let title_text = if tab.title.chars().count() > max_chars {
+                        let truncated: String = tab
+                            .title
+                            .chars()
+                            .take(max_chars.saturating_sub(1))
+                            .collect();
+                        format!("{}…", truncated)
+                    } else {
+                        tab.title.clone()
                     };
 
-                    let close_space = if tab_bar.show_close_button { 24.0 } else { 8.0 };
-                    let max_text_w = (actual_w - 16.0 - close_space).max(0.0);
-                    let max_chars = (max_text_w / tab_cw).floor() as usize;
-
-                    let text_start_x = (tab_x + 8.0).round();
-                    let text_start_y = ((bar_h - tab_ch) / 2.0).round();
-
-                    let char_count = tab.title.chars().count();
-                    if char_count <= max_chars {
-                        for (c_idx, ch_char) in tab.title.chars().enumerate() {
-                            let char_x = (text_start_x + (c_idx as f32) * tab_cw).round();
-                            let uv = self
-                                .tab_font_loader
-                                .get_glyph_uv(ch_char, false, false, false);
+                    let title_y = (bar_h - tab_ch) / 2.0;
+                    let mut cx = tab_x + tab_cw;
+                    for ch in title_text.chars() {
+                        if cx + tab_cw > tab_x + tab_w - close_btn_w {
+                            break;
+                        }
+                        if ch != ' ' {
+                            let uv = self.tab_font_loader.get_glyph_uv(ch, false, false, false);
                             push_quad(
                                 &mut vertices,
-                                char_x,
-                                text_start_y,
-                                tab_cw * uv.width_mult,
+                                cx,
+                                title_y,
+                                tab_cw,
                                 tab_ch,
                                 uv.u_min,
                                 uv.v_min,
                                 uv.u_max,
                                 uv.v_max,
-                                text_fg,
+                                title_fg,
                                 uv.is_color,
                             );
                         }
-                    } else if max_chars > 1 {
-                        for (c_idx, ch_char) in tab.title.chars().take(max_chars - 1).enumerate() {
-                            let char_x = (text_start_x + (c_idx as f32) * tab_cw).round();
-                            let uv = self
-                                .tab_font_loader
-                                .get_glyph_uv(ch_char, false, false, false);
-                            push_quad(
-                                &mut vertices,
-                                char_x,
-                                text_start_y,
-                                tab_cw * uv.width_mult,
-                                tab_ch,
-                                uv.u_min,
-                                uv.v_min,
-                                uv.u_max,
-                                uv.v_max,
-                                text_fg,
-                                uv.is_color,
-                            );
-                        }
-                        let char_x = (text_start_x + ((max_chars - 1) as f32) * tab_cw).round();
-                        let uv = self.tab_font_loader.get_glyph_uv('…', false, false, false);
-                        push_quad(
-                            &mut vertices,
-                            char_x,
-                            text_start_y,
-                            tab_cw * uv.width_mult,
-                            tab_ch,
-                            uv.u_min,
-                            uv.v_min,
-                            uv.u_max,
-                            uv.v_max,
-                            text_fg,
-                            uv.is_color,
-                        );
-                    } else if max_chars == 1
-                        && let Some(ch_char) = tab.title.chars().next()
-                    {
-                        let char_x = text_start_x;
-                        let uv = self
-                            .tab_font_loader
-                            .get_glyph_uv(ch_char, false, false, false);
-                        push_quad(
-                            &mut vertices,
-                            char_x,
-                            text_start_y,
-                            tab_cw * uv.width_mult,
-                            tab_ch,
-                            uv.u_min,
-                            uv.v_min,
-                            uv.u_max,
-                            uv.v_max,
-                            text_fg,
-                            uv.is_color,
-                        );
+                        cx += tab_cw;
                     }
 
-                    // Close button
                     if tab_bar.show_close_button {
-                        let close_x = (tab_x + actual_w - 20.0).round();
-                        let close_y = ((bar_h - tab_ch) / 2.0).round();
-                        let close_fg = if tab.is_close_hovered {
+                        let close_hovered = tab.is_close_hovered;
+                        let close_fg = if close_hovered {
                             theme.ansi_colors[1]
                         } else {
                             Color {
-                                r: (theme.default_fg.r as f32 * 0.6) as u8,
-                                g: (theme.default_fg.g as f32 * 0.6) as u8,
-                                b: (theme.default_fg.b as f32 * 0.6) as u8,
+                                r: (theme.default_fg.r as f32 * 0.4) as u8,
+                                g: (theme.default_fg.g as f32 * 0.4) as u8,
+                                b: (theme.default_fg.b as f32 * 0.4) as u8,
                             }
                         };
+
+                        let close_x = tab_x + tab_w - close_btn_w;
+                        let close_y = (bar_h - tab_ch) / 2.0;
                         let uv = self.tab_font_loader.get_glyph_uv('×', false, false, false);
                         push_quad(
                             &mut vertices,
                             close_x,
                             close_y,
-                            tab_cw * uv.width_mult,
+                            tab_cw,
                             tab_ch,
                             uv.u_min,
                             uv.v_min,
@@ -1150,86 +1515,67 @@ impl Renderer {
                             uv.is_color,
                         );
                     }
+
+                    let sep_color = Color {
+                        r: (theme.default_bg.r as f32 * 0.8) as u8,
+                        g: (theme.default_bg.g as f32 * 0.8) as u8,
+                        b: (theme.default_bg.b as f32 * 0.8) as u8,
+                    };
+                    push_quad(
+                        &mut vertices,
+                        tab_x + tab_w - 1.0,
+                        4.0,
+                        1.0,
+                        bar_h - 8.0,
+                        wu,
+                        wv,
+                        wu,
+                        wv,
+                        sep_color,
+                        false,
+                    );
                 }
 
-                // 3. New Tab Button '+'
                 if tab_bar.show_new_tab {
-                    let btn_x = ((tab_count as f32) * tab_w + 4.0).round();
-                    let btn_w = 24.0;
-                    let btn_h = bar_h - 4.0;
-                    let btn_y = 2.0;
-
-                    if tab_bar.is_new_tab_hovered {
-                        let hover_bg = Color {
-                            r: (theme.default_bg.r as f32 * 0.85) as u8,
-                            g: (theme.default_bg.g as f32 * 0.85) as u8,
-                            b: (theme.default_bg.b as f32 * 0.85) as u8,
-                        };
-                        push_quad(
-                            &mut vertices,
-                            btn_x,
-                            btn_y,
-                            btn_w,
-                            btn_h,
-                            wu,
-                            wv,
-                            wu,
-                            wv,
-                            hover_bg,
-                            false,
-                        );
-                    }
-
-                    let plus_fg = if tab_bar.is_new_tab_hovered {
+                    let total_tabs_w = tab_w * tab_count as f32;
+                    let new_tab_x = total_tabs_w + 4.0;
+                    let new_tab_y = (bar_h - tab_ch) / 2.0;
+                    let new_tab_fg = if tab_bar.is_new_tab_hovered {
                         theme.default_fg
                     } else {
                         Color {
-                            r: (theme.default_fg.r as f32 * 0.7) as u8,
-                            g: (theme.default_fg.g as f32 * 0.7) as u8,
-                            b: (theme.default_fg.b as f32 * 0.7) as u8,
+                            r: (theme.default_fg.r as f32 * 0.5) as u8,
+                            g: (theme.default_fg.g as f32 * 0.5) as u8,
+                            b: (theme.default_fg.b as f32 * 0.5) as u8,
                         }
                     };
-                    let plus_x = btn_x + (btn_w - tab_cw) / 2.0;
-                    let plus_y = (bar_h - tab_ch) / 2.0;
+
                     let uv = self.tab_font_loader.get_glyph_uv('+', false, false, false);
                     push_quad(
                         &mut vertices,
-                        plus_x,
-                        plus_y,
-                        tab_cw * uv.width_mult,
+                        new_tab_x,
+                        new_tab_y,
+                        tab_cw,
                         tab_ch,
                         uv.u_min,
                         uv.v_min,
                         uv.u_max,
                         uv.v_max,
-                        plus_fg,
+                        new_tab_fg,
                         uv.is_color,
                     );
                 }
+            }
+
+            let tab_count = (vertices.len() / 8) as i32 - tab_start;
+            if tab_count > 0 {
+                draw_batches.push((tab_start, tab_count, self.tab_font_loader.atlas_texture));
             }
         }
 
         // ── GPU draw call ─────────────────────────────────────────────────────
         unsafe {
-            self.gl.viewport(
-                0,
-                0,
-                self.viewport_width as i32,
-                self.viewport_height as i32,
-            );
-            let alpha = opacity.clamp(0.0, 1.0);
-            self.gl.clear_color(
-                (theme.default_bg.r as f32 / 255.0) * alpha,
-                (theme.default_bg.g as f32 / 255.0) * alpha,
-                (theme.default_bg.b as f32 / 255.0) * alpha,
-                alpha,
-            );
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
-
-            self.gl.use_program(Some(self.program));
-
-            // Orthographic projection: (0,0) = top-left, (width,height) = bottom-right
-            let ortho = [
+            let ortho: [f32; 16] = [
                 2.0 / self.viewport_width as f32,
                 0.0,
                 0.0,
@@ -1262,31 +1608,27 @@ impl Renderer {
                 glow::DYNAMIC_DRAW,
             );
 
-            let terminal_count = (terminal_vertex_len / 8) as i32;
-            let total_count = (vertices.len() / 8) as i32;
+            let alpha = opacity.clamp(0.0, 1.0);
+            self.gl.clear_color(
+                (base_theme.default_bg.r as f32 / 255.0) * alpha,
+                (base_theme.default_bg.g as f32 / 255.0) * alpha,
+                (base_theme.default_bg.b as f32 / 255.0) * alpha,
+                alpha,
+            );
+            self.gl.clear(glow::COLOR_BUFFER_BIT);
 
-            if terminal_count > 0 {
-                self.gl.active_texture(glow::TEXTURE0);
-                self.gl
-                    .bind_texture(glow::TEXTURE_2D, Some(self.font_loader.atlas_texture));
-                self.gl.draw_arrays(glow::TRIANGLES, 0, terminal_count);
-            }
+            self.gl.use_program(Some(self.program));
 
-            if total_count > terminal_count {
+            for (start, count, texture) in draw_batches {
                 self.gl.active_texture(glow::TEXTURE0);
-                self.gl
-                    .bind_texture(glow::TEXTURE_2D, Some(self.tab_font_loader.atlas_texture));
-                self.gl.draw_arrays(
-                    glow::TRIANGLES,
-                    terminal_count,
-                    total_count - terminal_count,
-                );
+                self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                self.gl.draw_arrays(glow::TRIANGLES, start, count);
             }
         }
 
         // Retain the vertex buffer if within 2x the current viewport needs;
         // otherwise shrink to current needs to prevent unbounded growth.
-        let current_viewport_capacity = cols * rows * 6 * 8;
+        let current_viewport_capacity = total_cells * 6 * 8;
         let max_retained = current_viewport_capacity * 2;
         if vertices.capacity() > max_retained {
             self.vertices = Vec::with_capacity(current_viewport_capacity);
@@ -1305,6 +1647,9 @@ impl Renderer {
         }
         self.font_loader.release_memory();
         self.tab_font_loader.release_memory();
+        for loader in self.pane_font_loaders.values_mut() {
+            loader.release_memory();
+        }
     }
 }
 

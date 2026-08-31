@@ -13,6 +13,7 @@ impl Grid {
             return;
         }
 
+        self.normalize_row_offset();
         self.selection.clear();
 
         let default_cell = Cell::new(' ', self.default_fg, self.default_bg, CellFlags::empty());
@@ -330,6 +331,7 @@ impl Grid {
         self.height = new_h;
         self.scroll_region_top = 0;
         self.scroll_region_bottom = new_h.saturating_sub(1);
+        self.row_offset = 0;
 
         self.cursor.x = new_cursor_col.min(new_w.saturating_sub(1));
         self.cursor.y = if new_cursor_row_idx >= grid_start {

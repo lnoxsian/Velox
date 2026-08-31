@@ -158,11 +158,12 @@ impl FontLoader {
         } else {
             None
         };
-        let font_bold_italic = if !font_set.bold_italic.synthetic_italic && !font_set.bold_italic.synthetic_bold {
-            Some(font_set.bold_italic.font.clone())
-        } else {
-            None
-        };
+        let font_bold_italic =
+            if !font_set.bold_italic.synthetic_italic && !font_set.bold_italic.synthetic_bold {
+                Some(font_set.bold_italic.font.clone())
+            } else {
+                None
+            };
 
         let fallback_manager = FallbackManager::with_shared_database(Arc::clone(db));
 
@@ -243,6 +244,95 @@ impl FontLoader {
             scratch_pixels: Vec::with_capacity(4096),
             scratch_rgba: Vec::with_capacity(4096 * 4),
         }
+    }
+
+    /// Create an optimized, full-featured FontLoader for a split pane with independent font size.
+    /// Reuses already loaded FontArc handles.
+    pub fn create_pane_loader(&self, pane_font_size: f32) -> Self {
+        let px_size = (pane_font_size * self.font_scale_multiplier)
+            .round()
+            .max(1.0);
+        let scale = PxScale::from(px_size);
+        let scaled_font = self.font.as_scaled(scale);
+        let cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        let cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
+        let atlas_width = 512;
+        let atlas_height = 512;
+
+        let atlas_texture = unsafe {
+            let tex = self.gl.create_texture().unwrap();
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA as i32,
+                atlas_width as i32,
+                atlas_height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
+            self.gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::LINEAR as i32,
+            );
+
+            let white_pixels = [255u8; 2 * 2 * 4];
+            self.gl.tex_sub_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                0,
+                0,
+                2,
+                2,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
+            );
+            tex
+        };
+
+        let mut loader = Self {
+            gl: self.gl.clone(),
+            font_set: self.font_set.clone(),
+            font: self.font.clone(),
+            font_bold: self.font_bold.clone(),
+            font_italic: self.font_italic.clone(),
+            font_bold_italic: self.font_bold_italic.clone(),
+            fallback_manager: FallbackManager::new(),
+            cell_width,
+            cell_height,
+            font_size: pane_font_size,
+            font_scale_multiplier: self.font_scale_multiplier,
+            atlas_texture,
+            atlas_width,
+            atlas_height,
+            ascii_cache: [None; 512],
+            dynamic_cache: HashMap::new(),
+            next_x: 4,
+            next_y: 0,
+            current_row_height: 0,
+            scratch_png: Vec::with_capacity(32 * 1024),
+            scratch_pixels: Vec::with_capacity(4096),
+            scratch_rgba: Vec::with_capacity(4096 * 4),
+        };
+        loader.preload_ascii();
+        loader
     }
 
     /// Create an optimized, lightweight FontLoader for tab bar text.
@@ -667,12 +757,8 @@ impl FontLoader {
                 ascent = scaled_font.ascent();
 
                 let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
-                let outlined_opt = get_or_create_outlined_glyph(
-                    char_font,
-                    char_glyph_id,
-                    scale,
-                    should_shear,
-                );
+                let outlined_opt =
+                    get_or_create_outlined_glyph(char_font, char_glyph_id, scale, should_shear);
 
                 if let Some(outlined) = outlined_opt {
                     let bounds = outlined.px_bounds();
@@ -812,7 +898,8 @@ impl FontLoader {
                         let scaled_font = char_font.as_scaled(scale);
                         let ascent = scaled_font.ascent();
 
-                        let should_shear = comb_synth_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+                        let should_shear =
+                            comb_synth_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
                         if let Some(outlined) = get_or_create_outlined_glyph(
                             char_font,
                             char_glyph_id,
@@ -964,7 +1051,10 @@ mod tests {
                         drawn_pixels += 1;
                     }
                 });
-                assert!(drawn_pixels > 0, "Sheared glyph must rasterize successfully");
+                assert!(
+                    drawn_pixels > 0,
+                    "Sheared glyph must rasterize successfully"
+                );
             }
         }
     }

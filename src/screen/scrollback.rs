@@ -220,23 +220,18 @@ impl ScrollbackStorage {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub fn trim_trailing_blank_cells(cells: &[Cell], default_bg: Option<Color>) -> &[Cell] {
-    let mut end = cells.len();
-    while end > 0 {
-        let c = &cells[end - 1];
-        let is_default_bg = default_bg.is_none_or(|bg| c.background == bg);
-        if c.character == ' '
-            && c.flags.is_empty()
-            && c.underline_color.is_none()
-            && is_default_bg
-        {
-            end -= 1;
-        } else {
-            break;
-        }
+    if let Some(pos) = cells.iter().rposition(|c| {
+        c.character != ' '
+            || !c.flags.is_empty()
+            || c.underline_color.is_some()
+            || default_bg.is_some_and(|bg| c.background != bg)
+    }) {
+        &cells[..pos + 1]
+    } else {
+        &[]
     }
-    &cells[..end]
 }
 
 pub struct Scrollback {

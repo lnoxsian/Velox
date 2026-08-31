@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.1.9-blue.svg?style=for-the-badge" alt="Version 0.1.9">
+  <img src="https://img.shields.io/badge/version-v0.2.0-blue.svg?style=for-the-badge" alt="Version 0.2.0">
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg?style=for-the-badge&logo=rust" alt="Rust"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License"></a>
   <a href="https://platform.linux.org"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20Wayland%20%7C%20X11-informational.svg?style=for-the-badge&logo=linux" alt="Platform"></a>
@@ -31,7 +31,7 @@
 ---
 
 > [!NOTE]
-> **Velox v0.1.9** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, OpenGL text rendering, native CPU software fallback via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
+> **Velox v0.2.0** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, OpenGL text rendering, native CPU software fallback via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
 
 ---
 
@@ -58,7 +58,7 @@ Velox guarantees strict performance metrics across runtime workloads:
 
 | Metric | Target / Benchmark |
 | :--- | :--- |
-| **Version** | `v0.1.9` |
+| **Version** | `v0.2.0` |
 | **Startup Time** | `< 15ms` |
 | **Idle Memory Footprint** | `< 30MB` (Standalone) / `~3–5MB` (IPC sub-window/tab) |
 | **Frame Rate** | `120 – 240 FPS` (GPU) / `60 FPS` (Software) |

@@ -5,7 +5,14 @@ pub struct PtyMaster {
 }
 
 impl PtyMaster {
+    pub fn dummy() -> Self {
+        Self { fd: -1 }
+    }
+
     pub fn get_foreground_process_name(&self) -> Option<String> {
+        if self.fd < 0 {
+            return None;
+        }
         let pgid = unsafe { libc::tcgetpgrp(self.fd) };
         if pgid < 0 {
             return None;
@@ -17,6 +24,9 @@ impl PtyMaster {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.fd < 0 {
+            return Ok(0);
+        }
         let res = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
         if res < 0 {
             Err(std::io::Error::last_os_error())
@@ -26,6 +36,9 @@ impl PtyMaster {
     }
 
     pub fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.fd < 0 {
+            return Ok(buf.len());
+        }
         let res = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
         if res < 0 {
             Err(std::io::Error::last_os_error())
@@ -35,6 +48,9 @@ impl PtyMaster {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> std::io::Result<()> {
+        if self.fd < 0 {
+            return Ok(());
+        }
         let ws = libc::winsize {
             ws_row: rows,
             ws_col: cols,
@@ -52,8 +68,10 @@ impl PtyMaster {
 
 impl Drop for PtyMaster {
     fn drop(&mut self) {
-        unsafe {
-            libc::close(self.fd);
+        if self.fd >= 0 {
+            unsafe {
+                libc::close(self.fd);
+            }
         }
     }
 }

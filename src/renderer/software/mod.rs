@@ -1,3 +1,6 @@
+use crate::app::pane::PaneId;
+use crate::app::split::{PaneRect, SplitDirection};
+use crate::renderer::renderer::SeparatorRenderData;
 pub mod atlas;
 pub mod color;
 pub mod damage;
@@ -23,11 +26,27 @@ use primitives::try_render_primitive;
 use raster::{blit_alpha_glyph, blit_color_glyph};
 use std::time::Instant;
 
+use std::collections::HashMap;
+
+pub struct CpuPaneRenderData<'a> {
+    pub pane_id: PaneId,
+    pub rect: PaneRect,
+    pub cells: &'a [Cell],
+    pub grid: &'a Grid,
+    pub font_size: f32,
+    pub theme: &'a Theme,
+    pub cursor_visible: bool,
+    pub cursor_shape: CursorShape,
+    pub display_cursor_x: usize,
+    pub is_active: bool,
+}
+
 /// Pure-Rust, retained CPU software renderer for Velox.
 pub struct CpuRenderer {
     pub framebuffer: Framebuffer,
     pub glyph_cache: GlyphCache,
     pub tab_glyph_cache: GlyphCache,
+    pub pane_glyph_caches: HashMap<u32, GlyphCache>,
     pub damage: DamageMap,
     pub palette: PrecomputedPalette,
     pub viewport_width: u32,
@@ -39,7 +58,6 @@ pub struct CpuRenderer {
     prev_cursor_text_color: Option<crate::screen::cell::Color>,
     prev_tab_accent_color: Option<crate::screen::cell::Color>,
     bold_is_bright: bool,
-    prev_scroll_offset: usize,
     pub start_time: Instant,
     pub prev_blink_on: bool,
     pub opacity: f32,
@@ -72,6 +90,7 @@ impl CpuRenderer {
             framebuffer,
             glyph_cache,
             tab_glyph_cache,
+            pane_glyph_caches: HashMap::new(),
             damage: DamageMap::new(rows),
             palette,
             viewport_width: width,
@@ -83,7 +102,6 @@ impl CpuRenderer {
             prev_cursor_text_color: theme.cursor_text_color,
             prev_tab_accent_color: theme.tab_accent_color,
             bold_is_bright,
-            prev_scroll_offset: 0,
             start_time: Instant::now(),
             prev_blink_on: true,
             opacity,
@@ -118,6 +136,9 @@ impl CpuRenderer {
     pub fn release_memory(&mut self) {
         self.glyph_cache.release_memory();
         self.tab_glyph_cache.release_memory();
+        for cache in self.pane_glyph_caches.values_mut() {
+            cache.release_memory();
+        }
         self.damage.mark_all();
     }
 
@@ -172,6 +193,73 @@ impl CpuRenderer {
         target_buffer: &mut [u32],
         tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
     ) {
+        let cw = self.glyph_cache.cell_width as f32;
+        let ch = self.glyph_cache.cell_height as f32;
+        let bar_h = if let Some(tb) = tab_bar_info {
+            tb.height
+        } else {
+            0.0
+        };
+        let pane_w = (grid.width as f32 * cw).max(1.0);
+        let pane_h = (grid.height as f32 * ch).max(1.0);
+        let pane_rect = PaneRect {
+            pane_id: 0,
+            x: 0.0,
+            y: bar_h,
+            width: pane_w + padding_x * 2.0,
+            height: pane_h + padding_y * 2.0,
+            padding_x,
+            padding_y,
+            cols: grid.width,
+            rows: grid.height,
+            cell_width: cw,
+            cell_height: ch,
+        };
+        let pane_data = CpuPaneRenderData {
+            pane_id: 0,
+            rect: pane_rect,
+            cells,
+            grid,
+            font_size: self.glyph_cache.font_size,
+            theme,
+            cursor_visible,
+            cursor_shape,
+            display_cursor_x,
+            is_active: true,
+        };
+        self.render_splits(
+            &[pane_data],
+            &[],
+            opacity,
+            window_dim,
+            is_focused,
+            target_buffer,
+            tab_bar_info,
+            None,
+            None,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_splits(
+        &mut self,
+        panes: &[CpuPaneRenderData],
+        separators: &[SeparatorRenderData],
+        opacity: f32,
+        window_dim: f32,
+        is_focused: bool,
+        target_buffer: &mut [u32],
+        tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
+        separator_color_override: Option<crate::screen::cell::Color>,
+        active_separator_color_override: Option<crate::screen::cell::Color>,
+    ) {
+        if panes.is_empty() {
+            return;
+        }
+
+        let active_pane = panes.iter().find(|p| p.is_active).unwrap_or(&panes[0]);
+        let base_theme = active_pane.theme;
+
         let opacity = opacity.clamp(0.0, 1.0);
         let effective_dim = if !is_focused {
             window_dim.clamp(0.0, 1.0)
@@ -179,9 +267,9 @@ impl CpuRenderer {
             0.0
         };
         let effective_theme = if effective_dim > 0.0 {
-            theme.dimmed(effective_dim)
+            base_theme.dimmed(effective_dim)
         } else {
-            theme.clone()
+            base_theme.clone()
         };
         let theme = &effective_theme;
 
@@ -208,46 +296,21 @@ impl CpuRenderer {
             self.damage.mark_all();
         }
 
-        // 2. Ingest terminal damage and scroll offset changes
-        if grid.scroll_offset != self.prev_scroll_offset {
-            self.damage.mark_all();
-            self.prev_scroll_offset = grid.scroll_offset;
+        // Check if any pane has damage
+        let mut any_pane_damage = self.damage.full_redraw;
+        for pane in panes {
+            if pane.grid.damage.full_redraw || pane.grid.damage.dirty_rows.iter().any(|&d| d) {
+                any_pane_damage = true;
+                break;
+            }
         }
-
-        self.damage
-            .sync_from_grid(&grid.damage.dirty_rows, grid.damage.full_redraw);
-        self.damage
-            .update_cursor(display_cursor_x, grid.cursor.y, cursor_visible);
-
-        let history_len = grid.scrollback.len();
-        let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) =
-            grid.selection.normalized_bounds();
-        self.damage
-            .update_selection(grid.selection.active, sel_min_abs_y, sel_max_abs_y);
-
-        let grid_w = grid.width;
-        let grid_h = grid.height;
 
         // Blink animation handling
         let blink_on = (self.start_time.elapsed().as_millis() / 500).is_multiple_of(2);
         let blink_changed = blink_on != self.prev_blink_on;
         self.prev_blink_on = blink_on;
 
-        if blink_changed {
-            for y in 0..grid_h {
-                let row_start = y * grid_w;
-                let row_end = (row_start + grid_w).min(cells.len());
-                if row_start < cells.len()
-                    && cells[row_start..row_end]
-                        .iter()
-                        .any(|c| c.flags.contains(CellFlags::BLINK))
-                {
-                    self.damage.mark_row(y);
-                }
-            }
-        }
-
-        // Compute a lightweight hash of the tab bar state to detect changes
+        // Tab bar dirty hash
         let new_tab_bar_hash: u64 = tab_bar_info
             .map(|tb| {
                 let mut h: u64 = tb.tabs.len() as u64;
@@ -266,247 +329,168 @@ impl CpuRenderer {
             .unwrap_or(0);
         let tab_bar_dirty = new_tab_bar_hash != self.prev_tab_bar_hash;
 
-        // If no damage and tab bar unchanged, directly copy framebuffer to surface
-        if !self.damage.has_damage() && !tab_bar_dirty {
+        let force_redraw =
+            self.damage.full_redraw || any_pane_damage || blink_changed || tab_bar_dirty;
+
+        if !force_redraw && !self.damage.has_damage() {
             if target_buffer.len() == self.framebuffer.pixels.len() {
                 target_buffer.copy_from_slice(self.framebuffer.as_slice());
             }
             return;
         }
 
-        let cell_w = self.glyph_cache.cell_width;
-        let cell_h = self.glyph_cache.cell_height;
-        let bar_h = if let Some(tb) = tab_bar_info {
-            tb.height as u32
-        } else {
-            0
-        };
-        let px_offset = padding_x as u32;
-        let py_offset = padding_y as u32 + bar_h;
-
-        if self.damage.full_redraw {
+        if self.damage.full_redraw || any_pane_damage {
             self.framebuffer.clear(self.palette.default_bg);
         }
 
-        // 3. Render each dirty row
-        for y in 0..grid_h {
-            if !self.damage.is_dirty(y) {
-                continue;
-            }
+        // Render each pane
+        for pane in panes {
+            let font_size = pane.font_size;
+            let cell_w = pane.rect.cell_width.round().max(1.0) as u32;
+            let cell_h = pane.rect.cell_height.round().max(1.0) as u32;
+            let grid = pane.grid;
+            let cells = pane.cells;
+            let grid_w = grid.width;
+            let grid_h = grid.height;
+            let history_len = grid.scrollback.len();
+            let selection_bounds = grid.selection.normalized_bounds();
+            let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = selection_bounds;
 
-            let abs_y = y + history_len;
-            let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
-                (true, abs_y - grid.scroll_offset)
+            let pane_effective_dim = if !pane.is_active {
+                (effective_dim * 0.5 + 0.1).clamp(0.0, 1.0)
             } else {
-                (false, 0)
+                effective_dim
             };
-            let is_row_in_selection = grid.selection.active
-                && is_row_valid
-                && abs_row >= sel_min_abs_y
-                && abs_row <= sel_max_abs_y;
 
-            let py = py_offset + (y as u32) * cell_h;
-            if py + cell_h > self.framebuffer.height {
-                break;
-            }
+            // Fill entire pane rectangle with default background
+            let tile_x = pane.rect.x.round() as u32;
+            let tile_y = pane.rect.y.round() as u32;
+            let tile_w = pane.rect.width.round() as u32;
+            let tile_h = pane.rect.height.round() as u32;
+            let default_pane_bg = if pane_effective_dim > 0.0 {
+                PackedColor::from_color(pane.theme.default_bg.dim(pane_effective_dim)).to_u32()
+            } else {
+                self.palette.default_bg
+            };
+            self.framebuffer
+                .fill_span(tile_x, tile_y, tile_w, tile_h, default_pane_bg);
 
-            let row_start = y * grid_w;
-            let row_cells = &cells[row_start..(row_start + grid_w).min(cells.len())];
+            let px_offset = (pane.rect.x + pane.rect.padding_x).round() as u32;
+            let py_offset = (pane.rect.y + pane.rect.padding_y).round() as u32;
 
-            // ─── Pass A: Coalesced Background Spans ───────────────────────────
-            let mut span_start_col = 0usize;
-            let mut span_bg = 0u32;
-            let mut in_span = false;
-
-            for (col, cell) in row_cells.iter().enumerate() {
-                let is_selected = if is_row_in_selection {
-                    if sel_min_abs_y == sel_max_abs_y {
-                        col >= sel_min_x && col <= sel_max_x
-                    } else if abs_row == sel_min_abs_y {
-                        col >= sel_min_x
-                    } else if abs_row == sel_max_abs_y {
-                        col <= sel_max_x
-                    } else {
-                        true
-                    }
+            for y in 0..grid_h {
+                let abs_y = y + history_len;
+                let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
+                    (true, abs_y - grid.scroll_offset)
                 } else {
-                    false
+                    (false, 0)
                 };
-                let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                let is_inverted = is_selected ^ is_reverse;
+                let is_row_in_selection = pane.is_active
+                    && grid.selection.active
+                    && !grid.selection.is_empty()
+                    && is_row_valid
+                    && abs_row >= sel_min_abs_y
+                    && abs_row <= sel_max_abs_y;
 
-                let (_, bg) =
-                    self.palette
-                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright, effective_dim);
-
-                if !in_span {
-                    span_start_col = col;
-                    span_bg = bg;
-                    in_span = true;
-                } else if bg != span_bg {
-                    // Flush span
-                    let span_px = px_offset + (span_start_col as u32) * cell_w;
-                    let span_w = ((col - span_start_col) as u32) * cell_w;
-                    self.framebuffer
-                        .fill_span(span_px, py, span_w, cell_h, span_bg);
-
-                    span_start_col = col;
-                    span_bg = bg;
-                }
-            }
-
-            if in_span {
-                let span_px = px_offset + (span_start_col as u32) * cell_w;
-                let span_w = ((row_cells.len() - span_start_col) as u32) * cell_w;
-                self.framebuffer
-                    .fill_span(span_px, py, span_w, cell_h, span_bg);
-            }
-
-            // ─── Pass B: Glyphs, Primitives, and Decorations ──────────────────
-            for (col, cell) in row_cells.iter().enumerate() {
-                if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
-                    continue;
-                }
-
-                let px = px_offset + (col as u32) * cell_w;
-                if px + cell_w > self.framebuffer.width {
+                let py = py_offset + (y as u32) * cell_h;
+                if py + cell_h > self.framebuffer.height {
                     break;
                 }
 
-                let is_selected = if is_row_in_selection {
-                    if sel_min_abs_y == sel_max_abs_y {
-                        col >= sel_min_x && col <= sel_max_x
-                    } else if abs_row == sel_min_abs_y {
-                        col >= sel_min_x
-                    } else if abs_row == sel_max_abs_y {
-                        col <= sel_max_x
+                let physical_y = (grid.row_offset + y) % grid_h;
+                let row_start = physical_y * grid_w;
+                let row_cells = &cells[row_start..(row_start + grid_w).min(cells.len())];
+
+                // Pass A: Coalesced Background Spans
+                let mut span_start_col = 0usize;
+                let mut span_bg = 0u32;
+                let mut in_span = false;
+
+                for (col, cell) in row_cells.iter().enumerate() {
+                    let is_selected = if is_row_in_selection {
+                        if sel_min_abs_y == sel_max_abs_y {
+                            col >= sel_min_x && col <= sel_max_x
+                        } else if abs_row == sel_min_abs_y {
+                            col >= sel_min_x
+                        } else if abs_row == sel_max_abs_y {
+                            col <= sel_max_x
+                        } else {
+                            true
+                        }
                     } else {
-                        true
-                    }
-                } else {
-                    false
-                };
-                let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                let is_inverted = is_selected ^ is_reverse;
+                        false
+                    };
+                    let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                    let is_inverted = is_selected ^ is_reverse;
 
-                let (fg, _) =
-                    self.palette
-                        .resolve_cell_colors(cell, is_inverted, self.bold_is_bright, effective_dim);
+                    let (_, bg) = self.palette.resolve_cell_colors(
+                        cell,
+                        is_inverted,
+                        self.bold_is_bright,
+                        pane_effective_dim,
+                    );
 
-                // Render character (skip if HIDDEN or BLINK during off phase)
-                let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
-                    || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
-
-                if !skip_fg && cell.character != ' ' {
-                    let is_wide = cell.flags.contains(CellFlags::WIDE);
-                    let target_w = if is_wide { cell_w * 2 } else { cell_w };
-
-                    if !try_render_primitive(
-                        cell.character,
-                        px,
-                        py,
-                        target_w,
-                        cell_h,
-                        fg,
-                        &mut self.framebuffer,
-                    ) {
-                        let is_bold = cell.flags.contains(CellFlags::BOLD);
-                        let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                        let key = GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
-
-                        if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key) {
-                            if glyph_ref.is_color {
-                                let pixels = self.glyph_cache.atlas.get_color(&glyph_ref);
-                                blit_color_glyph(
-                                    &mut self.framebuffer,
-                                    px,
-                                    py,
-                                    pixels,
-                                    glyph_ref.width,
-                                    glyph_ref.height,
-                                );
-                            } else {
-                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
-                                blit_alpha_glyph(
-                                    &mut self.framebuffer,
-                                    px,
-                                    py,
-                                    mask,
-                                    glyph_ref.width,
-                                    glyph_ref.height,
-                                    fg,
-                                );
-                            }
-                        }
+                    if !in_span {
+                        span_start_col = col;
+                        span_bg = bg;
+                        in_span = true;
+                    } else if bg != span_bg {
+                        let span_px = px_offset + (span_start_col as u32) * cell_w;
+                        let span_w = ((col - span_start_col) as u32) * cell_w;
+                        self.framebuffer
+                            .fill_span(span_px, py, span_w, cell_h, span_bg);
+                        span_start_col = col;
+                        span_bg = bg;
                     }
                 }
 
-                // Render text decorations
-                let ul_color = if let Some(uc) = cell.underline_color {
-                    let dim_c = uc.dim(effective_dim);
-                    PackedColor::from_color(dim_c).to_u32()
-                } else {
-                    fg
-                };
-
-                if cell.flags.contains(CellFlags::UNDERLINE) {
-                    draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
-                }
-                if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                    draw_double_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
-                }
-                if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                    draw_curly_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
-                }
-                if cell.flags.contains(CellFlags::STRIKE) {
-                    draw_strike(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
-                }
-            }
-        }
-
-        // 4. Render Cursor
-        if cursor_visible && grid.cursor.y < grid_h && display_cursor_x < grid_w {
-            let cur_x = display_cursor_x;
-            let cur_y = grid.cursor.y;
-            let px = px_offset + (cur_x as u32) * cell_w;
-            let py = py_offset + (cur_y as u32) * cell_h;
-
-            if px + cell_w <= self.framebuffer.width && py + cell_h <= self.framebuffer.height {
-                let cell_idx = cur_y * grid_w + cur_x;
-                let cell = if cell_idx < cells.len() {
-                    &cells[cell_idx]
-                } else {
-                    &grid.cells[0]
-                };
-
-                let cell_fg_color = cell.foreground.dim(effective_dim);
-                let mut cell_fg = cell_fg_color;
-                if self.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
-                    for i in 0..8 {
-                        if cell_fg_color == self.palette.ansi_colors_raw[i] {
-                            cell_fg = theme.ansi_colors[i + 8];
-                            break;
-                        }
-                    }
-                }
-
-                let cursor_color =
-                    PackedColor::from_color(theme.resolve_cursor_color(cell_fg)).to_u32();
-                let cursor_text_color =
-                    PackedColor::from_color(theme.resolve_cursor_text_color(cell.background).dim(effective_dim))
-                        .to_u32();
-
-                if is_focused && cursor_shape == CursorShape::Block {
-                    // Block cursor: fill cursor block and render inverted cell character
+                if in_span {
+                    let span_px = px_offset + (span_start_col as u32) * cell_w;
+                    let span_w = ((row_cells.len() - span_start_col) as u32) * cell_w;
                     self.framebuffer
-                        .fill_span(px, py, cell_w, cell_h, cursor_color);
-                    let skip_cursor_fg = cell.flags.contains(CellFlags::HIDDEN)
+                        .fill_span(span_px, py, span_w, cell_h, span_bg);
+                }
+
+                // Pass B: Glyphs, Primitives, Decorations
+                for (col, cell) in row_cells.iter().enumerate() {
+                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                        continue;
+                    }
+
+                    let px = px_offset + (col as u32) * cell_w;
+                    if px + cell_w > self.framebuffer.width {
+                        break;
+                    }
+
+                    let is_selected = if is_row_in_selection {
+                        if sel_min_abs_y == sel_max_abs_y {
+                            col >= sel_min_x && col <= sel_max_x
+                        } else if abs_row == sel_min_abs_y {
+                            col >= sel_min_x
+                        } else if abs_row == sel_max_abs_y {
+                            col <= sel_max_x
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    };
+                    let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                    let is_inverted = is_selected ^ is_reverse;
+
+                    let (fg, _) = self.palette.resolve_cell_colors(
+                        cell,
+                        is_inverted,
+                        self.bold_is_bright,
+                        pane_effective_dim,
+                    );
+
+                    let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
                         || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
 
-                    if !skip_cursor_fg && cell.character != ' ' {
+                    if !skip_fg && cell.character != ' ' {
                         let is_wide = cell.flags.contains(CellFlags::WIDE);
                         let target_w = if is_wide { cell_w * 2 } else { cell_w };
-                        let inv_fg = cursor_text_color;
 
                         if !try_render_primitive(
                             cell.character,
@@ -514,48 +498,237 @@ impl CpuRenderer {
                             py,
                             target_w,
                             cell_h,
-                            inv_fg,
+                            fg,
                             &mut self.framebuffer,
                         ) {
                             let is_bold = cell.flags.contains(CellFlags::BOLD);
                             let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                            let key = GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
+                            let glyph_key =
+                                GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
 
-                            if let Some(glyph_ref) = self.glyph_cache.get_or_rasterize(key)
-                                && !glyph_ref.is_color
-                            {
-                                let mask = self.glyph_cache.atlas.get_alpha(&glyph_ref);
-                                blit_alpha_glyph(
-                                    &mut self.framebuffer,
-                                    px,
-                                    py,
-                                    mask,
-                                    glyph_ref.width,
-                                    glyph_ref.height,
-                                    inv_fg,
-                                );
+                            let glyph_cache =
+                                if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
+                                    &mut self.glyph_cache
+                                } else {
+                                    let key = (font_size * 100.0).round() as u32;
+                                    if !self.pane_glyph_caches.contains_key(&key) {
+                                        let cache = self.glyph_cache.create_pane_cache(font_size);
+                                        self.pane_glyph_caches.insert(key, cache);
+                                    }
+                                    self.pane_glyph_caches.get_mut(&key).unwrap()
+                                };
+
+                            if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
+                                if glyph_ref.is_color {
+                                    let pixels = glyph_cache.atlas.get_color(&glyph_ref);
+                                    blit_color_glyph(
+                                        &mut self.framebuffer,
+                                        px,
+                                        py,
+                                        pixels,
+                                        glyph_ref.width,
+                                        glyph_ref.height,
+                                    );
+                                } else {
+                                    let mask = glyph_cache.atlas.get_alpha(&glyph_ref);
+                                    blit_alpha_glyph(
+                                        &mut self.framebuffer,
+                                        px,
+                                        py,
+                                        mask,
+                                        glyph_ref.width,
+                                        glyph_ref.height,
+                                        fg,
+                                    );
+                                }
                             }
                         }
                     }
-                } else {
+
+                    // Decorations
+                    let ul_color = if let Some(uc) = cell.underline_color {
+                        PackedColor::from_color(uc.dim(pane_effective_dim)).to_u32()
+                    } else {
+                        fg
+                    };
+
+                    if cell.flags.contains(CellFlags::UNDERLINE) {
+                        draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
+                    }
+                    if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                        draw_double_underline(
+                            &mut self.framebuffer,
+                            px,
+                            py,
+                            cell_w,
+                            cell_h,
+                            ul_color,
+                        );
+                    }
+                    if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                        draw_curly_underline(
+                            &mut self.framebuffer,
+                            px,
+                            py,
+                            cell_w,
+                            cell_h,
+                            ul_color,
+                        );
+                    }
+                    if cell.flags.contains(CellFlags::STRIKE) {
+                        draw_strike(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
+                    }
+                }
+
+                // Render Cursor for this row
+                let cursor_y = grid.cursor.y;
+                if pane.is_active
+                    && y == cursor_y
+                    && pane.cursor_visible
+                    && (grid.scroll_offset == 0)
+                {
+                    let cursor_x = pane.display_cursor_x.min(grid_w.saturating_sub(1));
+                    let cursor_px = px_offset + (cursor_x as u32) * cell_w;
+                    let cursor_py = py_offset + (cursor_y as u32) * cell_h;
+                    let cursor_shape = pane.cursor_shape;
+
+                    let physical_cursor_y = (grid.row_offset + cursor_y) % grid_h;
+                    let cell_idx = physical_cursor_y * grid_w + cursor_x;
+                    let cursor_color = if cell_idx < cells.len() {
+                        let cell = &cells[cell_idx];
+                        let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                        if self.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                            for i in 0..8 {
+                                if cell_fg == theme.ansi_colors[i] {
+                                    cell_fg = theme.ansi_colors[i + 8];
+                                    break;
+                                }
+                            }
+                        }
+                        PackedColor::from_color(theme.resolve_cursor_color(cell_fg)).to_u32()
+                    } else {
+                        self.palette.default_fg
+                    };
+
                     draw_cursor(
                         &mut self.framebuffer,
-                        px,
-                        py,
+                        cursor_px,
+                        cursor_py,
                         cell_w,
                         cell_h,
                         cursor_shape,
-                        is_focused,
+                        is_focused && pane.is_active,
                         cursor_color,
                     );
                 }
             }
         }
 
-        // 4.5. Render Tab Bar (only when content changed or full redraw forced)
-        if (tab_bar_dirty || self.damage.full_redraw)
-            && let Some(tab_bar) = tab_bar_info
-        {
+        // Render Separators
+        for sep in separators {
+            let active_color = if sep.is_dragging || sep.is_hovered {
+                active_separator_color_override
+                    .map(|c| PackedColor::from_color(c).to_u32())
+                    .unwrap_or(self.palette.tab_accent)
+            } else {
+                active_separator_color_override
+                    .map(|c| PackedColor::from_color(c).to_u32())
+                    .unwrap_or(self.palette.tab_accent)
+            };
+            let inactive_color = separator_color_override
+                .map(|c| PackedColor::from_color(c).to_u32())
+                .unwrap_or(self.palette.ansi_colors[8]);
+
+            if sep.is_dragging || sep.is_hovered {
+                self.framebuffer.fill_span(
+                    sep.rect.x as u32,
+                    sep.rect.y as u32,
+                    sep.rect.width as u32,
+                    sep.rect.height as u32,
+                    active_color,
+                );
+            } else if let Some((start, end)) = sep.active_segment {
+                match sep.rect.direction {
+                    SplitDirection::Vertical => {
+                        // Inactive top segment
+                        if start > sep.rect.y + 0.5 {
+                            self.framebuffer.fill_span(
+                                sep.rect.x as u32,
+                                sep.rect.y as u32,
+                                sep.rect.width as u32,
+                                (start - sep.rect.y) as u32,
+                                inactive_color,
+                            );
+                        }
+                        // Active middle segment
+                        if end > start + 0.5 {
+                            self.framebuffer.fill_span(
+                                sep.rect.x as u32,
+                                start as u32,
+                                sep.rect.width as u32,
+                                (end - start) as u32,
+                                active_color,
+                            );
+                        }
+                        // Inactive bottom segment
+                        let bottom_y = sep.rect.y + sep.rect.height;
+                        if bottom_y > end + 0.5 {
+                            self.framebuffer.fill_span(
+                                sep.rect.x as u32,
+                                end as u32,
+                                sep.rect.width as u32,
+                                (bottom_y - end) as u32,
+                                inactive_color,
+                            );
+                        }
+                    }
+                    SplitDirection::Horizontal => {
+                        // Inactive left segment
+                        if start > sep.rect.x + 0.5 {
+                            self.framebuffer.fill_span(
+                                sep.rect.x as u32,
+                                sep.rect.y as u32,
+                                (start - sep.rect.x) as u32,
+                                sep.rect.height as u32,
+                                inactive_color,
+                            );
+                        }
+                        // Active middle segment
+                        if end > start + 0.5 {
+                            self.framebuffer.fill_span(
+                                start as u32,
+                                sep.rect.y as u32,
+                                (end - start) as u32,
+                                sep.rect.height as u32,
+                                active_color,
+                            );
+                        }
+                        // Inactive right segment
+                        let right_x = sep.rect.x + sep.rect.width;
+                        if right_x > end + 0.5 {
+                            self.framebuffer.fill_span(
+                                end as u32,
+                                sep.rect.y as u32,
+                                (right_x - end) as u32,
+                                sep.rect.height as u32,
+                                inactive_color,
+                            );
+                        }
+                    }
+                }
+            } else {
+                self.framebuffer.fill_span(
+                    sep.rect.x as u32,
+                    sep.rect.y as u32,
+                    sep.rect.width as u32,
+                    sep.rect.height as u32,
+                    inactive_color,
+                );
+            }
+        }
+
+        // Render Tab Bar
+        if let Some(tab_bar) = tab_bar_info {
             let bar_h = tab_bar.height as u32;
             let tab_count = tab_bar.tabs.len();
             if tab_count > 0 && bar_h > 0 {
@@ -734,15 +907,13 @@ impl CpuRenderer {
             }
         }
 
-        // Update tab bar hash for next frame
         self.prev_tab_bar_hash = new_tab_bar_hash;
 
-        // 5. Present to Softbuffer target slice
+        // Present to target slice
         if target_buffer.len() == self.framebuffer.pixels.len() {
             target_buffer.copy_from_slice(self.framebuffer.as_slice());
         }
 
-        // 6. Clear damage
         self.damage.clear();
     }
 }

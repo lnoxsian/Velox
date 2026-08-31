@@ -62,7 +62,8 @@ pub fn draw_curly_underline(
         let angle = (global_x / period) * std::f32::consts::TAU;
         let y_offset = (angle.sin() * amp).round();
         let y = ((base_y + y_offset).round() as i32)
-            .clamp(py as i32, (py + cell_h).saturating_sub(thickness) as i32) as u32;
+            .clamp(py as i32, (py + cell_h).saturating_sub(thickness) as i32)
+            as u32;
         let y = y.min(fb.height.saturating_sub(thickness));
         fb.fill_span(px + x, y, 1, thickness, color);
     }
@@ -251,7 +252,10 @@ mod tests {
         }
         assert!(max_y > min_y, "Curly underline must oscillate vertically");
         assert!(max_y - min_y >= 2, "Curly wave amplitude must be visible");
-        assert!(min_y >= 19, "Curly underline must sit in descent area with separation from baseline");
+        assert!(
+            min_y >= 19,
+            "Curly underline must sit in descent area with separation from baseline"
+        );
         for (x, &count) in drawn_pixels_per_col.iter().enumerate() {
             assert_eq!(count, 2, "Column {} should have 2px thickness", x);
         }

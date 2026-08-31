@@ -41,13 +41,15 @@ impl Grid {
         }
         let height_of_region = bottom - top + 1;
         let u_delta = (delta as usize).min(height_of_region);
+        let default_cell = Cell::new(' ', self.default_fg, bg, CellFlags::empty());
 
-        // Push lines scrolled off-screen to scrollback only if scrolling the entire screen
+        // Fast path: Full-screen scroll via circular row offset rotation O(1) with ZERO memory copying
         if top == 0 && bottom == self.height - 1 {
             for y in 0..u_delta.min(self.height) {
-                let start = y * self.width;
+                let physical_y = (self.row_offset + y) % self.height;
+                let start = physical_y * self.width;
                 let end = start + self.width;
-                let wrapped = self.row_wrapped.get(y).copied().unwrap_or(false);
+                let wrapped = self.row_wrapped.get(physical_y).copied().unwrap_or(false);
                 let prev_len = self.scrollback.len();
                 self.scrollback.push_line(&self.cells[start..end], wrapped);
                 let new_len = self.scrollback.len();
@@ -61,11 +63,25 @@ impl Grid {
                         self.selection.end_y = self.selection.end_y.saturating_sub(evicted);
                     }
                 }
+                // Clear the scrolled-off physical row so it becomes the fresh bottom row
+                self.cells[start..end].fill(default_cell);
+                if physical_y < self.row_wrapped.len() {
+                    self.row_wrapped[physical_y] = false;
+                }
             }
+
+            self.row_offset = (self.row_offset + u_delta) % self.height;
+
             if self.scroll_offset > 0 {
                 self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());
             }
+
+            self.damage.mark_all();
+            return;
         }
+
+        // Sub-region scrolling (e.g. vim/htop): Normalize row offset first, then standard copy_within
+        self.normalize_row_offset();
 
         if u_delta < height_of_region {
             let src = (top + u_delta) * self.width;
@@ -80,8 +96,6 @@ impl Grid {
             }
         }
 
-        // Clear bottom lines of the scrolling region
-        let default_cell = Cell::new(' ', self.default_fg, bg, CellFlags::empty());
         let clear_start = (bottom + 1 - u_delta) * self.width;
         let clear_end = (bottom + 1) * self.width;
         self.cells[clear_start..clear_end].fill(default_cell);
@@ -93,7 +107,6 @@ impl Grid {
             }
         }
 
-        // Mark rows in scrolling region as damaged
         for y in top..=bottom {
             self.damage.mark_dirty(y);
         }
@@ -107,7 +120,25 @@ impl Grid {
         }
         let height_of_region = bottom - top + 1;
         let u_delta = delta.min(height_of_region);
+        let default_cell = Cell::new(' ', self.default_fg, bg, CellFlags::empty());
 
+        if top == 0 && bottom == self.height - 1 {
+            // Full-screen reverse scroll via circular row offset
+            for y in 0..u_delta {
+                let physical_y = (self.row_offset + self.height - 1 - y) % self.height;
+                let start = physical_y * self.width;
+                let end = start + self.width;
+                self.cells[start..end].fill(default_cell);
+                if physical_y < self.row_wrapped.len() {
+                    self.row_wrapped[physical_y] = false;
+                }
+            }
+            self.row_offset = (self.row_offset + self.height - (u_delta % self.height)) % self.height;
+            self.damage.mark_all();
+            return;
+        }
+
+        self.normalize_row_offset();
         if u_delta < height_of_region {
             let src = top * self.width;
             let dst = (top + u_delta) * self.width;
@@ -121,7 +152,6 @@ impl Grid {
             }
         }
 
-        let default_cell = Cell::new(' ', self.default_fg, bg, CellFlags::empty());
         let clear_start = top * self.width;
         let clear_end = (top + u_delta) * self.width;
         self.cells[clear_start..clear_end].fill(default_cell);
@@ -138,6 +168,7 @@ impl Grid {
     }
 
     pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        self.normalize_row_offset();
         let top_idx = if top == 0 {
             0
         } else {
@@ -159,6 +190,7 @@ impl Grid {
     }
 
     pub fn insert_lines(&mut self, n: usize, fg: Color, bg: Color) {
+        self.normalize_row_offset();
         self.clamp_cursor();
         let top = self.cursor.y;
         let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
@@ -195,6 +227,7 @@ impl Grid {
     }
 
     pub fn delete_lines(&mut self, n: usize, fg: Color, bg: Color) {
+        self.normalize_row_offset();
         self.clamp_cursor();
         let top = self.cursor.y;
         let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));

@@ -4,7 +4,7 @@ pub struct DamageMap {
     pub dirty_rows: Vec<bool>,
     pub full_redraw: bool,
     pub prev_cursor_pos: Option<(usize, usize)>,
-    pub prev_selection_range: Option<(usize, usize)>,
+    pub prev_selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl DamageMap {
@@ -13,7 +13,7 @@ impl DamageMap {
             dirty_rows: vec![true; rows.max(1)],
             full_redraw: true,
             prev_cursor_pos: None,
-            prev_selection_range: None,
+            prev_selection: None,
         }
     }
 
@@ -88,27 +88,37 @@ impl DamageMap {
     }
 
     /// Mark old and new selection rows dirty when selection changes.
-    pub fn update_selection(&mut self, active: bool, min_y: usize, max_y: usize) {
-        if !active {
-            if let Some((old_min, old_max)) = self.prev_selection_range.take() {
-                for y in old_min..=old_max {
-                    self.mark_row(y);
-                }
-            }
-            return;
-        }
+    pub fn update_selection(
+        &mut self,
+        active: bool,
+        bounds: ((usize, usize), (usize, usize)),
+        history_len: usize,
+        scroll_offset: usize,
+        grid_h: usize,
+    ) {
+        let new_selection = if active { Some(bounds) } else { None };
 
-        let new_range = (min_y, max_y);
-        if self.prev_selection_range != Some(new_range) {
-            if let Some((old_min, old_max)) = self.prev_selection_range {
-                for y in old_min..=old_max {
-                    self.mark_row(y);
+        if self.prev_selection != new_selection {
+            let mark_selection_rows = |dm: &mut DamageMap, min_abs_y: usize, max_abs_y: usize| {
+                for abs_y in min_abs_y..=max_abs_y {
+                    let total_y = abs_y + scroll_offset;
+                    if total_y >= history_len {
+                        let screen_y = total_y - history_len;
+                        if screen_y < grid_h {
+                            dm.mark_row(screen_y);
+                        }
+                    }
                 }
+            };
+
+            if let Some(((_, old_min_y), (_, old_max_y))) = self.prev_selection {
+                mark_selection_rows(self, old_min_y, old_max_y);
             }
-            for y in min_y..=max_y {
-                self.mark_row(y);
+            if let Some(((_, new_min_y), (_, new_max_y))) = new_selection {
+                mark_selection_rows(self, new_min_y, new_max_y);
             }
-            self.prev_selection_range = Some(new_range);
+
+            self.prev_selection = new_selection;
         }
     }
 }

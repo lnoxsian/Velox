@@ -200,7 +200,13 @@ fn test_software_renderer_scroll_selection() {
     // Populate lines 0..15 so scrollback has 5 lines and active grid has 10 lines
     for i in 0..15 {
         for c in format!("line-{}", i).chars() {
-            grid.put_char(c, grid.default_fg, grid.default_bg, None, CellFlags::empty());
+            grid.put_char(
+                c,
+                grid.default_fg,
+                grid.default_bg,
+                None,
+                CellFlags::empty(),
+            );
         }
         if i < 14 {
             grid.scroll_or_move_down(grid.default_bg);
@@ -776,7 +782,11 @@ fn test_software_renderer_unfocused_dim() {
             g: 255,
             b: 255,
         },
-        Color { r: 50, g: 50, b: 50 },
+        Color {
+            r: 50,
+            g: 50,
+            b: 50,
+        },
         CellFlags::empty(),
     );
     grid.damage.mark_dirty(0);
@@ -870,5 +880,135 @@ fn test_software_renderer_unfocused_dim() {
         (100..=135).contains(&max_unfocused_text_r),
         "Unfocused text must be dimmed to ~125 (got {})",
         max_unfocused_text_r
+    );
+}
+
+#[test]
+fn test_software_renderer_dynamic_selection_drag_and_scrollback() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut grid = Grid::new(
+        80,
+        24,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    let theme = Theme::new();
+    let mut target = vec![0u32; 800 * 600];
+
+    // Push 10 lines of scrollback history
+    for i in 0..10 {
+        let line = vec![
+            Cell {
+                character: (b'0' + (i as u8)) as char,
+                foreground: Color {
+                    r: 255,
+                    g: 255,
+                    b: 255
+                },
+                background: Color { r: 0, g: 0, b: 0 },
+                underline_color: None,
+                flags: CellFlags::empty(),
+            };
+            80
+        ];
+        grid.scrollback.push_line(&line, false);
+    }
+    assert_eq!(grid.scrollback.len(), 10);
+
+    // Initial render (clears initial full_redraw)
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+    assert!(!renderer.damage.has_damage());
+
+    // 1. Start selection on screen row 2 (abs_y = 10 + 2 = 12)
+    grid.selection.start_selection(0, 12);
+    grid.selection.update_selection(5, 12);
+
+    // Frame 2: should detect damage on row 2 even without full_redraw
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+    let cell_w = renderer.glyph_cache.cell_width;
+    let cell_h = renderer.glyph_cache.cell_height;
+    let sample_x = 2 * cell_w + 2;
+    let sample_y = 2 * cell_h + 2;
+    let expected_inverted_bg =
+        velox::renderer::software::color::PackedColor::from_color(grid.default_fg).to_u32();
+    assert_eq!(
+        target[(sample_y as usize) * 800 + (sample_x as usize)],
+        expected_inverted_bg,
+        "Row 2 cell 2 must be highlighted as selected"
+    );
+
+    // 2. Drag selection horizontally to col 15 on same row 2
+    grid.selection.update_selection(15, 12);
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+    let sample_x_10 = 10 * cell_w + 2;
+    assert_eq!(
+        target[(sample_y as usize) * 800 + (sample_x_10 as usize)],
+        expected_inverted_bg,
+        "Horizontal drag expansion to col 10 must be highlighted"
+    );
+
+    // 3. Clear selection
+    grid.selection.clear();
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+    let default_bg_packed =
+        velox::renderer::software::color::PackedColor::from_color(grid.default_bg).to_u32();
+    assert_eq!(
+        target[(sample_y as usize) * 800 + (sample_x as usize)],
+        default_bg_packed,
+        "Row 2 cell 2 must revert to default background when selection cleared"
     );
 }

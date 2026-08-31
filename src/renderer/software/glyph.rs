@@ -146,11 +146,12 @@ impl GlyphCache {
         } else {
             None
         };
-        let font_bold_italic = if !font_set.bold_italic.synthetic_italic && !font_set.bold_italic.synthetic_bold {
-            Some(font_set.bold_italic.font.clone())
-        } else {
-            None
-        };
+        let font_bold_italic =
+            if !font_set.bold_italic.synthetic_italic && !font_set.bold_italic.synthetic_bold {
+                Some(font_set.bold_italic.font.clone())
+            } else {
+                None
+            };
 
         let fallback_manager = FallbackManager::with_shared_database(std::sync::Arc::clone(db));
 
@@ -174,6 +175,44 @@ impl GlyphCache {
             cell_height,
             font_size,
             font_scale_multiplier,
+            atlas: GlyphAtlas::new(),
+            scratch: GlyphScratch::new(),
+            ascii_table: [None; 512],
+            unicode_table: HashMap::with_capacity(1024),
+            max_unicode_entries: 4096,
+        };
+        cache.preload_common_glyphs();
+        cache
+    }
+
+    /// Create a full-featured GlyphCache for a split pane with independent font size.
+    /// Reuses already loaded FontArc handles.
+    pub fn create_pane_cache(&self, pane_font_size: f32) -> Self {
+        let px_size = (pane_font_size * self.font_scale_multiplier)
+            .round()
+            .max(1.0);
+        let scale = PxScale::from(px_size);
+        let scaled_font = self.font.as_scaled(scale);
+        let cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        let cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
+        let mut cache = Self {
+            font_set: self.font_set.clone(),
+            font: self.font.clone(),
+            font_bold: self.font_bold.clone(),
+            font_italic: self.font_italic.clone(),
+            font_bold_italic: self.font_bold_italic.clone(),
+            fallback_manager: FallbackManager::new(),
+            cell_width,
+            cell_height,
+            font_size: pane_font_size,
+            font_scale_multiplier: self.font_scale_multiplier,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],

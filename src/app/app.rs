@@ -1,3 +1,16 @@
+use crate::app::pane::{Pane, PaneId};
+use crate::app::split::{FocusDirection, PaneRect, SeparatorRect, SplitDirection, SplitId};
+use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
+use crate::cli::CliOptions;
+use crate::config::config::parse_hex_color;
+use crate::ipc::{IpcListenerHandle, start_ipc_server};
+use crate::pty::master::PtyMaster;
+use crate::pty::process::spawn_process;
+use crate::renderer::renderer::{PaneRenderData, Renderer, SeparatorRenderData};
+use crate::renderer::software::CpuPaneRenderData;
+use crate::renderer::software::CpuRenderer;
+use crate::screen::cell::{Cell, Color};
+use crate::terminal::terminal::Terminal;
 use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
 use glutin_winit::GlWindow;
@@ -10,69 +23,14 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Window, WindowId};
 
-use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
-use crate::cli::CliOptions;
-use crate::ipc::{IpcListenerHandle, start_ipc_server};
-use crate::pty::master::PtyMaster;
-use crate::pty::process::spawn_process;
-
-fn spawn_pty_reader(
-    pty_reader: Arc<PtyMaster>,
-    proxy: EventLoopProxy<CustomEvent>,
-    window_id: WindowId,
-    tab_id: u64,
-) {
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 65536];
-        loop {
-            match pty_reader.read(&mut buf) {
-                Ok(0) => {
-                    let _ = proxy.send_event(CustomEvent::PtyExit { window_id, tab_id });
-                    break;
-                }
-                Ok(n) => {
-                    let _ = proxy.send_event(CustomEvent::PtyData {
-                        window_id,
-                        tab_id,
-                        data: buf[..n].to_vec(),
-                    });
-                }
-                Err(_) => {
-                    let _ = proxy.send_event(CustomEvent::PtyExit { window_id, tab_id });
-                    break;
-                }
-            }
-        }
-    });
-}
-
-use crate::renderer::renderer::Renderer;
-use crate::renderer::software::CpuRenderer;
-use crate::screen::cell::{Cell, CellFlags};
-use crate::terminal::terminal::Terminal;
-
-pub enum CustomEvent {
-    PtyData {
-        window_id: WindowId,
-        tab_id: u64,
-        data: Vec<u8>,
-    },
-    PtyExit {
-        window_id: WindowId,
-        tab_id: u64,
-    },
-    IpcCreateWindow {
-        working_directory: Option<String>,
-        command: Option<Vec<String>>,
-        title: Option<String>,
-        hold: Option<bool>,
-    },
-    IpcCreateTab {
-        working_directory: Option<String>,
-        command: Option<Vec<String>>,
-        title: Option<String>,
-        hold: Option<bool>,
-    },
+#[derive(Debug, Clone, Copy)]
+pub struct DraggingSeparator {
+    pub split_id: SplitId,
+    pub direction: SplitDirection,
+    pub bounds_x: f32,
+    pub bounds_y: f32,
+    pub bounds_w: f32,
+    pub bounds_h: f32,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -106,26 +64,93 @@ impl WindowRendererBackend {
     }
 
     #[inline(always)]
-    pub fn base_cell_height(&self) -> u32 {
+    pub fn base_cell_width(&self) -> u32 {
         match self {
-            Self::OpenGL { renderer, .. } => renderer.tab_font_loader.cell_height,
-            Self::Software { renderer, .. } => renderer.tab_glyph_cache.cell_height,
+            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_width,
+            Self::Software { renderer, .. } => renderer.glyph_cache.cell_width,
         }
     }
 
-    pub fn set_tab_font_size(&mut self, size: f32) {
+    #[inline(always)]
+    pub fn base_cell_height(&self) -> u32 {
         match self {
-            Self::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                renderer.set_tab_font_size(size);
-            }
-            Self::Software { renderer, .. } => renderer.set_tab_font_size(size),
+            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_height,
+            Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
         }
     }
+
+    pub fn set_tab_font_size(&mut self, font_size: f32) {
+        match self {
+            Self::OpenGL { renderer, .. } => renderer.set_tab_font_size(font_size),
+            Self::Software { renderer, .. } => renderer.tab_glyph_cache.update_font_size(font_size),
+        }
+    }
+}
+
+pub enum CustomEvent {
+    PtyData {
+        window_id: WindowId,
+        tab_id: u64,
+        pane_id: u64,
+        data: Vec<u8>,
+    },
+    PtyExit {
+        window_id: WindowId,
+        tab_id: u64,
+        pane_id: u64,
+    },
+    IpcCreateWindow {
+        working_directory: Option<String>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        hold: Option<bool>,
+    },
+    IpcCreateTab {
+        working_directory: Option<String>,
+        command: Option<Vec<String>>,
+        title: Option<String>,
+        hold: Option<bool>,
+    },
+}
+
+fn spawn_pty_reader(
+    pty_reader: Arc<PtyMaster>,
+    proxy: EventLoopProxy<CustomEvent>,
+    window_id: WindowId,
+    tab_id: u64,
+    pane_id: u64,
+) {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        loop {
+            match pty_reader.read(&mut buf) {
+                Ok(0) => {
+                    let _ = proxy.send_event(CustomEvent::PtyExit {
+                        window_id,
+                        tab_id,
+                        pane_id,
+                    });
+                    break;
+                }
+                Ok(n) => {
+                    let _ = proxy.send_event(CustomEvent::PtyData {
+                        window_id,
+                        tab_id,
+                        pane_id,
+                        data: buf[..n].to_vec(),
+                    });
+                }
+                Err(_) => {
+                    let _ = proxy.send_event(CustomEvent::PtyExit {
+                        window_id,
+                        tab_id,
+                        pane_id,
+                    });
+                    break;
+                }
+            }
+        }
+    });
 }
 
 pub struct WindowState {
@@ -140,6 +165,7 @@ pub struct WindowState {
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
+    pub base_cell_width: u32,
     pub base_cell_height: u32,
     pub padding_x: f32,
     pub padding_y: f32,
@@ -156,18 +182,26 @@ pub struct WindowState {
     pub cursor_blink_enabled: bool,
     pub cursor_blink_on: bool,
     pub last_cursor_blink: std::time::Instant,
+    pub hide_mouse_on_typing: bool,
     pub opacity: f32,
     pub window_dim: f32,
     pub shell_path: String,
     pub tabs: Vec<Tab>,
     pub active_tab_index: usize,
     pub next_tab_id: u64,
+    pub next_pane_id: u64,
+    pub next_split_id: u64,
     pub tab_bar: TabBar,
     pub event_loop_proxy: EventLoopProxy<CustomEvent>,
-    /// Set whenever tab bar visual state changes; triggers cache rebuild in draw().
     pub tab_bar_dirty: bool,
-    /// Cached render info; rebuilt lazily when tab_bar_dirty is true.
     pub tab_bar_render_cache: Option<TabBarRenderInfo>,
+    pub dragging_separator: Option<DraggingSeparator>,
+    pub hovered_separator: Option<SplitId>,
+    pub separator_size: f32,
+    pub min_cols: usize,
+    pub min_rows: usize,
+    pub separator_color: Option<Color>,
+    pub active_separator_color: Option<Color>,
 }
 
 impl Drop for WindowState {
@@ -185,6 +219,14 @@ impl Drop for WindowState {
 }
 
 impl WindowState {
+    #[inline]
+    pub fn mark_interaction(&mut self) {
+        if self.cursor_blink_enabled && !self.cursor_blink_on {
+            self.cursor_blink_on = true;
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn release_memory(&mut self) {
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
@@ -226,6 +268,16 @@ impl WindowState {
     }
 
     #[inline(always)]
+    pub fn active_pane(&self) -> &Pane {
+        self.active_tab().active_pane()
+    }
+
+    #[inline(always)]
+    pub fn active_pane_mut(&mut self) -> &mut Pane {
+        self.active_tab_mut().active_pane_mut()
+    }
+
+    #[inline(always)]
     pub fn set_cursor_cached(&mut self, icon: winit::window::CursorIcon) {
         if self.current_cursor_icon != icon {
             self.current_cursor_icon = icon;
@@ -242,6 +294,64 @@ impl WindowState {
         }
     }
 
+    pub fn recalculate_panes_layout(
+        &self,
+        tab_index: usize,
+    ) -> (Vec<PaneRect>, Vec<SeparatorRect>) {
+        let size = self.window.inner_size();
+        let width = size.width.max(1);
+        let height = size.height.max(1);
+        let tab_bar_h = self.tab_bar_height();
+        let total_x = 0.0;
+        let total_y = tab_bar_h;
+        let total_w = (width as f32).max(10.0);
+        let total_h = (height as f32 - tab_bar_h).max(10.0);
+
+        if let Some(tab) = self.tabs.get(tab_index) {
+            tab.tree.calculate_layout(
+                total_x,
+                total_y,
+                total_w,
+                total_h,
+                self.separator_size,
+                self.padding_x,
+                self.padding_y,
+                self.base_cell_width,
+                self.base_cell_height,
+                self.default_font_size,
+                self.min_cols,
+                self.min_rows,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        }
+    }
+
+    pub fn sync_tab_panes_dimensions(&mut self, tab_index: usize) {
+        let (pane_rects, _) = self.recalculate_panes_layout(tab_index);
+
+        if let Some(tab) = self.tabs.get_mut(tab_index) {
+            for rect in pane_rects {
+                if let Some(pane) = tab.tree.find_pane_mut(rect.pane_id) {
+                    let cw = rect.cell_width as u32;
+                    let ch = rect.cell_height as u32;
+                    pane.terminal.set_cell_dimensions(cw, ch);
+                    if pane.terminal.grid.width != rect.cols
+                        || pane.terminal.grid.height != rect.rows
+                    {
+                        pane.terminal.resize(rect.cols as u32, rect.rows as u32);
+                        let _ = pane.pty_master.resize(rect.cols as u16, rect.rows as u16);
+                        pane.terminal.active_grid_mut().mark_all_dirty();
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn sync_active_tab_layout(&mut self) {
+        self.sync_tab_panes_dimensions(self.active_tab_index);
+    }
+
     pub fn recalculate_grid_size(&self) -> (u32, u32) {
         let size = self.window.inner_size();
         let width = size.width.max(1);
@@ -255,13 +365,7 @@ impl WindowState {
     }
 
     pub fn resize_active_tab(&mut self) {
-        let (cols, rows) = self.recalculate_grid_size();
-        let cw = self.cell_width();
-        let ch = self.cell_height();
-        let tab = self.active_tab_mut();
-        tab.terminal.set_cell_dimensions(cw, ch);
-        tab.terminal.resize(cols, rows);
-        let _ = tab.pty_master.resize(cols as u16, rows as u16);
+        self.sync_active_tab_layout();
         self.needs_redraw = true;
         self.content_dirty = true;
     }
@@ -282,11 +386,28 @@ impl WindowState {
         }
     }
 
+    pub fn sync_active_pane_font_size(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let active_pane_font_size = self.active_pane().font_size;
+        self.active_tab_mut().font_size = active_pane_font_size;
+        if (self.current_font_size - active_pane_font_size).abs() > 0.01 {
+            self.current_font_size = active_pane_font_size;
+            self.set_renderer_font_size(active_pane_font_size);
+            self.resize_active_tab();
+        }
+    }
+
     pub fn set_font_size(&mut self, size: f32) {
         let size = size.max(1.0);
         self.current_font_size = size;
         if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
             tab.font_size = size;
+            let active_pane_id = tab.active_pane_id;
+            if let Some(pane) = tab.tree.find_pane_mut(active_pane_id) {
+                pane.font_size = size;
+            }
         }
         self.set_renderer_font_size(size);
         self.resize_active_tab();
@@ -315,6 +436,174 @@ impl WindowState {
         self.resize_active_tab();
     }
 
+    pub fn split_horizontal(&mut self) -> Option<PaneId> {
+        self.split_active_pane(SplitDirection::Horizontal)
+    }
+
+    pub fn split_vertical(&mut self) -> Option<PaneId> {
+        self.split_active_pane(SplitDirection::Vertical)
+    }
+
+    pub fn split_active_pane(&mut self, direction: SplitDirection) -> Option<PaneId> {
+        if self.tabs.is_empty() {
+            return None;
+        }
+
+        let tab_id = self.active_tab().id;
+        let active_pane_id = self.active_tab().active_pane_id;
+        let new_pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
+        let split_id = self.next_split_id;
+        self.next_split_id += 1;
+
+        let (cols, rows) = self.recalculate_grid_size();
+        let pty_master = Arc::new(spawn_process(&self.shell_path, None, None).ok()?);
+        let _ = pty_master.resize(cols as u16, rows as u16);
+
+        let mut terminal = Terminal::new(cols as usize, rows as usize);
+        terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
+
+        spawn_pty_reader(
+            pty_master.clone(),
+            self.event_loop_proxy.clone(),
+            self.window.id(),
+            tab_id,
+            new_pane_id,
+        );
+
+        let font_size = self.active_pane().font_size;
+        let new_pane = Pane::new(new_pane_id, pty_master, terminal, font_size, false);
+
+        let tab = self.active_tab_mut();
+        let split_success = tab
+            .tree
+            .split_pane(active_pane_id, new_pane, direction, 0.5, split_id);
+        if !split_success {
+            return None;
+        }
+
+        tab.active_pane_id = new_pane_id;
+        tab.clear_unfocused_selections();
+        self.sync_active_pane_font_size();
+        self.sync_active_tab_layout();
+        self.needs_redraw = true;
+        self.content_dirty = true;
+        self.tab_bar_dirty = true;
+
+        Some(new_pane_id)
+    }
+
+    pub fn close_pane(&mut self) -> bool {
+        if self.tabs.is_empty() {
+            return true;
+        }
+        let tab_id = self.active_tab().id;
+        let pane_id = self.active_tab().active_pane_id;
+        self.close_pane_in_tab(tab_id, pane_id)
+    }
+
+    pub fn close_pane_in_tab(&mut self, tab_id: u64, pane_id: u64) -> bool {
+        let tab_idx = match self.tabs.iter().position(|t| t.id == tab_id) {
+            Some(idx) => idx,
+            None => return false,
+        };
+
+        let tab = &mut self.tabs[tab_idx];
+        if tab.tree.pane_count() <= 1 {
+            return self.close_tab(tab_idx);
+        }
+
+        let removed = tab.tree.remove_pane(pane_id);
+        if removed.is_some() {
+            if tab.active_pane_id == pane_id
+                && let Some(first_id) = tab.tree.first_pane_id()
+            {
+                tab.active_pane_id = first_id;
+            }
+            tab.clear_unfocused_selections();
+            self.sync_active_pane_font_size();
+            self.sync_tab_panes_dimensions(tab_idx);
+            self.tab_bar_dirty = true;
+            self.needs_redraw = true;
+            self.content_dirty = true;
+        }
+        false
+    }
+
+    pub fn focus_direction(&mut self, direction: FocusDirection) -> bool {
+        if self.tabs.is_empty() {
+            return false;
+        }
+
+        let (pane_rects, _) = self.recalculate_panes_layout(self.active_tab_index);
+        let active_pane_id = self.active_tab().active_pane_id;
+
+        if let Some(target_id) =
+            crate::app::split::find_neighbor_pane(&pane_rects, active_pane_id, direction)
+        {
+            let tab = self.active_tab_mut();
+            tab.active_pane_id = target_id;
+            tab.clear_unfocused_selections();
+            self.sync_active_pane_font_size();
+            self.needs_redraw = true;
+            self.content_dirty = true;
+            return true;
+        }
+        false
+    }
+
+    pub fn focus_next_pane(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let tab = self.active_tab_mut();
+        let pane_ids = tab.tree.collect_pane_ids();
+        if pane_ids.len() > 1
+            && let Some(pos) = pane_ids.iter().position(|&id| id == tab.active_pane_id)
+        {
+            let next_pos = (pos + 1) % pane_ids.len();
+            tab.active_pane_id = pane_ids[next_pos];
+            tab.clear_unfocused_selections();
+            self.sync_active_pane_font_size();
+            self.needs_redraw = true;
+            self.content_dirty = true;
+        }
+    }
+
+    pub fn focus_previous_pane(&mut self) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let tab = self.active_tab_mut();
+        let pane_ids = tab.tree.collect_pane_ids();
+        if pane_ids.len() > 1
+            && let Some(pos) = pane_ids.iter().position(|&id| id == tab.active_pane_id)
+        {
+            let prev_pos = (pos + pane_ids.len() - 1) % pane_ids.len();
+            tab.active_pane_id = pane_ids[prev_pos];
+            tab.clear_unfocused_selections();
+            self.sync_active_pane_font_size();
+            self.needs_redraw = true;
+            self.content_dirty = true;
+        }
+    }
+
+    pub fn adjust_active_split_ratio(&mut self, delta: f32) -> bool {
+        if self.tabs.is_empty() {
+            return false;
+        }
+        let active_pane_id = self.active_tab().active_pane_id;
+        let tab = self.active_tab_mut();
+        let adjusted = tab.tree.adjust_ancestor_split_ratio(active_pane_id, delta);
+        if adjusted {
+            self.sync_active_tab_layout();
+            self.needs_redraw = true;
+            self.content_dirty = true;
+            return true;
+        }
+        false
+    }
+
     pub fn create_tab(
         &mut self,
         working_directory: Option<String>,
@@ -324,6 +613,8 @@ impl WindowState {
     ) -> u64 {
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
+        let pane_id = self.next_pane_id;
+        self.next_pane_id += 1;
 
         let was_visible = self.tab_bar.is_visible(self.tabs.len());
 
@@ -354,12 +645,22 @@ impl WindowState {
             self.event_loop_proxy.clone(),
             self.window.id(),
             tab_id,
+            pane_id,
         );
 
-        let tab = Tab::new(
-            tab_id,
+        let pane = Pane::with_title(
+            pane_id,
             pty_master,
             terminal,
+            custom_title.clone(),
+            initial_title.clone(),
+            tab_font_size,
+            hold.unwrap_or(false),
+        );
+
+        let tab = Tab::with_pane(
+            tab_id,
+            pane,
             custom_title,
             initial_title,
             hold.unwrap_or(false),
@@ -372,6 +673,8 @@ impl WindowState {
         let is_now_visible = self.tab_bar.is_visible(self.tabs.len());
         if was_visible != is_now_visible {
             self.resize_active_tab();
+        } else {
+            self.sync_active_tab_layout();
         }
 
         self.tab_bar_dirty = true;
@@ -395,7 +698,8 @@ impl WindowState {
             self.active_tab_index = self.tabs.len() - 1;
         }
 
-        let active_font_size = self.tabs[self.active_tab_index].font_size;
+        let active_font_size = self.tabs[self.active_tab_index].active_pane().font_size;
+        self.tabs[self.active_tab_index].font_size = active_font_size;
         if (self.current_font_size - active_font_size).abs() > 0.01 {
             self.current_font_size = active_font_size;
             self.set_renderer_font_size(active_font_size);
@@ -407,34 +711,30 @@ impl WindowState {
         self.tab_bar_dirty = true;
         self.needs_redraw = true;
         self.content_dirty = true;
-        self.tabs[self.active_tab_index]
-            .terminal
-            .active_grid_mut()
-            .mark_all_dirty();
+        for pane in self.tabs[self.active_tab_index].tree.panes_mut() {
+            pane.terminal.active_grid_mut().mark_all_dirty();
+        }
         false
     }
 
     pub fn switch_tab(&mut self, index: usize) {
         if index < self.tabs.len() && index != self.active_tab_index {
             self.active_tab_index = index;
-            let tab_font_size = self.tabs[index].font_size;
-            if (self.current_font_size - tab_font_size).abs() > 0.01 {
-                self.current_font_size = tab_font_size;
-                self.set_renderer_font_size(tab_font_size);
+            let active_pane_font_size = self.active_pane().font_size;
+            self.tabs[index].font_size = active_pane_font_size;
+            if (self.current_font_size - active_pane_font_size).abs() > 0.01 {
+                self.current_font_size = active_pane_font_size;
+                self.set_renderer_font_size(active_pane_font_size);
             }
-            let (cols, rows) = self.recalculate_grid_size();
-            let tab = &mut self.tabs[index];
-            if tab.terminal.grid.width != cols as usize || tab.terminal.grid.height != rows as usize
-            {
-                tab.terminal.resize(cols, rows);
-                let _ = tab.pty_master.resize(cols as u16, rows as u16);
-            }
+            self.sync_tab_panes_dimensions(index);
             self.window.set_title(&self.tabs[index].current_title);
             self.current_title = self.tabs[index].current_title.clone();
             self.tab_bar_dirty = true;
             self.needs_redraw = true;
             self.content_dirty = true;
-            self.tabs[index].terminal.active_grid_mut().mark_all_dirty();
+            for pane in self.tabs[index].tree.panes_mut() {
+                pane.terminal.active_grid_mut().mark_all_dirty();
+            }
         }
     }
 
@@ -460,19 +760,21 @@ impl WindowState {
             self.tab_bar_dirty = true;
             self.needs_redraw = true;
             self.content_dirty = true;
-            self.tabs[to].terminal.active_grid_mut().mark_all_dirty();
+            for pane in self.tabs[to].tree.panes_mut() {
+                pane.terminal.active_grid_mut().mark_all_dirty();
+            }
         }
     }
 
     pub fn draw(&mut self) {
         self.last_frame_instant = std::time::Instant::now();
 
-        // 1. Ensure renderer font size matches the active tab's isolated font size
+        // 1. Ensure renderer font size matches the active pane's isolated font size
         if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
-            let tab_font_size = active_tab.font_size;
-            if (self.current_font_size - tab_font_size).abs() > 0.01 {
-                self.current_font_size = tab_font_size;
-                self.set_renderer_font_size(tab_font_size);
+            let active_pane_font_size = active_tab.active_pane().font_size;
+            if (self.current_font_size - active_pane_font_size).abs() > 0.01 {
+                self.current_font_size = active_pane_font_size;
+                self.set_renderer_font_size(active_pane_font_size);
             }
         }
 
@@ -482,10 +784,10 @@ impl WindowState {
         {
             self.window.set_title(&active_tab.current_title);
             self.current_title = active_tab.current_title.clone();
-            self.tab_bar_dirty = true; // title changed → rebuild cache
+            self.tab_bar_dirty = true;
         }
 
-        // 3. Prepare tab bar render info (lazily cached; rebuilt only when state changes)
+        // 3. Prepare tab bar render info
         let is_tab_bar_visible = self.tab_bar.is_visible(self.tabs.len());
         if is_tab_bar_visible && (self.tab_bar_dirty || self.tab_bar_render_cache.is_none()) {
             for tab in &mut self.tabs {
@@ -519,74 +821,34 @@ impl WindowState {
             None
         };
 
-        let active_tab = match self.tabs.get(self.active_tab_index) {
-            Some(t) => t,
-            None => return,
-        };
+        if self.tabs.is_empty() {
+            return;
+        }
 
-        let active_grid = active_tab.terminal.active_grid();
-        let width = active_grid.width;
-        let height = active_grid.height;
-        let size = width * height;
+        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+        let active_pane_id = self.active_tab().active_pane_id;
+        let active_pane_rect = pane_rects
+            .iter()
+            .find(|r| r.pane_id == active_pane_id)
+            .copied();
 
-        let offset = active_grid.scroll_offset;
-        let history_len = active_grid.scrollback.len();
+        let dragging_split_id = self.dragging_separator.map(|d| d.split_id);
+        let hovered_split_id = self.hovered_separator;
 
-        let render_cells: &[Cell] = if offset == 0 {
-            &active_grid.cells
-        } else {
-            if self.render_cells_buf.len() != size {
-                let default_cell =
-                    Cell::new(' ', active_grid.default_fg, active_grid.default_bg, CellFlags::empty());
-                self.render_cells_buf.resize(size, default_cell);
-            }
-            let default_cell =
-                Cell::new(' ', active_grid.default_fg, active_grid.default_bg, CellFlags::empty());
-            for y in 0..height {
-                let dest_start = y * width;
-                let dest_end = dest_start + width;
-
-                let idx = (y + history_len).saturating_sub(offset);
-                if y + history_len < offset {
-                    self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                } else if idx < history_len {
-                    if !active_grid.scrollback.copy_row_to_slice(
-                        idx,
-                        &mut self.render_cells_buf[dest_start..dest_end],
-                        default_cell,
-                    ) {
-                        self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                    }
-                } else {
-                    let grid_y = idx - history_len;
-                    let src_start = grid_y * width;
-                    let src_end = src_start + width;
-                    if src_end <= active_grid.cells.len() {
-                        self.render_cells_buf[dest_start..dest_end]
-                            .copy_from_slice(&active_grid.cells[src_start..src_end]);
-                    } else {
-                        self.render_cells_buf[dest_start..dest_end].fill(default_cell);
-                    }
+        let separator_render_datas: Vec<SeparatorRenderData> = sep_rects
+            .into_iter()
+            .map(|r| {
+                let active_segment = active_pane_rect.and_then(|ap| r.active_segment_for_pane(&ap));
+                let is_active = active_segment.is_some();
+                SeparatorRenderData {
+                    rect: r,
+                    is_active,
+                    active_segment,
+                    is_hovered: hovered_split_id == Some(r.split_id),
+                    is_dragging: dragging_split_id == Some(r.split_id),
                 }
-            }
-            &self.render_cells_buf
-        };
-
-        let cursor_visible = if offset > 0 {
-            false
-        } else if self.cursor_blink_enabled {
-            active_grid.cursor.visible && self.cursor_blink_on
-        } else {
-            active_grid.cursor.visible
-        };
-
-        let cursor_shape = if !self.is_focused
-            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-        {
-            crate::screen::cursor::CursorShape::HollowBlock
-        } else {
-            active_grid.cursor.shape
-        };
+            })
+            .collect();
 
         let effective_dim = if !self.is_focused {
             self.window_dim
@@ -594,57 +856,139 @@ impl WindowState {
             0.0
         };
 
-        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
-
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
                 renderer,
                 gl_surface,
                 gl_context,
             } => {
+                let active_tab = &self.tabs[self.active_tab_index];
+                let mut pane_render_datas = Vec::with_capacity(pane_rects.len());
+
+                for rect in &pane_rects {
+                    if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
+                        let active_grid = pane.terminal.active_grid();
+                        let width = active_grid.width;
+                        let height = active_grid.height;
+                        let offset = active_grid.scroll_offset;
+                        let history_len = active_grid.scrollback.len();
+                        let is_active = pane.id == active_pane_id;
+
+                        let cursor_visible = if !is_active || offset > 0 {
+                            false
+                        } else if self.cursor_blink_enabled {
+                            active_grid.cursor.visible && self.cursor_blink_on
+                        } else {
+                            active_grid.cursor.visible
+                        };
+
+                        let cursor_shape = if !self.is_focused
+                            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                        {
+                            crate::screen::cursor::CursorShape::HollowBlock
+                        } else {
+                            active_grid.cursor.shape
+                        };
+
+                        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+
+                        pane_render_datas.push(PaneRenderData {
+                            pane_id: pane.id,
+                            rect: *rect,
+                            cells: &active_grid.cells,
+                            row_offset: active_grid.row_offset,
+                            cols: width,
+                            rows: height,
+                            font_size: pane.font_size,
+                            cursor_x: display_cursor_x,
+                            cursor_y: active_grid.cursor.y,
+                            cursor_visible,
+                            cursor_shape,
+                            theme: &pane.terminal.theme,
+                            bold_is_bright: pane.terminal.bold_is_bright,
+                            selection: &active_grid.selection,
+                            scroll_offset: offset,
+                            history_len,
+                            is_active,
+                        });
+                    }
+                }
+
                 let _ = gl_context.make_current(gl_surface);
-                renderer.draw(
-                    render_cells,
-                    width,
-                    height,
-                    display_cursor_x,
-                    active_grid.cursor.y,
-                    cursor_visible,
-                    cursor_shape,
-                    &active_tab.terminal.theme,
-                    active_tab.terminal.bold_is_bright,
-                    &active_grid.selection,
-                    offset,
-                    history_len,
-                    self.padding_x,
-                    self.padding_y,
+                renderer.draw_splits(
+                    &pane_render_datas,
+                    &separator_render_datas,
                     self.opacity,
                     effective_dim,
                     tab_bar_info,
+                    self.separator_color,
+                    self.active_separator_color,
                 );
                 let _ = gl_surface.swap_buffers(gl_context);
             }
             WindowRendererBackend::Software { renderer, surface } => {
+                let active_tab = &self.tabs[self.active_tab_index];
+                let mut cpu_pane_render_datas = Vec::with_capacity(pane_rects.len());
+
+                for rect in &pane_rects {
+                    if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
+                        let active_grid = pane.terminal.active_grid();
+                        let width = active_grid.width;
+                        let offset = active_grid.scroll_offset;
+                        let is_active = pane.id == active_pane_id;
+
+                        let cursor_visible = if !is_active || offset > 0 {
+                            false
+                        } else if self.cursor_blink_enabled {
+                            active_grid.cursor.visible && self.cursor_blink_on
+                        } else {
+                            active_grid.cursor.visible
+                        };
+
+                        let cursor_shape = if !self.is_focused
+                            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                        {
+                            crate::screen::cursor::CursorShape::HollowBlock
+                        } else {
+                            active_grid.cursor.shape
+                        };
+
+                        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+
+                        cpu_pane_render_datas.push(CpuPaneRenderData {
+                            pane_id: pane.id,
+                            rect: *rect,
+                            cells: &active_grid.cells,
+                            grid: active_grid,
+                            font_size: pane.font_size,
+                            theme: &pane.terminal.theme,
+                            cursor_visible,
+                            cursor_shape,
+                            display_cursor_x,
+                            is_active,
+                        });
+                    }
+                }
+
                 if let Ok(mut buffer) = surface.buffer_mut() {
-                    renderer.render_with_tab_bar(
-                        render_cells,
-                        active_grid,
-                        &active_tab.terminal.theme,
-                        self.padding_x,
-                        self.padding_y,
-                        cursor_visible,
-                        cursor_shape,
-                        display_cursor_x,
-                        self.is_focused,
+                    renderer.render_splits(
+                        &cpu_pane_render_datas,
+                        &separator_render_datas,
                         self.opacity,
                         self.window_dim,
+                        self.is_focused,
                         &mut buffer,
                         tab_bar_info,
+                        self.separator_color,
+                        self.active_separator_color,
                     );
                     let _ = buffer.present();
                 }
+
                 if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
-                    active_tab.terminal.active_grid_mut().clear_damage();
+                    for pane in active_tab.tree.panes_mut() {
+                        pane.terminal.active_grid_mut().clear_damage();
+                    }
                 }
             }
         }
@@ -721,6 +1065,7 @@ impl App {
 
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
+        let hide_mouse_on_typing = config.hide_mouse_on_typing().unwrap_or(true);
         let gpu = config.gpu_acceleration().unwrap_or(true);
         let fps_limit = match config.fps_limit() {
             Some(limit) => Some(limit),
@@ -734,8 +1079,8 @@ impl App {
         };
 
         let font_size = config.font_size();
-        let padding_x = config.padding_x().unwrap_or(8.0);
-        let padding_y = config.padding_y().unwrap_or(4.0);
+        let padding_x = config.pane_padding_x().unwrap_or(8.0);
+        let padding_y = config.pane_padding_y().unwrap_or(4.0);
         let font_scale_multiplier = config.font_scale_multiplier().unwrap_or(1.5);
         let bold_is_bright = config.bold_is_bright().unwrap_or(true);
 
@@ -812,6 +1157,7 @@ impl App {
 
         let tab_font_size = config.tab_font_size();
         backend.set_tab_font_size(tab_font_size);
+        let base_cell_width = backend.base_cell_width();
         let base_cell_height = backend.base_cell_height();
 
         let tab_bar = TabBar::from_config(&config);
@@ -830,6 +1176,7 @@ impl App {
 
         let shell_path = config
             .shell
+            .clone()
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".to_string());
 
@@ -845,11 +1192,13 @@ impl App {
 
         let window_id = window.id();
         let tab_id = 0u64;
+        let pane_id = 0u64;
         spawn_pty_reader(
             pty_master.clone(),
             self.event_loop_proxy.clone(),
             window_id,
             tab_id,
+            pane_id,
         );
 
         let tab = Tab::new(
@@ -861,6 +1210,14 @@ impl App {
             hold.unwrap_or(false),
             font_size,
         );
+
+        let separator_size = config.pane_separator_size();
+        let min_cols = config.pane_minimum_columns();
+        let min_rows = config.pane_minimum_rows();
+        let separator_color = config.pane_separator_color().and_then(parse_hex_color);
+        let active_separator_color = config
+            .pane_active_separator_color()
+            .and_then(parse_hex_color);
 
         let mut window_state = WindowState {
             window,
@@ -876,6 +1233,7 @@ impl App {
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
+            base_cell_width,
             base_cell_height,
             padding_x,
             padding_y,
@@ -892,20 +1250,28 @@ impl App {
             cursor_blink_enabled,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
+            hide_mouse_on_typing,
             opacity,
             window_dim,
             shell_path,
             tabs: vec![tab],
             active_tab_index: 0,
             next_tab_id: 1,
+            next_pane_id: 1,
+            next_split_id: 1,
             tab_bar,
             event_loop_proxy: self.event_loop_proxy.clone(),
             tab_bar_dirty: true,
             tab_bar_render_cache: None,
+            dragging_separator: None,
+            hovered_separator: None,
+            separator_size,
+            min_cols,
+            min_rows,
+            separator_color,
+            active_separator_color,
         };
 
-        // Render initial frame synchronously to eliminate any cold-start transparent/blank flicker,
-        // then reveal the window.
         window_state.draw();
         window_state.window.set_visible(true);
 
@@ -1066,10 +1432,10 @@ impl ApplicationHandler<CustomEvent> for App {
                     if !focused {
                         ws.is_mouse_down = false;
                     }
-                    let active_tab = ws.active_tab();
-                    if active_tab.terminal.focus_tracking {
+                    let active_pane = ws.active_pane();
+                    if active_pane.terminal.focus_tracking {
                         let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
-                        let _ = active_tab.pty_master.write(seq);
+                        let _ = active_pane.pty_master.write(seq);
                     }
                     ws.content_dirty = true;
                     ws.tab_bar_dirty = true;
@@ -1105,40 +1471,54 @@ impl ApplicationHandler<CustomEvent> for App {
             CustomEvent::PtyData {
                 window_id,
                 tab_id,
+                pane_id,
                 data,
             } => {
                 if let Some(ws) = self.windows.get_mut(&window_id)
                     && let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id)
+                    && let Some(pane) = tab.tree.find_pane_mut(pane_id)
                 {
-                    tab.last_activity = std::time::Instant::now();
-                    tab.terminal.feed(&data);
-                    if !tab.terminal.outgoing.is_empty() {
-                        let _ = tab.pty_master.write(&tab.terminal.outgoing);
-                        tab.terminal.outgoing.clear();
-                        if tab.terminal.outgoing.capacity() > 4096 {
-                            tab.terminal.outgoing.shrink_to_fit();
+                    pane.last_activity = std::time::Instant::now();
+                    tab.last_activity = pane.last_activity;
+                    pane.terminal.feed(&data);
+                    if !pane.terminal.outgoing.is_empty() {
+                        let _ = pane.pty_master.write(&pane.terminal.outgoing);
+                        pane.terminal.outgoing.clear();
+                        if pane.terminal.outgoing.capacity() > 4096 {
+                            pane.terminal.outgoing.shrink_to_fit();
                         }
                     }
                     if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
+                        ws.mark_interaction();
                         ws.needs_redraw = true;
                         ws.content_dirty = true;
                     }
                 }
             }
-            CustomEvent::PtyExit { window_id, tab_id } => {
+            CustomEvent::PtyExit {
+                window_id,
+                tab_id,
+                pane_id,
+            } => {
                 if let Some(ws) = self.windows.get_mut(&window_id)
                     && let Some(tab_idx) = ws.tabs.iter().position(|t| t.id == tab_id)
                 {
-                    if ws.tabs[tab_idx].hold {
-                        ws.tabs[tab_idx].current_title = "[Process exited]".to_string();
-                        if ws.active_tab_index == tab_idx {
-                            ws.window.set_title("[Process exited]");
+                    let tab = &mut ws.tabs[tab_idx];
+                    if let Some(pane) = tab.tree.find_pane_mut(pane_id)
+                        && pane.hold
+                    {
+                        pane.current_title = "[Process exited]".to_string();
+                        if tab.active_pane_id == pane_id {
+                            tab.current_title = "[Process exited]".to_string();
+                            if ws.active_tab_index == tab_idx {
+                                ws.window.set_title("[Process exited]");
+                            }
                         }
                         ws.tab_bar_dirty = true;
                         ws.needs_redraw = true;
                         return;
                     }
-                    let should_close_window = ws.close_tab(tab_idx);
+                    let should_close_window = ws.close_pane_in_tab(tab_id, pane_id);
                     if should_close_window {
                         self.windows.remove(&window_id);
                         crate::memory::trim_allocator_memory();
@@ -1192,21 +1572,26 @@ impl ApplicationHandler<CustomEvent> for App {
             }
 
             // Cursor and text blink toggle (500ms cycle)
-            if now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500) {
-                if ws.cursor_blink_enabled {
-                    ws.cursor_blink_on = !ws.cursor_blink_on;
-                }
+            if ws.cursor_blink_enabled
+                && now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500)
+            {
+                ws.cursor_blink_on = !ws.cursor_blink_on;
                 ws.last_cursor_blink = now;
                 ws.needs_redraw = true;
             }
 
-            let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
-            min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
+            if ws.cursor_blink_enabled {
+                let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
+                min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
+            }
 
             // Redraw scheduling
             if ws.needs_redraw {
                 if let Some(active_tab) = ws.tabs.get_mut(ws.active_tab_index)
-                    && active_tab.terminal.is_synchronized_output_active()
+                    && active_tab
+                        .active_pane_mut()
+                        .terminal
+                        .is_synchronized_output_active()
                 {
                     continue;
                 }

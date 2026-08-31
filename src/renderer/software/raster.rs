@@ -58,6 +58,10 @@ pub fn blit_alpha_glyph(
 
     let pixels = fb.as_mut_slice();
 
+    let fg_rb = fg & 0x00FF00FF;
+    let fg_g = fg & 0x0000FF00;
+    let fg_a = (fg >> 24) & 0xFF;
+
     for y in 0..max_y {
         let src_row = y * gw;
         let dst_row = ((py as usize) + y) * stride + (px as usize);
@@ -72,7 +76,16 @@ pub fn blit_alpha_glyph(
             if alpha == 255 {
                 *dst_pix = fg;
             } else {
-                *dst_pix = blend_alpha(*dst_pix, fg, alpha);
+                let a = alpha as u32;
+                let inv_a = 255 - a;
+                let dst = *dst_pix;
+                let dst_rb = dst & 0x00FF00FF;
+                let res_rb = ((fg_rb * a + dst_rb * inv_a) >> 8) & 0x00FF00FF;
+                let dst_g = dst & 0x0000FF00;
+                let res_g = ((fg_g * a + dst_g * inv_a) >> 8) & 0x0000FF00;
+                let dst_a = (dst >> 24) & 0xFF;
+                let res_a = ((fg_a * a + dst_a * inv_a) >> 8) & 0xFF;
+                *dst_pix = (res_a << 24) | res_rb | res_g;
             }
         }
     }

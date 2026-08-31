@@ -36,6 +36,7 @@ pub struct Grid {
     pub scroll_region_top: usize,
     pub scroll_region_bottom: usize,
     pub scroll_offset: usize,
+    pub row_offset: usize,
     pub hyperlinks: crate::hyperlink::osc8::HyperlinkStore,
     pub current_hyperlink: Option<std::sync::Arc<crate::hyperlink::osc8::Hyperlink>>,
 }
@@ -92,9 +93,33 @@ impl Grid {
             scroll_region_top: 0,
             scroll_region_bottom: height.saturating_sub(1),
             scroll_offset: 0,
+            row_offset: 0,
             hyperlinks: crate::hyperlink::osc8::HyperlinkStore::new(),
             current_hyperlink: None,
         }
+    }
+
+    #[inline(always)]
+    pub fn physical_row(&self, y: usize) -> usize {
+        if self.height == 0 {
+            0
+        } else {
+            (self.row_offset + y) % self.height
+        }
+    }
+
+    pub fn normalize_row_offset(&mut self) {
+        if self.row_offset == 0 || self.height <= 1 {
+            return;
+        }
+        let split_point = self.row_offset * self.width;
+        if split_point < self.cells.len() {
+            self.cells.rotate_left(split_point);
+        }
+        if self.row_offset < self.row_wrapped.len() {
+            self.row_wrapped.rotate_left(self.row_offset);
+        }
+        self.row_offset = 0;
     }
 
     #[inline(always)]
@@ -139,7 +164,8 @@ impl Grid {
         flags: CellFlags,
     ) {
         if self.cursor.x >= self.width {
-            let row_start = self.cursor.y * self.width;
+            let physical_y = self.physical_row(self.cursor.y);
+            let row_start = physical_y * self.width;
             let start = (row_start + self.cursor.x).min(self.cells.len());
             let end = (row_start + self.width).min(self.cells.len());
             if start < end {
@@ -151,8 +177,8 @@ impl Grid {
                     flags: CellFlags::empty(),
                 });
             }
-            if self.cursor.y < self.row_wrapped.len() {
-                self.row_wrapped[self.cursor.y] = true;
+            if physical_y < self.row_wrapped.len() {
+                self.row_wrapped[physical_y] = true;
             }
             self.cursor.x = 0;
             self.scroll_or_move_down(bg);
@@ -166,7 +192,8 @@ impl Grid {
             self.hyperlinks.remove_cell(abs_row, self.cursor.x);
         }
 
-        let idx = self.cursor.y * self.width + self.cursor.x;
+        let physical_y = self.physical_row(self.cursor.y);
+        let idx = physical_y * self.width + self.cursor.x;
         if idx < self.cells.len() {
             self.cells[idx] = Cell {
                 character: c,
@@ -188,9 +215,13 @@ impl Grid {
         underline_color: Option<Color>,
         flags: CellFlags,
     ) {
+        let has_hyperlinks = !self.hyperlinks.rows.is_empty();
+        let has_current_link = self.current_hyperlink.is_some();
+
         while !text.is_empty() {
             if self.cursor.x >= self.width {
-                let row_start = self.cursor.y * self.width;
+                let physical_y = self.physical_row(self.cursor.y);
+                let row_start = physical_y * self.width;
                 let start = (row_start + self.cursor.x).min(self.cells.len());
                 let end = (row_start + self.width).min(self.cells.len());
                 if start < end {
@@ -202,8 +233,8 @@ impl Grid {
                         flags: CellFlags::empty(),
                     });
                 }
-                if self.cursor.y < self.row_wrapped.len() {
-                    self.row_wrapped[self.cursor.y] = true;
+                if physical_y < self.row_wrapped.len() {
+                    self.row_wrapped[physical_y] = true;
                 }
                 self.cursor.x = 0;
                 self.scroll_or_move_down(bg);
@@ -216,31 +247,35 @@ impl Grid {
 
             let chunk_len = text.len().min(available_in_row);
             let chunk = &text[..chunk_len];
-            let row_start = self.cursor.y * self.width;
+            let physical_y = self.physical_row(self.cursor.y);
+            let row_start = physical_y * self.width;
             let dest_start = row_start + self.cursor.x;
             let dest_end = (dest_start + chunk_len).min(self.cells.len());
 
-            for (i, &b) in chunk.iter().enumerate() {
-                if dest_start + i < dest_end {
-                    self.cells[dest_start + i] = Cell {
-                        character: b as char,
-                        foreground: fg,
-                        background: bg,
-                        underline_color,
-                        flags,
-                    };
+            if dest_start < dest_end {
+                let actual_len = dest_end - dest_start;
+                let dest_slice = &mut self.cells[dest_start..dest_end];
+                for (cell, &b) in dest_slice.iter_mut().zip(&chunk[..actual_len]) {
+                    cell.character = b as char;
+                    cell.foreground = fg;
+                    cell.background = bg;
+                    cell.underline_color = underline_color;
+                    cell.flags = flags;
                 }
             }
 
-            if let Some(ref link) = self.current_hyperlink {
+            if has_current_link {
+                let link = self.current_hyperlink.as_ref().unwrap();
                 let abs_row = self.scrollback.len() + self.cursor.y;
                 for col in self.cursor.x..self.cursor.x + chunk_len {
                     self.hyperlinks.insert(abs_row, col, link.clone());
                 }
-            } else if !self.hyperlinks.rows.is_empty() {
+            } else if has_hyperlinks {
                 let abs_row = self.scrollback.len() + self.cursor.y;
-                for col in self.cursor.x..self.cursor.x + chunk_len {
-                    self.hyperlinks.remove_cell(abs_row, col);
+                if self.hyperlinks.rows.contains_key(&abs_row) {
+                    for col in self.cursor.x..self.cursor.x + chunk_len {
+                        self.hyperlinks.remove_cell(abs_row, col);
+                    }
                 }
             }
 
@@ -270,14 +305,16 @@ impl Grid {
         }
         let is_combining = UnicodeWidthChar::width(c) == Some(0);
         if is_combining && self.cursor.x > 0 {
+            let physical_y = self.physical_row(self.cursor.y);
+            let row_start = physical_y * self.width;
             let mut target_x = self.cursor.x - 1;
-            let mut idx = self.cursor.y * self.width + target_x;
+            let mut idx = row_start + target_x;
             if idx < self.cells.len()
                 && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION)
                 && target_x > 0
             {
                 target_x -= 1;
-                idx = self.cursor.y * self.width + target_x;
+                idx = row_start + target_x;
             }
             if idx < self.cells.len() {
                 let base_char = self.cells[idx].character;
@@ -316,7 +353,8 @@ impl Grid {
 
         if self.cursor.x + w > self.width {
             // Fill rest of the row with spaces, then wrap
-            let row_start = self.cursor.y * self.width;
+            let physical_y = self.physical_row(self.cursor.y);
+            let row_start = physical_y * self.width;
             let start = (row_start + self.cursor.x).min(self.cells.len());
             let end = (row_start + self.width).min(self.cells.len());
             if start < end {
@@ -328,12 +366,15 @@ impl Grid {
                     flags: CellFlags::empty(),
                 });
             }
-            if self.cursor.y < self.row_wrapped.len() {
-                self.row_wrapped[self.cursor.y] = true;
+            if physical_y < self.row_wrapped.len() {
+                self.row_wrapped[physical_y] = true;
             }
             self.cursor.x = 0;
             self.scroll_or_move_down(bg);
         }
+
+        let physical_y = self.physical_row(self.cursor.y);
+        let row_start = physical_y * self.width;
 
         if w == 2 {
             flags.insert(CellFlags::WIDE);
@@ -348,7 +389,7 @@ impl Grid {
                 self.hyperlinks.remove_cell(abs_row, self.cursor.x + 1);
             }
 
-            let idx = self.cursor.y * self.width + self.cursor.x;
+            let idx = row_start + self.cursor.x;
             if idx < self.cells.len() {
                 self.cells[idx] = Cell {
                     character: c,
@@ -360,7 +401,7 @@ impl Grid {
             }
             self.cursor.x += 1;
 
-            let idx_next = self.cursor.y * self.width + self.cursor.x;
+            let idx_next = row_start + self.cursor.x;
             if idx_next < self.cells.len() {
                 self.cells[idx_next] = Cell {
                     character: ' ',
@@ -380,7 +421,7 @@ impl Grid {
                 self.hyperlinks.remove_cell(abs_row, self.cursor.x);
             }
 
-            let idx = self.cursor.y * self.width + self.cursor.x;
+            let idx = row_start + self.cursor.x;
             if idx < self.cells.len() {
                 self.cells[idx] = Cell {
                     character: c,
@@ -417,8 +458,10 @@ impl Grid {
         if cursor_y >= self.height || cursor_x >= self.width {
             return;
         }
-        let start = cursor_y * self.width + cursor_x;
-        let end = (start + n).min(cursor_y * self.width + self.width);
+        let physical_y = self.physical_row(cursor_y);
+        let row_start = physical_y * self.width;
+        let start = row_start + cursor_x;
+        let end = (start + n).min(row_start + self.width);
         let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         self.cells[start..end].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
@@ -431,7 +474,8 @@ impl Grid {
         if cursor_y >= self.height || cursor_x >= self.width {
             return;
         }
-        let row_start = cursor_y * self.width;
+        let physical_y = self.physical_row(cursor_y);
+        let row_start = physical_y * self.width;
         let n = n.min(self.width - cursor_x);
         let move_start = row_start + cursor_x + n;
         let move_end = row_start + self.width;
@@ -451,7 +495,8 @@ impl Grid {
         if cursor_y >= self.height || cursor_x >= self.width {
             return;
         }
-        let row_start = cursor_y * self.width;
+        let physical_y = self.physical_row(cursor_y);
+        let row_start = physical_y * self.width;
         let n = n.min(self.width - cursor_x);
         let move_start = row_start + cursor_x;
         let move_end = row_start + self.width - n;
@@ -470,7 +515,8 @@ impl Grid {
         }
         let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
-        let row_start = self.cursor.y * self.width;
+        let physical_y = self.physical_row(self.cursor.y);
+        let row_start = physical_y * self.width;
         match mode {
             0 => {
                 // Cursor to end of line
@@ -498,8 +544,8 @@ impl Grid {
             }
             _ => {}
         }
-        if (mode == 2 || (mode == 0 && cur_x == 0)) && self.cursor.y < self.row_wrapped.len() {
-            self.row_wrapped[self.cursor.y] = false;
+        if (mode == 2 || (mode == 0 && cur_x == 0)) && physical_y < self.row_wrapped.len() {
+            self.row_wrapped[physical_y] = false;
         }
         self.damage.mark_dirty(self.cursor.y);
     }
@@ -511,7 +557,8 @@ impl Grid {
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         match mode {
             0 => {
-                // Cursor to end of display
+                // Cursor to end of display: normalize first if wrapped
+                self.normalize_row_offset();
                 let start = (cur_y * self.width + cur_x).min(self.cells.len());
                 self.cells[start..].fill(default_cell);
                 for y in cur_y..self.height {
@@ -523,6 +570,7 @@ impl Grid {
             }
             1 => {
                 // Start of display to cursor
+                self.normalize_row_offset();
                 let len = self.cells.len();
                 if len > 0 {
                     let end = (cur_y * self.width + cur_x).min(len - 1);
@@ -540,6 +588,7 @@ impl Grid {
                 self.cells.fill(default_cell);
                 self.damage.mark_all();
                 self.row_wrapped.fill(false);
+                self.row_offset = 0;
                 self.scrollback.clear();
                 self.scroll_offset = 0;
                 self.selection.clear();
@@ -586,7 +635,8 @@ impl Grid {
             } else {
                 let grid_y = y - history_len;
                 if grid_y < self.height {
-                    let row_start = grid_y * self.width;
+                    let physical_y = self.physical_row(grid_y);
+                    let row_start = physical_y * self.width;
                     for x in start_col..=end_col {
                         let idx = row_start + x;
                         if idx < self.cells.len() {
@@ -622,7 +672,8 @@ impl Grid {
         } else {
             let grid_y = abs_y - history_len;
             if grid_y < self.height {
-                let row_start = grid_y * self.width;
+                let physical_y = self.physical_row(grid_y);
+                let row_start = physical_y * self.width;
                 let row_end = (row_start + self.width).min(self.cells.len());
                 row_cells = self.cells[row_start..row_end].to_vec();
             }

@@ -28,19 +28,50 @@ fn main() {
     println!("============================================================");
 
     let baseline_rss = get_process_rss_kb();
-    println!("Process Baseline RSS: {:.2} MB ({} KB)\n", baseline_rss as f64 / 1024.0, baseline_rss);
+    println!(
+        "Process Baseline RSS: {:.2} MB ({} KB)\n",
+        baseline_rss as f64 / 1024.0,
+        baseline_rss
+    );
 
     // ── 1. Core Struct Sizes (Stack Footprint) ───────────────────────────────
     println!("--- 1. Core Data Structures Size Breakdown ---");
-    println!("  • Cell:             {:>4} bytes (16B cache-line target)", std::mem::size_of::<Cell>());
-    println!("  • Grid (struct):    {:>4} bytes", std::mem::size_of::<Grid>());
-    println!("  • Row:              {:>4} bytes", std::mem::size_of::<Row>());
-    println!("  • Chunk:            {:>4} bytes", std::mem::size_of::<Chunk>());
-    println!("  • Scrollback:       {:>4} bytes", std::mem::size_of::<Scrollback>());
-    println!("  • Terminal:         {:>4} bytes", std::mem::size_of::<Terminal>());
-    println!("  • AnsiParser:       {:>4} bytes", std::mem::size_of::<velox::ansi::parser::AnsiParser>());
-    println!("  • GlyphCache (CPU): {:>4} bytes", std::mem::size_of::<GlyphCache>());
-    println!("  • FallbackManager:  {:>4} bytes\n", std::mem::size_of::<FallbackManager>());
+    println!(
+        "  • Cell:             {:>4} bytes (16B cache-line target)",
+        std::mem::size_of::<Cell>()
+    );
+    println!(
+        "  • Grid (struct):    {:>4} bytes",
+        std::mem::size_of::<Grid>()
+    );
+    println!(
+        "  • Row:              {:>4} bytes",
+        std::mem::size_of::<Row>()
+    );
+    println!(
+        "  • Chunk:            {:>4} bytes",
+        std::mem::size_of::<Chunk>()
+    );
+    println!(
+        "  • Scrollback:       {:>4} bytes",
+        std::mem::size_of::<Scrollback>()
+    );
+    println!(
+        "  • Terminal:         {:>4} bytes",
+        std::mem::size_of::<Terminal>()
+    );
+    println!(
+        "  • AnsiParser:       {:>4} bytes",
+        std::mem::size_of::<velox::ansi::parser::AnsiParser>()
+    );
+    println!(
+        "  • GlyphCache (CPU): {:>4} bytes",
+        std::mem::size_of::<GlyphCache>()
+    );
+    println!(
+        "  • FallbackManager:  {:>4} bytes\n",
+        std::mem::size_of::<FallbackManager>()
+    );
 
     // ── 2. Grid & Viewport RAM Consumption ──────────────────────────────────
     println!("--- 2. Active Grid Memory per Resolution ---");
@@ -50,11 +81,28 @@ fn main() {
         ("Full-HD 1080p (147x51)", 147, 51),
         ("4K UHD (295x102)", 295, 102),
     ] {
-        let grid = Grid::new(cols, rows, Color { r: 255, g: 255, b: 255 }, Color { r: 0, g: 0, b: 0 }, 1000, false);
+        let grid = Grid::new(
+            cols,
+            rows,
+            Color {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            Color { r: 0, g: 0, b: 0 },
+            1000,
+            false,
+        );
         let cell_bytes = grid.cells.capacity() * std::mem::size_of::<Cell>();
         let wrapped_bytes = grid.row_wrapped.capacity();
         let total_grid_bytes = std::mem::size_of::<Grid>() + cell_bytes + wrapped_bytes;
-        println!("  • {:<24} ({} cells): {:.2} KB ({:.2} KB heap)", name, cols * rows, total_grid_bytes as f64 / 1024.0, cell_bytes as f64 / 1024.0);
+        println!(
+            "  • {:<24} ({} cells): {:.2} KB ({:.2} KB heap)",
+            name,
+            cols * rows,
+            total_grid_bytes as f64 / 1024.0,
+            cell_bytes as f64 / 1024.0
+        );
     }
     println!();
 
@@ -68,7 +116,13 @@ fn main() {
             let current_rss = get_process_rss_kb();
             let delta = current_rss.saturating_sub(rss_before_tabs);
             let per_tab = if i > 0 { delta as f64 / i as f64 } else { 0.0 };
-            println!("  • {:>2} Tabs active: RSS = {:.2} MB (Delta: +{:.2} MB, ~{:.2} KB/tab)", i, current_rss as f64 / 1024.0, delta as f64 / 1024.0, per_tab);
+            println!(
+                "  • {:>2} Tabs active: RSS = {:.2} MB (Delta: +{:.2} MB, ~{:.2} KB/tab)",
+                i,
+                current_rss as f64 / 1024.0,
+                delta as f64 / 1024.0,
+                per_tab
+            );
         }
     }
     drop(tabs);
@@ -87,10 +141,15 @@ fn main() {
         let rss_after_finite = get_process_rss_kb();
         let delta_finite = rss_after_finite.saturating_sub(rss_before);
 
-        println!("  • Finite Scrollback ({} lines): RSS Delta = +{:.2} MB ({:.2} bytes/line)",
+        println!(
+            "  • Finite Scrollback ({} lines): RSS Delta = +{:.2} MB ({:.2} bytes/line)",
             line_count,
             delta_finite as f64 / 1024.0,
-            if line_count > 0 { (delta_finite * 1024) as f64 / line_count as f64 } else { 0.0 }
+            if line_count > 0 {
+                (delta_finite * 1024) as f64 / line_count as f64
+            } else {
+                0.0
+            }
         );
     }
     println!();
@@ -101,7 +160,8 @@ fn main() {
     let initial_atlas = glyph_cache.atlas.total_capacity_bytes();
 
     // Populate ASCII + CJK + Emoji + Box drawing
-    let test_chars: Vec<char> = (32u8..127).map(|b| b as char)
+    let test_chars: Vec<char> = (32u8..127)
+        .map(|b| b as char)
         .chain("─│┌┐└┘├┤┬┴┼█▀▄▌▐░▒▓".chars())
         .chain("こんにちは世界！终端模拟器🦀🚀🌟🔥⚡️🎉".chars())
         .collect();
@@ -114,8 +174,12 @@ fn main() {
 
     let loaded_atlas = glyph_cache.atlas.total_capacity_bytes();
     let loaded_atlas_used = glyph_cache.atlas.total_bytes();
-    println!("  • Initial Atlas Capacity: {:.2} KB", initial_atlas as f64 / 1024.0);
-    println!("  • Populated Atlas ({:>3} glyphs rasterized): Used = {:.2} KB, Allocated = {:.2} KB",
+    println!(
+        "  • Initial Atlas Capacity: {:.2} KB",
+        initial_atlas as f64 / 1024.0
+    );
+    println!(
+        "  • Populated Atlas ({:>3} glyphs rasterized): Used = {:.2} KB, Allocated = {:.2} KB",
         test_chars.len() * 3,
         loaded_atlas_used as f64 / 1024.0,
         loaded_atlas as f64 / 1024.0
@@ -123,7 +187,10 @@ fn main() {
 
     glyph_cache.release_memory();
     let after_release = glyph_cache.atlas.total_capacity_bytes();
-    println!("  • After Memory Release / Prune: {:.2} KB", after_release as f64 / 1024.0);
+    println!(
+        "  • After Memory Release / Prune: {:.2} KB",
+        after_release as f64 / 1024.0
+    );
     println!();
 
     // ── 6. High-Throughput Heavy Stream RAM Stability ────────────────────────
@@ -142,6 +209,9 @@ fn main() {
     let rss_growth = rss_end.saturating_sub(rss_start);
 
     println!("  • Processed 100 MB stream in {:?}", elapsed);
-    println!("  • RSS Growth during 100 MB stream: +{:.2} KB (Zero Memory Leak / Bound)", rss_growth);
+    println!(
+        "  • RSS Growth during 100 MB stream: +{:.2} KB (Zero Memory Leak / Bound)",
+        rss_growth
+    );
     println!("============================================================");
 }

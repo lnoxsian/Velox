@@ -22,6 +22,11 @@ impl Selection {
         self.active = false;
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        !self.active || (self.start_x == self.end_x && self.start_y == self.end_y)
+    }
+
     pub fn start_selection(&mut self, x: usize, y: usize) {
         self.start_x = x;
         self.start_y = y;
@@ -98,6 +103,11 @@ mod tests {
         assert!(sel.contains(2, 5));
         assert!(sel.contains(5, 5));
         assert!(sel.contains(8, 5));
+        assert!(!sel.is_empty());
+
+        let mut single_click = Selection::new();
+        single_click.start_selection(4, 4);
+        assert!(single_click.is_empty());
         assert!(!sel.contains(1, 5));
         assert!(!sel.contains(9, 5));
     }

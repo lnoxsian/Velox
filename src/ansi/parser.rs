@@ -182,9 +182,10 @@ impl AnsiParser {
                     active.scroll_or_move_down(bg);
                 } else if active.cursor.x == 0
                     && active.cursor.y > 0
-                    && active.row_wrapped[active.cursor.y - 1]
+                    && active.row_wrapped[active.physical_row(active.cursor.y - 1)]
                 {
-                    let row_start = active.cursor.y * active.width;
+                    let physical_y = active.physical_row(active.cursor.y);
+                    let row_start = physical_y * active.width;
                     let is_empty = active
                         .cells
                         .get(row_start..row_start + active.width)
@@ -194,7 +195,8 @@ impl AnsiParser {
                             })
                         });
                     if is_empty {
-                        active.row_wrapped[active.cursor.y - 1] = false;
+                        let prev_physical_y = active.physical_row(active.cursor.y - 1);
+                        active.row_wrapped[prev_physical_y] = false;
                     } else {
                         active.scroll_or_move_down(bg);
                     }
@@ -210,7 +212,8 @@ impl AnsiParser {
                 let active = terminal.active_grid_mut();
                 if active.cursor.x > 0 {
                     active.cursor.x -= 1;
-                    let idx = active.cursor.y * active.width + active.cursor.x;
+                    let physical_y = active.physical_row(active.cursor.y);
+                    let idx = physical_y * active.width + active.cursor.x;
                     if idx < active.cells.len()
                         && active.cells[idx]
                             .flags
@@ -219,10 +222,11 @@ impl AnsiParser {
                     {
                         active.cursor.x -= 1;
                     }
-                } else if active.cursor.y > 0 && active.row_wrapped[active.cursor.y - 1] {
+                } else if active.cursor.y > 0 && active.row_wrapped[active.physical_row(active.cursor.y - 1)] {
                     active.cursor.y -= 1;
                     active.cursor.x = active.width.saturating_sub(1);
-                    let idx = active.cursor.y * active.width + active.cursor.x;
+                    let physical_y = active.physical_row(active.cursor.y);
+                    let idx = physical_y * active.width + active.cursor.x;
                     if idx < active.cells.len()
                         && active.cells[idx]
                             .flags
@@ -419,34 +423,64 @@ impl AnsiParser {
                     use std::io::Write;
                     let mut cur = std::io::Cursor::new(&mut buf[..]);
                     let _ = write!(cur, "\x1bP1$r0");
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::BOLD) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::BOLD)
+                    {
                         let _ = write!(cur, ";1");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::DIM) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::DIM)
+                    {
                         let _ = write!(cur, ";2");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::ITALIC) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::ITALIC)
+                    {
                         let _ = write!(cur, ";3");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::UNDERLINE) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::UNDERLINE)
+                    {
                         let _ = write!(cur, ";4");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::DOUBLE_UNDERLINE) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::DOUBLE_UNDERLINE)
+                    {
                         let _ = write!(cur, ";4:2");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::CURLY_UNDERLINE) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::CURLY_UNDERLINE)
+                    {
                         let _ = write!(cur, ";4:3");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::BLINK) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::BLINK)
+                    {
                         let _ = write!(cur, ";5");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::REVERSE) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::REVERSE)
+                    {
                         let _ = write!(cur, ";7");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::HIDDEN) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::HIDDEN)
+                    {
                         let _ = write!(cur, ";8");
                     }
-                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::STRIKE) {
+                    if terminal
+                        .current_flags
+                        .contains(crate::screen::cell::CellFlags::STRIKE)
+                    {
                         let _ = write!(cur, ";9");
                     }
                     let _ = write!(cur, "m\x1b\\");

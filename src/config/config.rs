@@ -64,6 +64,8 @@ pub struct WindowConfig {
     pub opacity: Option<f32>,
     #[serde(default)]
     pub window_dim: Option<f32>,
+    #[serde(default)]
+    pub hide_mouse_on_typing: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -207,6 +209,53 @@ pub struct TabsConfig {
     pub tab_accent_color: Option<String>,
 }
 
+fn default_separator_size() -> f32 {
+    2.0
+}
+
+fn default_minimum_columns() -> usize {
+    20
+}
+
+fn default_minimum_rows() -> usize {
+    5
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PanesConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_separator_size")]
+    pub separator_size: f32,
+    #[serde(default = "default_minimum_columns")]
+    pub minimum_columns: usize,
+    #[serde(default = "default_minimum_rows")]
+    pub minimum_rows: usize,
+    #[serde(default)]
+    pub separator_color: Option<String>,
+    #[serde(default)]
+    pub active_separator_color: Option<String>,
+    #[serde(default)]
+    pub padding_x: Option<f32>,
+    #[serde(default)]
+    pub padding_y: Option<f32>,
+}
+
+impl Default for PanesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            separator_size: default_separator_size(),
+            minimum_columns: default_minimum_columns(),
+            minimum_rows: default_minimum_rows(),
+            separator_color: None,
+            active_separator_color: None,
+            padding_x: None,
+            padding_y: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct Config {
     #[serde(default)]
@@ -215,6 +264,8 @@ pub struct Config {
     pub window: WindowConfig,
     #[serde(default)]
     pub tabs: TabsConfig,
+    #[serde(default)]
+    pub panes: PanesConfig,
     #[serde(default)]
     pub colors: Option<ConfigColors>,
 
@@ -324,11 +375,7 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) default_bg_legacy: Option<String>,
-    #[serde(
-        default,
-        rename = "opacity",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, rename = "opacity", skip_serializing_if = "Option::is_none")]
     pub(crate) opacity_legacy: Option<f32>,
     #[serde(
         default,
@@ -349,6 +396,12 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) tab_font_size_legacy: Option<f32>,
+    #[serde(
+        default,
+        rename = "hide_mouse_on_typing",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) hide_mouse_on_typing_legacy: Option<bool>,
 }
 
 impl Config {
@@ -463,6 +516,12 @@ impl Config {
             .or(self.scroll_on_keystroke_legacy)
     }
 
+    pub fn hide_mouse_on_typing(&self) -> Option<bool> {
+        self.window
+            .hide_mouse_on_typing
+            .or(self.hide_mouse_on_typing_legacy)
+    }
+
     pub fn show_tab_bar(&self) -> TabBarVisibility {
         self.tabs.show_tab_bar
     }
@@ -505,6 +564,38 @@ impl Config {
             .as_ref()
             .and_then(|c| c.default_bg.as_deref())
             .or(self.default_bg_legacy.as_deref())
+    }
+
+    pub fn panes_enabled(&self) -> bool {
+        self.panes.enabled
+    }
+
+    pub fn pane_separator_size(&self) -> f32 {
+        self.panes.separator_size.clamp(1.0, 20.0)
+    }
+
+    pub fn pane_minimum_columns(&self) -> usize {
+        self.panes.minimum_columns.max(1)
+    }
+
+    pub fn pane_minimum_rows(&self) -> usize {
+        self.panes.minimum_rows.max(1)
+    }
+
+    pub fn pane_separator_color(&self) -> Option<&str> {
+        self.panes.separator_color.as_deref()
+    }
+
+    pub fn pane_active_separator_color(&self) -> Option<&str> {
+        self.panes.active_separator_color.as_deref()
+    }
+
+    pub fn pane_padding_x(&self) -> Option<f32> {
+        self.panes.padding_x.or_else(|| self.padding_x())
+    }
+
+    pub fn pane_padding_y(&self) -> Option<f32> {
+        self.panes.padding_y.or_else(|| self.padding_y())
     }
 }
 
@@ -815,5 +906,18 @@ mod tests {
         "##;
         let cfg_underflow: Config = toml::from_str(toml_underflow).unwrap();
         assert_eq!(cfg_underflow.window_dim(), 0.0);
+    }
+
+    #[test]
+    fn test_config_mouse_hide() {
+        let empty_cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(empty_cfg.hide_mouse_on_typing(), None);
+
+        let toml_custom = r#"
+            [window]
+            hide_mouse_on_typing = true
+        "#;
+        let cfg_custom: Config = toml::from_str(toml_custom).unwrap();
+        assert_eq!(cfg_custom.hide_mouse_on_typing(), Some(true));
     }
 }

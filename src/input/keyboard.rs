@@ -3,6 +3,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 pub fn translate_key(
     key: &Key,
+    text: Option<&str>,
     modifiers: ModifiersState,
     cursor_keys_mode: bool,
     kitty_flags: u16,
@@ -50,13 +51,18 @@ pub fn translate_key(
                     buf.extend_from_slice(s.as_bytes());
                     return Some(buf);
                 }
-                Key::Character(s) if s.len() == 1 && (kitty_mod > 1 || report_all) => {
-                    let c = s.chars().next().unwrap();
-                    let cp = c as u32;
-                    let mut buf = SmallVec::<[u8; 16]>::new();
-                    let s = format!("\x1b[{};{}u", cp, kitty_mod);
-                    buf.extend_from_slice(s.as_bytes());
-                    return Some(buf);
+                Key::Character(s) if s.len() == 1 => {
+                    // In disambiguate mode, only encode modified keys (Ctrl, Alt, Super).
+                    // Shift alone on printable characters must produce standard text (not escape codes).
+                    let has_command_mod = has_ctrl || has_alt || has_super;
+                    if report_all || has_command_mod {
+                        let c = s.chars().next().unwrap();
+                        let cp = c.to_ascii_lowercase() as u32;
+                        let mut buf = SmallVec::<[u8; 16]>::new();
+                        let s = format!("\x1b[{};{}u", cp, kitty_mod);
+                        buf.extend_from_slice(s.as_bytes());
+                        return Some(buf);
+                    }
                 }
                 _ => {}
             }
@@ -94,8 +100,36 @@ pub fn translate_key(
     }
 
     // ── 4. Standard XTerm Modified & Unmodified Keys ─────────────────────────
+    // If winit resolved printable text (including dead keys, AltGr, IME, shifted symbols) and no Ctrl/Super modifier
+    if !has_ctrl
+        && !has_super
+        && let Some(t) = text
+        && !t.is_empty()
+    {
+        let buf = SmallVec::<[u8; 16]>::from_slice(t.as_bytes());
+        if has_alt {
+            let mut escaped: SmallVec<[u8; 16]> = smallvec![27u8];
+            escaped.extend_from_slice(&buf);
+            return Some(escaped);
+        } else {
+            return Some(buf);
+        }
+    }
+
     match key {
         Key::Character(s) => {
+            let buf = SmallVec::<[u8; 16]>::from_slice(s.as_bytes());
+            if has_alt {
+                let mut escaped: SmallVec<[u8; 16]> = smallvec![27u8];
+                escaped.extend_from_slice(&buf);
+                Some(escaped)
+            } else {
+                Some(buf)
+            }
+        }
+        Key::Dead(Some(c)) => {
+            let mut char_buf = [0u8; 4];
+            let s = c.encode_utf8(&mut char_buf);
             let buf = SmallVec::<[u8; 16]>::from_slice(s.as_bytes());
             if has_alt {
                 let mut escaped: SmallVec<[u8; 16]> = smallvec![27u8];

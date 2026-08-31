@@ -1,3 +1,5 @@
+use crate::app::pane::{Pane, PaneId};
+use crate::app::split::SplitTree;
 use crate::config::config::{Config, TabBarVisibility};
 use crate::pty::master::PtyMaster;
 use crate::terminal::terminal::Terminal;
@@ -52,8 +54,8 @@ fn tab_width_formula(viewport_width: f32, tab_count: usize, show_new_tab: bool) 
 
 pub struct Tab {
     pub id: u64,
-    pub pty_master: Arc<PtyMaster>,
-    pub terminal: Terminal,
+    pub tree: SplitTree,
+    pub active_pane_id: PaneId,
     pub custom_title: Option<String>,
     pub current_title: String,
     pub last_title_check: Instant,
@@ -73,11 +75,22 @@ impl Tab {
         hold: bool,
         font_size: f32,
     ) -> Self {
+        let pane_id = id;
+        let pane = Pane::with_title(
+            pane_id,
+            pty_master,
+            terminal,
+            custom_title.clone(),
+            initial_title.clone(),
+            font_size,
+            hold,
+        );
+        let tree = SplitTree::new(pane);
         let now = Instant::now();
         Self {
             id,
-            pty_master,
-            terminal,
+            tree,
+            active_pane_id: pane_id,
             custom_title,
             current_title: initial_title,
             last_title_check: now,
@@ -88,7 +101,63 @@ impl Tab {
         }
     }
 
+    pub fn with_pane(
+        id: u64,
+        initial_pane: Pane,
+        custom_title: Option<String>,
+        initial_title: String,
+        hold: bool,
+        font_size: f32,
+    ) -> Self {
+        let pane_id = initial_pane.id;
+        let tree = SplitTree::new(initial_pane);
+        let now = Instant::now();
+        Self {
+            id,
+            tree,
+            active_pane_id: pane_id,
+            custom_title,
+            current_title: initial_title,
+            last_title_check: now,
+            last_activity: now,
+            last_cleanup: now,
+            hold,
+            font_size,
+        }
+    }
+
+    #[inline]
+    pub fn active_pane(&self) -> &Pane {
+        self.tree
+            .find_pane(self.active_pane_id)
+            .or_else(|| self.tree.first_pane())
+            .expect("tab must have at least one pane")
+    }
+
+    #[inline]
+    pub fn active_pane_mut(&mut self) -> &mut Pane {
+        let active_id = self.active_pane_id;
+        if self.tree.find_pane(active_id).is_some() {
+            return self.tree.find_pane_mut(active_id).expect("pane exists");
+        }
+        if let Some(first_id) = self.tree.first_pane_id() {
+            self.active_pane_id = first_id;
+            return self
+                .tree
+                .find_pane_mut(first_id)
+                .expect("first pane exists");
+        }
+        panic!("tab must have at least one pane");
+    }
+
+    #[inline]
+    pub fn clear_unfocused_selections(&mut self) {
+        let active_id = self.active_pane_id;
+        self.tree.clear_unfocused_selections(active_id);
+    }
+
     /// Refresh foreground process / OSC title for this tab.
+    /// Delegates to active pane's title unless custom tab title is set.
     /// Returns `true` if the title actually changed.
     pub fn update_title(&mut self) -> bool {
         if self.last_title_check.elapsed() < std::time::Duration::from_millis(500) {
@@ -105,26 +174,15 @@ impl Tab {
             return true;
         }
 
-        // 2. OSC title explicitly set by shell/program (OSC 0 / OSC 2)
-        if let Some(ref osc) = self.terminal.osc_title {
-            if self.current_title == *osc {
-                return false;
-            }
-            self.current_title = osc.clone();
+        // 2. Delegate to active pane title
+        let new_title = {
+            let active_pane = self.active_pane_mut();
+            let _ = active_pane.update_title();
+            active_pane.current_title.clone()
+        };
+        if self.current_title != new_title {
+            self.current_title = new_title;
             return true;
-        }
-
-        // 3. Foreground process name polling
-        if let Some(program) = self.pty_master.get_foreground_process_name() {
-            let new_title = match &self.terminal.app_title {
-                Some(tpl) => tpl.replace("{program}", &program),
-                None => program,
-            };
-
-            if self.current_title != new_title {
-                self.current_title = new_title;
-                return true;
-            }
         }
 
         false

@@ -1,6 +1,8 @@
 use ab_glyph::{Font, PxScale, ScaleFont};
 use velox::font::fallback::get_system_font_db;
-use velox::font::resolved::{ResolvedFontSet, SYNTHETIC_ITALIC_SHEAR, get_or_create_outlined_glyph, shear_outline};
+use velox::font::resolved::{
+    ResolvedFontSet, SYNTHETIC_ITALIC_SHEAR, get_or_create_outlined_glyph, shear_outline,
+};
 use velox::renderer::software::glyph::{GlyphCache, GlyphKey};
 use velox::screen::cell::{Cell, CellFlags, Color};
 use velox::screen::grid::Grid;
@@ -11,7 +13,10 @@ fn test_font_style_resolution_matrix() {
     let set = ResolvedFontSet::resolve(db, "monospace");
 
     // 1. Regular is never synthetic italic
-    assert!(!set.regular.synthetic_italic, "Regular must not be synthetic italic");
+    assert!(
+        !set.regular.synthetic_italic,
+        "Regular must not be synthetic italic"
+    );
 
     // 2. Bold style
     let bold = set.get(true, false);
@@ -23,7 +28,10 @@ fn test_font_style_resolution_matrix() {
 
     // 4. Bold Italic style
     let bold_italic = set.get(true, true);
-    assert!(bold_italic.font.glyph_id('A').0 != 0, "Bold Italic face must resolve");
+    assert!(
+        bold_italic.font.glyph_id('A').0 != 0,
+        "Bold Italic face must resolve"
+    );
 }
 
 #[test]
@@ -115,8 +123,7 @@ fn test_multiple_font_sizes_synthetic_italic() {
 fn test_clipping_prevention_challenging_glyphs() {
     let mut cache = GlyphCache::from_font_family("monospace", 16.0, 1.0);
     let challenging_chars = [
-        '/', '\\', '(', ')', '[', ']', '{', '}', '<', '>',
-        'f', 'j', 'y', 'Q', '@', '&', '%', 'W',
+        '/', '\\', '(', ')', '[', ']', '{', '}', '<', '>', 'f', 'j', 'y', 'Q', '@', '&', '%', 'W',
     ];
 
     for &ch in &challenging_chars {
@@ -174,7 +181,8 @@ fn test_cache_key_isolation_regular_vs_italic() {
 #[test]
 fn test_software_renderer_renders_italic_and_bold_italic_lines() {
     let theme = velox::theme::theme::Theme::new();
-    let dummy_cache = velox::renderer::software::glyph::GlyphCache::from_font_family("monospace", 14.0, 1.0);
+    let dummy_cache =
+        velox::renderer::software::glyph::GlyphCache::from_font_family("monospace", 14.0, 1.0);
     let cell_w = dummy_cache.cell_width;
     let cell_h = dummy_cache.cell_height;
     let screen_w = 40 * cell_w;
@@ -193,7 +201,11 @@ fn test_software_renderer_renders_italic_and_bold_italic_lines() {
     let mut grid = Grid::new(
         40,
         10,
-        Color { r: 255, g: 255, b: 255 },
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
         Color { r: 0, g: 0, b: 0 },
         100,
         false,
@@ -204,37 +216,69 @@ fn test_software_renderer_renders_italic_and_bold_italic_lines() {
     let test_line_norm = "Normal: ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123";
     let test_line_ital = "Italic: abcdefghijklmnopqrstuvwxyz /\\()";
     let test_line_bold = "Bold:   f j y Q @ & % AV To Wa";
-    let test_line_bi   = "BoldIt: ABCDEFGHIJKLMNOPQRSTUVWXYZ /\\";
+    let test_line_bi = "BoldIt: ABCDEFGHIJKLMNOPQRSTUVWXYZ /\\";
 
     for (x, ch) in test_line_norm.chars().enumerate() {
         grid.cells[x] = Cell::new(
             ch,
-            Color { r: 240, g: 240, b: 240 },
-            Color { r: 20, g: 20, b: 20 },
+            Color {
+                r: 240,
+                g: 240,
+                b: 240,
+            },
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+            },
             CellFlags::empty(),
         );
     }
     for (x, ch) in test_line_ital.chars().enumerate() {
         grid.cells[40 + x] = Cell::new(
             ch,
-            Color { r: 200, g: 220, b: 255 },
-            Color { r: 20, g: 20, b: 20 },
+            Color {
+                r: 200,
+                g: 220,
+                b: 255,
+            },
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+            },
             CellFlags::ITALIC,
         );
     }
     for (x, ch) in test_line_bold.chars().enumerate() {
         grid.cells[80 + x] = Cell::new(
             ch,
-            Color { r: 255, g: 200, b: 200 },
-            Color { r: 20, g: 20, b: 20 },
+            Color {
+                r: 255,
+                g: 200,
+                b: 200,
+            },
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+            },
             CellFlags::BOLD,
         );
     }
     for (x, ch) in test_line_bi.chars().enumerate() {
         grid.cells[120 + x] = Cell::new(
             ch,
-            Color { r: 255, g: 255, b: 180 },
-            Color { r: 20, g: 20, b: 20 },
+            Color {
+                r: 255,
+                g: 255,
+                b: 180,
+            },
+            Color {
+                r: 20,
+                g: 20,
+                b: 20,
+            },
             CellFlags::BOLD | CellFlags::ITALIC,
         );
     }
@@ -262,5 +306,8 @@ fn test_software_renderer_renders_italic_and_bold_italic_lines() {
 
     // Verify framebuffer contains non-zero rendered pixels
     let non_zero_pixels = fb.iter().filter(|&&p| p != 0).count();
-    assert!(non_zero_pixels > 0, "Rendered frame must contain glyph pixels");
+    assert!(
+        non_zero_pixels > 0,
+        "Rendered frame must contain glyph pixels"
+    );
 }
