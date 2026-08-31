@@ -8,20 +8,20 @@ fn test_infinite_scrollback_million_lines_memory_bounded() {
 
     let total_lines = 100_000usize; // 100,000 lines test
     for i in 0..total_lines {
-        let cell = Cell {
-            character: (b'0' + (i % 10) as u8) as char,
-            foreground: Color {
+        let cell = Cell::new(
+            (b'0' + (i % 10) as u8) as char,
+            Color {
                 r: (i % 255) as u8,
                 g: ((i * 3) % 255) as u8,
                 b: ((i * 7) % 255) as u8,
             },
-            background: Color { r: 0, g: 0, b: 0 },
-            flags: if i % 2 == 0 {
+            Color { r: 0, g: 0, b: 0 },
+            if i % 2 == 0 {
                 CellFlags::BOLD
             } else {
                 CellFlags::UNDERLINE
             },
-        };
+        );
         scrollback.push_line(&[cell], i % 3 == 0);
     }
 
@@ -74,62 +74,62 @@ fn test_infinite_scrollback_all_cell_attributes_intact() {
     let mut scrollback = Scrollback::new(10, true);
 
     let test_cells = vec![
-        Cell {
-            character: 'W',
-            foreground: Color {
+        Cell::new(
+            'W',
+            Color {
                 r: 12,
                 g: 34,
                 b: 56,
             },
-            background: Color {
+            Color {
                 r: 78,
                 g: 90,
                 b: 12,
             },
-            flags: CellFlags::BOLD | CellFlags::ITALIC,
-        },
-        Cell {
-            character: '🚀',
-            foreground: Color {
+            CellFlags::BOLD | CellFlags::ITALIC,
+        ),
+        Cell::new(
+            '🚀',
+            Color {
                 r: 255,
                 g: 200,
                 b: 100,
             },
-            background: Color {
+            Color {
                 r: 50,
                 g: 60,
                 b: 70,
             },
-            flags: CellFlags::WIDE,
-        },
-        Cell {
-            character: ' ',
-            foreground: Color {
+            CellFlags::WIDE,
+        ),
+        Cell::new(
+            ' ',
+            Color {
                 r: 255,
                 g: 200,
                 b: 100,
             },
-            background: Color {
+            Color {
                 r: 50,
                 g: 60,
                 b: 70,
             },
-            flags: CellFlags::WIDE_CONTINUATION,
-        },
-        Cell {
-            character: 'U',
-            foreground: Color {
+            CellFlags::WIDE_CONTINUATION,
+        ),
+        Cell::new(
+            'U',
+            Color {
                 r: 11,
                 g: 22,
                 b: 33,
             },
-            background: Color {
+            Color {
                 r: 44,
                 g: 55,
                 b: 66,
             },
-            flags: CellFlags::CURLY_UNDERLINE | CellFlags::STRIKE,
-        },
+            CellFlags::CURLY_UNDERLINE | CellFlags::STRIKE,
+        ),
     ];
 
     // Push 600 lines so that the first lines are written to a disk chunk

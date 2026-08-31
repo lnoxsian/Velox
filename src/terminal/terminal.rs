@@ -49,6 +49,13 @@ pub struct Terminal {
     pub last_command_exit_code: Option<i32>,
     pub scroll_on_output: bool,
     pub scroll_on_keystroke: bool,
+    pub current_underline_color: Option<Color>,
+    pub last_char: Option<char>,
+    pub cell_width_px: u32,
+    pub cell_height_px: u32,
+    pub title_stack: Vec<String>,
+    pub kitty_keyboard_flags: u16,
+    pub kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
 }
 
 impl Terminal {
@@ -127,6 +134,13 @@ impl Terminal {
             last_command_exit_code: None,
             scroll_on_output,
             scroll_on_keystroke,
+            current_underline_color: None,
+            last_char: None,
+            cell_width_px: 10,
+            cell_height_px: 20,
+            title_stack: Vec::new(),
+            kitty_keyboard_flags: 0,
+            kitty_keyboard_stack: smallvec::SmallVec::new(),
         }
     }
 
@@ -209,13 +223,17 @@ impl Terminal {
                     let ascii_slice = &data[start..i];
                     let fg = self.current_fg;
                     let bg = self.current_bg;
+                    let uc = self.current_underline_color;
                     let flags = self.current_flags;
+                    if let Some(&last_b) = ascii_slice.last() {
+                        self.last_char = Some(last_b as char);
+                    }
                     let grid = if self.is_alt_screen {
                         &mut self.alt_grid
                     } else {
                         &mut self.grid
                     };
-                    grid.put_ascii_slice(ascii_slice, fg, bg, flags);
+                    grid.put_ascii_slice(ascii_slice, fg, bg, uc, flags);
                     continue;
                 }
             }
@@ -226,6 +244,11 @@ impl Terminal {
         self.parser = parser;
     }
 
+    pub fn set_cell_dimensions(&mut self, cw: u32, ch: u32) {
+        self.cell_width_px = cw.max(1);
+        self.cell_height_px = ch.max(1);
+    }
+
     pub fn send_to_shell(&mut self, data: &[u8]) {
         self.outgoing.extend_from_slice(data);
     }
@@ -233,6 +256,7 @@ impl Terminal {
     pub fn reset_attrs(&mut self) {
         self.current_fg = self.theme.default_fg;
         self.current_bg = self.theme.default_bg;
+        self.current_underline_color = None;
         self.current_flags = CellFlags::empty();
     }
 
@@ -245,6 +269,7 @@ impl Terminal {
         active_grid.saved_cursor = active_grid.cursor;
         active_grid.saved_fg = self.current_fg;
         active_grid.saved_bg = self.current_bg;
+        active_grid.saved_underline_color = self.current_underline_color;
         active_grid.saved_flags = self.current_flags;
         active_grid.saved_g0_charset = self.g0_charset;
         active_grid.saved_g1_charset = self.g1_charset;
@@ -261,6 +286,7 @@ impl Terminal {
         active_grid.clamp_cursor();
         self.current_fg = active_grid.saved_fg;
         self.current_bg = active_grid.saved_bg;
+        self.current_underline_color = active_grid.saved_underline_color;
         self.current_flags = active_grid.saved_flags;
         self.g0_charset = active_grid.saved_g0_charset;
         self.g1_charset = active_grid.saved_g1_charset;
@@ -971,4 +997,211 @@ mod tests {
         }
         assert_eq!(term.grid.hyperlink_at(14, 1), None);
     }
+
+    #[test]
+    fn test_sgr_58_59_underline_color() {
+        let mut term = Terminal::new(80, 24);
+        // SGR 58:2::255:100:50;4m -> Underline with RGB (255, 100, 50)
+        term.feed(b"\x1b[58:2::255:100:50;4mA");
+        let cell = &term.grid.cells[0];
+        assert_eq!(cell.character, 'A');
+        assert!(cell.flags.contains(CellFlags::UNDERLINE));
+        assert_eq!(
+            cell.underline_color,
+            Some(Color {
+                r: 255,
+                g: 100,
+                b: 50
+            })
+        );
+
+        // SGR 59m -> Reset underline color
+        term.feed(b"\x1b[59mB");
+        let cell_b = &term.grid.cells[1];
+        assert_eq!(cell_b.character, 'B');
+        assert!(cell_b.flags.contains(CellFlags::UNDERLINE));
+        assert_eq!(cell_b.underline_color, None);
+
+        // SGR 0m -> Reset all attributes
+        term.feed(b"\x1b[0mC");
+        let cell_c = &term.grid.cells[2];
+        assert_eq!(cell_c.character, 'C');
+        assert!(!cell_c.flags.contains(CellFlags::UNDERLINE));
+        assert_eq!(cell_c.underline_color, None);
+    }
+
+    #[test]
+    fn test_ecma48_rep_repeat_character() {
+        let mut term = Terminal::new(80, 24);
+        // Feed 'X' then repeat 5 times with REP (CSI 5 b)
+        term.feed(b"X\x1b[5b");
+        for x in 0..6 {
+            assert_eq!(term.grid.cells[x].character, 'X');
+        }
+        assert_eq!(term.grid.cells[6].character, ' ');
+        assert_eq!(term.grid.cursor.x, 6);
+    }
+
+    #[test]
+    fn test_csi_cbt_cursor_backward_tab() {
+        let mut term = Terminal::new(80, 24);
+        term.grid.cursor.x = 22; // In 3rd tab stop (tab stops at 0, 8, 16, 24...)
+        term.feed(b"\x1b[Z"); // CBT 1 -> x=16
+        assert_eq!(term.grid.cursor.x, 16);
+        term.feed(b"\x1b[2Z"); // CBT 2 -> x=0
+        assert_eq!(term.grid.cursor.x, 0);
+    }
+
+    #[test]
+    fn test_xtwinops_geometry_reporting_and_title_stack() {
+        let mut term = Terminal::new(80, 24);
+        term.set_cell_dimensions(10, 20);
+
+        // CSI 14 t -> Report text area size in pixels: \x1b[4;480;800t (24*20=480, 80*10=800)
+        term.outgoing.clear();
+        term.feed(b"\x1b[14t");
+        assert_eq!(term.outgoing, b"\x1b[4;480;800t");
+
+        // CSI 16 t -> Report cell size in pixels: \x1b[6;20;10t
+        term.outgoing.clear();
+        term.feed(b"\x1b[16t");
+        assert_eq!(term.outgoing, b"\x1b[6;20;10t");
+
+        // CSI 18 t -> Report text area size in chars: \x1b[8;24;80t
+        term.outgoing.clear();
+        term.feed(b"\x1b[18t");
+        assert_eq!(term.outgoing, b"\x1b[8;24;80t");
+
+        // Title stack: CSI 22 t (push) and CSI 23 t (pop)
+        term.osc_title = Some("Initial Title".to_string());
+        term.feed(b"\x1b[22t");
+        assert_eq!(term.title_stack.len(), 1);
+        assert_eq!(term.title_stack[0], "Initial Title");
+
+        term.osc_title = Some("New Title".to_string());
+        term.feed(b"\x1b[23t");
+        assert_eq!(term.osc_title, Some("Initial Title".to_string()));
+        assert!(term.title_stack.is_empty());
+    }
+
+    #[test]
+    fn test_kitty_keyboard_flags_negotiation() {
+        let mut term = Terminal::new(80, 24);
+
+        // CSI ? u -> Query flags
+        term.outgoing.clear();
+        term.feed(b"\x1b[?u");
+        assert_eq!(term.outgoing, b"\x1b[?0u");
+
+        // CSI > 3 u -> Push flags=3
+        term.feed(b"\x1b[>3u");
+        assert_eq!(term.kitty_keyboard_flags, 3);
+        assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3]);
+
+        // CSI = 1 ; 1 u -> Set flag bit 1
+        term.feed(b"\x1b[=1;1u");
+        assert_eq!(term.kitty_keyboard_flags, 3);
+
+        // CSI < 1 u -> Pop 1 level
+        term.feed(b"\x1b[<1u");
+        assert_eq!(term.kitty_keyboard_flags, 0);
+        assert!(term.kitty_keyboard_stack.is_empty());
+    }
+
+    #[test]
+    fn test_decrqss_queries() {
+        let mut term = Terminal::new(80, 24);
+
+        // SGR query: DCS $ q m ST
+        term.outgoing.clear();
+        term.feed(b"\x1b[1;4m"); // Bold + Underline
+        term.feed(b"\x1bP$qm\x1b\\");
+        assert_eq!(term.outgoing, b"\x1bP1$r0;1;4m\x1b\\");
+
+        // Margins query: DCS $ q r ST
+        term.outgoing.clear();
+        term.feed(b"\x1bP$qr\x1b\\");
+        assert_eq!(term.outgoing, b"\x1bP1$r1;24r\x1b\\");
+
+        // Cursor style query: DCS $ q space q ST
+        term.outgoing.clear();
+        term.feed(b"\x1b[2 q"); // Set block cursor
+        term.feed(b"\x1bP$q q\x1b\\");
+        assert_eq!(term.outgoing, b"\x1bP1$r2 q\x1b\\");
+    }
+
+    #[test]
+    fn test_xtgettcap_capability_queries() {
+        let mut term = Terminal::new(80, 24);
+
+        // Query RGB (524742) and Tc (5463)
+        term.outgoing.clear();
+        term.feed(b"\x1bP+q524742;5463\x1b\\");
+        assert_eq!(term.outgoing, b"\x1bP1+q524742=31;5463=31\x1b\\");
+
+        // Query TN (544e) -> xterm-256color (787465726d2d323536636f6c6f72)
+        term.outgoing.clear();
+        term.feed(b"\x1bP+q544e\x1b\\");
+        assert_eq!(
+            term.outgoing,
+            b"\x1bP1+q544e=787465726d2d323536636f6c6f72\x1b\\"
+        );
+
+        // Query unrecognized capabilities (e.g. ble.sh / starship query for "indn" and "query-os-name")
+        term.outgoing.clear();
+        term.feed(b"\x1bP+q696e646e;71756572792d6f732d6e616d65\x1b\\");
+        // Must be completely silent without leaking raw hex characters to shell stdin
+        assert!(term.outgoing.is_empty());
+    }
+
+    #[test]
+    fn test_xterm_modified_arrow_and_kitty_keyboard_translation() {
+        use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+        // Shift+Tab -> CBT (\x1b[Z)
+        let cbt = crate::input::keyboard::translate_key(
+            &Key::Named(NamedKey::Tab),
+            ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(cbt.as_deref(), Some(&b"\x1b[Z"[..]));
+
+        // Ctrl+Up -> \x1b[1;5A
+        let ctrl_up = crate::input::keyboard::translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_up.as_deref(), Some(&b"\x1b[1;5A"[..]));
+
+        // Alt+Left -> \x1b[1;3D
+        let alt_left = crate::input::keyboard::translate_key(
+            &Key::Named(NamedKey::ArrowLeft),
+            ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(alt_left.as_deref(), Some(&b"\x1b[1;3D"[..]));
+
+        // Kitty Keyboard Protocol: Ctrl+A with flags=1 -> \x1b[97;5u (codepoint 97 for 'a', mod=5)
+        let kitty_ctrl_a = crate::input::keyboard::translate_key(
+            &Key::Character("a".into()),
+            ModifiersState::CONTROL,
+            false,
+            1,
+        );
+        assert_eq!(kitty_ctrl_a.as_deref(), Some(&b"\x1b[97;5u"[..]));
+
+        // Kitty Keyboard Protocol: Shift+Enter with flags=1 -> \x1b[13;2u
+        let kitty_shift_enter = crate::input::keyboard::translate_key(
+            &Key::Named(NamedKey::Enter),
+            ModifiersState::SHIFT,
+            false,
+            1,
+        );
+        assert_eq!(kitty_shift_enter.as_deref(), Some(&b"\x1b[13;2u"[..]));
+    }
 }
+

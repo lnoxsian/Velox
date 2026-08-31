@@ -442,14 +442,21 @@ impl CpuRenderer {
                 }
 
                 // Render text decorations
+                let ul_color = if let Some(uc) = cell.underline_color {
+                    let dim_c = uc.dim(effective_dim);
+                    PackedColor::from_color(dim_c).to_u32()
+                } else {
+                    fg
+                };
+
                 if cell.flags.contains(CellFlags::UNDERLINE) {
-                    draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                    draw_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
                 }
                 if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                    draw_double_underline(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                    draw_double_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
                 }
                 if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                    draw_curly_underline(&mut self.framebuffer, px, py, cell_w, cell_h, fg);
+                    draw_curly_underline(&mut self.framebuffer, px, py, cell_w, cell_h, ul_color);
                 }
                 if cell.flags.contains(CellFlags::STRIKE) {
                     draw_strike(&mut self.framebuffer, px, py, cell_w, cell_h, fg);

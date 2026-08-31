@@ -81,12 +81,7 @@ impl Grid {
         }
 
         // Clear bottom lines of the scrolling region
-        let default_cell = Cell {
-            character: ' ',
-            foreground: self.default_fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', self.default_fg, bg, CellFlags::empty());
         let clear_start = (bottom + 1 - u_delta) * self.width;
         let clear_end = (bottom + 1) * self.width;
         self.cells[clear_start..clear_end].fill(default_cell);
@@ -126,12 +121,7 @@ impl Grid {
             }
         }
 
-        let default_cell = Cell {
-            character: ' ',
-            foreground: self.default_fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', self.default_fg, bg, CellFlags::empty());
         let clear_start = top * self.width;
         let clear_end = (top + u_delta) * self.width;
         self.cells[clear_start..clear_end].fill(default_cell);
@@ -187,12 +177,7 @@ impl Grid {
                         .copy_within(top..=last_valid, top + u_delta);
                 }
             }
-            let default_cell = Cell {
-                character: ' ',
-                foreground: fg,
-                background: bg,
-                flags: CellFlags::empty(),
-            };
+            let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
             let clear_start = top * self.width;
             let clear_end = (top + u_delta) * self.width;
             for cell in &mut self.cells[clear_start..clear_end] {
@@ -228,12 +213,7 @@ impl Grid {
                         .copy_within((top + u_delta)..=last_valid, top);
                 }
             }
-            let default_cell = Cell {
-                character: ' ',
-                foreground: fg,
-                background: bg,
-                flags: CellFlags::empty(),
-            };
+            let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
             let clear_start = (bottom + 1 - u_delta) * self.width;
             let clear_end = (bottom + 1) * self.width;
             for cell in &mut self.cells[clear_start..clear_end] {

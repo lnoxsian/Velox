@@ -35,6 +35,10 @@ harness = false
 name = "terminal_throughput"
 harness = false
 
+[[bench]]
+name = "memory_benchmark"
+harness = false
+
 [profile.optimized-release]
 inherits = "release"
 opt-level = 3

@@ -100,12 +100,12 @@ fn test_software_renderer_damage_partial_row() {
 
     // Modify only row 5
     grid.damage.mark_dirty(5);
-    grid.cells[5 * 80 + 10] = Cell {
-        character: 'A',
-        foreground: Color { r: 255, g: 0, b: 0 },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::BOLD,
-    };
+    grid.cells[5 * 80 + 10] = Cell::new(
+        'A',
+        Color { r: 255, g: 0, b: 0 },
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::BOLD,
+    );
 
     renderer.render(
         &grid.cells,
@@ -200,7 +200,7 @@ fn test_software_renderer_scroll_selection() {
     // Populate lines 0..15 so scrollback has 5 lines and active grid has 10 lines
     for i in 0..15 {
         for c in format!("line-{}", i).chars() {
-            grid.put_char(c, grid.default_fg, grid.default_bg, CellFlags::empty());
+            grid.put_char(c, grid.default_fg, grid.default_bg, None, CellFlags::empty());
         }
         if i < 14 {
             grid.scroll_or_move_down(grid.default_bg);
@@ -254,46 +254,46 @@ fn test_software_renderer_decorations() {
     let theme = Theme::new();
     let mut target = vec![0u32; 800 * 600];
 
-    grid.cells[0] = Cell {
-        character: 'U',
-        foreground: Color {
+    grid.cells[0] = Cell::new(
+        'U',
+        Color {
             r: 255,
             g: 255,
             b: 0,
         },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::UNDERLINE,
-    };
-    grid.cells[1] = Cell {
-        character: 'D',
-        foreground: Color {
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::UNDERLINE,
+    );
+    grid.cells[1] = Cell::new(
+        'D',
+        Color {
             r: 255,
             g: 255,
             b: 0,
         },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::DOUBLE_UNDERLINE,
-    };
-    grid.cells[2] = Cell {
-        character: 'C',
-        foreground: Color {
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::DOUBLE_UNDERLINE,
+    );
+    grid.cells[2] = Cell::new(
+        'C',
+        Color {
             r: 255,
             g: 255,
             b: 0,
         },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::CURLY_UNDERLINE,
-    };
-    grid.cells[3] = Cell {
-        character: 'S',
-        foreground: Color {
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::CURLY_UNDERLINE,
+    );
+    grid.cells[3] = Cell::new(
+        'S',
+        Color {
             r: 255,
             g: 255,
             b: 0,
         },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::STRIKE,
-    };
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::STRIKE,
+    );
 
     grid.damage.mark_dirty(0);
     renderer.render(
@@ -331,12 +331,12 @@ fn test_software_renderer_scrollback_rendering() {
     let mut target = vec![0u32; 800 * 600];
 
     // Push historical row into scrollback
-    let scroll_cell = Cell {
-        character: 'H',
-        foreground: Color { r: 255, g: 0, b: 0 },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::empty(),
-    };
+    let scroll_cell = Cell::new(
+        'H',
+        Color { r: 255, g: 0, b: 0 },
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::empty(),
+    );
     grid.scrollback.push_line(&[scroll_cell], false);
     grid.scroll_offset = 1;
 
@@ -376,12 +376,12 @@ fn test_software_renderer_blinking_text() {
     let mut target = vec![0u32; 800 * 600];
 
     // Create a blinking green 'A' cell
-    grid.cells[0] = Cell {
-        character: 'A',
-        foreground: Color { r: 0, g: 255, b: 0 },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::BLINK,
-    };
+    grid.cells[0] = Cell::new(
+        'A',
+        Color { r: 0, g: 255, b: 0 },
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::BLINK,
+    );
     grid.damage.mark_dirty(0);
 
     // 1. Phase 1: blink_on is true (start_time elapsed 0ms)
@@ -477,16 +477,16 @@ fn test_software_renderer_double_line_table() {
 
     for (y, row) in table_rows.iter().enumerate() {
         for (x, &ch) in row.iter().enumerate() {
-            grid.cells[y * 80 + x] = Cell {
-                character: ch,
-                foreground: Color {
+            grid.cells[y * 80 + x] = Cell::new(
+                ch,
+                Color {
                     r: 0,
                     g: 255,
                     b: 255,
                 },
-                background: Color { r: 0, g: 0, b: 0 },
-                flags: CellFlags::empty(),
-            };
+                Color { r: 0, g: 0, b: 0 },
+                CellFlags::empty(),
+            );
         }
         grid.damage.mark_dirty(y);
     }
@@ -536,16 +536,16 @@ fn test_software_renderer_all_box_drawing_chars() {
     for y in 0..4 {
         for x in 0..32 {
             if let Some(ch) = char::from_u32(char_idx) {
-                grid.cells[y * 80 + x] = Cell {
-                    character: ch,
-                    foreground: Color {
+                grid.cells[y * 80 + x] = Cell::new(
+                    ch,
+                    Color {
                         r: 255,
                         g: 255,
                         b: 0,
                     },
-                    background: Color { r: 0, g: 0, b: 0 },
-                    flags: CellFlags::empty(),
-                };
+                    Color { r: 0, g: 0, b: 0 },
+                    CellFlags::empty(),
+                );
             }
             char_idx += 1;
         }
@@ -769,16 +769,16 @@ fn test_software_renderer_unfocused_dim() {
     let mut grid = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
 
     // Populate cell with bright text 'A'
-    grid.cells[0] = Cell {
-        character: 'A',
-        foreground: Color {
+    grid.cells[0] = Cell::new(
+        'A',
+        Color {
             r: 255,
             g: 255,
             b: 255,
         },
-        background: Color { r: 50, g: 50, b: 50 },
-        flags: CellFlags::empty(),
-    };
+        Color { r: 50, g: 50, b: 50 },
+        CellFlags::empty(),
+    );
     grid.damage.mark_dirty(0);
 
     let mut focused_target = vec![0u32; 800 * 600];
@@ -867,7 +867,7 @@ fn test_software_renderer_unfocused_dim() {
         max_focused_text_r
     );
     assert!(
-        max_unfocused_text_r <= 135 && max_unfocused_text_r >= 100,
+        (100..=135).contains(&max_unfocused_text_r),
         "Unfocused text must be dimmed to ~125 (got {})",
         max_unfocused_text_r
     );

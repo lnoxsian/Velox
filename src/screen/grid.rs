@@ -23,6 +23,7 @@ pub struct Grid {
     pub saved_cursor: Cursor,
     pub saved_fg: Color,
     pub saved_bg: Color,
+    pub saved_underline_color: Option<Color>,
     pub saved_flags: CellFlags,
     pub saved_g0_charset: u8,
     pub saved_g1_charset: u8,
@@ -52,6 +53,7 @@ impl Grid {
             character: ' ',
             foreground: fg,
             background: bg,
+            underline_color: None,
             flags: CellFlags::empty(),
         };
         Self {
@@ -73,12 +75,17 @@ impl Grid {
             },
             saved_fg: fg,
             saved_bg: bg,
+            saved_underline_color: None,
             saved_flags: CellFlags::empty(),
             saved_g0_charset: 0,
             saved_g1_charset: 0,
             saved_active_charset: 0,
             damage: DamageTracker::new(height),
-            scrollback: Scrollback::new(scrollback_limit, infinite_scrollback),
+            scrollback: {
+                let mut sb = Scrollback::new(scrollback_limit, infinite_scrollback);
+                sb.default_bg = Some(bg);
+                sb
+            },
             selection: Selection::new(),
             default_fg: fg,
             default_bg: bg,
@@ -123,7 +130,14 @@ impl Grid {
     }
 
     #[inline(always)]
-    pub fn put_ascii(&mut self, c: char, fg: Color, bg: Color, flags: CellFlags) {
+    pub fn put_ascii(
+        &mut self,
+        c: char,
+        fg: Color,
+        bg: Color,
+        underline_color: Option<Color>,
+        flags: CellFlags,
+    ) {
         if self.cursor.x >= self.width {
             let row_start = self.cursor.y * self.width;
             let start = (row_start + self.cursor.x).min(self.cells.len());
@@ -133,6 +147,7 @@ impl Grid {
                     character: ' ',
                     foreground: fg,
                     background: bg,
+                    underline_color: None,
                     flags: CellFlags::empty(),
                 });
             }
@@ -157,6 +172,7 @@ impl Grid {
                 character: c,
                 foreground: fg,
                 background: bg,
+                underline_color,
                 flags,
             };
         }
@@ -164,7 +180,14 @@ impl Grid {
         self.damage.mark_dirty(self.cursor.y);
     }
 
-    pub fn put_ascii_slice(&mut self, mut text: &[u8], fg: Color, bg: Color, flags: CellFlags) {
+    pub fn put_ascii_slice(
+        &mut self,
+        mut text: &[u8],
+        fg: Color,
+        bg: Color,
+        underline_color: Option<Color>,
+        flags: CellFlags,
+    ) {
         while !text.is_empty() {
             if self.cursor.x >= self.width {
                 let row_start = self.cursor.y * self.width;
@@ -175,6 +198,7 @@ impl Grid {
                         character: ' ',
                         foreground: fg,
                         background: bg,
+                        underline_color: None,
                         flags: CellFlags::empty(),
                     });
                 }
@@ -202,6 +226,7 @@ impl Grid {
                         character: b as char,
                         foreground: fg,
                         background: bg,
+                        underline_color,
                         flags,
                     };
                 }
@@ -225,10 +250,17 @@ impl Grid {
         }
     }
 
-    pub fn put_char(&mut self, c: char, fg: Color, bg: Color, mut flags: CellFlags) {
+    pub fn put_char(
+        &mut self,
+        c: char,
+        fg: Color,
+        bg: Color,
+        underline_color: Option<Color>,
+        mut flags: CellFlags,
+    ) {
         let cp = c as u32;
         if (0x20..0x7f).contains(&cp) {
-            self.put_ascii(c, fg, bg, flags);
+            self.put_ascii(c, fg, bg, underline_color, flags);
             return;
         }
 
@@ -292,6 +324,7 @@ impl Grid {
                     character: ' ',
                     foreground: fg,
                     background: bg,
+                    underline_color: None,
                     flags: CellFlags::empty(),
                 });
             }
@@ -321,6 +354,7 @@ impl Grid {
                     character: c,
                     foreground: fg,
                     background: bg,
+                    underline_color,
                     flags,
                 };
             }
@@ -332,6 +366,7 @@ impl Grid {
                     character: ' ',
                     foreground: fg,
                     background: bg,
+                    underline_color: None,
                     flags: CellFlags::WIDE_CONTINUATION,
                 };
             }
@@ -351,12 +386,28 @@ impl Grid {
                     character: c,
                     foreground: fg,
                     background: bg,
+                    underline_color,
                     flags,
                 };
             }
             self.cursor.x += 1;
         }
         self.damage.mark_dirty(self.cursor.y);
+    }
+
+    /// Repeat the given character `n` times using current attributes (ECMA-48 REP).
+    pub fn repeat_char(
+        &mut self,
+        n: usize,
+        c: char,
+        fg: Color,
+        bg: Color,
+        underline_color: Option<Color>,
+        flags: CellFlags,
+    ) {
+        for _ in 0..n {
+            self.put_char(c, fg, bg, underline_color, flags);
+        }
     }
 
     pub fn erase_characters(&mut self, n: usize, fg: Color, bg: Color) {
@@ -368,12 +419,7 @@ impl Grid {
         }
         let start = cursor_y * self.width + cursor_x;
         let end = (start + n).min(cursor_y * self.width + self.width);
-        let default_cell = Cell {
-            character: ' ',
-            foreground: fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         self.cells[start..end].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
     }
@@ -392,12 +438,7 @@ impl Grid {
         let dest = row_start + cursor_x;
         self.cells.copy_within(move_start..move_end, dest);
 
-        let default_cell = Cell {
-            character: ' ',
-            foreground: fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         let fill_start = row_start + self.width - n;
         self.cells[fill_start..row_start + self.width].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
@@ -417,12 +458,7 @@ impl Grid {
         let dest = row_start + cursor_x + n;
         self.cells.copy_within(move_start..move_end, dest);
 
-        let default_cell = Cell {
-            character: ' ',
-            foreground: fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         self.cells[move_start..move_start + n].fill(default_cell);
         self.damage.mark_dirty(cursor_y);
     }
@@ -432,12 +468,7 @@ impl Grid {
         if self.height == 0 || self.width == 0 {
             return;
         }
-        let default_cell = Cell {
-            character: ' ',
-            foreground: fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         let row_start = self.cursor.y * self.width;
         match mode {
@@ -475,12 +506,7 @@ impl Grid {
 
     pub fn erase_display(&mut self, mode: u8, fg: Color, bg: Color) {
         self.clamp_cursor();
-        let default_cell = Cell {
-            character: ' ',
-            foreground: fg,
-            background: bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         let cur_y = self.cursor.y.min(self.height.saturating_sub(1));
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         match mode {
@@ -671,12 +697,14 @@ mod tests {
             'a',
             Color { r: 0, g: 0, b: 0 },
             Color { r: 0, g: 0, b: 0 },
+            None,
             CellFlags::empty(),
         );
         grid.put_char(
             '\u{0301}',
             Color { r: 0, g: 0, b: 0 },
             Color { r: 0, g: 0, b: 0 },
+            None,
             CellFlags::empty(),
         );
 
@@ -697,7 +725,7 @@ mod tests {
 
         // Write a 70-character line (fits on 80 cols without wrapping)
         for c in "0123456789012345678901234567890123456789012345678901234567890123456789".chars() {
-            grid.put_char(c, fg, bg, CellFlags::empty());
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
         }
 
         assert!(!grid.row_wrapped[0]);
@@ -735,7 +763,7 @@ mod tests {
 
         // Fill 50 characters, cursor will be at x=50, y=0
         for _ in 0..50 {
-            grid.put_char('X', fg, bg, CellFlags::empty());
+            grid.put_char('X', fg, bg, None, CellFlags::empty());
         }
         assert_eq!(grid.cursor.x, 50);
         grid.resize(30, 10);
@@ -780,7 +808,7 @@ mod tests {
         // Fill history so scrollback has lines
         for i in 0..15 {
             for c in format!("line {}", i).chars() {
-                grid.put_char(c, fg, bg, CellFlags::empty());
+                grid.put_char(c, fg, bg, None, CellFlags::empty());
             }
             grid.scroll_or_move_down(bg);
             grid.cursor.x = 0;
@@ -866,7 +894,7 @@ mod tests {
         // Put 10 lines of text (5 scroll into scrollback, 5 remain in active grid)
         for i in 0..10 {
             for c in format!("line-{}", i).chars() {
-                grid.put_char(c, fg, bg, CellFlags::empty());
+                grid.put_char(c, fg, bg, None, CellFlags::empty());
             }
             if i < 9 {
                 grid.scroll_or_move_down(bg);
@@ -907,7 +935,7 @@ mod tests {
 
         for i in 0..10 {
             for c in format!("hello_world_{} foo-bar", i).chars() {
-                grid.put_char(c, fg, bg, CellFlags::empty());
+                grid.put_char(c, fg, bg, None, CellFlags::empty());
             }
             if i < 9 {
                 grid.scroll_or_move_down(bg);
@@ -943,7 +971,7 @@ mod tests {
         // Scroll 10 lines into scrollback (filling the 5-line capacity)
         for i in 0..10 {
             for c in format!("line-{}", i).chars() {
-                grid.put_char(c, fg, bg, CellFlags::empty());
+                grid.put_char(c, fg, bg, None, CellFlags::empty());
             }
             grid.scroll(1, bg);
         }

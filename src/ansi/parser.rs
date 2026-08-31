@@ -54,11 +54,6 @@ impl AnsiParser {
                     self.state = ParserState::DCS;
                     self.dcs_buf.clear();
                 } else if byte == b'\\' {
-                    if !self.dcs_buf.is_empty() {
-                        self.dispatch_dcs(terminal);
-                    } else {
-                        self.dispatch_osc(terminal);
-                    }
                     self.state = ParserState::Ground;
                 } else if byte == b'(' {
                     self.state = ParserState::EscapeDesignateG0;
@@ -139,9 +134,19 @@ impl AnsiParser {
                     self.dispatch_osc(terminal);
                     self.state = ParserState::Ground;
                 } else if byte == 0x1b {
-                    self.state = ParserState::Escape;
+                    self.state = ParserState::OscEscape;
                 } else {
                     self.osc_buf.push(byte);
+                }
+            }
+            ParserState::OscEscape => {
+                if byte == b'\\' {
+                    self.dispatch_osc(terminal);
+                    self.state = ParserState::Ground;
+                } else {
+                    self.osc_buf.clear();
+                    crate::ansi::esc::handle_escape(byte, terminal);
+                    self.state = ParserState::Ground;
                 }
             }
             ParserState::DCS => {
@@ -149,9 +154,19 @@ impl AnsiParser {
                     self.dispatch_dcs(terminal);
                     self.state = ParserState::Ground;
                 } else if byte == 0x1b {
-                    self.state = ParserState::Escape;
+                    self.state = ParserState::DcsEscape;
                 } else {
                     self.dcs_buf.push(byte);
+                }
+            }
+            ParserState::DcsEscape => {
+                if byte == b'\\' {
+                    self.dispatch_dcs(terminal);
+                    self.state = ParserState::Ground;
+                } else {
+                    self.dcs_buf.clear();
+                    crate::ansi::esc::handle_escape(byte, terminal);
+                    self.state = ParserState::Ground;
                 }
             }
         }
@@ -246,10 +261,12 @@ impl AnsiParser {
                 c = Self::translate_dec_line_drawing(c);
             }
 
+            terminal.last_char = Some(c);
             let fg = terminal.current_fg;
             let bg = terminal.current_bg;
+            let uc = terminal.current_underline_color;
             let flags = terminal.current_flags;
-            terminal.active_grid_mut().put_char(c, fg, bg, flags);
+            terminal.active_grid_mut().put_char(c, fg, bg, uc, flags);
             return;
         }
 
@@ -266,10 +283,12 @@ impl AnsiParser {
                     c = Self::translate_dec_line_drawing(c);
                 }
 
+                terminal.last_char = Some(c);
                 let fg = terminal.current_fg;
                 let bg = terminal.current_bg;
+                let uc = terminal.current_underline_color;
                 let flags = terminal.current_flags;
-                terminal.active_grid_mut().put_char(c, fg, bg, flags);
+                terminal.active_grid_mut().put_char(c, fg, bg, uc, flags);
                 self.utf8_buf.clear();
             }
         } else if self.utf8_buf.len() >= 4 {
@@ -386,9 +405,160 @@ impl AnsiParser {
         if self.dcs_buf.is_empty() {
             return;
         }
-        if self.dcs_buf.starts_with(b"+q") {
-            let resp = b"\x1bP0+q\x1b\\";
-            terminal.send_to_shell(resp);
+        if self.dcs_buf.starts_with(b"$q") {
+            // DECRQSS - Request Status String: DCS $ q <req> ST
+            let req = &self.dcs_buf[2..];
+            match req {
+                b"\"p" | b"p" => {
+                    // Conformance level (DECSCL): VT420, 8-bit controls
+                    terminal.send_to_shell(b"\x1bP1$r64;1\"p\x1b\\");
+                }
+                b"m" => {
+                    // SGR query
+                    let mut buf = [0u8; 64];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1bP1$r0");
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::BOLD) {
+                        let _ = write!(cur, ";1");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::DIM) {
+                        let _ = write!(cur, ";2");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::ITALIC) {
+                        let _ = write!(cur, ";3");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::UNDERLINE) {
+                        let _ = write!(cur, ";4");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::DOUBLE_UNDERLINE) {
+                        let _ = write!(cur, ";4:2");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::CURLY_UNDERLINE) {
+                        let _ = write!(cur, ";4:3");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::BLINK) {
+                        let _ = write!(cur, ";5");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::REVERSE) {
+                        let _ = write!(cur, ";7");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::HIDDEN) {
+                        let _ = write!(cur, ";8");
+                    }
+                    if terminal.current_flags.contains(crate::screen::cell::CellFlags::STRIKE) {
+                        let _ = write!(cur, ";9");
+                    }
+                    let _ = write!(cur, "m\x1b\\");
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                b"r" => {
+                    // DECSTBM margins
+                    let active = terminal.active_grid();
+                    let top = active.scroll_region_top + 1;
+                    let bottom = active.scroll_region_bottom + 1;
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1bP1$r{};{}r\x1b\\", top, bottom);
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                b" q" => {
+                    // DECSCUSR cursor shape query
+                    let shape_code = match terminal.active_grid().cursor.shape {
+                        crate::screen::cursor::CursorShape::Block => 2,
+                        crate::screen::cursor::CursorShape::Underline => 4,
+                        crate::screen::cursor::CursorShape::Beam => 6,
+                        crate::screen::cursor::CursorShape::HollowBlock => 2,
+                    };
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1bP1$r{} q\x1b\\", shape_code);
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                _ => {
+                    // Invalid / unsupported request
+                    terminal.send_to_shell(b"\x1bP0$r\x1b\\");
+                }
+            }
+        } else if self.dcs_buf.starts_with(b"+q") {
+            // XTGETTCAP - Terminfo Capabilities Query: DCS + q <hex1> [; <hex2>...] ST
+            let req = &self.dcs_buf[2..];
+            let mut matched = false;
+            let mut resp_buf = Vec::with_capacity(128);
+            resp_buf.extend_from_slice(b"\x1bP1+q");
+
+            for cap_hex in req.split(|&b| b == b';') {
+                let cap_str = std::str::from_utf8(cap_hex).unwrap_or("").to_lowercase();
+                match cap_str.as_str() {
+                    "524742" | "5463" => {
+                        // RGB / Tc: 24-bit TrueColor support
+                        if matched {
+                            resp_buf.push(b';');
+                        }
+                        resp_buf.extend_from_slice(cap_hex);
+                        resp_buf.extend_from_slice(b"=31"); // hex for "1"
+                        matched = true;
+                    }
+                    "536d756c78" => {
+                        // Smulx: styled underlines (\E[4:%p1%dm)
+                        if matched {
+                            resp_buf.push(b';');
+                        }
+                        resp_buf.extend_from_slice(cap_hex);
+                        resp_buf.extend_from_slice(b"=1b5b343a25703125646d");
+                        matched = true;
+                    }
+                    "536574756c63" => {
+                        // Setulc: colored underline
+                        if matched {
+                            resp_buf.push(b';');
+                        }
+                        resp_buf.extend_from_slice(cap_hex);
+                        resp_buf.extend_from_slice(b"=1b5b35383a323a3a257031257b36353533367d252f25643a257031257b3235367d252f257b3235357d252625643a257031257b3235357d25262564253b6d");
+                        matched = true;
+                    }
+                    "4d73" => {
+                        // Ms: OSC 52 clipboard
+                        if matched {
+                            resp_buf.push(b';');
+                        }
+                        resp_buf.extend_from_slice(cap_hex);
+                        resp_buf.extend_from_slice(b"=1b5d35323b25703125733b257032257307");
+                        matched = true;
+                    }
+                    "53796e63" => {
+                        // Sync: Synchronized updates mode 2026
+                        if matched {
+                            resp_buf.push(b';');
+                        }
+                        resp_buf.extend_from_slice(cap_hex);
+                        resp_buf.extend_from_slice(b"=1b5b3f3230323668");
+                        matched = true;
+                    }
+                    "544e" => {
+                        // TN: "xterm-256color"
+                        if matched {
+                            resp_buf.push(b';');
+                        }
+                        resp_buf.extend_from_slice(cap_hex);
+                        resp_buf.extend_from_slice(b"=787465726d2d323536636f6c6f72");
+                        matched = true;
+                    }
+                    _ => {}
+                }
+            }
+
+            if matched {
+                resp_buf.extend_from_slice(b"\x1b\\");
+                terminal.send_to_shell(&resp_buf);
+            }
+            // When no requested capabilities are recognized, silently ignore to prevent
+            // leaking raw hex queries into interactive shells and prompts (e.g. ble.sh / starship).
         }
         self.dcs_buf.clear();
         if self.dcs_buf.capacity() > 1024 {

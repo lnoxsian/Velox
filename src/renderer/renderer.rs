@@ -525,12 +525,13 @@ impl Renderer {
         };
 
         let effective_dim = window_dim.clamp(0.0, 1.0);
-        let effective_theme = if effective_dim > 0.0 {
-            theme.dimmed(effective_dim)
+        let dimmed_theme;
+        let theme = if effective_dim > 0.0 {
+            dimmed_theme = theme.dimmed(effective_dim);
+            &dimmed_theme
         } else {
-            theme.clone()
+            theme
         };
-        let theme = &effective_theme;
 
         // Reuse the vertex buffer allocation across frames
         let mut vertices = std::mem::take(&mut self.vertices);
@@ -838,6 +839,7 @@ impl Renderer {
 
                 // ── Text decorations ──────────────────────────────────────────
                 let deco_thick = 1.0f32.max((ch * 0.045).floor());
+                let ul_color = cell.underline_color.map(|c| c.dim(effective_dim)).unwrap_or(fg);
 
                 if cell.flags.contains(CellFlags::UNDERLINE) {
                     let line_y = py + ch - deco_thick - 1.0;
@@ -851,7 +853,7 @@ impl Renderer {
                         wv,
                         wu,
                         wv,
-                        fg,
+                        ul_color,
                         false,
                     );
                 }
@@ -871,7 +873,7 @@ impl Renderer {
                         wv,
                         wu,
                         wv,
-                        fg,
+                        ul_color,
                         false,
                     );
                     push_quad(
@@ -884,7 +886,7 @@ impl Renderer {
                         wv,
                         wu,
                         wv,
-                        fg,
+                        ul_color,
                         false,
                     );
                 }
@@ -912,7 +914,7 @@ impl Renderer {
                             wv,
                             wu,
                             wv,
-                            fg,
+                            ul_color,
                             false,
                         );
                         sx += step;

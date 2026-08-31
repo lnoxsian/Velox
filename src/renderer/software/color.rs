@@ -253,12 +253,12 @@ mod tests {
         let palette_dark = PrecomputedPalette::new(&theme_dark, 1.0);
 
         // Dark theme: fish pager selection with #060606 foreground and default background
-        let cell = Cell {
-            character: 'a',
-            foreground: Color { r: 6, g: 6, b: 6 },
-            background: theme_dark.default_bg,
-            flags: CellFlags::REVERSE,
-        };
+        let cell = Cell::new(
+            'a',
+            Color { r: 6, g: 6, b: 6 },
+            theme_dark.default_bg,
+            CellFlags::REVERSE,
+        );
         let (fg, bg) = palette_dark.resolve_cell_colors(&cell, true, false, 0.0);
         // bg must be inverted to light default_fg
         assert_eq!(bg, PackedColor::from_color(theme_dark.default_fg).to_u32());
@@ -279,12 +279,12 @@ mod tests {
             ..Theme::new()
         };
         let palette_light = PrecomputedPalette::new(&theme_light, 1.0);
-        let cell_light = Cell {
-            character: 'a',
-            foreground: Color { r: 6, g: 6, b: 6 },
-            background: theme_light.default_bg,
-            flags: CellFlags::REVERSE,
-        };
+        let cell_light = Cell::new(
+            'a',
+            Color { r: 6, g: 6, b: 6 },
+            theme_light.default_bg,
+            CellFlags::REVERSE,
+        );
         let (fg_l, bg_l) = palette_light.resolve_cell_colors(&cell_light, true, false, 0.0);
         assert_eq!(
             bg_l,

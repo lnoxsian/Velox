@@ -116,12 +116,12 @@ fn test_glyph_scratch_buffer_reuse() {
 #[test]
 fn test_contiguous_scrollback_chunk_representation() {
     let mut chunk = Chunk::new();
-    let default_cell = Cell {
-        character: 'X',
-        foreground: Color { r: 255, g: 0, b: 0 },
-        background: Color { r: 0, g: 0, b: 0 },
-        flags: CellFlags::empty(),
-    };
+    let default_cell = Cell::new(
+        'X',
+        Color { r: 255, g: 0, b: 0 },
+        Color { r: 0, g: 0, b: 0 },
+        CellFlags::empty(),
+    );
 
     for i in 0..100 {
         let row_cells = vec![default_cell; 80];

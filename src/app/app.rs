@@ -256,7 +256,10 @@ impl WindowState {
 
     pub fn resize_active_tab(&mut self) {
         let (cols, rows) = self.recalculate_grid_size();
+        let cw = self.cell_width();
+        let ch = self.cell_height();
         let tab = self.active_tab_mut();
+        tab.terminal.set_cell_dimensions(cw, ch);
         tab.terminal.resize(cols, rows);
         let _ = tab.pty_master.resize(cols as u16, rows as u16);
         self.needs_redraw = true;
@@ -342,7 +345,8 @@ impl WindowState {
         let (cols, rows) = self.recalculate_grid_size();
         let _ = pty_master.resize(cols as u16, rows as u16);
 
-        let terminal = Terminal::new(cols as usize, rows as usize);
+        let mut terminal = Terminal::new(cols as usize, rows as usize);
+        terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
         let initial_title = custom_title.clone().unwrap_or_else(|| "velox".to_string());
 
         spawn_pty_reader(
@@ -525,28 +529,19 @@ impl WindowState {
         let height = active_grid.height;
         let size = width * height;
 
-        if self.render_cells_buf.len() != size {
-            let default_cell = Cell {
-                character: ' ',
-                foreground: active_grid.default_fg,
-                background: active_grid.default_bg,
-                flags: CellFlags::empty(),
-            };
-            self.render_cells_buf.resize(size, default_cell);
-        }
-
         let offset = active_grid.scroll_offset;
         let history_len = active_grid.scrollback.len();
 
-        if offset == 0 {
-            self.render_cells_buf.copy_from_slice(&active_grid.cells);
+        let render_cells: &[Cell] = if offset == 0 {
+            &active_grid.cells
         } else {
-            let default_cell = Cell {
-                character: ' ',
-                foreground: active_grid.default_fg,
-                background: active_grid.default_bg,
-                flags: CellFlags::empty(),
-            };
+            if self.render_cells_buf.len() != size {
+                let default_cell =
+                    Cell::new(' ', active_grid.default_fg, active_grid.default_bg, CellFlags::empty());
+                self.render_cells_buf.resize(size, default_cell);
+            }
+            let default_cell =
+                Cell::new(' ', active_grid.default_fg, active_grid.default_bg, CellFlags::empty());
             for y in 0..height {
                 let dest_start = y * width;
                 let dest_end = dest_start + width;
@@ -574,7 +569,8 @@ impl WindowState {
                     }
                 }
             }
-        }
+            &self.render_cells_buf
+        };
 
         let cursor_visible = if offset > 0 {
             false
@@ -608,7 +604,7 @@ impl WindowState {
             } => {
                 let _ = gl_context.make_current(gl_surface);
                 renderer.draw(
-                    &self.render_cells_buf,
+                    render_cells,
                     width,
                     height,
                     display_cursor_x,
@@ -631,7 +627,7 @@ impl WindowState {
             WindowRendererBackend::Software { renderer, surface } => {
                 if let Ok(mut buffer) = surface.buffer_mut() {
                     renderer.render_with_tab_bar(
-                        &self.render_cells_buf,
+                        render_cells,
                         active_grid,
                         &active_tab.terminal.theme,
                         self.padding_x,

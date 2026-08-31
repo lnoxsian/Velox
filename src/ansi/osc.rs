@@ -242,6 +242,27 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
             }
         }
 
+        // OSC 777: Desktop Notification (urxvt / foot / kitty standard)
+        // Format: OSC 777 ; notify ; <title> ; <message>
+        "777" if params.len() >= 4 => {
+            let action = std::str::from_utf8(params[1]).unwrap_or("").trim();
+            if action == "notify" {
+                let title = std::str::from_utf8(params[2]).unwrap_or("").trim().to_string();
+                let body = std::str::from_utf8(params[3]).unwrap_or("").trim().to_string();
+                if !title.is_empty() || !body.is_empty() {
+                    std::thread::spawn(move || {
+                        let _ = std::process::Command::new("notify-send")
+                            .arg(&title)
+                            .arg(&body)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                    });
+                }
+            }
+        }
+
         _ => {}
     }
 }

@@ -49,8 +49,24 @@ pub struct Cell {
     pub character: char,
     pub foreground: Color,
     pub background: Color,
+    pub underline_color: Option<Color>,
     pub flags: CellFlags,
 }
+
+impl Cell {
+    #[inline(always)]
+    pub fn new(character: char, foreground: Color, background: Color, flags: CellFlags) -> Self {
+        Self {
+            character,
+            foreground,
+            background,
+            underline_color: None,
+            flags,
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<Cell>() == 16);
 
 #[cfg(test)]
 mod tests {

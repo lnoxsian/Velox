@@ -15,12 +15,7 @@ impl Grid {
 
         self.selection.clear();
 
-        let default_cell = Cell {
-            character: ' ',
-            foreground: self.default_fg,
-            background: self.default_bg,
-            flags: CellFlags::empty(),
-        };
+        let default_cell = Cell::new(' ', self.default_fg, self.default_bg, CellFlags::empty());
 
         struct CombinedRow {
             cells: Vec<Cell>,

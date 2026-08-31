@@ -74,20 +74,20 @@ fn main() {
     // 2. ASCII Full-Screen Redraw Benchmark
     for y in 0..rows as usize {
         for x in 0..cols as usize {
-            grid.cells[y * cols as usize + x] = Cell {
-                character: ((33 + (x + y) % 94) as u8) as char,
-                foreground: Color {
+            grid.cells[y * cols as usize + x] = Cell::new(
+                ((33 + (x + y) % 94) as u8) as char,
+                Color {
                     r: 220,
                     g: 220,
                     b: 220,
                 },
-                background: Color {
+                Color {
                     r: 15,
                     g: 15,
                     b: 15,
                 },
-                flags: CellFlags::empty(),
-            };
+                CellFlags::empty(),
+            );
         }
     }
     let iters = 50u32;
@@ -121,20 +121,20 @@ fn main() {
             let bg_r = ((x * 255) / cols as usize) as u8;
             let bg_g = ((y * 255) / rows as usize) as u8;
             let bg_b = 128u8;
-            grid.cells[y * cols as usize + x] = Cell {
-                character: ' ',
-                foreground: Color {
+            grid.cells[y * cols as usize + x] = Cell::new(
+                ' ',
+                Color {
                     r: 255,
                     g: 255,
                     b: 255,
                 },
-                background: Color {
+                Color {
                     r: bg_r,
                     g: bg_g,
                     b: bg_b,
                 },
-                flags: CellFlags::empty(),
-            };
+                CellFlags::empty(),
+            );
         }
     }
     let start = Instant::now();
@@ -167,20 +167,20 @@ fn main() {
     ];
     for y in 0..rows as usize {
         for x in 0..cols as usize {
-            grid.cells[y * cols as usize + x] = Cell {
-                character: box_chars[(x + y) % box_chars.len()],
-                foreground: Color {
+            grid.cells[y * cols as usize + x] = Cell::new(
+                box_chars[(x + y) % box_chars.len()],
+                Color {
                     r: 0,
                     g: 255,
                     b: 128,
                 },
-                background: Color {
+                Color {
                     r: 20,
                     g: 20,
                     b: 30,
                 },
-                flags: CellFlags::empty(),
-            };
+                CellFlags::empty(),
+            );
         }
     }
     let start = Instant::now();
@@ -219,16 +219,16 @@ fn main() {
         grid.damage.dirty_rows.fill(false);
         grid.damage.dirty_rows[(rows - 1) as usize] = true;
         for x in 0..cols as usize {
-            grid.cells[(rows - 1) as usize * cols as usize + x] = Cell {
-                character: ((33 + (i + x as u32) % 94) as u8) as char,
-                foreground: Color {
+            grid.cells[(rows - 1) as usize * cols as usize + x] = Cell::new(
+                ((33 + (i + x as u32) % 94) as u8) as char,
+                Color {
                     r: 255,
                     g: 255,
                     b: 255,
                 },
-                background: Color { r: 0, g: 0, b: 0 },
-                flags: CellFlags::empty(),
-            };
+                Color { r: 0, g: 0, b: 0 },
+                CellFlags::empty(),
+            );
         }
         renderer.render(
             &grid.cells,

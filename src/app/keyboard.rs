@@ -202,10 +202,12 @@ impl WindowState {
 
             // ── 3. Normal Typing / PTY Input ─────────────────────────────────
             let cursor_keys_mode = self.active_tab().terminal.cursor_keys_mode;
+            let kitty_flags = self.active_tab().terminal.kitty_keyboard_flags;
             if let Some(bytes) = crate::input::keyboard::translate_key(
                 &event.logical_key,
                 modifiers,
                 cursor_keys_mode,
+                kitty_flags,
             ) {
                 let scroll_on_keystroke = self.active_tab().terminal.scroll_on_keystroke;
                 let active_tab = self.active_tab_mut();

@@ -1,4 +1,4 @@
-use crate::screen::cell::Cell;
+use crate::screen::cell::{Cell, Color};
 use bincode;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -220,9 +220,29 @@ impl ScrollbackStorage {
     }
 }
 
+#[inline]
+pub fn trim_trailing_blank_cells(cells: &[Cell], default_bg: Option<Color>) -> &[Cell] {
+    let mut end = cells.len();
+    while end > 0 {
+        let c = &cells[end - 1];
+        let is_default_bg = default_bg.is_none_or(|bg| c.background == bg);
+        if c.character == ' '
+            && c.flags.is_empty()
+            && c.underline_color.is_none()
+            && is_default_bg
+        {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    &cells[..end]
+}
+
 pub struct Scrollback {
     pub max_lines: usize,
     pub infinite: bool,
+    pub default_bg: Option<Color>,
     hot_rows: VecDeque<Row>,
     storage: Option<ScrollbackStorage>,
 }
@@ -232,6 +252,7 @@ impl Scrollback {
         Self {
             max_lines,
             infinite,
+            default_bg: None,
             hot_rows: VecDeque::new(),
             storage: if infinite {
                 ScrollbackStorage::new()
@@ -246,6 +267,12 @@ impl Scrollback {
             return;
         }
 
+        let target_cells = if wrapped {
+            cells
+        } else {
+            trim_trailing_blank_cells(cells, self.default_bg)
+        };
+
         if self.infinite {
             if self.storage.is_none() {
                 self.storage = ScrollbackStorage::new();
@@ -254,7 +281,7 @@ impl Scrollback {
             if self.max_lines == 0 {
                 // Directly accumulate in pending chunk when hot RAM buffer limit is 0
                 if let Some(storage) = self.storage.as_mut() {
-                    storage.pending_chunk.push_row(cells, wrapped);
+                    storage.pending_chunk.push_row(target_cells, wrapped);
                     if storage.pending_chunk.len() >= SCROLLBACK_CHUNK_ROWS {
                         storage.flush_pending_chunk();
                     }
@@ -274,12 +301,15 @@ impl Scrollback {
                 }
                 // Recycle the popped row's allocation instead of dropping and reallocating
                 oldest.cells.clear();
-                oldest.cells.extend_from_slice(cells);
+                oldest.cells.extend_from_slice(target_cells);
                 oldest.wrapped = wrapped;
+                if oldest.cells.capacity() > 128 && target_cells.len() < 32 {
+                    oldest.cells.shrink_to(32);
+                }
                 self.hot_rows.push_back(oldest);
             } else {
                 self.hot_rows.push_back(Row {
-                    cells: cells.to_vec(),
+                    cells: target_cells.to_vec(),
                     wrapped,
                 });
             }
@@ -289,13 +319,16 @@ impl Scrollback {
                 && let Some(mut reused) = self.hot_rows.pop_front()
             {
                 reused.cells.clear();
-                reused.cells.extend_from_slice(cells);
+                reused.cells.extend_from_slice(target_cells);
                 reused.wrapped = wrapped;
+                if reused.cells.capacity() > 128 && target_cells.len() < 32 {
+                    reused.cells.shrink_to(32);
+                }
                 self.hot_rows.push_back(reused);
                 return;
             }
             self.hot_rows.push_back(Row {
-                cells: cells.to_vec(),
+                cells: target_cells.to_vec(),
                 wrapped,
             });
         }
@@ -427,20 +460,22 @@ mod tests {
     use crate::screen::cell::{Cell, CellFlags, Color};
 
     fn make_test_cell(ch: char, fg_r: u8) -> Cell {
-        Cell {
-            character: ch,
-            foreground: Color {
+        let mut cell = Cell::new(
+            ch,
+            Color {
                 r: fg_r,
                 g: 200,
                 b: 100,
             },
-            background: Color {
+            Color {
                 r: 10,
                 g: 20,
                 b: 30,
             },
-            flags: CellFlags::BOLD | CellFlags::UNDERLINE,
-        }
+            CellFlags::BOLD | CellFlags::UNDERLINE,
+        );
+        cell.underline_color = None;
+        cell
     }
 
     #[test]

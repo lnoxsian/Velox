@@ -185,7 +185,7 @@ impl WindowState {
                     if cx <= 255 && cy <= 255 {
                         buf[0] = 0x1b;
                         buf[1] = b'M';
-                        buf[2] = cb as u8;
+                        buf[2] = cb;
                         buf[3] = cx as u8;
                         buf[4] = cy as u8;
                         5
@@ -435,7 +435,7 @@ impl WindowState {
                     if cx <= 255 && cy <= 255 {
                         buf[0] = 0x1b;
                         buf[1] = b'M';
-                        buf[2] = cb as u8;
+                        buf[2] = cb;
                         buf[3] = cx as u8;
                         buf[4] = cy as u8;
                         5

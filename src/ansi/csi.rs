@@ -103,9 +103,13 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                         }
                         49 => terminal.current_bg = terminal.theme.default_bg,
                         58 => {
-                            let _ = parse_sgr_color(params, &mut i, &terminal.theme);
+                            if let Some(color) = parse_sgr_color(params, &mut i, &terminal.theme) {
+                                terminal.current_underline_color = Some(color);
+                            }
                         }
-                        59 => {}
+                        59 => {
+                            terminal.current_underline_color = None;
+                        }
                         90..=97 => {
                             terminal.current_fg =
                                 terminal.theme.get_ansi_color(code - 90 + 8, false)
@@ -118,6 +122,97 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                     }
                     i += 1;
                 }
+            }
+        }
+        b'b' => {
+            // Repeat Preceding Character (ECMA-48 REP)
+            let n = params.first().copied().unwrap_or(1).max(1) as usize;
+            if let Some(c) = terminal.last_char {
+                let fg = terminal.current_fg;
+                let bg = terminal.current_bg;
+                let uc = terminal.current_underline_color;
+                let flags = terminal.current_flags;
+                terminal
+                    .active_grid_mut()
+                    .repeat_char(n, c, fg, bg, uc, flags);
+            }
+        }
+        b'Z' => {
+            // Cursor Backward Tabulation (CBT)
+            let n = params.first().copied().unwrap_or(1).max(1) as usize;
+            let active = terminal.active_grid_mut();
+            for _ in 0..n {
+                if active.cursor.x > 0 {
+                    active.cursor.x = ((active.cursor.x.saturating_sub(1)) / 8) * 8;
+                } else {
+                    break;
+                }
+            }
+        }
+        b't' => {
+            // Window manipulation & metrics (XTWINOPS)
+            let op = params.first().copied().unwrap_or(0);
+            match op {
+                14 => {
+                    // Report text area size in pixels: \x1b[4;<h>;<w>t
+                    let active = terminal.active_grid();
+                    let w = (active.width as u32) * terminal.cell_width_px;
+                    let h = (active.height as u32) * terminal.cell_height_px;
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1b[4;{};{}t", h, w);
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                16 => {
+                    // Report character cell size in pixels: \x1b[6;<h>;<w>t
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(
+                        cur,
+                        "\x1b[6;{};{}t",
+                        terminal.cell_height_px, terminal.cell_width_px
+                    );
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                18 => {
+                    // Report text area size in characters: \x1b[8;<rows>;<cols>t
+                    let active = terminal.active_grid();
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1b[8;{};{}t", active.height, active.width);
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                19 => {
+                    // Report screen size in characters: \x1b[9;<rows>;<cols>t
+                    let active = terminal.active_grid();
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1b[9;{};{}t", active.height, active.width);
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                22 => {
+                    // Push title to stack
+                    let title = terminal
+                        .osc_title
+                        .clone()
+                        .unwrap_or_else(|| terminal.app_title.clone().unwrap_or_default());
+                    terminal.title_stack.push(title);
+                }
+                23 => {
+                    // Pop title from stack
+                    if let Some(title) = terminal.title_stack.pop() {
+                        terminal.osc_title = Some(title);
+                    }
+                }
+                _ => {}
             }
         }
         b'A' => {
@@ -303,8 +398,47 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
             terminal.save_cursor();
         }
         b'u' => {
-            // Restore Cursor
-            terminal.restore_cursor();
+            match prefix {
+                Some(b'?') => {
+                    // Kitty Keyboard Protocol: Query flags (`CSI ? u`)
+                    let mut buf = [0u8; 32];
+                    use std::io::Write;
+                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                    let _ = write!(cur, "\x1b[?{}u", terminal.kitty_keyboard_flags);
+                    let written = cur.position() as usize;
+                    terminal.send_to_shell(&buf[..written]);
+                }
+                Some(b'>') => {
+                    // Kitty Keyboard Protocol: Push flags (`CSI > <flags> u`)
+                    let flags = params.first().copied().unwrap_or(0);
+                    terminal.kitty_keyboard_stack.push(flags);
+                    terminal.kitty_keyboard_flags = flags;
+                }
+                Some(b'<') => {
+                    // Kitty Keyboard Protocol: Pop flags (`CSI < <count> u`)
+                    let count = params.first().copied().unwrap_or(1) as usize;
+                    for _ in 0..count {
+                        terminal.kitty_keyboard_stack.pop();
+                    }
+                    terminal.kitty_keyboard_flags =
+                        terminal.kitty_keyboard_stack.last().copied().unwrap_or(0);
+                }
+                Some(b'=') => {
+                    // Kitty Keyboard Protocol: Set / modify flags (`CSI = <flags> [; <mode>] u`)
+                    let flags = params.first().copied().unwrap_or(0);
+                    let mode = params.get(1).copied().unwrap_or(1);
+                    match mode {
+                        1 => terminal.kitty_keyboard_flags |= flags,
+                        2 => terminal.kitty_keyboard_flags = flags,
+                        3 => terminal.kitty_keyboard_flags &= !flags,
+                        _ => {}
+                    }
+                }
+                _ => {
+                    // Restore Cursor (ANSI / VT)
+                    terminal.restore_cursor();
+                }
+            }
         }
         b'G' => {
             // Cursor Horizontal Absolute (CHA)

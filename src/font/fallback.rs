@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 pub const MAX_FALLBACK_FONTS: usize = 8;
-pub const MAX_FALLBACK_BYTES: usize = 64 * 1024 * 1024; // 64 MB virtual/resident fallback budget
+pub const MAX_FALLBACK_BYTES: usize = 32 * 1024 * 1024; // 32 MB resident fallback budget
 pub const MAX_MISSING_CHARS: usize = 1024;
 
 static SYSTEM_FONT_DB: OnceLock<Arc<Database>> = OnceLock::new();

@@ -520,6 +520,7 @@ fn test_software_renderer_tab_switch_clean_redraw() {
                 b: 255,
             },
             Color { r: 0, g: 0, b: 0 },
+            None,
             velox::screen::cell::CellFlags::empty(),
         );
     }

@@ -207,36 +207,36 @@ fn test_software_renderer_renders_italic_and_bold_italic_lines() {
     let test_line_bi   = "BoldIt: ABCDEFGHIJKLMNOPQRSTUVWXYZ /\\";
 
     for (x, ch) in test_line_norm.chars().enumerate() {
-        grid.cells[x] = Cell {
-            character: ch,
-            foreground: Color { r: 240, g: 240, b: 240 },
-            background: Color { r: 20, g: 20, b: 20 },
-            flags: CellFlags::empty(),
-        };
+        grid.cells[x] = Cell::new(
+            ch,
+            Color { r: 240, g: 240, b: 240 },
+            Color { r: 20, g: 20, b: 20 },
+            CellFlags::empty(),
+        );
     }
     for (x, ch) in test_line_ital.chars().enumerate() {
-        grid.cells[40 + x] = Cell {
-            character: ch,
-            foreground: Color { r: 200, g: 220, b: 255 },
-            background: Color { r: 20, g: 20, b: 20 },
-            flags: CellFlags::ITALIC,
-        };
+        grid.cells[40 + x] = Cell::new(
+            ch,
+            Color { r: 200, g: 220, b: 255 },
+            Color { r: 20, g: 20, b: 20 },
+            CellFlags::ITALIC,
+        );
     }
     for (x, ch) in test_line_bold.chars().enumerate() {
-        grid.cells[80 + x] = Cell {
-            character: ch,
-            foreground: Color { r: 255, g: 200, b: 200 },
-            background: Color { r: 20, g: 20, b: 20 },
-            flags: CellFlags::BOLD,
-        };
+        grid.cells[80 + x] = Cell::new(
+            ch,
+            Color { r: 255, g: 200, b: 200 },
+            Color { r: 20, g: 20, b: 20 },
+            CellFlags::BOLD,
+        );
     }
     for (x, ch) in test_line_bi.chars().enumerate() {
-        grid.cells[120 + x] = Cell {
-            character: ch,
-            foreground: Color { r: 255, g: 255, b: 180 },
-            background: Color { r: 20, g: 20, b: 20 },
-            flags: CellFlags::BOLD | CellFlags::ITALIC,
-        };
+        grid.cells[120 + x] = Cell::new(
+            ch,
+            Color { r: 255, g: 255, b: 180 },
+            Color { r: 20, g: 20, b: 20 },
+            CellFlags::BOLD | CellFlags::ITALIC,
+        );
     }
 
     let cell_w = renderer.glyph_cache.cell_width;
