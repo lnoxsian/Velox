@@ -361,7 +361,10 @@ impl Theme {
             "tab_accent" | "tab_bar" | "tab" | "accent" => Some(self.resolve_tab_accent_color()),
             "default_fg" | "fg" | "foreground" => Some(self.default_fg),
             "default_bg" | "bg" | "background" => Some(self.default_bg),
-            "cursor" | "cursor_color" => self.cursor_color.or(self.initial_cursor_color).or(Some(self.default_fg)),
+            "cursor" | "cursor_color" => self
+                .cursor_color
+                .or(self.initial_cursor_color)
+                .or(Some(self.default_fg)),
             "black" => Some(self.ansi_colors[0]),
             "red" => Some(self.ansi_colors[1]),
             "green" => Some(self.ansi_colors[2]),
@@ -379,12 +382,11 @@ impl Theme {
             "bright_cyan" => Some(self.ansi_colors[14]),
             "bright_white" => Some(self.ansi_colors[15]),
             _ => {
-                if let Some(idx_str) = s.strip_prefix("ansi_").or_else(|| s.strip_prefix("ansi")) {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        if idx < 16 {
-                            return Some(self.ansi_colors[idx]);
-                        }
-                    }
+                if let Some(idx_str) = s.strip_prefix("ansi_").or_else(|| s.strip_prefix("ansi"))
+                    && let Ok(idx) = idx_str.parse::<usize>()
+                    && idx < 16
+                {
+                    return Some(self.ansi_colors[idx]);
                 }
                 crate::config::config::parse_hex_color(&s)
             }

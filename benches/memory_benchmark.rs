@@ -213,5 +213,53 @@ fn main() {
         "  • RSS Growth during 100 MB stream: +{:.2} KB (Zero Memory Leak / Bound)",
         rss_growth
     );
+    println!();
+
+    // ── 7. Multi-Pane Split Tree Memory Scaling ──────────────────────────────
+    println!("--- 7. Multi-Pane Split Tree Memory Scaling ---");
+    let rss_before_panes = get_process_rss_kb();
+    let mut panes: Vec<velox::app::pane::Pane> = Vec::new();
+    for i in 1..=32 {
+        let pty = std::sync::Arc::new(velox::pty::master::PtyMaster::dummy());
+        let terminal = Terminal::new(80, 24);
+        panes.push(velox::app::pane::Pane::new(i, pty, terminal, 14.0, false));
+        if i == 1 || i == 4 || i == 8 || i == 16 || i == 32 {
+            let current_rss = get_process_rss_kb();
+            let delta = current_rss.saturating_sub(rss_before_panes);
+            let per_pane = if i > 0 { delta as f64 / i as f64 } else { 0.0 };
+            println!(
+                "  • {:>2} Panes active: RSS = {:.2} MB (Delta: +{:.2} MB, ~{:.2} KB/pane)",
+                i,
+                current_rss as f64 / 1024.0,
+                delta as f64 / 1024.0,
+                per_pane
+            );
+        }
+    }
+    drop(panes);
+    println!();
+
+    // ── 8. Global Bounded Subsystems Verification ────────────────────────────
+    println!("--- 8. Global Bounded Cache Subsystems ---");
+    let pool = velox::pty::get_pty_buffer_pool();
+    let b1 = pool.acquire();
+    let b2 = pool.acquire();
+    pool.recycle(b1);
+    pool.recycle(b2);
+    println!(
+        "  • PTY Buffer Pool: Active and recycling (retained capacity = {} buffers)",
+        pool.len()
+    );
+
+    let global_scrollback = velox::screen::scrollback::get_global_scrollback_cache();
+    let cached_chunks = global_scrollback
+        .lock()
+        .map_or(0, |c| c.current_cached_chunks());
+    println!(
+        "  • Global Scrollback LRU Cache: Bounded to {} chunks max (currently {} in RAM)",
+        velox::screen::scrollback::GLOBAL_SCROLLBACK_CACHE_MAX_CHUNKS,
+        cached_chunks
+    );
+
     println!("============================================================");
 }

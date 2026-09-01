@@ -71,7 +71,11 @@ impl Default for Cell {
     fn default() -> Self {
         Self {
             character: ' ',
-            foreground: Color { r: 255, g: 255, b: 255 },
+            foreground: Color {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
             background: Color { r: 0, g: 0, b: 0 },
             underline_color: None,
             flags: CellFlags::empty(),

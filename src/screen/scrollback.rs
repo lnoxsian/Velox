@@ -100,24 +100,127 @@ struct CachedChunk {
     pub access_tick: u64,
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+pub const GLOBAL_SCROLLBACK_CACHE_MAX_CHUNKS: usize = 24;
+
+/// Global LRU cache for deserialized disk chunks across all terminal panes.
+pub struct GlobalScrollbackCache {
+    chunks: Vec<GlobalCachedChunk>,
+    max_chunks: usize,
+    tick: u64,
+}
+
+struct GlobalCachedChunk {
+    storage_id: u64,
+    chunk_idx: usize,
+    chunk: Chunk,
+    access_tick: u64,
+}
+
+impl GlobalScrollbackCache {
+    pub fn new(max_chunks: usize) -> Self {
+        Self {
+            chunks: Vec::with_capacity(max_chunks),
+            max_chunks,
+            tick: 0,
+        }
+    }
+
+    pub fn get(&mut self, storage_id: u64, chunk_idx: usize) -> Option<Chunk> {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if let Some(c) = self
+            .chunks
+            .iter_mut()
+            .find(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
+        {
+            c.access_tick = tick;
+            return Some(c.chunk.clone());
+        }
+        None
+    }
+
+    pub fn insert(&mut self, storage_id: u64, chunk_idx: usize, chunk: Chunk) {
+        self.tick = self.tick.wrapping_add(1);
+        let tick = self.tick;
+        if let Some(c) = self
+            .chunks
+            .iter_mut()
+            .find(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
+        {
+            c.chunk = chunk;
+            c.access_tick = tick;
+            return;
+        }
+        if self.chunks.len() >= self.max_chunks
+            && let Some((oldest_idx, _)) = self
+                .chunks
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, c)| c.access_tick)
+        {
+            self.chunks.remove(oldest_idx);
+        }
+        self.chunks.push(GlobalCachedChunk {
+            storage_id,
+            chunk_idx,
+            chunk,
+            access_tick: tick,
+        });
+    }
+
+    pub fn invalidate_storage(&mut self, storage_id: u64) {
+        self.chunks.retain(|c| c.storage_id != storage_id);
+    }
+
+    pub fn current_cached_chunks(&self) -> usize {
+        self.chunks.len()
+    }
+}
+
+static GLOBAL_SCROLLBACK_CACHE: OnceLock<Mutex<GlobalScrollbackCache>> = OnceLock::new();
+
+pub fn get_global_scrollback_cache() -> &'static Mutex<GlobalScrollbackCache> {
+    GLOBAL_SCROLLBACK_CACHE.get_or_init(|| {
+        Mutex::new(GlobalScrollbackCache::new(
+            GLOBAL_SCROLLBACK_CACHE_MAX_CHUNKS,
+        ))
+    })
+}
+
 pub struct ScrollbackStorage {
+    id: u64,
     file: RefCell<File>,
     chunks: Vec<ChunkIndex>,
     pending_chunk: Chunk,
-    cache: RefCell<Vec<CachedChunk>>,
+    local_cache: RefCell<Vec<CachedChunk>>,
     tick_counter: RefCell<u64>,
     serialize_buf: RefCell<Vec<u8>>,
     read_buf: RefCell<Vec<u8>>,
     total_disk_lines: u64,
 }
 
+impl Drop for ScrollbackStorage {
+    fn drop(&mut self) {
+        if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
+            global_cache.invalidate_storage(self.id);
+        }
+    }
+}
+
 impl ScrollbackStorage {
     pub fn new() -> Option<Self> {
+        let id = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
         tempfile().ok().map(|f| Self {
+            id,
             file: RefCell::new(f),
             chunks: Vec::new(),
             pending_chunk: Chunk::new(),
-            cache: RefCell::new(Vec::with_capacity(CHUNK_CACHE_CAPACITY)),
+            local_cache: RefCell::new(Vec::with_capacity(CHUNK_CACHE_CAPACITY)),
             tick_counter: RefCell::new(0),
             serialize_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
             read_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
@@ -171,9 +274,9 @@ impl ScrollbackStorage {
     ) -> Option<R> {
         let tick = self.next_tick();
 
-        // 1. Check in-memory chunk cache
+        // 1. Check in-memory local chunk cache
         {
-            let mut cache = self.cache.borrow_mut();
+            let mut cache = self.local_cache.borrow_mut();
             if let Some(pos) = cache.iter().position(|c| c.chunk_id == chunk_idx) {
                 cache[pos].access_tick = tick;
                 let (cells, wrapped) = cache[pos].chunk.get_row_view(row_offset)?;
@@ -181,7 +284,28 @@ impl ScrollbackStorage {
             }
         }
 
-        // 2. Cache miss: Read chunk from disk using reusable buffer
+        // 2. Check global LRU chunk cache
+        if let Ok(mut global_cache) = get_global_scrollback_cache().lock()
+            && let Some(chunk) = global_cache.get(self.id, chunk_idx)
+        {
+            let (cells, wrapped) = chunk.get_row_view(row_offset)?;
+            let result = f(cells, wrapped);
+            let mut cache = self.local_cache.borrow_mut();
+            if cache.len() >= CHUNK_CACHE_CAPACITY
+                && let Some((oldest_idx, _)) =
+                    cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
+            {
+                cache.remove(oldest_idx);
+            }
+            cache.push(CachedChunk {
+                chunk_id: chunk_idx,
+                chunk,
+                access_tick: tick,
+            });
+            return Some(result);
+        }
+
+        // 3. Cache miss: Read chunk from disk using reusable buffer
         let chunk_meta = *self.chunks.get(chunk_idx)?;
         let mut file = self.file.try_borrow_mut().ok()?;
         file.seek(SeekFrom::Start(chunk_meta.file_offset)).ok()?;
@@ -197,8 +321,12 @@ impl ScrollbackStorage {
         let (cells, wrapped) = chunk.get_row_view(row_offset)?;
         let result = f(cells, wrapped);
 
-        // 3. Insert into bounded LRU cache
-        let mut cache = self.cache.borrow_mut();
+        // 4. Insert into global cache and local cache
+        if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
+            global_cache.insert(self.id, chunk_idx, chunk.clone());
+        }
+
+        let mut cache = self.local_cache.borrow_mut();
         if cache.len() >= CHUNK_CACHE_CAPACITY
             && let Some((oldest_idx, _)) =
                 cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
@@ -404,7 +532,10 @@ impl Scrollback {
         if let Some(storage) = self.storage.as_mut() {
             storage.pending_chunk.clear();
             storage.chunks.clear();
-            storage.cache.borrow_mut().clear();
+            storage.local_cache.borrow_mut().clear();
+            if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
+                global_cache.invalidate_storage(storage.id);
+            }
             storage.total_disk_lines = 0;
             if let Ok(mut file) = storage.file.try_borrow_mut() {
                 let _ = file.set_len(0);
@@ -425,10 +556,9 @@ impl Scrollback {
     pub fn resident_row_count(&self) -> usize {
         let hot = self.hot_rows.len();
         let pending = self.storage.as_ref().map_or(0, |s| s.pending_chunk.len());
-        let cached: usize = self
-            .storage
-            .as_ref()
-            .map_or(0, |s| s.cache.borrow().iter().map(|c| c.chunk.len()).sum());
+        let cached: usize = self.storage.as_ref().map_or(0, |s| {
+            s.local_cache.borrow().iter().map(|c| c.chunk.len()).sum()
+        });
         hot + pending + cached
     }
 

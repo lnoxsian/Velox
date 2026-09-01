@@ -2,7 +2,7 @@ use crate::app::pane::{Pane, PaneId};
 use crate::app::split::{FocusDirection, PaneRect, SeparatorRect, SplitDirection, SplitId};
 use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
-use crate::ipc::{start_ipc_server, IpcListenerHandle};
+use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_process;
 use crate::renderer::renderer::{PaneRenderData, Renderer, SeparatorRenderData};
@@ -120,10 +120,11 @@ fn spawn_pty_reader(
     pane_id: u64,
 ) {
     std::thread::spawn(move || {
-        let mut buf = [0u8; 65536];
+        let mut buf = crate::pty::acquire_pty_buffer();
         loop {
             match pty_reader.read(&mut buf) {
                 Ok(0) => {
+                    crate::pty::recycle_pty_buffer(buf);
                     let _ = proxy.send_event(CustomEvent::PtyExit {
                         window_id,
                         tab_id,
@@ -132,14 +133,18 @@ fn spawn_pty_reader(
                     break;
                 }
                 Ok(n) => {
+                    let mut send_buf = crate::pty::acquire_pty_buffer();
+                    send_buf[..n].copy_from_slice(&buf[..n]);
+                    send_buf.truncate(n);
                     let _ = proxy.send_event(CustomEvent::PtyData {
                         window_id,
                         tab_id,
                         pane_id,
-                        data: buf[..n].to_vec(),
+                        data: send_buf,
                     });
                 }
                 Err(_) => {
+                    crate::pty::recycle_pty_buffer(buf);
                     let _ = proxy.send_event(CustomEvent::PtyExit {
                         window_id,
                         tab_id,
@@ -942,6 +947,12 @@ impl WindowState {
                     effective_active_separator_color,
                 );
                 let _ = gl_surface.swap_buffers(gl_context);
+                if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
+                    for pane in active_tab.tree.panes_mut() {
+                        pane.terminal.active_grid_mut().clear_damage();
+                        pane.render_state.clear_damage();
+                    }
+                }
             }
             WindowRendererBackend::Software { renderer, surface } => {
                 let active_tab = &self.tabs[self.active_tab_index];
@@ -1509,6 +1520,7 @@ impl ApplicationHandler<CustomEvent> for App {
                         ws.content_dirty = true;
                     }
                 }
+                crate::pty::recycle_pty_buffer(data);
             }
             CustomEvent::PtyExit {
                 window_id,

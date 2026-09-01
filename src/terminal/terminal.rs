@@ -203,8 +203,7 @@ impl Terminal {
         while i < len {
             let byte = data[i];
             // Fast path for printable ASCII and line endings when in Ground state with default ASCII charset
-            if parser.state == crate::ansi::state::ParserState::Ground
-                && parser.utf8_buf.is_empty()
+            if parser.state == crate::ansi::state::ParserState::Ground && parser.utf8_buf.is_empty()
             {
                 if (0x20..=0x7e).contains(&byte) {
                     let active_charset = self.active_charset;

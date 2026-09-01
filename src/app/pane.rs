@@ -1,4 +1,5 @@
 use crate::pty::master::PtyMaster;
+use crate::renderer::state::PaneRenderState;
 use crate::terminal::terminal::Terminal;
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,6 +11,7 @@ pub struct Pane {
     pub pty_master: Arc<PtyMaster>,
     pub terminal: Terminal,
     pub font_size: f32,
+    pub render_state: PaneRenderState,
     pub custom_title: Option<String>,
     pub current_title: String,
     pub last_title_check: Instant,
@@ -32,6 +34,7 @@ impl Pane {
             pty_master,
             terminal,
             font_size,
+            render_state: PaneRenderState::new(),
             custom_title: None,
             current_title: "velox".to_string(),
             last_title_check: now,
@@ -56,6 +59,7 @@ impl Pane {
             pty_master,
             terminal,
             font_size,
+            render_state: PaneRenderState::new(),
             custom_title,
             current_title: initial_title,
             last_title_check: now,
@@ -72,6 +76,7 @@ impl Pane {
             pty_master: Arc::new(PtyMaster::dummy()),
             terminal: Terminal::new(1, 1),
             font_size: 14.0,
+            render_state: PaneRenderState::new(),
             custom_title: None,
             current_title: String::new(),
             last_title_check: now,

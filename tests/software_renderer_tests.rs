@@ -191,11 +191,10 @@ fn test_software_renderer_scroll_selection() {
             b: 255,
         },
         Color { r: 0, g: 0, b: 0 },
-        100,
+        1000,
         false,
     );
     let theme = Theme::new();
-    let mut target = vec![0u32; 800 * 600];
 
     // Populate lines 0..15 so scrollback has 5 lines and active grid has 10 lines
     for i in 0..15 {
@@ -1045,18 +1044,19 @@ fn test_software_renderer_dynamic_selection_drag_and_scrollback() {
 fn test_scrollback_background_preserves_theme_background_color() {
     let mut theme = Theme::new();
     // Non-black theme background (e.g. Catppuccin Mocha #1e1e2e -> r:30, g:30, b:46)
-    theme.default_bg = Color { r: 30, g: 30, b: 46 };
-    theme.default_fg = Color { r: 205, g: 214, b: 244 };
+    theme.default_bg = Color {
+        r: 30,
+        g: 30,
+        b: 46,
+    };
+    theme.default_fg = Color {
+        r: 205,
+        g: 214,
+        b: 244,
+    };
 
     let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 1.0);
-    let mut grid = Grid::new(
-        80,
-        10,
-        theme.default_fg,
-        theme.default_bg,
-        100,
-        false,
-    );
+    let mut grid = Grid::new(80, 10, theme.default_fg, theme.default_bg, 100, false);
 
     // Write short lines so lines 0..15 have trailing trimmed blank spaces
     for i in 0..15 {
@@ -1097,19 +1097,17 @@ fn test_scrollback_background_preserves_theme_background_color() {
     );
 
     let cell_w = renderer.glyph_cache.cell_width as usize;
-    let cell_h = renderer.glyph_cache.cell_height as usize;
+    let _cell_h = renderer.glyph_cache.cell_height as usize;
     let expected_bg_packed =
         velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // Check row 0 (which is in scrollback) at column 40 (beyond text "line-1")
     let test_x = 40 * cell_w + 2;
-    let test_y = 0 * cell_h + 2;
+    let test_y = 2;
     let actual_pixel = target[test_y * 800 + test_x];
 
     assert_eq!(
-        actual_pixel,
-        expected_bg_packed,
+        actual_pixel, expected_bg_packed,
         "Trailing columns in scrollback must maintain the theme's default background color and not turn black"
     );
 }
-

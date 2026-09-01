@@ -187,3 +187,62 @@ fn test_combining_registry_bounded_capacity() {
     assert!(registry.lock().is_ok());
     assert_eq!(velox::screen::grid::MAX_COMBINING_SEQUENCES, 4096);
 }
+
+#[test]
+fn test_pane_render_state_damage_and_caching() {
+    let mut state = velox::renderer::state::PaneRenderState::new();
+    assert!(state.dirty);
+    assert!(state.full_redraw);
+
+    state.ensure_rows(24);
+    assert_eq!(state.row_cache.len(), 24);
+
+    state.clear_damage();
+    assert!(!state.dirty);
+    assert!(!state.full_redraw);
+    assert!(!state.dirty_rows.any_dirty());
+
+    state.mark_row_dirty(5);
+    assert!(state.dirty);
+    assert!(state.dirty_rows.is_dirty(5));
+    assert!(!state.dirty_rows.is_dirty(6));
+    assert!(!state.row_cache[5].valid);
+
+    state.release_memory();
+    assert!(state.full_redraw);
+}
+
+#[test]
+fn test_pty_buffer_pool_acquire_and_recycle() {
+    let pool = velox::pty::get_pty_buffer_pool();
+    let initial_len = pool.len();
+
+    let buf1 = velox::pty::acquire_pty_buffer();
+    assert_eq!(buf1.len(), velox::pty::buffer_pool::PTY_BUFFER_SIZE);
+
+    let buf2 = velox::pty::acquire_pty_buffer();
+    assert_eq!(buf2.len(), velox::pty::buffer_pool::PTY_BUFFER_SIZE);
+
+    velox::pty::recycle_pty_buffer(buf1);
+    velox::pty::recycle_pty_buffer(buf2);
+
+    assert!(pool.len() >= initial_len);
+}
+
+#[test]
+fn test_global_scrollback_cache_lru_eviction() {
+    let global_cache = velox::screen::scrollback::get_global_scrollback_cache();
+    let mut lock = global_cache.lock().unwrap();
+
+    let storage_id = 99999u64;
+    let chunk = Chunk::new();
+
+    // Insert chunks
+    for i in 0..10 {
+        lock.insert(storage_id, i, chunk.clone());
+    }
+
+    assert!(lock.get(storage_id, 0).is_some());
+    lock.invalidate_storage(storage_id);
+    assert!(lock.get(storage_id, 0).is_none());
+}

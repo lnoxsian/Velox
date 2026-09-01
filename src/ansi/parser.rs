@@ -222,7 +222,9 @@ impl AnsiParser {
                     {
                         active.cursor.x -= 1;
                     }
-                } else if active.cursor.y > 0 && active.row_wrapped[active.physical_row(active.cursor.y - 1)] {
+                } else if active.cursor.y > 0
+                    && active.row_wrapped[active.physical_row(active.cursor.y - 1)]
+                {
                     active.cursor.y -= 1;
                     active.cursor.x = active.width.saturating_sub(1);
                     let physical_y = active.physical_row(active.cursor.y);

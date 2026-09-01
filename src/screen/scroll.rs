@@ -133,7 +133,8 @@ impl Grid {
                     self.row_wrapped[physical_y] = false;
                 }
             }
-            self.row_offset = (self.row_offset + self.height - (u_delta % self.height)) % self.height;
+            self.row_offset =
+                (self.row_offset + self.height - (u_delta % self.height)) % self.height;
             self.damage.mark_all();
             return;
         }

@@ -3,15 +3,84 @@ use crate::screen::cursor::Cursor;
 use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
 use crate::screen::selection::Selection;
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use unicode_width::UnicodeWidthChar;
 
-static COMBINING_REGISTRY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
-
 pub const MAX_COMBINING_SEQUENCES: usize = 4096;
 
-pub fn get_combining_registry() -> &'static Mutex<Vec<String>> {
-    COMBINING_REGISTRY.get_or_init(|| Mutex::new(Vec::with_capacity(64)))
+pub struct CombiningRegistry {
+    list: Vec<String>,
+    map: HashMap<String, u32>,
+}
+
+impl CombiningRegistry {
+    pub fn new() -> Self {
+        Self {
+            list: Vec::with_capacity(64),
+            map: HashMap::with_capacity(64),
+        }
+    }
+
+    #[inline]
+    pub fn get_or_insert(&mut self, seq: &str) -> Option<u32> {
+        if let Some(&id) = self.map.get(seq) {
+            Some(id)
+        } else if self.list.len() < MAX_COMBINING_SEQUENCES {
+            let id = self.list.len() as u32;
+            let s = seq.to_string();
+            self.list.push(s.clone());
+            self.map.insert(s, id);
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn append_to_entry(&mut self, reg_idx: usize, c: char) {
+        if reg_idx < self.list.len() {
+            let old_str = self.list[reg_idx].clone();
+            self.map.remove(&old_str);
+            self.list[reg_idx].push(c);
+            self.map.insert(self.list[reg_idx].clone(), reg_idx as u32);
+        }
+    }
+
+    #[inline]
+    pub fn get_sequence(&self, reg_idx: usize) -> Option<&str> {
+        self.list.get(reg_idx).map(|s| s.as_str())
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+}
+
+impl Default for CombiningRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::ops::Deref for CombiningRegistry {
+    type Target = Vec<String>;
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.list
+    }
+}
+
+static COMBINING_REGISTRY: OnceLock<Mutex<CombiningRegistry>> = OnceLock::new();
+
+pub fn get_combining_registry() -> &'static Mutex<CombiningRegistry> {
+    COMBINING_REGISTRY.get_or_init(|| Mutex::new(CombiningRegistry::new()))
 }
 
 pub struct Grid {
@@ -109,11 +178,7 @@ impl Grid {
     }
 
     #[inline(always)]
-    pub fn with_display_row_slice<R>(
-        &self,
-        y: usize,
-        f: impl FnOnce(&[Cell]) -> R,
-    ) -> Option<R> {
+    pub fn with_display_row_slice<R>(&self, y: usize, f: impl FnOnce(&[Cell]) -> R) -> Option<R> {
         let history_len = self.scrollback.len();
         let abs_y = y + history_len;
         if abs_y < self.scroll_offset {
@@ -351,23 +416,16 @@ impl Grid {
                 let base_char = self.cells[idx].character;
                 if ('\u{100000}'..='\u{10ffff}').contains(&base_char) {
                     let reg_idx = (base_char as u32 - 0x100000) as usize;
-                    if let Ok(mut registry) = get_combining_registry().lock()
-                        && reg_idx < registry.len()
-                    {
-                        registry[reg_idx].push(c);
+                    if let Ok(mut registry) = get_combining_registry().lock() {
+                        registry.append_to_entry(reg_idx, c);
                     }
                 } else {
-                    let mut seq = String::new();
+                    let mut seq = String::with_capacity(8);
                     seq.push(base_char);
                     seq.push(c);
                     let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
-                        // Deduplicate: reuse existing registry entry if this sequence was seen before
-                        if let Some(pos) = registry.iter().position(|s| *s == seq) {
-                            char::from_u32(0x100000 + pos as u32).unwrap_or(base_char)
-                        } else if registry.len() < MAX_COMBINING_SEQUENCES {
-                            let reg_idx = registry.len();
-                            registry.push(seq);
-                            char::from_u32(0x100000 + reg_idx as u32).unwrap_or(base_char)
+                        if let Some(id) = registry.get_or_insert(&seq) {
+                            char::from_u32(0x100000 + id).unwrap_or(base_char)
                         } else {
                             base_char
                         }

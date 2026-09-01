@@ -953,35 +953,24 @@ fn test_active_split_separator_accent_color_matches_tab_bar_and_config() {
         theme.parse_color_spec("tab_accent"),
         Some(default_tab_accent)
     );
-    assert_eq!(
-        theme.parse_color_spec("tab_bar"),
-        Some(default_tab_accent)
-    );
-    assert_eq!(
-        theme.parse_color_spec("accent"),
-        Some(default_tab_accent)
-    );
+    assert_eq!(theme.parse_color_spec("tab_bar"), Some(default_tab_accent));
+    assert_eq!(theme.parse_color_spec("accent"), Some(default_tab_accent));
 
     // 2. Named color adjustments
     assert_eq!(
         theme.parse_color_spec("magenta"),
         Some(theme.ansi_colors[5])
     );
-    assert_eq!(
-        theme.parse_color_spec("red"),
-        Some(theme.ansi_colors[1])
-    );
-    assert_eq!(
-        theme.parse_color_spec("green"),
-        Some(theme.ansi_colors[2])
-    );
-    assert_eq!(
-        theme.parse_color_spec("cyan"),
-        Some(theme.ansi_colors[6])
-    );
+    assert_eq!(theme.parse_color_spec("red"), Some(theme.ansi_colors[1]));
+    assert_eq!(theme.parse_color_spec("green"), Some(theme.ansi_colors[2]));
+    assert_eq!(theme.parse_color_spec("cyan"), Some(theme.ansi_colors[6]));
     assert_eq!(
         theme.parse_color_spec("#ff5500"),
-        Some(Color { r: 255, g: 85, b: 0 })
+        Some(Color {
+            r: 255,
+            g: 85,
+            b: 0
+        })
     );
 
     // 3. When tab bar accent color is customized in theme (e.g. magenta), separator matches it

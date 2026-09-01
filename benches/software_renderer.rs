@@ -251,5 +251,252 @@ fn main() {
         (scroll_iters as f64) / elapsed.as_secs_f64()
     );
 
+    // 6. Split Pane Isolated Damage Rendering (4 Panes, only 1 pane damaged)
+    let pane_w = 960.0;
+    let pane_h = 540.0;
+    let p_cols = (pane_w / renderer.glyph_cache.cell_width as f32) as usize;
+    let p_rows = (pane_h / renderer.glyph_cache.cell_height as f32) as usize;
+
+    let mut p_grid1 = Grid::new(
+        p_cols,
+        p_rows,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    let p_grid2 = Grid::new(
+        p_cols,
+        p_rows,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    let p_grid3 = Grid::new(
+        p_cols,
+        p_rows,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    let p_grid4 = Grid::new(
+        p_cols,
+        p_rows,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+
+    let rect1 = velox::app::split::PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: pane_w,
+        height: pane_h,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cols: p_cols,
+        rows: p_rows,
+        cell_width: renderer.glyph_cache.cell_width as f32,
+        cell_height: renderer.glyph_cache.cell_height as f32,
+    };
+    let rect2 = velox::app::split::PaneRect {
+        pane_id: 2,
+        x: pane_w,
+        y: 0.0,
+        width: pane_w,
+        height: pane_h,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cols: p_cols,
+        rows: p_rows,
+        cell_width: renderer.glyph_cache.cell_width as f32,
+        cell_height: renderer.glyph_cache.cell_height as f32,
+    };
+    let rect3 = velox::app::split::PaneRect {
+        pane_id: 3,
+        x: 0.0,
+        y: pane_h,
+        width: pane_w,
+        height: pane_h,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cols: p_cols,
+        rows: p_rows,
+        cell_width: renderer.glyph_cache.cell_width as f32,
+        cell_height: renderer.glyph_cache.cell_height as f32,
+    };
+    let rect4 = velox::app::split::PaneRect {
+        pane_id: 4,
+        x: pane_w,
+        y: pane_h,
+        width: pane_w,
+        height: pane_h,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cols: p_cols,
+        rows: p_rows,
+        cell_width: renderer.glyph_cache.cell_width as f32,
+        cell_height: renderer.glyph_cache.cell_height as f32,
+    };
+
+    // Initial frame
+    {
+        let split_panes = [
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 1,
+                rect: rect1,
+                cells: &p_grid1.cells,
+                grid: &p_grid1,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: true,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: true,
+            },
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 2,
+                rect: rect2,
+                cells: &p_grid2.cells,
+                grid: &p_grid2,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: false,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: false,
+            },
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 3,
+                rect: rect3,
+                cells: &p_grid3.cells,
+                grid: &p_grid3,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: false,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: false,
+            },
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 4,
+                rect: rect4,
+                cells: &p_grid4.cells,
+                grid: &p_grid4,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: false,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: false,
+            },
+        ];
+        renderer.render_splits(
+            &split_panes,
+            &[],
+            1.0,
+            0.0,
+            true,
+            &mut target,
+            None,
+            None,
+            None,
+        );
+    }
+
+    let multi_iters = 500u32;
+    let start = Instant::now();
+    for _ in 0..multi_iters {
+        p_grid1.damage.dirty_rows.fill(false);
+        p_grid1.damage.dirty_rows[5] = true;
+        let split_panes = [
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 1,
+                rect: rect1,
+                cells: &p_grid1.cells,
+                grid: &p_grid1,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: true,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: true,
+            },
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 2,
+                rect: rect2,
+                cells: &p_grid2.cells,
+                grid: &p_grid2,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: false,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: false,
+            },
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 3,
+                rect: rect3,
+                cells: &p_grid3.cells,
+                grid: &p_grid3,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: false,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: false,
+            },
+            velox::renderer::software::CpuPaneRenderData {
+                pane_id: 4,
+                rect: rect4,
+                cells: &p_grid4.cells,
+                grid: &p_grid4,
+                font_size: 14.0,
+                theme: &theme,
+                cursor_visible: false,
+                cursor_shape: velox::screen::cursor::CursorShape::Block,
+                display_cursor_x: 0,
+                is_active: false,
+            },
+        ];
+        renderer.render_splits(
+            &split_panes,
+            &[],
+            1.0,
+            0.0,
+            true,
+            &mut target,
+            None,
+            None,
+            None,
+        );
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "6. 4-Split Panes Isolated Row Damage: {:?} per frame ({:.2} fps)",
+        elapsed / multi_iters,
+        (multi_iters as f64) / elapsed.as_secs_f64()
+    );
+
     println!("=== Benchmark Complete ===");
 }

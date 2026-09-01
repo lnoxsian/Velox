@@ -339,7 +339,7 @@ impl CpuRenderer {
             return;
         }
 
-        if self.damage.full_redraw || any_pane_damage {
+        if self.damage.full_redraw {
             self.framebuffer.clear(self.palette.default_bg);
         }
 
@@ -362,7 +362,6 @@ impl CpuRenderer {
                 effective_dim
             };
 
-            // Fill entire pane rectangle with default background
             let tile_x = pane.rect.x.round() as u32;
             let tile_y = pane.rect.y.round() as u32;
             let tile_w = pane.rect.width.round() as u32;
@@ -372,13 +371,35 @@ impl CpuRenderer {
             } else {
                 self.palette.default_bg
             };
-            self.framebuffer
-                .fill_span(tile_x, tile_y, tile_w, tile_h, default_pane_bg);
+
+            let pane_full_redraw = self.damage.full_redraw || grid.damage.full_redraw;
+            if pane_full_redraw {
+                self.framebuffer
+                    .fill_span(tile_x, tile_y, tile_w, tile_h, default_pane_bg);
+            }
 
             let px_offset = (pane.rect.x + pane.rect.padding_x).round() as u32;
             let py_offset = (pane.rect.y + pane.rect.padding_y).round() as u32;
 
             for y in 0..grid_h {
+                let row_dirty = pane_full_redraw
+                    || grid.damage.dirty_rows.get(y).copied().unwrap_or(true)
+                    || blink_changed;
+
+                if !row_dirty {
+                    continue;
+                }
+
+                let py = py_offset + (y as u32) * cell_h;
+                if py + cell_h > self.framebuffer.height {
+                    break;
+                }
+
+                if !pane_full_redraw {
+                    self.framebuffer
+                        .fill_span(tile_x, py, tile_w, cell_h, default_pane_bg);
+                }
+
                 let abs_y = y + history_len;
                 let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
                     (true, abs_y - grid.scroll_offset)
@@ -517,17 +538,18 @@ impl CpuRenderer {
                                 let glyph_key =
                                     GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
 
-                                let glyph_cache =
-                                    if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
-                                        &mut self.glyph_cache
-                                    } else {
-                                        let key = (font_size * 100.0).round() as u32;
-                                        if !self.pane_glyph_caches.contains_key(&key) {
-                                            let cache = self.glyph_cache.create_pane_cache(font_size);
-                                            self.pane_glyph_caches.insert(key, cache);
-                                        }
-                                        self.pane_glyph_caches.get_mut(&key).unwrap()
-                                    };
+                                let glyph_cache = if (self.glyph_cache.font_size - font_size).abs()
+                                    < 0.01
+                                {
+                                    &mut self.glyph_cache
+                                } else {
+                                    let key = (font_size * 100.0).round() as u32;
+                                    if !self.pane_glyph_caches.contains_key(&key) {
+                                        let cache = self.glyph_cache.create_pane_cache(font_size);
+                                        self.pane_glyph_caches.insert(key, cache);
+                                    }
+                                    self.pane_glyph_caches.get_mut(&key).unwrap()
+                                };
 
                                 if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
                                     if glyph_ref.is_color {
