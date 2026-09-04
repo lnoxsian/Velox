@@ -532,7 +532,7 @@ impl WindowState {
         if state.is_pressed() {
             let clicked_pane_id = pane_rect.pane_id;
             if self.active_tab().active_pane_id != clicked_pane_id {
-                self.active_tab_mut().active_pane_id = clicked_pane_id;
+                self.active_tab_mut().set_active_pane(clicked_pane_id);
                 self.sync_active_pane_font_size();
                 self.needs_redraw = true;
                 self.content_dirty = true;

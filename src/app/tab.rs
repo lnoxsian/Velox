@@ -56,6 +56,7 @@ pub struct Tab {
     pub id: u64,
     pub tree: SplitTree,
     pub active_pane_id: PaneId,
+    pub focus_history: Vec<PaneId>,
     pub custom_title: Option<String>,
     pub current_title: String,
     pub last_title_check: Instant,
@@ -91,6 +92,7 @@ impl Tab {
             id,
             tree,
             active_pane_id: pane_id,
+            focus_history: vec![pane_id],
             custom_title,
             current_title: initial_title,
             last_title_check: now,
@@ -116,6 +118,7 @@ impl Tab {
             id,
             tree,
             active_pane_id: pane_id,
+            focus_history: vec![pane_id],
             custom_title,
             current_title: initial_title,
             last_title_check: now,
@@ -126,10 +129,48 @@ impl Tab {
         }
     }
 
+    /// Update active pane and record in MRU focus history stack
+    #[inline]
+    pub fn set_active_pane(&mut self, pane_id: PaneId) {
+        self.active_pane_id = pane_id;
+        self.focus_history.retain(|&id| id != pane_id);
+        self.focus_history.push(pane_id);
+    }
+
+    /// Remove a pane and transfer focus to the previously active / second-last created pane
+    pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<Pane> {
+        let removed = self.tree.remove_pane(pane_id);
+        if removed.is_some() {
+            self.focus_history.retain(|&id| id != pane_id);
+            if self.active_pane_id == pane_id {
+                if let Some(&prev_id) = self
+                    .focus_history
+                    .iter()
+                    .rev()
+                    .find(|&&id| self.tree.find_pane(id).is_some())
+                {
+                    self.active_pane_id = prev_id;
+                } else if let Some(last_id) = self.tree.last_pane_id() {
+                    self.active_pane_id = last_id;
+                } else if let Some(first_id) = self.tree.first_pane_id() {
+                    self.active_pane_id = first_id;
+                }
+            }
+        }
+        removed
+    }
+
     #[inline]
     pub fn active_pane(&self) -> &Pane {
         self.tree
             .find_pane(self.active_pane_id)
+            .or_else(|| {
+                self.focus_history
+                    .iter()
+                    .rev()
+                    .find_map(|&id| self.tree.find_pane(id))
+            })
+            .or_else(|| self.tree.last_pane())
             .or_else(|| self.tree.first_pane())
             .expect("tab must have at least one pane")
     }
@@ -139,6 +180,19 @@ impl Tab {
         let active_id = self.active_pane_id;
         if self.tree.find_pane(active_id).is_some() {
             return self.tree.find_pane_mut(active_id).expect("pane exists");
+        }
+        if let Some(&prev_id) = self
+            .focus_history
+            .iter()
+            .rev()
+            .find(|&&id| self.tree.find_pane(id).is_some())
+        {
+            self.active_pane_id = prev_id;
+            return self.tree.find_pane_mut(prev_id).expect("prev pane exists");
+        }
+        if let Some(last_id) = self.tree.last_pane_id() {
+            self.active_pane_id = last_id;
+            return self.tree.find_pane_mut(last_id).expect("last pane exists");
         }
         if let Some(first_id) = self.tree.first_pane_id() {
             self.active_pane_id = first_id;

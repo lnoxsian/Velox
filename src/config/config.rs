@@ -417,7 +417,7 @@ impl Config {
         self.window
             .window_dim
             .or(self.window_dim_legacy)
-            .unwrap_or(0.0)
+            .unwrap_or(0.15)
             .clamp(0.0, 1.0)
     }
 
@@ -882,7 +882,7 @@ mod tests {
             opacity = 0.9
         "##;
         let cfg_default: Config = toml::from_str(toml_default).unwrap();
-        assert_eq!(cfg_default.window_dim(), 0.0);
+        assert!((cfg_default.window_dim() - 0.15).abs() < f32::EPSILON);
 
         // Under [window] table
         let toml_window = r##"
@@ -921,3 +921,4 @@ mod tests {
         assert_eq!(cfg_custom.hide_mouse_on_typing(), Some(true));
     }
 }
+

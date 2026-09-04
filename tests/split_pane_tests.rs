@@ -337,18 +337,103 @@ fn test_tab_pane_management_and_active_pane() {
     let p2 = create_test_pane(2, 80, 24);
     tab.tree
         .split_pane(1, p2, SplitDirection::Vertical, 0.5, 100);
-    tab.active_pane_id = 2;
+    tab.set_active_pane(2);
 
     assert_eq!(tab.active_pane().id, 2);
     assert_eq!(tab.tree.pane_count(), 2);
 
-    // If active pane is removed, active_pane_id falls back to remaining pane
-    tab.tree.remove_pane(2);
-    if tab.tree.find_pane(tab.active_pane_id).is_none() {
-        tab.active_pane_id = tab.tree.first_pane_id().unwrap();
-    }
+    // If active pane is removed, focus goes to previously active pane
+    tab.remove_pane(2);
     assert_eq!(tab.active_pane_id, 1);
     assert_eq!(tab.active_pane().id, 1);
+}
+
+#[test]
+fn test_closing_last_created_pane_focuses_second_last_created_pane() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    let terminal = Terminal::new(80, 24);
+    let mut tab = Tab::new(1, pty, terminal, None, "velox".to_string(), false, 14.0);
+
+    // Initial state: Pane 1 is active
+    assert_eq!(tab.active_pane_id, 1);
+
+    // Split 1 -> Create Pane 2
+    let p2 = create_test_pane(2, 80, 24);
+    tab.tree
+        .split_pane(1, p2, SplitDirection::Vertical, 0.5, 100);
+    tab.set_active_pane(2);
+    assert_eq!(tab.active_pane_id, 2);
+
+    // Split 2 -> Create Pane 3
+    let p3 = create_test_pane(3, 80, 24);
+    tab.tree
+        .split_pane(2, p3, SplitDirection::Horizontal, 0.5, 101);
+    tab.set_active_pane(3);
+    assert_eq!(tab.active_pane_id, 3);
+
+    // Split 3 -> Create Pane 4
+    let p4 = create_test_pane(4, 80, 24);
+    tab.tree
+        .split_pane(3, p4, SplitDirection::Vertical, 0.5, 102);
+    tab.set_active_pane(4);
+    assert_eq!(tab.active_pane_id, 4);
+
+    // Close last created pane (Pane 4) -> Focus MUST go to second-last created pane (Pane 3), NOT Pane 1!
+    let removed = tab.remove_pane(4);
+    assert!(removed.is_some());
+    assert_eq!(
+        tab.active_pane_id, 3,
+        "Closing last created pane 4 should transfer focus to second-last created pane 3"
+    );
+    assert_eq!(tab.active_pane().id, 3);
+
+    // Close last created remaining pane (Pane 3) -> Focus MUST go to Pane 2, NOT Pane 1!
+    let removed = tab.remove_pane(3);
+    assert!(removed.is_some());
+    assert_eq!(
+        tab.active_pane_id, 2,
+        "Closing pane 3 should transfer focus to remaining second-last created pane 2"
+    );
+    assert_eq!(tab.active_pane().id, 2);
+
+    // Close Pane 2 -> Focus MUST go to Pane 1!
+    let removed = tab.remove_pane(2);
+    assert!(removed.is_some());
+    assert_eq!(
+        tab.active_pane_id, 1,
+        "Closing pane 2 should transfer focus to pane 1"
+    );
+    assert_eq!(tab.active_pane().id, 1);
+}
+
+#[test]
+fn test_focus_history_mru_ordering_on_arbitrary_switch() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    let terminal = Terminal::new(80, 24);
+    let mut tab = Tab::new(1, pty, terminal, None, "velox".to_string(), false, 14.0);
+
+    let p2 = create_test_pane(2, 80, 24);
+    tab.tree
+        .split_pane(1, p2, SplitDirection::Vertical, 0.5, 100);
+    tab.set_active_pane(2);
+
+    let p3 = create_test_pane(3, 80, 24);
+    tab.tree
+        .split_pane(2, p3, SplitDirection::Horizontal, 0.5, 101);
+    tab.set_active_pane(3);
+
+    // Now focus is on 3, history is [1, 2, 3]
+    // User clicks Pane 1
+    tab.set_active_pane(1);
+    assert_eq!(tab.active_pane_id, 1);
+
+    // Closing Pane 1 should return focus to Pane 3 (most recently active remaining pane)
+    tab.remove_pane(1);
+    assert_eq!(tab.active_pane_id, 3);
+
+    // Closing Pane 3 should return focus to Pane 2
+    tab.remove_pane(3);
+    assert_eq!(tab.active_pane_id, 2);
 }
 
 #[test]

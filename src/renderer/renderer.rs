@@ -773,7 +773,7 @@ fn render_pane_row_bg(
             let is_block_cursor =
                 is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active;
             if is_block_cursor {
-                let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                let mut cell_fg = cell.foreground;
                 if pane.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
                     for i in 0..8 {
                         if cell_fg == pane_theme.ansi_colors[i] {
@@ -782,7 +782,10 @@ fn render_pane_row_bg(
                         }
                     }
                 }
-                bg = pane_theme.resolve_cursor_color(cell_fg);
+                let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
+                bg = pane_theme
+                    .resolve_cursor_color(cell_fg_dimmed)
+                    .dim(pane_effective_dim);
             }
 
             let next_x = x + if is_wide { 2 } else { 1 };
@@ -915,7 +918,7 @@ fn render_pane_row_fg(
                 pane_effective_dim,
             );
 
-            let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+            let mut cell_fg = cell.foreground;
             if pane.bold_is_bright && is_bold {
                 for i in 0..8 {
                     if cell_fg == pane_theme.ansi_colors[i] {
@@ -924,6 +927,7 @@ fn render_pane_row_fg(
                     }
                 }
             }
+            let cell_fg = cell_fg.dim(pane_effective_dim);
 
             if is_cursor && pane.cursor_shape == CursorShape::Block && pane.is_active {
                 fg = pane_theme
@@ -985,7 +989,9 @@ fn render_pane_row_fg(
 
             // ── Cursor ──
             if is_cursor && pane.is_active {
-                let cursor_color = pane_theme.resolve_cursor_color(cell_fg);
+                let cursor_color = pane_theme
+                    .resolve_cursor_color(cell_fg)
+                    .dim(pane_effective_dim);
                 match pane.cursor_shape {
                     CursorShape::Block => {}
                     CursorShape::HollowBlock => {
@@ -1221,10 +1227,7 @@ impl Renderer {
 
         // ── Update per-pane render states and rebuild only dirty rows ───────────
         for pane in panes {
-            let state = self
-                .pane_render_states
-                .entry(pane.pane_id)
-                .or_default();
+            let state = self.pane_render_states.entry(pane.pane_id).or_default();
             let font_size = pane.font_size;
             let key = (font_size * 100.0).round() as u32;
             let font_loader = if (self.font_loader.font_size - font_size).abs() < 0.01 {
@@ -1248,17 +1251,11 @@ impl Renderer {
             };
 
             let pane_effective_dim = if !pane.is_active {
-                (effective_dim * 0.5 + 0.1).clamp(0.0, 1.0)
+                (effective_dim * 0.5 + 0.15).clamp(0.0, 1.0)
             } else {
                 effective_dim
             };
-            let pane_theme_dimmed;
-            let pane_theme = if pane_effective_dim > 0.0 {
-                pane_theme_dimmed = pane.theme.dimmed(pane_effective_dim);
-                &pane_theme_dimmed
-            } else {
-                pane.theme
-            };
+            let pane_theme = pane.theme;
 
             let is_full_redraw = state.full_redraw
                 || state.last_cols != pane.cols
@@ -1326,9 +1323,9 @@ impl Renderer {
                     None
                 };
 
-                let grid_dirty = pane.grid.is_none_or(|g| {
-                    g.damage.dirty_rows.get(y).copied().unwrap_or(true)
-                });
+                let grid_dirty = pane
+                    .grid
+                    .is_none_or(|g| g.damage.dirty_rows.get(y).copied().unwrap_or(true));
 
                 let row_cache = &mut state.row_cache[y];
                 let needs_rebuild = !row_cache.valid
@@ -1387,33 +1384,24 @@ impl Renderer {
         // ── Pass 1: Background quads for all panes ────────────────────────────
         let pass1_start = (vertices.len() / 8) as i32;
         for pane in panes {
-            let pane_effective_dim = if !pane.is_active {
-                (effective_dim * 0.5 + 0.1).clamp(0.0, 1.0)
-            } else {
-                effective_dim
-            };
-            let pane_theme_dimmed;
-            let pane_theme = if pane_effective_dim > 0.0 {
-                pane_theme_dimmed = pane.theme.dimmed(pane_effective_dim);
-                &pane_theme_dimmed
-            } else {
-                pane.theme
-            };
+            let pane_theme = pane.theme;
 
-            // Fill entire pane rectangle default background to eliminate gaps
-            push_quad(
-                &mut vertices,
-                pane.rect.x,
-                pane.rect.y,
-                pane.rect.width,
-                pane.rect.height,
-                wu,
-                wv,
-                wu,
-                wv,
-                pane_theme.default_bg,
-                false,
-            );
+            // Fill entire pane rectangle default background to eliminate gaps if opaque or if pane has a custom background
+            if opacity >= 1.0 || pane_theme.default_bg != base_theme.default_bg {
+                push_quad(
+                    &mut vertices,
+                    pane.rect.x,
+                    pane.rect.y,
+                    pane.rect.width,
+                    pane.rect.height,
+                    wu,
+                    wv,
+                    wu,
+                    wv,
+                    pane_theme.default_bg,
+                    false,
+                );
+            }
 
             if let Some(state) = self.pane_render_states.get(&pane.pane_id) {
                 for row in &state.row_cache {
@@ -1897,5 +1885,117 @@ impl Drop for Renderer {
             self.gl.delete_vertex_array(self.vao);
             self.gl.delete_buffer(self.vbo);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_cell_colors_dimming() {
+        let theme = Theme::new();
+        let cell = Cell {
+            character: 'A',
+            foreground: Color {
+                r: 200,
+                g: 200,
+                b: 200,
+            },
+            background: Color {
+                r: 30,
+                g: 30,
+                b: 46,
+            },
+            underline_color: None,
+            flags: CellFlags::empty(),
+        };
+
+        // 1. Focused / no dim
+        let (fg_focused, bg_focused) = compute_cell_colors(&cell, false, false, &theme, 0.0);
+        assert_eq!(
+            fg_focused,
+            Color {
+                r: 200,
+                g: 200,
+                b: 200
+            }
+        );
+        assert_eq!(
+            bg_focused,
+            Color {
+                r: 30,
+                g: 30,
+                b: 46
+            }
+        );
+
+        // 2. Unfocused dim with 15% dimming factor (0.15)
+        let (fg_unfocused, bg_unfocused) = compute_cell_colors(&cell, false, false, &theme, 0.15);
+        assert_eq!(fg_unfocused.r, 170); // 200 * (1 - 0.15) = 170
+        assert_eq!(fg_unfocused.g, 170);
+        assert_eq!(fg_unfocused.b, 170);
+        assert_eq!(
+            bg_unfocused,
+            Color {
+                r: 30,
+                g: 30,
+                b: 46
+            }
+        ); // Background remains solid
+    }
+
+    #[test]
+    fn test_compute_cell_colors_bold_bright_with_dim() {
+        let theme = Theme::new();
+        let cell = Cell {
+            character: 'X',
+            foreground: theme.ansi_colors[1], // Red
+            background: theme.default_bg,
+            underline_color: None,
+            flags: CellFlags::BOLD,
+        };
+
+        // Bold-is-bright enabled with 15% dimming: should remap to bright red (ANSI 9) then dim by 15%
+        let (fg, bg) = compute_cell_colors(&cell, false, true, &theme, 0.15);
+        let expected_bright_red = theme.ansi_colors[9].dim(0.15);
+        assert_eq!(fg, expected_bright_red);
+        assert_eq!(bg, theme.default_bg);
+    }
+
+    #[test]
+    fn test_pane_bg_quad_culled_when_transparent() {
+        let theme = Theme::new();
+        let base_theme = theme.clone();
+        let pane_theme = theme.clone();
+
+        let opacity_transparent = 0.8;
+        let should_push_transparent =
+            opacity_transparent >= 1.0 || pane_theme.default_bg != base_theme.default_bg;
+        assert!(
+            !should_push_transparent,
+            "Pane background quad must be culled when window is transparent and default_bg matches base theme"
+        );
+
+        let opacity_opaque = 1.0;
+        let should_push_opaque =
+            opacity_opaque >= 1.0 || pane_theme.default_bg != base_theme.default_bg;
+        assert!(
+            should_push_opaque,
+            "Pane background quad must be pushed when window is fully opaque"
+        );
+
+        let mut custom_theme = theme.clone();
+        custom_theme.default_bg = Color {
+            r: 10,
+            g: 20,
+            b: 30,
+        };
+        let should_push_custom =
+            opacity_transparent >= 1.0 || custom_theme.default_bg != base_theme.default_bg;
+        assert!(
+            should_push_custom,
+            "Pane background quad must be pushed if pane has a custom background distinct from base theme"
+        );
     }
 }

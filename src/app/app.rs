@@ -223,6 +223,7 @@ impl Drop for WindowState {
 }
 
 impl WindowState {
+
     #[inline]
     pub fn mark_interaction(&mut self) {
         if self.cursor_blink_enabled && !self.cursor_blink_on {
@@ -486,7 +487,7 @@ impl WindowState {
             return None;
         }
 
-        tab.active_pane_id = new_pane_id;
+        tab.set_active_pane(new_pane_id);
         tab.clear_unfocused_selections();
         self.sync_active_pane_font_size();
         self.sync_active_tab_layout();
@@ -517,16 +518,12 @@ impl WindowState {
             return self.close_tab(tab_idx);
         }
 
-        let removed = tab.tree.remove_pane(pane_id);
+        let removed = tab.remove_pane(pane_id);
         if removed.is_some() {
-            if tab.active_pane_id == pane_id
-                && let Some(first_id) = tab.tree.first_pane_id()
-            {
-                tab.active_pane_id = first_id;
-            }
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.sync_tab_panes_dimensions(tab_idx);
+            crate::memory::trim_allocator_memory();
             self.tab_bar_dirty = true;
             self.needs_redraw = true;
             self.content_dirty = true;
@@ -546,7 +543,7 @@ impl WindowState {
             crate::app::split::find_neighbor_pane(&pane_rects, active_pane_id, direction)
         {
             let tab = self.active_tab_mut();
-            tab.active_pane_id = target_id;
+            tab.set_active_pane(target_id);
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.needs_redraw = true;
@@ -566,7 +563,7 @@ impl WindowState {
             && let Some(pos) = pane_ids.iter().position(|&id| id == tab.active_pane_id)
         {
             let next_pos = (pos + 1) % pane_ids.len();
-            tab.active_pane_id = pane_ids[next_pos];
+            tab.set_active_pane(pane_ids[next_pos]);
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.needs_redraw = true;
@@ -584,7 +581,7 @@ impl WindowState {
             && let Some(pos) = pane_ids.iter().position(|&id| id == tab.active_pane_id)
         {
             let prev_pos = (pos + pane_ids.len() - 1) % pane_ids.len();
-            tab.active_pane_id = pane_ids[prev_pos];
+            tab.set_active_pane(pane_ids[prev_pos]);
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.needs_redraw = true;
@@ -1646,3 +1643,5 @@ impl ApplicationHandler<CustomEvent> for App {
         }
     }
 }
+
+

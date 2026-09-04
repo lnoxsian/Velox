@@ -357,7 +357,7 @@ impl CpuRenderer {
             let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = selection_bounds;
 
             let pane_effective_dim = if !pane.is_active {
-                (effective_dim * 0.5 + 0.1).clamp(0.0, 1.0)
+                (effective_dim * 0.5 + 0.15).clamp(0.0, 1.0)
             } else {
                 effective_dim
             };
@@ -366,10 +366,11 @@ impl CpuRenderer {
             let tile_y = pane.rect.y.round() as u32;
             let tile_w = pane.rect.width.round() as u32;
             let tile_h = pane.rect.height.round() as u32;
-            let default_pane_bg = if pane_effective_dim > 0.0 {
-                PackedColor::from_color(pane.theme.default_bg.dim(pane_effective_dim)).to_u32()
-            } else {
+            let default_pane_bg = if pane.theme.default_bg == self.palette.raw_default_bg {
                 self.palette.default_bg
+            } else {
+                let alpha = (opacity * 255.0).round() as u8;
+                PackedColor::from_premultiplied(pane.theme.default_bg, alpha).to_u32()
             };
 
             let pane_full_redraw = self.damage.full_redraw || grid.damage.full_redraw;
@@ -412,11 +413,12 @@ impl CpuRenderer {
                     && is_row_valid
                     && abs_row >= sel_min_abs_y
                     && abs_row <= sel_max_abs_y;
-
-                let py = py_offset + (y as u32) * cell_h;
-                if py + cell_h > self.framebuffer.height {
-                    break;
-                }
+                let is_active_grid_row = is_row_valid && abs_row >= history_len;
+                let grid_y = if is_active_grid_row {
+                    abs_row - history_len
+                } else {
+                    0
+                };
 
                 let default_cell = Cell {
                     character: ' ',
@@ -455,12 +457,42 @@ impl CpuRenderer {
                         let is_reverse = cell.flags.contains(CellFlags::REVERSE);
                         let is_inverted = is_selected ^ is_reverse;
 
-                        let (_, bg) = self.palette.resolve_cell_colors(
+                        let (_, mut bg) = self.palette.resolve_cell_colors_pane(
                             cell,
                             is_inverted,
                             self.bold_is_bright,
                             pane_effective_dim,
+                            pane.theme,
+                            default_pane_bg,
                         );
+
+                        let is_cursor = pane.is_active
+                            && pane.cursor_visible
+                            && is_active_grid_row
+                            && col == pane.display_cursor_x
+                            && grid_y == grid.cursor.y;
+                        let is_block_cursor = is_cursor
+                            && pane.cursor_shape == CursorShape::Block
+                            && pane.is_active
+                            && is_focused;
+                        if is_block_cursor {
+                            let mut cell_fg = cell.foreground;
+                            if self.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                                for i in 0..8 {
+                                    if cell_fg == pane.theme.ansi_colors[i] {
+                                        cell_fg = pane.theme.ansi_colors[i + 8];
+                                        break;
+                                    }
+                                }
+                            }
+                            let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
+                            bg = PackedColor::from_color(
+                                pane.theme
+                                    .resolve_cursor_color(cell_fg_dimmed)
+                                    .dim(pane_effective_dim),
+                            )
+                            .to_u32();
+                        }
 
                         if !in_span {
                             span_start_col = col;
@@ -510,12 +542,32 @@ impl CpuRenderer {
                         let is_reverse = cell.flags.contains(CellFlags::REVERSE);
                         let is_inverted = is_selected ^ is_reverse;
 
-                        let (fg, _) = self.palette.resolve_cell_colors(
+                        let (mut fg, _) = self.palette.resolve_cell_colors_pane(
                             cell,
                             is_inverted,
                             self.bold_is_bright,
                             pane_effective_dim,
+                            pane.theme,
+                            default_pane_bg,
                         );
+
+                        let is_cursor = pane.is_active
+                            && pane.cursor_visible
+                            && is_active_grid_row
+                            && col == pane.display_cursor_x
+                            && grid_y == grid.cursor.y;
+                        let is_block_cursor = is_cursor
+                            && pane.cursor_shape == CursorShape::Block
+                            && pane.is_active
+                            && is_focused;
+                        if is_block_cursor {
+                            fg = PackedColor::from_color(
+                                pane.theme
+                                    .resolve_cursor_text_color(cell.background)
+                                    .dim(pane_effective_dim),
+                            )
+                            .to_u32();
+                        }
 
                         let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
                             || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
@@ -614,12 +666,13 @@ impl CpuRenderer {
                     }
                 });
 
-                // Render Cursor for this row
+                // Render Cursor for this row (non-block or unfocused cursor)
                 let cursor_y = grid.cursor.y;
                 if pane.is_active
                     && y == cursor_y
                     && pane.cursor_visible
                     && (grid.scroll_offset == 0)
+                    && (!is_focused || pane.cursor_shape != CursorShape::Block)
                 {
                     let cursor_x = pane.display_cursor_x.min(grid_w.saturating_sub(1));
                     let cursor_px = px_offset + (cursor_x as u32) * cell_w;
@@ -630,16 +683,22 @@ impl CpuRenderer {
                     let cell_idx = physical_cursor_y * grid_w + cursor_x;
                     let cursor_color = if cell_idx < cells.len() {
                         let cell = &cells[cell_idx];
-                        let mut cell_fg = cell.foreground.dim(pane_effective_dim);
+                        let mut cell_fg = cell.foreground;
                         if self.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
                             for i in 0..8 {
-                                if cell_fg == theme.ansi_colors[i] {
-                                    cell_fg = theme.ansi_colors[i + 8];
+                                if cell_fg == pane.theme.ansi_colors[i] {
+                                    cell_fg = pane.theme.ansi_colors[i + 8];
                                     break;
                                 }
                             }
                         }
-                        PackedColor::from_color(theme.resolve_cursor_color(cell_fg)).to_u32()
+                        let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
+                        PackedColor::from_color(
+                            pane.theme
+                                .resolve_cursor_color(cell_fg_dimmed)
+                                .dim(pane_effective_dim),
+                        )
+                        .to_u32()
                     } else {
                         self.palette.default_fg
                     };

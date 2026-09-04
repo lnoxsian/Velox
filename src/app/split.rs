@@ -573,6 +573,10 @@ impl SplitTree {
         self.root.last_pane()
     }
 
+    pub fn last_pane_id(&self) -> Option<PaneId> {
+        self.root.last_pane().map(|p| p.id)
+    }
+
     pub fn collect_panes(&self) -> Vec<&Pane> {
         let mut list = Vec::new();
         self.root.collect_panes(&mut list);

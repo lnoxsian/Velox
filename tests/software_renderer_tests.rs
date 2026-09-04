@@ -911,6 +911,98 @@ fn test_software_renderer_unfocused_dim() {
 }
 
 #[test]
+fn test_software_renderer_bold_bright_unfocused_dim() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut theme = Theme::new();
+    // Use distinct base vs bright ANSI red colors to clearly verify remapping
+    theme.ansi_colors[1] = Color { r: 100, g: 0, b: 0 };
+    theme.ansi_colors[9] = Color { r: 240, g: 0, b: 0 };
+
+    let mut grid = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
+
+    // Populate cell with bold ANSI red text 'X'
+    grid.cells[0] = Cell::new(
+        'X',
+        theme.ansi_colors[1], // ANSI 1 (dark red)
+        theme.default_bg,
+        CellFlags::BOLD,
+    );
+    grid.damage.mark_dirty(0);
+
+    let mut focused_target = vec![0u32; 800 * 600];
+    let mut unfocused_target = vec![0u32; 800 * 600];
+
+    // Render focused with window_dim = 0.5 (bold_is_bright remaps to bright red ~240)
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true, // is_focused
+        1.0,
+        0.5, // window_dim
+        &mut focused_target,
+        None,
+    );
+
+    // Render unfocused with window_dim = 0.5 (bold_is_bright remaps to bright red then dims 50% -> ~120)
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        false, // is_focused = false -> dims by 50%
+        1.0,
+        0.5, // window_dim
+        &mut unfocused_target,
+        None,
+    );
+
+    let cell_w = renderer.glyph_cache.cell_width as usize;
+    let cell_h = renderer.glyph_cache.cell_height as usize;
+
+    let mut max_focused_text_r = 0u32;
+    let mut max_unfocused_text_r = 0u32;
+
+    for y in 0..cell_h {
+        for x in 0..cell_w {
+            let f_px = focused_target[y * 800 + x];
+            let u_px = unfocused_target[y * 800 + x];
+            let f_r = (f_px >> 16) & 0xFF;
+            let u_r = (u_px >> 16) & 0xFF;
+            if f_r > max_focused_text_r {
+                max_focused_text_r = f_r;
+            }
+            if u_r > max_unfocused_text_r {
+                max_unfocused_text_r = u_r;
+            }
+        }
+    }
+
+    // Focused bold ANSI red must remap to bright red (around 240, not base 100)
+    assert!(
+        max_focused_text_r >= 200,
+        "Focused bold text should remap to bright red (got {})",
+        max_focused_text_r
+    );
+
+    // Unfocused bold ANSI red must remap to bright red (240) and dim by 50% -> around 120 (not 100 * 0.5 = 50)
+    assert!(
+        (95..=135).contains(&max_unfocused_text_r),
+        "Unfocused bold text must remap to bright red and dim to ~120 (got {})",
+        max_unfocused_text_r
+    );
+}
+
+#[test]
 fn test_software_renderer_dynamic_selection_drag_and_scrollback() {
     let mut renderer = setup_renderer(800, 600);
     let mut grid = Grid::new(
@@ -1109,5 +1201,117 @@ fn test_scrollback_background_preserves_theme_background_color() {
     assert_eq!(
         actual_pixel, expected_bg_packed,
         "Trailing columns in scrollback must maintain the theme's default background color and not turn black"
+    );
+}
+
+#[test]
+fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
+    let mut theme = Theme::new();
+    theme.default_bg = Color {
+        r: 30,
+        g: 30,
+        b: 46,
+    };
+    theme.default_fg = Color {
+        r: 205,
+        g: 214,
+        b: 244,
+    };
+
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 1.0);
+    let mut grid = Grid::new(80, 24, theme.default_fg, theme.default_bg, 100, false);
+    grid.damage.mark_all();
+
+    let mut target = vec![0u32; 800 * 600];
+
+    let padding_x = 12.0;
+    let padding_y = 10.0;
+
+    // Render with unfocused dimming (window_dim = 0.5, is_focused = false)
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        padding_x,
+        padding_y,
+        false,
+        CursorShape::Block,
+        0,
+        false, // is_focused
+        1.0,   // opacity
+        0.5,   // window_dim
+        &mut target,
+        None,
+    );
+
+    let expected_bg =
+        velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
+
+    // 1. Verify padding pixel (e.g. top-left margin (2, 2))
+    let padding_pixel = target[2 * 800 + 2];
+    assert_eq!(
+        padding_pixel, expected_bg,
+        "Top-left window padding must match theme default_bg and not be dimmed"
+    );
+
+    // 2. Verify inner grid cell background pixel (inside cell at col 0, row 0)
+    let cell_w = renderer.glyph_cache.cell_width as usize;
+    let cell_h = renderer.glyph_cache.cell_height as usize;
+    let grid_x = padding_x as usize + cell_w / 2;
+    let grid_y = padding_y as usize + cell_h / 2;
+    let cell_pixel = target[grid_y * 800 + grid_x];
+    assert_eq!(
+        cell_pixel, expected_bg,
+        "Grid cell background must match theme default_bg exactly"
+    );
+
+    // 3. Verify right window margin beyond terminal grid
+    let right_margin_pixel = target[300 * 800 + 798];
+    assert_eq!(
+        right_margin_pixel, expected_bg,
+        "Right margin must match theme default_bg"
+    );
+
+    // 4. Verify bottom window margin beyond terminal grid
+    let bottom_margin_pixel = target[598 * 800 + 400];
+    assert_eq!(
+        bottom_margin_pixel, expected_bg,
+        "Bottom margin must match theme default_bg"
+    );
+
+    // 5. Test with transparency (opacity = 0.8)
+    let mut trans_target = vec![0u32; 800 * 600];
+    let mut trans_renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 0.8);
+    let expected_trans_bg = velox::renderer::software::color::PackedColor::from_premultiplied(
+        theme.default_bg,
+        (0.8f32 * 255.0).round() as u8,
+    )
+    .to_u32();
+
+    trans_renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        padding_x,
+        padding_y,
+        false,
+        CursorShape::Block,
+        0,
+        false,
+        0.8,
+        0.5,
+        &mut trans_target,
+        None,
+    );
+
+    assert_eq!(
+        trans_target[2 * 800 + 2],
+        expected_trans_bg,
+        "Translucent padding pixel must have unified premultiplied background color"
+    );
+    assert_eq!(
+        trans_target[grid_y * 800 + grid_x],
+        expected_trans_bg,
+        "Translucent grid cell pixel must match translucent padding pixel exactly"
     );
 }
