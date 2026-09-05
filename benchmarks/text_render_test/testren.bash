@@ -27,11 +27,20 @@ if [ "$GRID_ONLY" = true ]; then
     echo "Rendering explicit column numbers (1..${cols}) and row numbers (1..${lines}) matrix grid..."
     echo
 
+    grid_width=$((cols - 8))
+    if [ $grid_width -lt 10 ]; then grid_width=10; fi
+
     # 1. Column Tens & Units Header Rulers
-    tens_line="Col:  "
-    units_line="      "
-    for ((c=7; c<=cols; c++)); do
+    hundreds_line="       "
+    tens_line="Col:   "
+    units_line="       "
+    for ((c=1; c<=grid_width; c++)); do
         unit=$((c % 10))
+        if [ $((c % 100)) -eq 0 ]; then
+            hundreds_line="${hundreds_line}$((c / 100))"
+        else
+            hundreds_line="${hundreds_line} "
+        fi
         if [ $((c % 10)) -eq 0 ]; then
             ten_digit=$(( (c / 10) % 10 ))
             tens_line="${tens_line}${ten_digit}"
@@ -41,39 +50,41 @@ if [ "$GRID_ONLY" = true ]; then
         units_line="${units_line}${unit}"
     done
 
+    if [ $grid_width -ge 100 ]; then
+        printf "\e[1;30m%s\e[0m\n" "$hundreds_line"
+    fi
     printf "\e[1;33m%s\e[0m\n" "$tens_line"
     printf "\e[1;36m%s\e[0m\n" "$units_line"
 
     # 2. Top Box Line
-    grid_width=$((cols - 8))
-    if [ $grid_width -lt 10 ]; then grid_width=10; fi
-
     border_h=""
     for ((k=0; k<grid_width; k++)); do border_h="${border_h}─"; done
 
-    printf "\e[1;35m┌──────┬%s┐\e[0m\n" "$border_h"
+    printf "\e[1;35m┌─────┬%s┐\e[0m\n" "$border_h"
+
+    letters="abcdefghijklmnopqrstuvwxyz"
+    num_pattern=""
+    alpha_pattern=""
+    for ((c=1; c<=grid_width; c++)); do
+        num_pattern="${num_pattern}$((c % 10))"
+        char_idx=$(( (c - 1) % 26 ))
+        alpha_pattern="${alpha_pattern}${letters:char_idx:1}"
+    done
 
     max_rows=$((lines - 10))
     if [ $max_rows -lt 4 ]; then max_rows=4; fi
 
     for ((r=1; r<=max_rows; r++)); do
         row_tag=$(printf "R%02d" "$r")
-        cell_pattern=""
-        for ((c=1; c<=grid_width; c++)); do
-            if [ $((r % 2)) -eq 1 ]; then
-                cell_pattern="${cell_pattern}$((c % 10))"
-            else
-                if [ $((c % 5)) -eq 0 ]; then
-                    cell_pattern="${cell_pattern}+"
-                else
-                    cell_pattern="${cell_pattern}·"
-                fi
-            fi
-        done
-        printf "\e[1;35m│\e[1;32m %s \e[1;35m│\e[0m%s\e[1;35m│\e[0m\n" "$row_tag" "$cell_pattern"
+        if [ $((r % 2)) -eq 1 ]; then
+            row_content="$num_pattern"
+        else
+            row_content="$alpha_pattern"
+        fi
+        printf "\e[1;35m│\e[1;32m %s \e[1;35m│\e[0m%s\e[1;35m│\e[0m\n" "$row_tag" "$row_content"
     done
 
-    printf "\e[1;35m└──────┴%s┘\e[0m\n" "$border_h"
+    printf "\e[1;35m└─────┴%s┘\e[0m\n" "$border_h"
     echo
 
     echo "Launching Full-Screen Alternate Buffer Corner-to-Corner Sweep..."
@@ -100,7 +111,8 @@ if [ "$GRID_ONLY" = true ]; then
             elif [ $((r % 2)) -eq 0 ]; then
                 grid_fill="${grid_fill}$((c % 10))"
             else
-                grid_fill="${grid_fill}·"
+                char_idx=$(( (c - 5) % 26 ))
+                grid_fill="${grid_fill}${letters:char_idx:1}"
             fi
         done
         printf "%s" "$grid_fill"
@@ -118,8 +130,7 @@ if [ "$GRID_ONLY" = true ]; then
     printf "\e[2;%dH\e[1;101;37m (1,%d) TOP-RIGHT ↗ \e[0m" "$((cols - 20))" "$cols"
 
     mid_r=$((lines / 2))
-    mid_msg=" VELOX FULL MATRIX GRID [ %d ROWS x %d COLS ] " "$lines" "$cols"
-    mid_msg_str=$(printf "$mid_msg")
+    printf -v mid_msg_str " VELOX FULL MATRIX GRID [ %d ROWS x %d COLS ] " "$lines" "$cols"
     mid_c=$(( (cols - ${#mid_msg_str}) / 2 ))
     if [ $mid_c -lt 1 ]; then mid_c=1; fi
     printf "\e[%d;%dH\e[1;42;30m%s\e[0m" "$mid_r" "$mid_c" "$mid_msg_str"
@@ -534,11 +545,20 @@ echo "Detected Terminal Dimensions: ${cols} columns × ${lines} rows"
 echo "Rendering explicit column numbers (1..${cols}) and row numbers (1..${lines}) matrix grid..."
 echo
 
+grid_width=$((cols - 8))
+if [ $grid_width -lt 10 ]; then grid_width=10; fi
+
 # 1. Column Tens & Units Header Rulers
-tens_line="Col:  "
-units_line="      "
-for ((c=7; c<=cols; c++)); do
+hundreds_line="       "
+tens_line="Col:   "
+units_line="       "
+for ((c=1; c<=grid_width; c++)); do
     unit=$((c % 10))
+    if [ $((c % 100)) -eq 0 ]; then
+        hundreds_line="${hundreds_line}$((c / 100))"
+    else
+        hundreds_line="${hundreds_line} "
+    fi
     if [ $((c % 10)) -eq 0 ]; then
         ten_digit=$(( (c / 10) % 10 ))
         tens_line="${tens_line}${ten_digit}"
@@ -548,40 +568,42 @@ for ((c=7; c<=cols; c++)); do
     units_line="${units_line}${unit}"
 done
 
+if [ $grid_width -ge 100 ]; then
+    printf "\e[1;30m%s\e[0m\n" "$hundreds_line"
+fi
 printf "\e[1;33m%s\e[0m\n" "$tens_line"
 printf "\e[1;36m%s\e[0m\n" "$units_line"
 
 # 2. Top Box Line
-grid_width=$((cols - 8))
-if [ $grid_width -lt 10 ]; then grid_width=10; fi
-
 border_h=""
 for ((k=0; k<grid_width; k++)); do border_h="${border_h}─"; done
 
-printf "\e[1;35m┌──────┬%s┐\e[0m\n" "$border_h"
+printf "\e[1;35m┌─────┬%s┐\e[0m\n" "$border_h"
 
 # 3. Data Rows with Row Index & Column Unit Patterns
 max_rows=8
 if [ $((lines / 2)) -gt 8 ]; then max_rows=$((lines / 2)); fi
 
-for ((r=1; r<=max_rows; r++)); do
-    row_tag=$(printf "R%02d" "$r")
-    cell_pattern=""
-    for ((c=1; c<=grid_width; c++)); do
-        if [ $((r % 2)) -eq 1 ]; then
-            cell_pattern="${cell_pattern}$((c % 10))"
-        else
-            if [ $((c % 5)) -eq 0 ]; then
-                cell_pattern="${cell_pattern}+"
-            else
-                cell_pattern="${cell_pattern}·"
-            fi
-        fi
-    done
-    printf "\e[1;35m│\e[1;32m %s \e[1;35m│\e[0m%s\e[1;35m│\e[0m\n" "$row_tag" "$cell_pattern"
+letters="abcdefghijklmnopqrstuvwxyz"
+num_pattern=""
+alpha_pattern=""
+for ((c=1; c<=grid_width; c++)); do
+    num_pattern="${num_pattern}$((c % 10))"
+    char_idx=$(( (c - 1) % 26 ))
+    alpha_pattern="${alpha_pattern}${letters:char_idx:1}"
 done
 
-printf "\e[1;35m└──────┴%s┘\e[0m\n" "$border_h"
+for ((r=1; r<=max_rows; r++)); do
+    row_tag=$(printf "R%02d" "$r")
+    if [ $((r % 2)) -eq 1 ]; then
+        row_content="$num_pattern"
+    else
+        row_content="$alpha_pattern"
+    fi
+    printf "\e[1;35m│\e[1;32m %s \e[1;35m│\e[0m%s\e[1;35m│\e[0m\n" "$row_tag" "$row_content"
+done
+
+printf "\e[1;35m└─────┴%s┘\e[0m\n" "$border_h"
 echo
 
 if [ "$FULL_GRID_TEST" = true ]; then
@@ -609,7 +631,8 @@ if [ "$FULL_GRID_TEST" = true ]; then
             elif [ $((r % 2)) -eq 0 ]; then
                 grid_fill="${grid_fill}$((c % 10))"
             else
-                grid_fill="${grid_fill}·"
+                char_idx=$(( (c - 5) % 26 ))
+                grid_fill="${grid_fill}${letters:char_idx:1}"
             fi
         done
         printf "%s" "$grid_fill"
@@ -627,8 +650,7 @@ if [ "$FULL_GRID_TEST" = true ]; then
     printf "\e[2;%dH\e[1;101;37m (1,%d) TOP-RIGHT ↗ \e[0m" "$((cols - 20))" "$cols"
 
     mid_r=$((lines / 2))
-    mid_msg=" VELOX FULL MATRIX GRID [ %d ROWS x %d COLS ] " "$lines" "$cols"
-    mid_msg_str=$(printf "$mid_msg")
+    printf -v mid_msg_str " VELOX FULL MATRIX GRID [ %d ROWS x %d COLS ] " "$lines" "$cols"
     mid_c=$(( (cols - ${#mid_msg_str}) / 2 ))
     if [ $mid_c -lt 1 ]; then mid_c=1; fi
     printf "\e[%d;%dH\e[1;42;30m%s\e[0m" "$mid_r" "$mid_c" "$mid_msg_str"
