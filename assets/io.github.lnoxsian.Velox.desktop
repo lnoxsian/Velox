@@ -1,0 +1,18 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Velox
+GenericName=Terminal Emulator
+Comment=Fast, modern, lightweight terminal emulator for Linux
+Exec=velox %F
+Icon=io.github.lnoxsian.Velox
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;console;shell;prompt;command;line;
+StartupNotify=true
+StartupWMClass=io.github.lnoxsian.Velox
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=velox

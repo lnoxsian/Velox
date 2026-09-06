@@ -89,7 +89,7 @@ impl PtyReactor {
                         epoll_fd,
                         events.as_mut_ptr(),
                         events.len() as i32,
-                        100, // 100ms timeout for safety
+                        -1, // Block until an event occurs on wake_fd or a PTY (true 0% CPU idle)
                     )
                 };
 

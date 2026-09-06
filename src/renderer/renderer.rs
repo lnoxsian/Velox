@@ -10,22 +10,6 @@ use std::sync::Arc;
 
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FontAtlasKey {
-    pub font_size_key: u32,
-    pub scale_multiplier_key: u32,
-}
-
-impl FontAtlasKey {
-    #[inline(always)]
-    pub fn new(font_size: f32, scale_multiplier: f32) -> Self {
-        Self {
-            font_size_key: (font_size * 100.0).round() as u32,
-            scale_multiplier_key: (scale_multiplier * 100.0).round() as u32,
-        }
-    }
-}
-
 pub struct PaneRenderData<'a> {
     pub pane_id: PaneId,
     pub rect: PaneRect,
@@ -84,7 +68,6 @@ pub struct Renderer {
     pub font_loader: FontLoader,
     pub tab_font_loader: FontLoader,
     pub pane_font_loaders: HashMap<u32, FontLoader>,
-    pub atlases: HashMap<FontAtlasKey, FontLoader>,
     pub pane_render_states: HashMap<PaneId, PaneRenderState>,
     pub font_family: String,
     pub font_scale_multiplier: f32,
@@ -432,6 +415,25 @@ impl Renderer {
         viewport_width: u32,
         viewport_height: u32,
     ) -> Self {
+        Self::try_new(
+            gl,
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            viewport_width,
+            viewport_height,
+        )
+        .expect("Failed to initialize OpenGL renderer")
+    }
+
+    pub fn try_new(
+        gl: Arc<glow::Context>,
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        viewport_width: u32,
+        viewport_height: u32,
+    ) -> Result<Self, String> {
         unsafe {
             // ── Shaders ──────────────────────────────────────────────────────
             let vertex_src = r#"
@@ -467,36 +469,55 @@ impl Renderer {
                 }
             "#;
 
-            let compile_shader = |gl: &glow::Context, kind, src| {
-                let sh = gl.create_shader(kind).unwrap();
+            let compile_shader = |gl: &glow::Context, kind, src| -> Result<glow::Shader, String> {
+                let sh = gl
+                    .create_shader(kind)
+                    .map_err(|e| format!("Failed to create shader: {}", e))?;
                 gl.shader_source(sh, src);
                 gl.compile_shader(sh);
                 if !gl.get_shader_compile_status(sh) {
-                    panic!("Shader compilation failed: {}", gl.get_shader_info_log(sh));
+                    let log = gl.get_shader_info_log(sh);
+                    gl.delete_shader(sh);
+                    return Err(format!("Shader compilation failed: {}", log));
                 }
-                sh
+                Ok(sh)
             };
 
-            let vs = compile_shader(&gl, glow::VERTEX_SHADER, vertex_src);
-            let fs = compile_shader(&gl, glow::FRAGMENT_SHADER, fragment_src);
+            let vs = compile_shader(&gl, glow::VERTEX_SHADER, vertex_src)?;
+            let fs = match compile_shader(&gl, glow::FRAGMENT_SHADER, fragment_src) {
+                Ok(sh) => sh,
+                Err(err) => {
+                    gl.delete_shader(vs);
+                    return Err(err);
+                }
+            };
 
-            let program = gl.create_program().unwrap();
+            let program = gl.create_program().map_err(|e| {
+                gl.delete_shader(vs);
+                gl.delete_shader(fs);
+                format!("Failed to create shader program: {}", e)
+            })?;
             gl.attach_shader(program, vs);
             gl.attach_shader(program, fs);
             gl.link_program(program);
             if !gl.get_program_link_status(program) {
-                panic!(
-                    "Shader program linking failed: {}",
-                    gl.get_program_info_log(program)
-                );
+                let log = gl.get_program_info_log(program);
+                gl.delete_shader(vs);
+                gl.delete_shader(fs);
+                gl.delete_program(program);
+                return Err(format!("Shader program linking failed: {}", log));
             }
             gl.delete_shader(vs);
             gl.delete_shader(fs);
 
             // ── VAO / VBO ─────────────────────────────────────────────────────
             // Vertex layout: [x, y, u, v, r, g, b, a] — 8 floats per vertex
-            let vao = gl.create_vertex_array().unwrap();
-            let vbo = gl.create_buffer().unwrap();
+            let vao = gl
+                .create_vertex_array()
+                .map_err(|e| format!("Failed to create vertex array: {}", e))?;
+            let vbo = gl
+                .create_buffer()
+                .map_err(|e| format!("Failed to create buffer: {}", e))?;
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
 
@@ -538,7 +559,7 @@ impl Renderer {
             let viewport_height = viewport_height.max(1);
             gl.viewport(0, 0, viewport_width as i32, viewport_height as i32);
 
-            Self {
+            Ok(Self {
                 gl,
                 program,
                 vao,
@@ -546,7 +567,6 @@ impl Renderer {
                 font_loader,
                 tab_font_loader,
                 pane_font_loaders: HashMap::new(),
-                atlases: HashMap::new(),
                 pane_render_states: HashMap::new(),
                 font_family: font_family.to_string(),
                 font_scale_multiplier,
@@ -554,7 +574,7 @@ impl Renderer {
                 viewport_height,
                 start_time: std::time::Instant::now(),
                 vertices: Vec::with_capacity(80 * 24 * 6 * 8),
-            }
+            })
         }
     }
 
@@ -588,12 +608,7 @@ impl Renderer {
         self.pane_render_states.clear();
         self.font_loader.release_memory();
         self.tab_font_loader.release_memory();
-        for loader in self.pane_font_loaders.values_mut() {
-            loader.release_memory();
-        }
-        for loader in self.atlases.values_mut() {
-            loader.release_memory();
-        }
+        self.pane_font_loaders.clear();
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
@@ -846,7 +861,7 @@ fn render_pane_row_fg(
     blink_on: bool,
     font_loader: &mut FontLoader,
     out: &mut Vec<f32>,
-) {
+) -> bool {
     let cols = pane.cols;
     let history_len = pane.history_len;
     let scroll_offset = pane.scroll_offset;
@@ -874,6 +889,7 @@ fn render_pane_row_fg(
     };
 
     with_pane_row_slice(pane, y, |row_cells| {
+        let mut has_blink_cells = false;
         let mut x = 0;
         while x < cols {
             let cell = if x < row_cells.len() {
@@ -881,6 +897,9 @@ fn render_pane_row_fg(
             } else {
                 default_cell
             };
+            if cell.flags.contains(CellFlags::BLINK) {
+                has_blink_cells = true;
+            }
             if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
                 x += 1;
                 continue;
@@ -1166,7 +1185,9 @@ fn render_pane_row_fg(
 
             x += if is_wide { 2 } else { 1 };
         }
-    });
+        has_blink_cells
+    })
+    .unwrap_or(false)
 }
 
 impl Renderer {
@@ -1211,11 +1232,20 @@ impl Renderer {
             }
         }
 
-        // Clean up closed panes
-        let current_pane_ids: std::collections::HashSet<PaneId> =
-            panes.iter().map(|p| p.pane_id).collect();
-        self.pane_render_states
-            .retain(|id, _| current_pane_ids.contains(id));
+        // Clean up closed panes without per-frame heap allocations
+        if self.pane_render_states.len() > panes.len() {
+            self.pane_render_states
+                .retain(|id, _| panes.iter().any(|p| p.pane_id == *id));
+        }
+
+        // Prune stale pane font loaders from closed panes or obsolete font sizes
+        if self.pane_font_loaders.len() > panes.len() {
+            self.pane_font_loaders.retain(|&k, _| {
+                panes
+                    .iter()
+                    .any(|p| (p.font_size * 100.0).round() as u32 == k)
+            });
+        }
 
         let mut draw_batches: Vec<(i32, i32, glow::Texture)> = Vec::with_capacity(panes.len() + 2);
 
@@ -1257,13 +1287,14 @@ impl Renderer {
             };
             let pane_theme = pane.theme;
 
+            let blink_changed = state.last_blink_on != blink_on;
+
             let is_full_redraw = state.full_redraw
                 || state.last_cols != pane.cols
                 || state.last_rows != pane.rows
                 || (state.last_font_size - pane.font_size).abs() > 0.01
                 || state.last_rect != Some(pane.rect)
                 || (state.last_dim - pane_effective_dim).abs() > 0.001
-                || state.last_blink_on != blink_on
                 || state.last_scroll_offset != pane.scroll_offset
                 || pane.grid.is_some_and(|g| g.damage.full_redraw);
 
@@ -1332,7 +1363,8 @@ impl Renderer {
                     || grid_dirty
                     || state.dirty_rows.is_dirty(y)
                     || row_cache.last_cursor != current_cursor
-                    || row_cache.last_selection_range != current_selection;
+                    || row_cache.last_selection_range != current_selection
+                    || (blink_changed && row_cache.has_blink_cells);
 
                 if needs_rebuild {
                     row_cache.bg_vertices.clear();
@@ -1354,7 +1386,7 @@ impl Renderer {
                     );
 
                     row_cache.fg_vertices.clear();
-                    render_pane_row_fg(
+                    row_cache.has_blink_cells = render_pane_row_fg(
                         pane,
                         y,
                         pane_theme,

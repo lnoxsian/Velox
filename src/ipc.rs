@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,18 +143,30 @@ pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListene
 
     thread::spawn(move || {
         while running_clone.load(Ordering::SeqCst) {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let proxy = proxy.clone();
-                    thread::spawn(move || {
-                        let _ = handle_client_stream(&mut stream, &proxy);
-                    });
+            let mut pfd = libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // Sleep in kernel for up to 1000ms until a client connects or shutdown
+            let ret = unsafe { libc::poll(&mut pfd, 1, 1000) };
+            if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let proxy = proxy.clone();
+                        thread::spawn(move || {
+                            let _ = handle_client_stream(&mut stream, &proxy);
+                        });
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(100));
+                    }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    thread::sleep(Duration::from_millis(50));
-                }
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(100));
+            } else if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINTR) {
+                    break;
                 }
             }
         }

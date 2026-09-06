@@ -22,6 +22,11 @@ fn main() {
     // Load user configuration
     let config = config::loader::load().unwrap_or_else(|_| config::defaults::default_config());
 
+    if cli_opts.diagnostics {
+        velox::diagnostics::run_diagnostics(&config);
+        return;
+    }
+
     let single_instance = cli_opts.single_instance || config.single_instance.unwrap_or(true);
 
     if single_instance || cli_opts.is_msg_create_window {

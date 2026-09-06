@@ -12,6 +12,7 @@ pub struct CliOptions {
     pub is_msg_create_window: bool,
     pub help: bool,
     pub version: bool,
+    pub diagnostics: bool,
 }
 
 impl CliOptions {
@@ -30,6 +31,12 @@ impl CliOptions {
         let mut i = 1;
         while i < args.len() {
             let arg = &args[i];
+
+            if arg == "doctor" {
+                options.diagnostics = true;
+                i += 1;
+                continue;
+            }
 
             if arg == "msg" {
                 if i + 1 < args.len() && args[i + 1] == "create-window" {
@@ -85,6 +92,9 @@ impl CliOptions {
                 "-v" | "--version" => {
                     options.version = true;
                 }
+                "--diagnostics" => {
+                    options.diagnostics = true;
+                }
                 _ => {
                     if arg.starts_with('-') {
                         eprintln!("Unknown flag: {}", arg);
@@ -111,12 +121,14 @@ impl CliOptions {
 
 USAGE:
     velox [OPTIONS]
+    velox doctor
     velox msg create-window [OPTIONS]
 
 FLAGS:
     -s, --single-instance   Enable single-process mode (connects to running instance or starts server)
     -d, --daemon            Start in background daemon mode (keeps process alive for IPC requests)
         --hold              Keep window open after child command exits
+        --diagnostics       Print system, display backend, OpenGL, and desktop diagnostics
     -h, --help              Print help information
     -v, --version           Print version information
 
@@ -126,6 +138,7 @@ OPTIONS:
     -e, --command <CMD...>          Execute specified command instead of shell
 
 SUBCOMMANDS:
+    doctor                          Run diagnostics check on display, GPU, and desktop environment
     msg create-window               Instruct running single-process instance to open a new window"
         );
     }
@@ -181,5 +194,16 @@ mod tests {
         let opts = CliOptions::parse_args(&args);
         assert!(opts.hold);
         assert_eq!(opts.working_directory, Some("/tmp".to_string()));
+    }
+
+    #[test]
+    fn test_cli_diagnostics_and_doctor() {
+        let args1 = vec!["velox".to_string(), "--diagnostics".to_string()];
+        let opts1 = CliOptions::parse_args(&args1);
+        assert!(opts1.diagnostics);
+
+        let args2 = vec!["velox".to_string(), "doctor".to_string()];
+        let opts2 = CliOptions::parse_args(&args2);
+        assert!(opts2.diagnostics);
     }
 }

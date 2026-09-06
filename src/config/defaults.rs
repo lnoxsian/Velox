@@ -1,5 +1,6 @@
 use crate::config::config::{
-    Config, ConfigColors, FontConfig, TabBarVisibility, TabsConfig, WindowConfig,
+    Config, ConfigColors, FontConfig, RendererBackendConfig, TabBarVisibility, TabsConfig,
+    WindowConfig,
 };
 
 pub fn default_config() -> Config {
@@ -14,6 +15,7 @@ pub fn default_config() -> Config {
             scrollback_limit: Some(2000),
             infinite_scrollback: Some(true),
             gpu_acceleration: Some(true),
+            renderer_backend: Some(RendererBackendConfig::Auto),
             scroll_multiplier: Some(5.0),
             fps_limit: Some(120),
             padding_x: Some(8.0),

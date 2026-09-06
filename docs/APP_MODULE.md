@@ -36,7 +36,6 @@ src/app/
   - `WindowRendererBackend::Software`: Owns `CpuRenderer` and `softbuffer::Surface`.
 - **`tabs: Vec<Tab>` & `active_tab_index: usize`**: List of active terminal tabs.
 - **`tab_bar: TabBar`**: Visual configuration, dimensions, accent color, and hit-testing cache.
-- **`render_cells_buf: Vec<Cell>`**: Reused contiguous cell buffer passed to the renderer.
 - **`opacity: f32` & `window_dim: f32`**: Transparency and unfocused dimming factors.
 - **`fps_limit: Option<u32>` & `last_frame_instant: Instant`**: Frame rate throttler.
 - **`needs_redraw: bool` & `content_dirty: bool`**: Redraw flags for synchronized and damaged rendering.

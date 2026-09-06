@@ -94,6 +94,13 @@ Standard Run (Default Single-Process Mode):
 ./target/release/velox
 ```
 
+Diagnostics & System Check:
+```bash
+velox doctor
+# or
+velox --diagnostics
+```
+
 Single-Instance Window Creation:
 ```bash
 ./target/release/velox msg create-window -w ~/projects -t "Project Terminal" -e htop
@@ -109,10 +116,46 @@ Start Background Daemon Mode:
 ./target/release/velox --daemon &
 ```
 
-Force Native CPU Software Rendering:
-Set `gpu_acceleration = false` in `config.toml` or launch with software configuration:
+Renderer Backend Selection:
+Set `renderer_backend = "auto"` (default), `"opengl"`, or `"software"` in `config.toml`:
 ```bash
-./target/release/velox
+# Explicitly run with pure CPU software rendering (softbuffer):
+velox
+```
+
+---
+
+## Installation & Desktop Integration
+
+Install Velox along with its desktop entry (`io.github.lnoxsian.Velox.desktop`) and complete multi-resolution hicolor icon suite (16x16 up to 1024x1024 and scalable SVG):
+
+### Using Make
+
+```bash
+# System-wide install (default PREFIX is /usr/local)
+sudo make install
+
+# User-local install
+make install PREFIX=$HOME/.local
+
+# Custom package root (DESTDIR)
+make install DESTDIR=/tmp/pkg PREFIX=/usr
+
+# Uninstall
+sudo make uninstall
+```
+
+### Using Just
+
+```bash
+# System-wide install
+sudo just install
+
+# User-local install
+just install prefix="$HOME/.local"
+
+# Uninstall
+sudo just uninstall
 ```
 
 ---
@@ -136,7 +179,8 @@ bold_is_bright = true
 [window]
 scrollback_limit = 2000
 infinite_scrollback = true
-gpu_acceleration = true
+renderer_backend = "auto"     # "auto" (default OpenGL with safe software fallback), "opengl", or "software"
+gpu_acceleration = true       # Backward-compatible alias for renderer_backend
 scroll_multiplier = 5.0
 fps_limit = 120
 padding_x = 8.0
@@ -201,6 +245,8 @@ src/
 ├── main.rs           # Application entry point & CLI routing
 ├── lib.rs            # Core library root & crate exports
 ├── cli.rs            # Command line argument parser & action protocol
+├── platform.rs       # Wayland / X11 window backend detection & canonical App ID
+├── diagnostics.rs    # System, display environment, OpenGL & desktop integration diagnostics
 ├── ipc.rs            # Unix domain socket single-instance IPC server & client
 ├── memory.rs         # Allocator memory trimming & heap compaction helpers
 ├── app/              # Multi-window orchestrator, tab manager & event loop
@@ -211,6 +257,7 @@ src/
 ├── terminal/         # VT state machine, mode flags & CSI/OSC protocol engine
 ├── screen/           # Character grid, cursor, selection & chunked scrollback
 ├── renderer/         # Dual rendering backends
+│   ├── backend.rs    # DisplayBuilder, EGL/GLX initialization, headless probe & fallback
 │   ├── renderer.rs   # Hardware OpenGL 3.3+ shader atlas renderer
 │   └── software/     # Pure-Rust CPU software renderer via softbuffer
 ├── pty/              # Asynchronous PTY process streams & fork execution

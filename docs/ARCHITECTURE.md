@@ -55,14 +55,33 @@ flowchart TD
 
 ## Core Subsystems
 
-### 1. Application & Window Orchestration (`app::`)
+### 1. Platform Windowing & Desktop Identity (`src/platform.rs`)
+
+- **Authoritative Backend Detection**: Uses Winit 0.30 extension traits (`ActiveEventLoopExtWayland::is_wayland`, `ActiveEventLoopExtX11::is_x11`) to determine the live windowing protocol at runtime, with environment fallback hints (`WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, `DISPLAY`).
+- **Canonical Identity Compliance**:
+  - Wayland `app_id`: `io.github.lnoxsian.Velox` (configured via `WindowAttributesExtWayland::with_name`).
+  - X11 `WM_CLASS`: `("velox", "io.github.lnoxsian.Velox")` matching the freedesktop standard (`WindowAttributesExtX11::with_name`).
+  - Desktop Entry: `io.github.lnoxsian.Velox.desktop` with `StartupWMClass=io.github.lnoxsian.Velox`.
+  - Icon theme lookup: `io.github.lnoxsian.Velox` matching installed SVG and hicolor PNG icons.
+
+### 2. Application & Window Orchestration (`app::`)
 
 - **`App`**: The top-level `winit::application::ApplicationHandler` managing all active `WindowId -> WindowState` instances, GL display/context initialization, modifier states, single-instance daemon mode, and IPC listener handles.
 - **`WindowState`**: Represents an open native window. Owns the active `WindowRendererBackend`, mouse/keyboard interaction state, tab list (`Vec<Tab>`), active tab index, tab bar layout (`TabBar`), render buffers, frame limiter, and window opacity/dimming parameters.
 - **`Tab` (`app/tab.rs`)**: Owns an individual tab's execution context: dedicated PTY master, background reader thread, `Terminal` state machine, custom title, hold-on-exit flag, and isolated tab zoom font size.
 - **`TabBar` (`app/tab.rs`)**: Manages tab bar layout, visibility modes (`Auto`, `Always`, `Never`), close/new-tab button hit testing, hover states, and generates render metadata (`TabBarRenderInfo`).
 
-### 2. Dual Rendering Backends (`renderer::`)
+### 3. Display Connection & Rendering Engine Lifecycle (`renderer::backend`)
+
+Velox abstracts window creation and rendering backend selection behind `create_window_and_renderer`, governed by `renderer_backend = "auto" | "opengl" | "software"`:
+
+- **`GlDisplayManager`**: Bootstraps the EGL/GLX display connection using `glutin_winit::DisplayBuilder` with `ApiPreference::PreferEgl` **without** allocating dummy 1x1 windows.
+- **Window & Context Binding**: The real window is created via `glutin_winit::finalize_window`, guaranteeing that X11 visuals and Wayland EGL configs match exactly. Context attributes target OpenGL 3.3 Core Profile.
+- **Zero-Size Protection**: Both surface creation and resizing guard against zero width or height by clamping dimensions with `NonZeroU32`, preventing driver panics on Wayland compositors during minimize/unmap transitions.
+- **Automatic Fallback Hierarchy**: In `Auto` mode, if display connection, config finding, context creation, or surface binding fails at any step, Velox logs a warning and cleanly switches to the CPU software renderer (`softbuffer`) without terminating the user's session.
+- **Diagnostics (`src/diagnostics.rs`)**: Standalone probe function `probe_opengl()` creates a headless test context to inspect active driver vendor, renderer, GL version, and GLSL version without modifying application state.
+
+### 4. Dual Rendering Backends (`renderer::`)
 
 Velox provides two full-featured renderers sharing identical layout and visual parity:
 

@@ -136,8 +136,9 @@ impl CpuRenderer {
     pub fn release_memory(&mut self) {
         self.glyph_cache.release_memory();
         self.tab_glyph_cache.release_memory();
-        for cache in self.pane_glyph_caches.values_mut() {
-            cache.release_memory();
+        self.pane_glyph_caches.clear();
+        if self.framebuffer.pixels.capacity() > self.framebuffer.pixels.len() * 2 {
+            self.framebuffer.pixels.shrink_to_fit();
         }
         self.damage.mark_all();
     }
@@ -259,6 +260,15 @@ impl CpuRenderer {
 
         let active_pane = panes.iter().find(|p| p.is_active).unwrap_or(&panes[0]);
         let base_theme = active_pane.theme;
+
+        // Prune stale pane glyph caches from closed panes or obsolete font sizes
+        if self.pane_glyph_caches.len() > panes.len() {
+            self.pane_glyph_caches.retain(|&k, _| {
+                panes
+                    .iter()
+                    .any(|p| (p.font_size * 100.0).round() as u32 == k)
+            });
+        }
 
         let opacity = opacity.clamp(0.0, 1.0);
         let effective_dim = if !is_focused {
@@ -383,9 +393,17 @@ impl CpuRenderer {
             let py_offset = (pane.rect.y + pane.rect.padding_y).round() as u32;
 
             for y in 0..grid_h {
+                let row_has_blink = blink_changed && {
+                    let start = y * grid_w;
+                    let end = (start + grid_w).min(cells.len());
+                    cells[start..end]
+                        .iter()
+                        .any(|c| c.flags.contains(CellFlags::BLINK))
+                };
                 let row_dirty = pane_full_redraw
                     || grid.damage.dirty_rows.get(y).copied().unwrap_or(true)
-                    || blink_changed;
+                    || row_has_blink
+                    || (pane.is_active && y == grid.cursor.y);
 
                 if !row_dirty {
                     continue;

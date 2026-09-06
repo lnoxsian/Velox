@@ -33,6 +33,9 @@ impl Framebuffer {
         self.stride = w as usize;
         let len = (w * h) as usize;
         self.pixels.resize(len, 0);
+        if self.pixels.capacity() > len * 2 && self.pixels.capacity() > 1920 * 1080 {
+            self.pixels.shrink_to(len);
+        }
         true
     }
 

@@ -15,6 +15,48 @@ build: generate-icons
 release:
     cargo build --release
 
+# Install Velox desktop entry
+install-desktop prefix="/usr/local" destdir="":
+    install -d {{destdir}}{{prefix}}/share/applications
+    install -m 644 assets/io.github.lnoxsian.Velox.desktop {{destdir}}{{prefix}}/share/applications/io.github.lnoxsian.Velox.desktop
+    @if [ -z "{{destdir}}" ]; then \
+        update-desktop-database -q {{prefix}}/share/applications 2>/dev/null || true; \
+    fi
+
+# Install Velox hicolor icons
+install-icons prefix="/usr/local" destdir="":
+    for size in 16x16 32x32 48x48 64x64 128x128 256x256 512x512 1024x1024; do \
+        install -d {{destdir}}{{prefix}}/share/icons/hicolor/$$size/apps; \
+        if [ -f "assets/generated_icons/icon_$$size.png" ]; then \
+            install -m 644 assets/generated_icons/icon_$$size.png {{destdir}}{{prefix}}/share/icons/hicolor/$$size/apps/io.github.lnoxsian.Velox.png; \
+        fi; \
+    done
+    install -d {{destdir}}{{prefix}}/share/icons/hicolor/scalable/apps
+    if [ -f "assets/icons/velox_terminal_icon_final.svg" ]; then \
+        install -m 644 assets/icons/velox_terminal_icon_final.svg {{destdir}}{{prefix}}/share/icons/hicolor/scalable/apps/io.github.lnoxsian.Velox.svg; \
+    fi
+    @if [ -z "{{destdir}}" ]; then \
+        gtk-update-icon-cache -q -t -f {{prefix}}/share/icons/hicolor 2>/dev/null || true; \
+    fi
+
+# Install Velox binary, desktop entry, and icons
+install prefix="/usr/local" destdir="": release (install-desktop prefix destdir) (install-icons prefix destdir)
+    install -d {{destdir}}{{prefix}}/bin
+    install -m 755 target/release/velox {{destdir}}{{prefix}}/bin/velox
+
+# Uninstall Velox binary, desktop entry, and icons
+uninstall prefix="/usr/local" destdir="":
+    rm -f {{destdir}}{{prefix}}/bin/velox
+    rm -f {{destdir}}{{prefix}}/share/applications/io.github.lnoxsian.Velox.desktop
+    for size in 16x16 32x32 48x48 64x64 128x128 256x256 512x512 1024x1024; do \
+        rm -f {{destdir}}{{prefix}}/share/icons/hicolor/$$size/apps/io.github.lnoxsian.Velox.png; \
+    done
+    rm -f {{destdir}}{{prefix}}/share/icons/hicolor/scalable/apps/io.github.lnoxsian.Velox.svg
+    @if [ -z "{{destdir}}" ]; then \
+        gtk-update-icon-cache -q -t -f {{prefix}}/share/icons/hicolor 2>/dev/null || true; \
+        update-desktop-database -q {{prefix}}/share/applications 2>/dev/null || true; \
+    fi
+
 # Build the project in optimized release mode
 optimized-release:
     cargo build --profile optimized-release

@@ -12,6 +12,8 @@ pub struct RowRenderCache {
     pub last_cursor: Option<(usize, CursorShape, bool)>,
     /// Cached selection range for this row (to detect selection drag/changes).
     pub last_selection_range: Option<(usize, usize)>,
+    /// Whether any cell in this row has the blinking attribute.
+    pub has_blink_cells: bool,
     /// Whether this row's cache is valid and can be reused directly.
     pub valid: bool,
 }
@@ -26,6 +28,7 @@ impl RowRenderCache {
         self.fg_vertices.clear();
         self.last_cursor = None;
         self.last_selection_range = None;
+        self.has_blink_cells = false;
         self.valid = false;
     }
 
@@ -34,6 +37,7 @@ impl RowRenderCache {
         self.fg_vertices = Vec::new();
         self.last_cursor = None;
         self.last_selection_range = None;
+        self.has_blink_cells = false;
         self.valid = false;
     }
 }
@@ -147,6 +151,9 @@ impl PaneRenderState {
     pub fn ensure_rows(&mut self, rows: usize) {
         if self.row_cache.len() != rows {
             self.row_cache.resize_with(rows, RowRenderCache::default);
+            if self.row_cache.capacity() > rows * 2 && self.row_cache.capacity() > 100 {
+                self.row_cache.shrink_to(rows);
+            }
             self.dirty_rows.resize(rows);
             self.mark_full_redraw();
         }
@@ -161,6 +168,9 @@ impl PaneRenderState {
     pub fn release_memory(&mut self) {
         for row in &mut self.row_cache {
             row.release_memory();
+        }
+        if self.row_cache.capacity() > 100 {
+            self.row_cache.shrink_to(self.row_cache.len());
         }
         self.mark_full_redraw();
     }

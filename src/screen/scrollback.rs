@@ -96,12 +96,12 @@ pub struct ChunkIndex {
 
 struct CachedChunk {
     pub chunk_id: usize,
-    pub chunk: Chunk,
+    pub chunk: Arc<Chunk>,
     pub access_tick: u64,
 }
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -117,7 +117,7 @@ pub struct GlobalScrollbackCache {
 struct GlobalCachedChunk {
     storage_id: u64,
     chunk_idx: usize,
-    chunk: Chunk,
+    chunk: Arc<Chunk>,
     access_tick: u64,
 }
 
@@ -130,7 +130,7 @@ impl GlobalScrollbackCache {
         }
     }
 
-    pub fn get(&mut self, storage_id: u64, chunk_idx: usize) -> Option<Chunk> {
+    pub fn get(&mut self, storage_id: u64, chunk_idx: usize) -> Option<Arc<Chunk>> {
         self.tick = self.tick.wrapping_add(1);
         let tick = self.tick;
         if let Some(c) = self
@@ -139,12 +139,13 @@ impl GlobalScrollbackCache {
             .find(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
         {
             c.access_tick = tick;
-            return Some(c.chunk.clone());
+            return Some(Arc::clone(&c.chunk));
         }
         None
     }
 
-    pub fn insert(&mut self, storage_id: u64, chunk_idx: usize, chunk: Chunk) {
+    pub fn insert(&mut self, storage_id: u64, chunk_idx: usize, chunk: impl Into<Arc<Chunk>>) {
+        let chunk = chunk.into();
         self.tick = self.tick.wrapping_add(1);
         let tick = self.tick;
         if let Some(c) = self
@@ -320,10 +321,11 @@ impl ScrollbackStorage {
         let chunk: Chunk = bincode::deserialize(&read_buf[..needed_len]).ok()?;
         let (cells, wrapped) = chunk.get_row_view(row_offset)?;
         let result = f(cells, wrapped);
+        let arc_chunk = Arc::new(chunk);
 
         // 4. Insert into global cache and local cache
         if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
-            global_cache.insert(self.id, chunk_idx, chunk.clone());
+            global_cache.insert(self.id, chunk_idx, Arc::clone(&arc_chunk));
         }
 
         let mut cache = self.local_cache.borrow_mut();
@@ -335,7 +337,7 @@ impl ScrollbackStorage {
         }
         cache.push(CachedChunk {
             chunk_id: chunk_idx,
-            chunk,
+            chunk: arc_chunk,
             access_tick: tick,
         });
 

@@ -8,18 +8,14 @@ use crate::pty::process::spawn_process;
 use crate::renderer::renderer::{PaneRenderData, Renderer, SeparatorRenderData};
 use crate::renderer::software::CpuPaneRenderData;
 use crate::renderer::software::CpuRenderer;
-use crate::screen::cell::Cell;
 use crate::terminal::terminal::Terminal;
-use glutin::display::GetGlDisplay;
 use glutin::prelude::*;
-use glutin_winit::GlWindow;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::raw_window_handle::HasWindowHandle;
 use winit::window::{Window, WindowId};
 
 #[derive(Debug, Clone, Copy)]
@@ -162,7 +158,6 @@ pub struct WindowState {
     pub window: Arc<Window>,
     pub mouse_x: f64,
     pub mouse_y: f64,
-    pub render_cells_buf: Vec<Cell>,
     pub scroll_multiplier: f64,
     pub fps_limit: Option<u32>,
     pub last_frame_instant: std::time::Instant,
@@ -223,12 +218,29 @@ impl Drop for WindowState {
 }
 
 impl WindowState {
-
     #[inline]
     pub fn mark_interaction(&mut self) {
         if self.cursor_blink_enabled && !self.cursor_blink_on {
             self.cursor_blink_on = true;
             self.needs_redraw = true;
+        }
+        self.last_cursor_blink = std::time::Instant::now();
+    }
+
+    #[inline]
+    pub fn is_cursor_blink_active(&self) -> bool {
+        if !self.cursor_blink_enabled || !self.is_focused {
+            return false;
+        }
+        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
+            active_tab
+                .active_pane()
+                .terminal
+                .active_grid()
+                .cursor
+                .visible
+        } else {
+            false
         }
     }
 
@@ -245,9 +257,6 @@ impl WindowState {
             WindowRendererBackend::Software { renderer, .. } => {
                 renderer.release_memory();
             }
-        }
-        if self.render_cells_buf.capacity() > 200 * 60 {
-            self.render_cells_buf = Vec::new();
         }
         crate::memory::trim_allocator_memory();
     }
@@ -419,8 +428,9 @@ impl WindowState {
     }
 
     pub fn resize_renderer(&mut self, width: u32, height: u32) {
-        let width = width.max(1);
-        let height = height.max(1);
+        if width == 0 || height == 0 {
+            return;
+        }
         match &mut self.backend {
             WindowRendererBackend::OpenGL {
                 renderer,
@@ -428,7 +438,9 @@ impl WindowState {
                 gl_context,
             } => {
                 let _ = gl_context.make_current(gl_surface);
-                self.window.resize_surface(gl_surface, gl_context);
+                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+                    gl_surface.resize(gl_context, w, h);
+                }
                 renderer.resize(width, height);
             }
             WindowRendererBackend::Software { renderer, surface } => {
@@ -439,6 +451,9 @@ impl WindowState {
             }
         }
         self.resize_active_tab();
+        self.needs_redraw = true;
+        self.content_dirty = true;
+        self.window.request_redraw();
     }
 
     pub fn split_horizontal(&mut self) -> Option<PaneId> {
@@ -523,7 +538,7 @@ impl WindowState {
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.sync_tab_panes_dimensions(tab_idx);
-            crate::memory::trim_allocator_memory();
+            self.release_memory();
             self.tab_bar_dirty = true;
             self.needs_redraw = true;
             self.content_dirty = true;
@@ -708,7 +723,7 @@ impl WindowState {
 
         self.resize_active_tab();
 
-        crate::memory::trim_allocator_memory();
+        self.release_memory();
         self.tab_bar_dirty = true;
         self.needs_redraw = true;
         self.content_dirty = true;
@@ -768,6 +783,11 @@ impl WindowState {
     }
 
     pub fn draw(&mut self) {
+        let size = self.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+
         self.last_frame_instant = std::time::Instant::now();
 
         // 1. Ensure renderer font size matches the active pane's isolated font size
@@ -1023,9 +1043,8 @@ impl WindowState {
 pub struct App {
     pub(crate) event_loop_proxy: EventLoopProxy<CustomEvent>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
-    pub(crate) gl_display: Option<glutin::display::Display>,
-    pub(crate) gl_config: Option<glutin::config::Config>,
-    pub(crate) gl: Option<Arc<glow::Context>>,
+    pub(crate) gl_manager: Option<crate::renderer::GlDisplayManager>,
+    pub(crate) gl_info: Option<crate::renderer::GlInfo>,
     pub(crate) windows: HashMap<WindowId, WindowState>,
     pub(crate) daemon_mode: bool,
     pub(crate) single_instance_mode: bool,
@@ -1041,9 +1060,8 @@ impl App {
         Self {
             event_loop_proxy,
             modifiers: winit::keyboard::ModifiersState::default(),
-            gl_display: None,
-            gl_config: None,
-            gl: None,
+            gl_manager: None,
+            gl_info: None,
             windows: HashMap::new(),
             daemon_mode,
             single_instance_mode,
@@ -1086,12 +1104,38 @@ impl App {
             window_attributes = window_attributes.with_window_icon(Some(icon));
         }
 
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        // Apply platform identity (Wayland app-id & X11 WM_CLASS)
+        window_attributes =
+            crate::platform::apply_platform_window_attributes(event_loop, window_attributes);
+
+        let (window, mut backend, gl_info) = match crate::renderer::create_window_and_renderer(
+            event_loop,
+            window_attributes,
+            &config,
+            &mut self.gl_manager,
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                log::error!("Failed to initialize window renderer backend: {}", e);
+                if self.windows.is_empty() && !self.daemon_mode {
+                    event_loop.exit();
+                }
+                return;
+            }
+        };
+
+        if self.gl_info.is_none() && gl_info.is_some() {
+            self.gl_info = gl_info;
+        }
+
+        let size = window.inner_size();
+        let win_width = size.width.max(1);
+        let win_height = size.height.max(1);
 
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
         let hide_mouse_on_typing = config.hide_mouse_on_typing().unwrap_or(true);
-        let gpu = config.gpu_acceleration().unwrap_or(true);
+        let gpu = matches!(backend, WindowRendererBackend::OpenGL { .. });
         let fps_limit = match config.fps_limit() {
             Some(limit) => Some(limit),
             None => {
@@ -1106,79 +1150,6 @@ impl App {
         let font_size = config.font_size();
         let padding_x = config.pane_padding_x().unwrap_or(8.0);
         let padding_y = config.pane_padding_y().unwrap_or(4.0);
-        let font_scale_multiplier = config.font_scale_multiplier().unwrap_or(1.5);
-        let bold_is_bright = config.bold_is_bright().unwrap_or(true);
-
-        let size = window.inner_size();
-        let win_width = size.width.max(1);
-        let win_height = size.height.max(1);
-
-        let mut backend = if gpu
-            && let (Some(gl_config), Some(gl_display), Some(gl)) = (
-                self.gl_config.as_ref(),
-                self.gl_display.as_ref(),
-                self.gl.as_ref(),
-            ) {
-            let gl = gl.clone();
-
-            let context_attributes = glutin::context::ContextAttributesBuilder::new()
-                .with_context_api(glutin::context::ContextApi::OpenGl(Some(
-                    glutin::context::Version::new(3, 3),
-                )))
-                .build(Some(window.window_handle().unwrap().as_raw()));
-
-            let gl_context = unsafe {
-                gl_display
-                    .create_context(gl_config, &context_attributes)
-                    .unwrap()
-            };
-
-            let attrs = window.build_surface_attributes(<_>::default()).unwrap();
-            let gl_surface = unsafe {
-                gl_config
-                    .display()
-                    .create_window_surface(gl_config, &attrs)
-                    .unwrap()
-            };
-
-            let gl_context = gl_context.make_current(&gl_surface).unwrap();
-
-            let renderer = Renderer::new(
-                gl,
-                config.font_family(),
-                font_size,
-                font_scale_multiplier,
-                win_width,
-                win_height,
-            );
-
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            }
-        } else {
-            let context = softbuffer::Context::new(window.clone()).unwrap();
-            let mut surface = softbuffer::Surface::new(&context, window.clone()).unwrap();
-            if let (Some(w), Some(h)) = (NonZeroU32::new(win_width), NonZeroU32::new(win_height)) {
-                let _ = surface.resize(w, h);
-            }
-
-            let theme = crate::theme::theme::Theme::from_config(&config);
-
-            let renderer = CpuRenderer::new(
-                config.font_family(),
-                font_size,
-                font_scale_multiplier,
-                &theme,
-                win_width,
-                win_height,
-                bold_is_bright,
-                opacity,
-            );
-
-            WindowRendererBackend::Software { renderer, surface }
-        };
 
         let tab_font_size = config.tab_font_size();
         backend.set_tab_font_size(tab_font_size);
@@ -1247,7 +1218,6 @@ impl App {
             backend,
             mouse_x: 0.0,
             mouse_y: 0.0,
-            render_cells_buf: Vec::new(),
             scroll_multiplier,
             fps_limit,
             last_frame_instant: std::time::Instant::now()
@@ -1299,6 +1269,7 @@ impl App {
         window_state.window.set_visible(true);
 
         self.windows.insert(window_id, window_state);
+        crate::memory::trim_allocator_memory();
     }
 }
 
@@ -1330,79 +1301,15 @@ fn load_app_icon() -> Option<winit::window::Icon> {
 
 impl ApplicationHandler<CustomEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let backend = crate::platform::detect_backend_from_event_loop(event_loop);
+        log::info!("Velox starting");
+        log::info!("Window backend: {}", backend);
+
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
 
         if config.single_instance.unwrap_or(true) {
             self.single_instance_mode = true;
-        }
-
-        let gpu = config.gpu_acceleration().unwrap_or(true);
-
-        if gpu && self.gl_display.is_none() {
-            let template = glutin::config::ConfigTemplateBuilder::new()
-                .with_alpha_size(8)
-                .with_transparency(true);
-
-            let dummy_attrs = Window::default_attributes()
-                .with_visible(false)
-                .with_transparent(true)
-                .with_inner_size(winit::dpi::PhysicalSize::new(1, 1));
-            let display_builder =
-                glutin_winit::DisplayBuilder::new().with_window_attributes(Some(dummy_attrs));
-
-            if let Ok((dummy_window, gl_config)) =
-                display_builder.build(event_loop, template, |configs| {
-                    configs
-                        .reduce(|accum, config| {
-                            if config.num_samples() > accum.num_samples() {
-                                config
-                            } else {
-                                accum
-                            }
-                        })
-                        .unwrap()
-                })
-                && let Some(dummy_window) = dummy_window
-            {
-                let gl_display = gl_config.display();
-
-                let context_attributes = glutin::context::ContextAttributesBuilder::new()
-                    .with_context_api(glutin::context::ContextApi::OpenGl(Some(
-                        glutin::context::Version::new(3, 3),
-                    )))
-                    .build(Some(dummy_window.window_handle().unwrap().as_raw()));
-
-                if let Ok(dummy_context) =
-                    unsafe { gl_display.create_context(&gl_config, &context_attributes) }
-                {
-                    let attrs = dummy_window
-                        .build_surface_attributes(<_>::default())
-                        .unwrap();
-                    if let Ok(dummy_surface) = unsafe {
-                        gl_config
-                            .display()
-                            .create_window_surface(&gl_config, &attrs)
-                    } {
-                        let _dummy_current = dummy_context.make_current(&dummy_surface).unwrap();
-
-                        let gl = unsafe {
-                            glow::Context::from_loader_function(|symbol| {
-                                let c_str = std::ffi::CString::new(symbol).unwrap();
-                                gl_display.get_proc_address(&c_str)
-                            })
-                        };
-
-                        self.gl_config = Some(gl_config);
-                        self.gl_display = Some(gl_display);
-                        self.gl = Some(Arc::new(gl));
-
-                        drop(_dummy_current);
-                        drop(dummy_surface);
-                        drop(dummy_window);
-                    }
-                }
-            }
         }
 
         if (self.single_instance_mode || self.daemon_mode) && self.ipc_listener.is_none() {
@@ -1454,6 +1361,10 @@ impl ApplicationHandler<CustomEvent> for App {
                     ws.is_focused = focused;
                     if !focused {
                         ws.is_mouse_down = false;
+                        ws.cursor_blink_on = true;
+                        ws.release_memory();
+                    } else {
+                        ws.mark_interaction();
                     }
                     let active_pane = ws.active_pane();
                     if active_pane.terminal.focus_tracking {
@@ -1465,9 +1376,16 @@ impl ApplicationHandler<CustomEvent> for App {
                     ws.needs_redraw = true;
                 }
                 WindowEvent::Resized(size) => {
-                    let width = size.width.max(1);
-                    let height = size.height.max(1);
-                    ws.resize_renderer(width, height);
+                    if size.width > 0 && size.height > 0 {
+                        ws.resize_renderer(size.width, size.height);
+                    }
+                }
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    log::debug!("Window scale factor changed: {}", scale_factor);
+                    let size = ws.window.inner_size();
+                    if size.width > 0 && size.height > 0 {
+                        ws.resize_renderer(size.width, size.height);
+                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     ws.handle_keyboard_input(event, modifiers);
@@ -1595,8 +1513,9 @@ impl ApplicationHandler<CustomEvent> for App {
                 ws.release_memory();
             }
 
-            // Cursor and text blink toggle (500ms cycle)
-            if ws.cursor_blink_enabled
+            // Cursor blink toggle (500ms cycle) - only when focused and cursor is visible
+            let cursor_blink_active = ws.is_cursor_blink_active();
+            if cursor_blink_active
                 && now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500)
             {
                 ws.cursor_blink_on = !ws.cursor_blink_on;
@@ -1604,7 +1523,7 @@ impl ApplicationHandler<CustomEvent> for App {
                 ws.needs_redraw = true;
             }
 
-            if ws.cursor_blink_enabled {
+            if cursor_blink_active {
                 let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
                 min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
             }
@@ -1643,5 +1562,3 @@ impl ApplicationHandler<CustomEvent> for App {
         }
     }
 }
-
-
