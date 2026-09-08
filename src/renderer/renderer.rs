@@ -1,7 +1,7 @@
 use crate::app::pane::PaneId;
 use crate::app::split::{PaneRect, SeparatorRect, SplitDirection};
 use crate::font::loader::FontLoader;
-use crate::renderer::state::PaneRenderState;
+use crate::renderer::state::{GlVertex, PaneRenderState};
 use crate::screen::cell::{Cell, CellFlags, Color};
 use crate::screen::cursor::CursorShape;
 use crate::theme::theme::Theme;
@@ -65,6 +65,8 @@ pub struct Renderer {
     program: glow::Program,
     vao: glow::VertexArray,
     vbo: glow::Buffer,
+    ebo: glow::Buffer,
+    ebo_quad_capacity: usize,
     pub font_loader: FontLoader,
     pub tab_font_loader: FontLoader,
     pub pane_font_loaders: HashMap<u32, FontLoader>,
@@ -74,7 +76,7 @@ pub struct Renderer {
     viewport_width: u32,
     viewport_height: u32,
     start_time: std::time::Instant,
-    vertices: Vec<f32>,
+    vertices: Vec<GlVertex>,
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -155,11 +157,11 @@ fn compute_cell_colors(
     (fg, bg)
 }
 
-/// Append a textured quad (two triangles) to the vertex buffer.
+/// Append a textured quad (4 indexed vertices) to the vertex buffer.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn push_quad(
-    vertices: &mut Vec<f32>,
+    vertices: &mut Vec<GlVertex>,
     x: f32,
     y: f32,
     w: f32,
@@ -171,21 +173,41 @@ fn push_quad(
     color: Color,
     is_color: bool,
 ) {
-    let alpha = if is_color { 0.0 } else { 1.0 };
-    let cr = color.r as f32 / 255.0;
-    let cg = color.g as f32 / 255.0;
-    let cb = color.b as f32 / 255.0;
+    let alpha = if is_color { 0u8 } else { 255u8 };
+    let c = [color.r, color.g, color.b, alpha];
     let x2 = x + w;
     let y2 = y + h;
 
-    let quad = [
-        // Triangle 1
-        x, y, u_min, v_min, cr, cg, cb, alpha, x2, y, u_max, v_min, cr, cg, cb, alpha, x, y2, u_min,
-        v_max, cr, cg, cb, alpha, // Triangle 2
-        x, y2, u_min, v_max, cr, cg, cb, alpha, x2, y, u_max, v_min, cr, cg, cb, alpha, x2, y2,
-        u_max, v_max, cr, cg, cb, alpha,
-    ];
-    vertices.extend_from_slice(&quad);
+    vertices.extend_from_slice(&[
+        GlVertex {
+            x,
+            y,
+            u: u_min,
+            v: v_min,
+            color: c,
+        },
+        GlVertex {
+            x: x2,
+            y,
+            u: u_max,
+            v: v_min,
+            color: c,
+        },
+        GlVertex {
+            x,
+            y: y2,
+            u: u_min,
+            v: v_max,
+            color: c,
+        },
+        GlVertex {
+            x: x2,
+            y: y2,
+            u: u_max,
+            v: v_max,
+            color: c,
+        },
+    ]);
 }
 
 #[inline(always)]
@@ -199,7 +221,7 @@ fn try_render_block_element(
     wu: f32,
     wv: f32,
     fg: Color,
-    vertices: &mut Vec<f32>,
+    vertices: &mut Vec<GlVertex>,
 ) -> bool {
     match c {
         '█' => {
@@ -510,18 +532,23 @@ impl Renderer {
             gl.delete_shader(vs);
             gl.delete_shader(fs);
 
-            // ── VAO / VBO ─────────────────────────────────────────────────────
-            // Vertex layout: [x, y, u, v, r, g, b, a] — 8 floats per vertex
+            // ── VAO / VBO / EBO ───────────────────────────────────────────────
+            // Vertex layout: [x, y, u, v, r, g, b, a] — 4 floats + 4 u8s = 20 bytes per vertex
             let vao = gl
                 .create_vertex_array()
                 .map_err(|e| format!("Failed to create vertex array: {}", e))?;
             let vbo = gl
                 .create_buffer()
-                .map_err(|e| format!("Failed to create buffer: {}", e))?;
+                .map_err(|e| format!("Failed to create vertex buffer: {}", e))?;
+            let ebo = gl
+                .create_buffer()
+                .map_err(|e| format!("Failed to create index buffer: {}", e))?;
+
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
 
-            let stride = 8 * std::mem::size_of::<f32>() as i32;
+            let stride = std::mem::size_of::<GlVertex>() as i32;
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, stride, 0); // a_pos
             gl.enable_vertex_attrib_array(0);
             gl.vertex_attrib_pointer_f32(
@@ -536,11 +563,11 @@ impl Renderer {
             gl.vertex_attrib_pointer_f32(
                 2,
                 4,
-                glow::FLOAT,
-                false,
+                glow::UNSIGNED_BYTE,
+                true,
                 stride,
                 4 * std::mem::size_of::<f32>() as i32,
-            ); // a_color
+            ); // a_color (normalized RGBA)
             gl.enable_vertex_attrib_array(2);
 
             gl.enable(glow::BLEND);
@@ -559,11 +586,13 @@ impl Renderer {
             let viewport_height = viewport_height.max(1);
             gl.viewport(0, 0, viewport_width as i32, viewport_height as i32);
 
-            Ok(Self {
+            let mut renderer = Self {
                 gl,
                 program,
                 vao,
                 vbo,
+                ebo,
+                ebo_quad_capacity: 0,
                 font_loader,
                 tab_font_loader,
                 pane_font_loaders: HashMap::new(),
@@ -573,9 +602,39 @@ impl Renderer {
                 viewport_width,
                 viewport_height,
                 start_time: std::time::Instant::now(),
-                vertices: Vec::with_capacity(80 * 24 * 6 * 8),
-            })
+                vertices: Vec::with_capacity(80 * 24 * 8),
+            };
+            renderer.ensure_ebo_capacity(4096);
+            Ok(renderer)
         }
+    }
+
+    pub fn ensure_ebo_capacity(&mut self, required_quads: usize) {
+        if self.ebo_quad_capacity >= required_quads {
+            return;
+        }
+        let new_capacity = required_quads.next_power_of_two().max(4096);
+        let mut indices: Vec<u32> = Vec::with_capacity(new_capacity * 6);
+        for i in 0..new_capacity as u32 {
+            let base = i * 4;
+            indices.push(base);
+            indices.push(base + 1);
+            indices.push(base + 2);
+            indices.push(base + 2);
+            indices.push(base + 1);
+            indices.push(base + 3);
+        }
+        unsafe {
+            self.gl.bind_vertex_array(Some(self.vao));
+            self.gl
+                .bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(self.ebo));
+            self.gl.buffer_data_u8_slice(
+                glow::ELEMENT_ARRAY_BUFFER,
+                bytemuck::cast_slice(&indices),
+                glow::STATIC_DRAW,
+            );
+        }
+        self.ebo_quad_capacity = new_capacity;
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -591,9 +650,9 @@ impl Renderer {
 
     pub fn trim_excess_buffer_capacity(&mut self) {
         let current_viewport_capacity =
-            (self.viewport_width / 8).max(20) * (self.viewport_height / 16).max(10) * 6 * 8;
+            (self.viewport_width / 8).max(20) * (self.viewport_height / 16).max(10) * 8;
         let max_retained = (current_viewport_capacity * 2) as usize;
-        const DEFAULT_CAPACITY: usize = 80 * 24 * 6 * 8;
+        const DEFAULT_CAPACITY: usize = 80 * 24 * 8;
         let target_cap = max_retained.max(DEFAULT_CAPACITY);
         if self.vertices.capacity() > target_cap * 2 {
             self.vertices.shrink_to(target_cap);
@@ -601,7 +660,7 @@ impl Renderer {
     }
 
     pub fn release_memory(&mut self) {
-        self.vertices = Vec::with_capacity(80 * 24 * 6 * 8);
+        self.vertices = Vec::with_capacity(80 * 24 * 8);
         for state in self.pane_render_states.values_mut() {
             state.release_memory();
         }
@@ -613,6 +672,9 @@ impl Renderer {
 
     pub fn set_font_size(&mut self, font_size: f32) {
         self.font_loader.update_font_size(font_size);
+        for state in self.pane_render_states.values_mut() {
+            state.mark_full_redraw();
+        }
     }
 
     pub fn set_tab_font_size(&mut self, font_size: f32) {
@@ -709,7 +771,7 @@ fn render_pane_row_bg(
     ch: f32,
     wu: f32,
     wv: f32,
-    out: &mut Vec<f32>,
+    out: &mut Vec<GlVertex>,
 ) {
     let cols = pane.cols;
     let history_len = pane.history_len;
@@ -860,7 +922,7 @@ fn render_pane_row_fg(
     wv: f32,
     blink_on: bool,
     font_loader: &mut FontLoader,
-    out: &mut Vec<f32>,
+    out: &mut Vec<GlVertex>,
 ) -> bool {
     let cols = pane.cols;
     let history_len = pane.history_len;
@@ -1215,7 +1277,7 @@ impl Renderer {
         let mut vertices = std::mem::take(&mut self.vertices);
         vertices.clear();
         let total_cells: usize = panes.iter().map(|p| p.cols * p.rows).sum();
-        let needed = (total_cells + (separators.len() + 10) * 2) * 12 * 8;
+        let needed = (total_cells + (separators.len() + 10) * 2) * 8;
         if vertices.capacity() < needed {
             vertices.reserve(needed);
         }
@@ -1247,7 +1309,8 @@ impl Renderer {
             });
         }
 
-        let mut draw_batches: Vec<(i32, i32, glow::Texture)> = Vec::with_capacity(panes.len() + 2);
+        let mut draw_batches: Vec<(i32, i32, glow::Texture, Option<PaneRect>)> =
+            Vec::with_capacity(panes.len() * 2 + 3);
 
         // Blink: toggle every 500 ms
         let blink_on = (self.start_time.elapsed().as_millis() / 500).is_multiple_of(2);
@@ -1296,6 +1359,8 @@ impl Renderer {
                 || state.last_rect != Some(pane.rect)
                 || (state.last_dim - pane_effective_dim).abs() > 0.001
                 || state.last_scroll_offset != pane.scroll_offset
+                || state.last_atlas_texture != Some(font_loader.atlas_texture)
+                || state.last_atlas_generation != font_loader.atlas_generation
                 || pane.grid.is_some_and(|g| g.damage.full_redraw);
 
             if is_full_redraw {
@@ -1310,113 +1375,136 @@ impl Renderer {
             state.last_dim = pane_effective_dim;
             state.last_blink_on = blink_on;
             state.last_scroll_offset = pane.scroll_offset;
+            state.last_atlas_texture = Some(font_loader.atlas_texture);
+            state.last_atlas_generation = font_loader.atlas_generation;
 
-            for y in 0..rows {
-                let abs_y = y + history_len;
-                let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
-                    (true, abs_y - scroll_offset)
-                } else {
-                    (false, 0)
-                };
-                let is_row_in_selection = selection_active
-                    && is_row_valid
-                    && abs_row >= sel_min_abs_y
-                    && abs_row <= sel_max_abs_y;
-                let is_active_grid_row = is_row_valid && abs_row >= history_len;
-                let grid_y = if is_active_grid_row {
-                    abs_row - history_len
-                } else {
-                    0
-                };
+            let mut pass = 0;
+            while pass < 2 {
+                pass += 1;
+                let start_generation = font_loader.atlas_generation;
 
-                let current_cursor = if pane.is_active
-                    && pane.cursor_visible
-                    && is_active_grid_row
-                    && grid_y == pane.cursor_y
-                {
-                    Some((pane.cursor_x, pane.cursor_shape, true))
-                } else {
-                    None
-                };
-
-                let current_selection = if is_row_in_selection {
-                    let sel_range = if sel_min_abs_y == sel_max_abs_y {
-                        (sel_min_x, sel_max_x)
-                    } else if abs_row == sel_min_abs_y {
-                        (sel_min_x, pane.cols)
-                    } else if abs_row == sel_max_abs_y {
-                        (0, sel_max_x)
+                for y in 0..rows {
+                    let abs_y = y + history_len;
+                    let (is_row_valid, abs_row) = if abs_y >= scroll_offset {
+                        (true, abs_y - scroll_offset)
                     } else {
-                        (0, pane.cols)
+                        (false, 0)
                     };
-                    Some(sel_range)
-                } else {
-                    None
-                };
+                    let is_row_in_selection = selection_active
+                        && is_row_valid
+                        && abs_row >= sel_min_abs_y
+                        && abs_row <= sel_max_abs_y;
+                    let is_active_grid_row = is_row_valid && abs_row >= history_len;
+                    let grid_y = if is_active_grid_row {
+                        abs_row - history_len
+                    } else {
+                        0
+                    };
 
-                let grid_dirty = pane
-                    .grid
-                    .is_none_or(|g| g.damage.dirty_rows.get(y).copied().unwrap_or(true));
+                    let current_cursor = if pane.is_active
+                        && pane.cursor_visible
+                        && is_active_grid_row
+                        && grid_y == pane.cursor_y
+                    {
+                        Some((pane.cursor_x, pane.cursor_shape, true))
+                    } else {
+                        None
+                    };
 
-                let row_cache = &mut state.row_cache[y];
-                let needs_rebuild = !row_cache.valid
-                    || grid_dirty
-                    || state.dirty_rows.is_dirty(y)
-                    || row_cache.last_cursor != current_cursor
-                    || row_cache.last_selection_range != current_selection
-                    || (blink_changed && row_cache.has_blink_cells);
+                    let current_selection = if is_row_in_selection {
+                        let sel_range = if sel_min_abs_y == sel_max_abs_y {
+                            (sel_min_x, sel_max_x)
+                        } else if abs_row == sel_min_abs_y {
+                            (sel_min_x, pane.cols)
+                        } else if abs_row == sel_max_abs_y {
+                            (0, sel_max_x)
+                        } else {
+                            (0, pane.cols)
+                        };
+                        Some(sel_range)
+                    } else {
+                        None
+                    };
 
-                if needs_rebuild {
-                    row_cache.bg_vertices.clear();
-                    render_pane_row_bg(
-                        pane,
-                        y,
-                        pane_theme,
-                        pane_effective_dim,
-                        selection_active,
-                        sel_min_x,
-                        sel_min_abs_y,
-                        sel_max_x,
-                        sel_max_abs_y,
-                        cw,
-                        ch,
-                        loader_wu,
-                        loader_wv,
-                        &mut row_cache.bg_vertices,
-                    );
+                    let grid_dirty = pane
+                        .grid
+                        .is_none_or(|g| g.damage.dirty_rows.get(y).copied().unwrap_or(true));
 
-                    row_cache.fg_vertices.clear();
-                    row_cache.has_blink_cells = render_pane_row_fg(
-                        pane,
-                        y,
-                        pane_theme,
-                        pane_effective_dim,
-                        selection_active,
-                        sel_min_x,
-                        sel_min_abs_y,
-                        sel_max_x,
-                        sel_max_abs_y,
-                        cw,
-                        ch,
-                        loader_wu,
-                        loader_wv,
-                        blink_on,
-                        font_loader,
-                        &mut row_cache.fg_vertices,
-                    );
+                    let row_cache = &mut state.row_cache[y];
+                    let needs_rebuild = !row_cache.valid
+                        || grid_dirty
+                        || state.dirty_rows.is_dirty(y)
+                        || row_cache.last_cursor != current_cursor
+                        || row_cache.last_selection_range != current_selection
+                        || (blink_changed && row_cache.has_blink_cells);
 
-                    row_cache.last_cursor = current_cursor;
-                    row_cache.last_selection_range = current_selection;
-                    row_cache.valid = true;
+                    if needs_rebuild {
+                        row_cache.bg_vertices.clear();
+                        render_pane_row_bg(
+                            pane,
+                            y,
+                            pane_theme,
+                            pane_effective_dim,
+                            selection_active,
+                            sel_min_x,
+                            sel_min_abs_y,
+                            sel_max_x,
+                            sel_max_abs_y,
+                            cw,
+                            ch,
+                            loader_wu,
+                            loader_wv,
+                            &mut row_cache.bg_vertices,
+                        );
+
+                        row_cache.fg_vertices.clear();
+                        row_cache.has_blink_cells = render_pane_row_fg(
+                            pane,
+                            y,
+                            pane_theme,
+                            pane_effective_dim,
+                            selection_active,
+                            sel_min_x,
+                            sel_min_abs_y,
+                            sel_max_x,
+                            sel_max_abs_y,
+                            cw,
+                            ch,
+                            loader_wu,
+                            loader_wv,
+                            blink_on,
+                            font_loader,
+                            &mut row_cache.fg_vertices,
+                        );
+
+                        row_cache.last_cursor = current_cursor;
+                        row_cache.last_selection_range = current_selection;
+                        row_cache.valid = true;
+                    }
                 }
+
+                if font_loader.atlas_generation == start_generation {
+                    break;
+                }
+                // Atlas grew or reset during row rendering; invalidate and re-render rows with updated atlas
+                state.mark_full_redraw();
+                state.last_atlas_texture = Some(font_loader.atlas_texture);
+                state.last_atlas_generation = font_loader.atlas_generation;
             }
             state.clear_damage();
         }
 
-        // ── Pass 1: Background quads for all panes ────────────────────────────
-        let pass1_start = (vertices.len() / 8) as i32;
+        // ── Pass 1: Background quads for each pane ────────────────────────────
         for pane in panes {
+            let pane_start_quads = (vertices.len() / 4) as i32;
             let pane_theme = pane.theme;
+            let font_size = pane.font_size;
+            let key = (font_size * 100.0).round() as u32;
+            let atlas_texture = if (self.font_loader.font_size - font_size).abs() < 0.01 {
+                self.font_loader.atlas_texture
+            } else {
+                self.pane_font_loaders.get(&key).unwrap().atlas_texture
+            };
 
             // Fill entire pane rectangle default background to eliminate gaps if opaque or if pane has a custom background
             if opacity >= 1.0 || pane_theme.default_bg != base_theme.default_bg {
@@ -1440,9 +1528,20 @@ impl Renderer {
                     vertices.extend_from_slice(&row.bg_vertices);
                 }
             }
+
+            let pane_quads = (vertices.len() / 4) as i32 - pane_start_quads;
+            if pane_quads > 0 {
+                draw_batches.push((
+                    pane_start_quads * 24,
+                    pane_quads * 6,
+                    atlas_texture,
+                    Some(pane.rect),
+                ));
+            }
         }
 
         // ── Pass 1.5: Separators ──────────────────────────────────────────────
+        let sep_start_quads = (vertices.len() / 4) as i32;
         for sep in separators {
             let active_color = active_separator_color_override
                 .unwrap_or_else(|| base_theme.resolve_tab_accent_color());
@@ -1584,14 +1683,19 @@ impl Renderer {
             }
         }
 
-        let pass1_count = (vertices.len() / 8) as i32 - pass1_start;
-        if pass1_count > 0 {
-            draw_batches.push((pass1_start, pass1_count, self.font_loader.atlas_texture));
+        let sep_quads = (vertices.len() / 4) as i32 - sep_start_quads;
+        if sep_quads > 0 {
+            draw_batches.push((
+                sep_start_quads * 24,
+                sep_quads * 6,
+                self.font_loader.atlas_texture,
+                None,
+            ));
         }
 
         // ── Pass 2: Foreground glyphs + cursor + decorations for each pane ────
         for pane in panes {
-            let pane_start = (vertices.len() / 8) as i32;
+            let pane_start_quads = (vertices.len() / 4) as i32;
             let font_size = pane.font_size;
             let key = (font_size * 100.0).round() as u32;
             let atlas_texture = if (self.font_loader.font_size - font_size).abs() < 0.01 {
@@ -1606,14 +1710,19 @@ impl Renderer {
                 }
             }
 
-            let pane_count = (vertices.len() / 8) as i32 - pane_start;
-            if pane_count > 0 {
-                draw_batches.push((pane_start, pane_count, atlas_texture));
+            let pane_quads = (vertices.len() / 4) as i32 - pane_start_quads;
+            if pane_quads > 0 {
+                draw_batches.push((
+                    pane_start_quads * 24,
+                    pane_quads * 6,
+                    atlas_texture,
+                    Some(pane.rect),
+                ));
             }
         }
 
         if let Some(tab_bar) = tab_bar_info {
-            let tab_start = (vertices.len() / 8) as i32;
+            let tab_start_quads = (vertices.len() / 4) as i32;
             let theme = base_theme;
             let bar_h = tab_bar.height;
             let tab_count = tab_bar.tabs.len();
@@ -1839,11 +1948,19 @@ impl Renderer {
                 }
             }
 
-            let tab_count = (vertices.len() / 8) as i32 - tab_start;
-            if tab_count > 0 {
-                draw_batches.push((tab_start, tab_count, self.tab_font_loader.atlas_texture));
+            let tab_quads = (vertices.len() / 4) as i32 - tab_start_quads;
+            if tab_quads > 0 {
+                draw_batches.push((
+                    tab_start_quads * 24,
+                    tab_quads * 6,
+                    self.tab_font_loader.atlas_texture,
+                    None,
+                ));
             }
         }
+
+        let total_quads = vertices.len() / 4;
+        self.ensure_ebo_capacity(total_quads);
 
         // ── GPU draw call ─────────────────────────────────────────────────────
         unsafe {
@@ -1858,7 +1975,7 @@ impl Renderer {
                 0.0,
                 0.0,
                 0.0,
-                1.0,
+                -1.0,
                 0.0,
                 -1.0,
                 1.0,
@@ -1891,16 +2008,42 @@ impl Renderer {
 
             self.gl.use_program(Some(self.program));
 
-            for (start, count, texture) in draw_batches {
+            let mut scissor_enabled = false;
+            for (byte_offset, count, texture, scissor) in draw_batches {
                 self.gl.active_texture(glow::TEXTURE0);
                 self.gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                self.gl.draw_arrays(glow::TRIANGLES, start, count);
+
+                if let Some(rect) = scissor {
+                    let sx = (rect.x.floor() as i32).max(0);
+                    let sy = ((self.viewport_height as f32 - (rect.y + rect.height)).floor() as i32)
+                        .max(0);
+                    let sw = ((rect.width.ceil() as i32).max(0))
+                        .min((self.viewport_width as i32 - sx).max(0));
+                    let sh = ((rect.height.ceil() as i32).max(0))
+                        .min((self.viewport_height as i32 - sy).max(0));
+
+                    if !scissor_enabled {
+                        self.gl.enable(glow::SCISSOR_TEST);
+                        scissor_enabled = true;
+                    }
+                    self.gl.scissor(sx, sy, sw, sh);
+                } else if scissor_enabled {
+                    self.gl.disable(glow::SCISSOR_TEST);
+                    scissor_enabled = false;
+                }
+
+                self.gl
+                    .draw_elements(glow::TRIANGLES, count, glow::UNSIGNED_INT, byte_offset);
+            }
+
+            if scissor_enabled {
+                self.gl.disable(glow::SCISSOR_TEST);
             }
         }
 
         // Retain the vertex buffer if within 2x the current viewport needs;
         // otherwise shrink to current needs to prevent unbounded growth.
-        let current_viewport_capacity = total_cells * 6 * 8;
+        let current_viewport_capacity = total_cells * 8;
         let max_retained = current_viewport_capacity * 2;
         if vertices.capacity() > max_retained {
             self.vertices = Vec::with_capacity(current_viewport_capacity);
@@ -1916,6 +2059,7 @@ impl Drop for Renderer {
             self.gl.delete_program(self.program);
             self.gl.delete_vertex_array(self.vao);
             self.gl.delete_buffer(self.vbo);
+            self.gl.delete_buffer(self.ebo);
         }
     }
 }
@@ -2029,5 +2173,76 @@ mod tests {
             should_push_custom,
             "Pane background quad must be pushed if pane has a custom background distinct from base theme"
         );
+    }
+
+    #[test]
+    fn test_gl_vertex_memory_layout_and_push_quad() {
+        assert_eq!(std::mem::size_of::<GlVertex>(), 20);
+        assert_eq!(std::mem::align_of::<GlVertex>(), 4);
+
+        let mut vertices: Vec<GlVertex> = Vec::new();
+        let color = Color {
+            r: 128,
+            g: 64,
+            b: 32,
+        };
+        push_quad(
+            &mut vertices,
+            10.0,
+            20.0,
+            100.0,
+            50.0,
+            0.1,
+            0.2,
+            0.8,
+            0.9,
+            color,
+            false,
+        );
+
+        assert_eq!(vertices.len(), 4);
+        // Top-left
+        assert_eq!(vertices[0].x, 10.0);
+        assert_eq!(vertices[0].y, 20.0);
+        assert_eq!(vertices[0].u, 0.1);
+        assert_eq!(vertices[0].v, 0.2);
+        assert_eq!(vertices[0].color, [128, 64, 32, 255]);
+
+        // Top-right
+        assert_eq!(vertices[1].x, 110.0);
+        assert_eq!(vertices[1].y, 20.0);
+        assert_eq!(vertices[1].u, 0.8);
+        assert_eq!(vertices[1].v, 0.2);
+        assert_eq!(vertices[1].color, [128, 64, 32, 255]);
+
+        // Bottom-left
+        assert_eq!(vertices[2].x, 10.0);
+        assert_eq!(vertices[2].y, 70.0);
+        assert_eq!(vertices[2].u, 0.1);
+        assert_eq!(vertices[2].v, 0.9);
+        assert_eq!(vertices[2].color, [128, 64, 32, 255]);
+
+        // Bottom-right
+        assert_eq!(vertices[3].x, 110.0);
+        assert_eq!(vertices[3].y, 70.0);
+        assert_eq!(vertices[3].u, 0.8);
+        assert_eq!(vertices[3].v, 0.9);
+        assert_eq!(vertices[3].color, [128, 64, 32, 255]);
+
+        // Color glyph (emoji): alpha should be 0u8
+        push_quad(
+            &mut vertices,
+            0.0,
+            0.0,
+            10.0,
+            10.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            color,
+            true,
+        );
+        assert_eq!(vertices[4].color, [128, 64, 32, 0]);
     }
 }

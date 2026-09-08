@@ -46,7 +46,7 @@ fn main() {
     );
 
     // 1. Idle Benchmark (0-damage)
-    grid.damage.dirty_rows.fill(false);
+    grid.damage.clear();
     let iterations = 5_000u32;
     let start = Instant::now();
     for _ in 0..iterations {

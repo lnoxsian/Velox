@@ -5,8 +5,8 @@ pub use crate::font::resolved::{
 };
 use crate::font::storage::{FontStorage, create_font_arc};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
+use ahash::AHashMap;
 use glow::HasContext;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
@@ -43,10 +43,11 @@ pub struct FontLoader {
     pub font_size: f32,
     pub font_scale_multiplier: f32,
     pub atlas_texture: glow::Texture,
+    pub atlas_generation: u64,
     atlas_width: u32,
     atlas_height: u32,
     ascii_cache: [Option<GlyphUv>; 512],
-    dynamic_cache: HashMap<CacheKey, GlyphUv>,
+    dynamic_cache: AHashMap<CacheKey, GlyphUv>,
     next_x: u32,
     next_y: u32,
     current_row_height: u32,
@@ -138,6 +139,61 @@ pub fn is_box_drawing_or_pipe(c: char) -> bool {
     )
 }
 
+pub fn compute_initial_atlas_dim(cell_width: u32, cell_height: u32) -> u32 {
+    let glyph_w = cell_width + GLYPH_PADDING;
+    let glyph_h = cell_height + GLYPH_PADDING;
+    // 380 ASCII glyphs + generous headroom for dynamic unicode / nerd font / powerline
+    let needed_pixels = (glyph_w * glyph_h * 500) as u32;
+    let mut dim = 512;
+    while (dim * dim) < needed_pixels && dim < 4096 {
+        dim *= 2;
+    }
+    dim
+}
+
+pub fn create_atlas_texture(gl: &glow::Context, width: u32, height: u32) -> glow::Texture {
+    unsafe {
+        let tex = gl.create_texture().unwrap();
+        gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA as i32,
+            width as i32,
+            height as i32,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(None),
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+
+        let white_pixels = [255u8; 2 * 2 * 4];
+        gl.tex_sub_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            0,
+            0,
+            2,
+            2,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
+        );
+        tex
+    }
+}
+
 impl FontLoader {
     pub fn new(
         gl: Arc<glow::Context>,
@@ -176,49 +232,10 @@ impl FontLoader {
         .ceil()
         .max(1.0) as u32;
 
-        let atlas_width = 512;
-        let atlas_height = 512;
-
-        let atlas_texture = unsafe {
-            let tex = gl.create_texture().unwrap();
-            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA as i32,
-                atlas_width as i32,
-                atlas_height as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-
-            let white_pixels = [255u8; 2 * 2 * 4];
-            gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                0,
-                0,
-                2,
-                2,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
-            );
-            tex
-        };
+        let dim = compute_initial_atlas_dim(cell_width, cell_height);
+        let atlas_width = dim;
+        let atlas_height = dim;
+        let atlas_texture = create_atlas_texture(&gl, atlas_width, atlas_height);
 
         Self {
             gl,
@@ -233,10 +250,11 @@ impl FontLoader {
             font_size,
             font_scale_multiplier,
             atlas_texture,
+            atlas_generation: 0,
             atlas_width,
             atlas_height,
             ascii_cache: [None; 512],
-            dynamic_cache: HashMap::new(),
+            dynamic_cache: AHashMap::new(),
             next_x: 4,
             next_y: 0,
             current_row_height: 0,
@@ -263,49 +281,10 @@ impl FontLoader {
         .ceil()
         .max(1.0) as u32;
 
-        let atlas_width = 512;
-        let atlas_height = 512;
-
-        let atlas_texture = unsafe {
-            let tex = self.gl.create_texture().unwrap();
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            self.gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA as i32,
-                atlas_width as i32,
-                atlas_height as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
-            self.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            self.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-
-            let white_pixels = [255u8; 2 * 2 * 4];
-            self.gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                0,
-                0,
-                2,
-                2,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
-            );
-            tex
-        };
+        let dim = compute_initial_atlas_dim(cell_width, cell_height);
+        let atlas_width = dim;
+        let atlas_height = dim;
+        let atlas_texture = create_atlas_texture(&self.gl, atlas_width, atlas_height);
 
         let mut loader = Self {
             gl: self.gl.clone(),
@@ -320,10 +299,11 @@ impl FontLoader {
             font_size: pane_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
             atlas_texture,
+            atlas_generation: 0,
             atlas_width,
             atlas_height,
             ascii_cache: [None; 512],
-            dynamic_cache: HashMap::new(),
+            dynamic_cache: AHashMap::new(),
             next_x: 4,
             next_y: 0,
             current_row_height: 0,
@@ -352,49 +332,10 @@ impl FontLoader {
         .ceil()
         .max(1.0) as u32;
 
-        let atlas_width = 256;
-        let atlas_height = 128;
-
-        let atlas_texture = unsafe {
-            let tex = self.gl.create_texture().unwrap();
-            self.gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-            self.gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA as i32,
-                atlas_width as i32,
-                atlas_height as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(None),
-            );
-            self.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            self.gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-
-            let white_pixels = [255u8; 2 * 2 * 4];
-            self.gl.tex_sub_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                0,
-                0,
-                2,
-                2,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
-            );
-            tex
-        };
+        let dim = compute_initial_atlas_dim(cell_width, cell_height);
+        let atlas_width = 256.max(dim / 2);
+        let atlas_height = 256.max(dim / 2);
+        let atlas_texture = create_atlas_texture(&self.gl, atlas_width, atlas_height);
 
         let mut loader = Self {
             gl: self.gl.clone(),
@@ -409,10 +350,11 @@ impl FontLoader {
             font_size: tab_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
             atlas_texture,
+            atlas_generation: 0,
             atlas_width,
             atlas_height,
             ascii_cache: [None; 512],
-            dynamic_cache: HashMap::with_capacity(32),
+            dynamic_cache: AHashMap::with_capacity(32),
             next_x: 4,
             next_y: 0,
             current_row_height: 0,
@@ -446,12 +388,29 @@ impl FontLoader {
         }
     }
 
+    pub fn reallocate_atlas(&mut self, new_width: u32, new_height: u32) {
+        let new_tex = create_atlas_texture(&self.gl, new_width, new_height);
+        unsafe {
+            self.gl.delete_texture(self.atlas_texture);
+        }
+        self.atlas_texture = new_tex;
+        self.atlas_width = new_width;
+        self.atlas_height = new_height;
+        self.ascii_cache.fill(None);
+        self.dynamic_cache.clear();
+        self.next_x = 4;
+        self.next_y = 0;
+        self.current_row_height = 0;
+        self.atlas_generation = self.atlas_generation.wrapping_add(1);
+    }
+
     pub fn reset_atlas_allocator(&mut self) {
         self.ascii_cache.fill(None);
         self.dynamic_cache.clear();
         self.next_x = 4;
         self.next_y = 0;
         self.current_row_height = 0;
+        self.atlas_generation = self.atlas_generation.wrapping_add(1);
 
         unsafe {
             self.gl
@@ -492,59 +451,9 @@ impl FontLoader {
         let new_width = (self.atlas_width * 2).min(4096);
         let new_height = (self.atlas_height * 2).min(4096);
 
-        unsafe {
-            if let Ok(new_tex) = self.gl.create_texture() {
-                self.gl.bind_texture(glow::TEXTURE_2D, Some(new_tex));
-                self.gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-                self.gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA as i32,
-                    new_width as i32,
-                    new_height as i32,
-                    0,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(None),
-                );
-                self.gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_MIN_FILTER,
-                    glow::LINEAR as i32,
-                );
-                self.gl.tex_parameter_i32(
-                    glow::TEXTURE_2D,
-                    glow::TEXTURE_MAG_FILTER,
-                    glow::LINEAR as i32,
-                );
-
-                let white_pixels = [255u8; 2 * 2 * 4];
-                self.gl.tex_sub_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    2,
-                    2,
-                    glow::RGBA,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(&white_pixels[..])),
-                );
-
-                self.gl.delete_texture(self.atlas_texture);
-                self.atlas_texture = new_tex;
-                self.atlas_width = new_width;
-                self.atlas_height = new_height;
-                self.ascii_cache.fill(None);
-                self.dynamic_cache.clear();
-                self.next_x = 4;
-                self.next_y = 0;
-                self.current_row_height = 0;
-                true
-            } else {
-                false
-            }
-        }
+        self.reallocate_atlas(new_width, new_height);
+        self.preload_ascii();
+        true
     }
 
     pub fn update_font_size(&mut self, font_size: f32) {
@@ -561,7 +470,12 @@ impl FontLoader {
         .ceil()
         .max(1.0) as u32;
 
-        self.reset_atlas_allocator();
+        let needed_dim = compute_initial_atlas_dim(self.cell_width, self.cell_height);
+        if needed_dim != self.atlas_width {
+            self.reallocate_atlas(needed_dim, needed_dim);
+        } else {
+            self.reset_atlas_allocator();
+        }
         self.preload_ascii();
     }
 
@@ -625,21 +539,24 @@ impl FontLoader {
             return *uv;
         }
 
-        let seq = if ('\u{100000}'..='\u{10ffff}').contains(&c) {
+        let combining_seq: Option<String> = if ('\u{100000}'..='\u{10ffff}').contains(&c) {
             let reg_idx = (c as u32 - 0x100000) as usize;
             if let Ok(registry) = crate::screen::grid::get_combining_registry().lock() {
                 if reg_idx < registry.len() {
-                    registry[reg_idx].clone()
+                    Some(registry[reg_idx].clone())
                 } else {
-                    c.to_string()
+                    None
                 }
             } else {
-                c.to_string()
+                None
             }
         } else {
-            c.to_string()
+            None
         };
-        let base_c = seq.chars().next().unwrap_or(c);
+        let base_c = combining_seq
+            .as_deref()
+            .and_then(|s| s.chars().next())
+            .unwrap_or(c);
 
         let resolved_font = self.font_set.get(is_bold, is_italic);
         let mut char_font = &resolved_font.font;
@@ -689,6 +606,7 @@ impl FontLoader {
         let mut bounds_min_x = 0.0f32;
         let mut bounds_min_y = 0.0f32;
         let mut ascent = 0.0f32;
+        let mut font_adv = 0.0f32;
         let mut has_outline = false;
         let mut the_outlined: Option<ab_glyph::OutlinedGlyph> = None;
         let is_nerd_or_pua = is_nerd_font_or_pua(base_c);
@@ -755,6 +673,7 @@ impl FontLoader {
 
                 let scaled_font = char_font.as_scaled(scale);
                 ascent = scaled_font.ascent();
+                font_adv = scaled_font.h_advance(char_glyph_id);
 
                 let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
                 let outlined_opt =
@@ -842,12 +761,8 @@ impl FontLoader {
                 } else if is_box {
                     (bounds_min_x, ascent + bounds_min_y)
                 } else {
-                    let xo = if glyph_w < base_target_width as f32 {
-                        let calc = (base_target_width as f32 - glyph_w) / 2.0;
-                        if calc > 0.0 { calc } else { bounds_min_x }
-                    } else {
-                        bounds_min_x
-                    };
+                    let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+                    let xo = pad_x + bounds_min_x;
                     let yo = ascent + bounds_min_y;
                     (xo, yo)
                 };
@@ -871,65 +786,68 @@ impl FontLoader {
                 }
 
                 // Also draw combining chars
-                for ch in seq.chars().skip(1) {
-                    let mut char_font = &resolved_font.font;
-                    let mut char_glyph_id = char_font.glyph_id(ch);
-                    let mut comb_synth_italic = is_synthetic_italic;
+                if let Some(ref seq) = combining_seq {
+                    for ch in seq.chars().skip(1) {
+                        let mut char_font = &resolved_font.font;
+                        let mut char_glyph_id = char_font.glyph_id(ch);
+                        let mut comb_synth_italic = is_synthetic_italic;
 
-                    if char_glyph_id.0 == 0
-                        && let Some(idx) = self.fallback_manager.find_fallback_for_char(ch)
-                    {
-                        let fallback = &self.fallback_manager.fallbacks[idx];
-                        let id = fallback.font.glyph_id(ch);
-                        if id.0 != 0 {
-                            char_font = &fallback.font;
-                            char_glyph_id = id;
-                            if is_italic {
-                                comb_synth_italic = true;
+                        if char_glyph_id.0 == 0
+                            && let Some(idx) = self.fallback_manager.find_fallback_for_char(ch)
+                        {
+                            let fallback = &self.fallback_manager.fallbacks[idx];
+                            let id = fallback.font.glyph_id(ch);
+                            if id.0 != 0 {
+                                char_font = &fallback.font;
+                                char_glyph_id = id;
+                                if is_italic {
+                                    comb_synth_italic = true;
+                                }
                             }
                         }
-                    }
 
-                    if char_glyph_id.0 != 0 {
-                        let px_size = (self.font_size * self.font_scale_multiplier)
-                            .round()
-                            .max(1.0);
-                        let scale = PxScale::from(px_size);
-                        let scaled_font = char_font.as_scaled(scale);
-                        let ascent = scaled_font.ascent();
+                        if char_glyph_id.0 != 0 {
+                            let px_size = (self.font_size * self.font_scale_multiplier)
+                                .round()
+                                .max(1.0);
+                            let scale = PxScale::from(px_size);
+                            let scaled_font = char_font.as_scaled(scale);
+                            let ascent = scaled_font.ascent();
 
-                        let should_shear =
-                            comb_synth_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
-                        if let Some(outlined) = get_or_create_outlined_glyph(
-                            char_font,
-                            char_glyph_id,
-                            scale,
-                            should_shear,
-                        ) {
-                            let bounds = outlined.px_bounds();
-                            let mut xo = bounds.min.x;
-                            if unicode_width::UnicodeWidthChar::width(ch) == Some(0)
-                                && bounds.max.x <= 1.0
-                            {
-                                xo += base_target_width as f32;
-                            }
-                            let yo = ascent + bounds.min.y;
-
-                            outlined.draw(|gx, gy, alpha| {
-                                let px = (xo + gx as f32).round() as i32;
-                                let py = (yo + gy as f32).round() as i32;
-
-                                if px >= 0
-                                    && px < target_width as i32
-                                    && py >= 0
-                                    && py < self.cell_height as i32
+                            let should_shear =
+                                comb_synth_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+                            if let Some(outlined) = get_or_create_outlined_glyph(
+                                char_font,
+                                char_glyph_id,
+                                scale,
+                                should_shear,
+                            ) {
+                                let bounds = outlined.px_bounds();
+                                let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+                                let mut xo = pad_x + bounds.min.x;
+                                if unicode_width::UnicodeWidthChar::width(ch) == Some(0)
+                                    && bounds.max.x <= 1.0
                                 {
-                                    let idx = py as usize * target_width as usize + px as usize;
-                                    let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
-                                    let new_alpha = old_alpha.max(alpha);
-                                    self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
+                                    xo += base_target_width as f32;
                                 }
-                            });
+                                let yo = ascent + bounds.min.y;
+
+                                outlined.draw(|gx, gy, alpha| {
+                                    let px = (xo + gx as f32).round() as i32;
+                                    let py = (yo + gy as f32).round() as i32;
+
+                                    if px >= 0
+                                        && px < target_width as i32
+                                        && py >= 0
+                                        && py < self.cell_height as i32
+                                    {
+                                        let idx = py as usize * target_width as usize + px as usize;
+                                        let old_alpha = self.scratch_pixels[idx] as f32 / 255.0;
+                                        let new_alpha = old_alpha.max(alpha);
+                                        self.scratch_pixels[idx] = (new_alpha * 255.0) as u8;
+                                    }
+                                });
+                            }
                         }
                     }
                 }
@@ -959,7 +877,17 @@ impl FontLoader {
         if self.next_y + glyph_h + pad > self.atlas_height {
             if !self.grow_atlas() {
                 self.reset_atlas_allocator();
+                self.preload_ascii();
             }
+
+            if !is_wide && let Some(idx) = Self::ascii_cache_idx(key.c, key.is_bold, key.is_italic) {
+                if let Some(uv) = self.ascii_cache[idx] {
+                    return uv;
+                }
+            } else if let Some(uv) = self.dynamic_cache.get(&key) {
+                return *uv;
+            }
+
             if self.next_x + glyph_w + pad > self.atlas_width {
                 self.next_x = pad;
                 self.next_y += self.current_row_height + pad;
@@ -1056,6 +984,46 @@ mod tests {
                     "Sheared glyph must rasterize successfully"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_character_positioning_preserves_font_bearing_and_uniform_padding() {
+        let db = crate::font::fallback::get_system_font_db();
+        let query = fontdb::Query {
+            families: &[fontdb::Family::Monospace],
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: fontdb::Style::Normal,
+        };
+        if let Some(font) = load_font_face(db, &query) {
+            let scale = ab_glyph::PxScale::from(16.0);
+            let scaled_font = font.as_scaled(scale);
+            let cell_width = scaled_font.h_advance(font.glyph_id('A')).ceil().max(1.0) as u32;
+
+            let adv_a = scaled_font.h_advance(font.glyph_id('A'));
+            let adv_1 = scaled_font.h_advance(font.glyph_id('1'));
+            let adv_i = scaled_font.h_advance(font.glyph_id('i'));
+            let adv_dot = scaled_font.h_advance(font.glyph_id('.'));
+
+            let pad_a = ((cell_width as f32 - adv_a) / 2.0).max(0.0);
+            let pad_1 = ((cell_width as f32 - adv_1) / 2.0).max(0.0);
+            let pad_i = ((cell_width as f32 - adv_i) / 2.0).max(0.0);
+            let pad_dot = ((cell_width as f32 - adv_dot) / 2.0).max(0.0);
+
+            // In a monospace font, advances and padding must be identical across standard glyphs
+            assert!(
+                (pad_a - pad_1).abs() < 0.01,
+                "Padding for '1' must match 'A'"
+            );
+            assert!(
+                (pad_a - pad_i).abs() < 0.01,
+                "Padding for 'i' must match 'A'"
+            );
+            assert!(
+                (pad_a - pad_dot).abs() < 0.01,
+                "Padding for '.' must match 'A'"
+            );
         }
     }
 }

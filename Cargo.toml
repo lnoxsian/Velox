@@ -1,6 +1,6 @@
 [package]
 name = "velox"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [dependencies]
@@ -26,6 +26,7 @@ png = "0.17"
 owned_ttf_parser = "0.25"
 softbuffer = "0.4"
 memmap2 = "0.9"
+ahash = "0.8"
 
 [[bench]]
 name = "software_renderer"

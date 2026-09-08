@@ -351,12 +351,16 @@ impl Grid {
             if dest_start < dest_end {
                 let actual_len = dest_end - dest_start;
                 let dest_slice = &mut self.cells[dest_start..dest_end];
+                let template = Cell {
+                    character: ' ',
+                    foreground: fg,
+                    background: bg,
+                    underline_color,
+                    flags,
+                };
                 for (cell, &b) in dest_slice.iter_mut().zip(&chunk[..actual_len]) {
+                    *cell = template;
                     cell.character = b as char;
-                    cell.foreground = fg;
-                    cell.background = bg;
-                    cell.underline_color = underline_color;
-                    cell.flags = flags;
                 }
             }
 

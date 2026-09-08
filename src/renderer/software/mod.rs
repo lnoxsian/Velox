@@ -64,6 +64,7 @@ pub struct CpuRenderer {
     prev_opacity: f32,
     prev_dim: f32,
     prev_tab_bar_hash: u64,
+    last_target_ptr: usize,
 }
 
 impl CpuRenderer {
@@ -108,12 +109,14 @@ impl CpuRenderer {
             prev_opacity: opacity,
             prev_dim: 0.0,
             prev_tab_bar_hash: 0,
+            last_target_ptr: 0,
         }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
         self.viewport_width = width;
         self.viewport_height = height;
+        self.last_target_ptr = 0;
         if self.framebuffer.resize(width, height) {
             let rows = (height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
             self.damage.resize(rows);
@@ -126,6 +129,7 @@ impl CpuRenderer {
         let rows = (self.viewport_height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
         self.damage.resize(rows);
         self.damage.mark_all();
+        self.last_target_ptr = 0;
     }
 
     pub fn set_tab_font_size(&mut self, font_size: f32) {
@@ -141,6 +145,7 @@ impl CpuRenderer {
             self.framebuffer.pixels.shrink_to_fit();
         }
         self.damage.mark_all();
+        self.last_target_ptr = 0;
     }
 
     /// Backwards-compatible render entry point (no tab bar). Delegates to `render_with_tab_bar`.
@@ -343,8 +348,12 @@ impl CpuRenderer {
             self.damage.full_redraw || any_pane_damage || blink_changed || tab_bar_dirty;
 
         if !force_redraw && !self.damage.has_damage() {
-            if target_buffer.len() == self.framebuffer.pixels.len() {
+            let current_ptr = target_buffer.as_ptr() as usize;
+            if current_ptr != self.last_target_ptr
+                && target_buffer.len() == self.framebuffer.pixels.len()
+            {
                 target_buffer.copy_from_slice(self.framebuffer.as_slice());
+                self.last_target_ptr = current_ptr;
             }
             return;
         }
@@ -376,6 +385,8 @@ impl CpuRenderer {
             let tile_y = pane.rect.y.round() as u32;
             let tile_w = pane.rect.width.round() as u32;
             let tile_h = pane.rect.height.round() as u32;
+            let max_x = (tile_x + tile_w).min(self.framebuffer.width);
+            let max_y = (tile_y + tile_h).min(self.framebuffer.height);
             let default_pane_bg = if pane.theme.default_bg == self.palette.raw_default_bg {
                 self.palette.default_bg
             } else {
@@ -410,7 +421,7 @@ impl CpuRenderer {
                 }
 
                 let py = py_offset + (y as u32) * cell_h;
-                if py + cell_h > self.framebuffer.height {
+                if py + cell_h > max_y {
                     break;
                 }
 
@@ -518,9 +529,12 @@ impl CpuRenderer {
                             in_span = true;
                         } else if bg != span_bg {
                             let span_px = px_offset + (span_start_col as u32) * cell_w;
-                            let span_w = ((col - span_start_col) as u32) * cell_w;
-                            self.framebuffer
-                                .fill_span(span_px, py, span_w, cell_h, span_bg);
+                            let span_w = (((col - span_start_col) as u32) * cell_w)
+                                .min(max_x.saturating_sub(span_px));
+                            if span_w > 0 && span_px < max_x {
+                                self.framebuffer
+                                    .fill_span(span_px, py, span_w, cell_h, span_bg);
+                            }
                             span_start_col = col;
                             span_bg = bg;
                         }
@@ -528,9 +542,12 @@ impl CpuRenderer {
 
                     if in_span {
                         let span_px = px_offset + (span_start_col as u32) * cell_w;
-                        let span_w = ((grid_w - span_start_col) as u32) * cell_w;
-                        self.framebuffer
-                            .fill_span(span_px, py, span_w, cell_h, span_bg);
+                        let span_w = (((grid_w - span_start_col) as u32) * cell_w)
+                            .min(max_x.saturating_sub(span_px));
+                        if span_w > 0 && span_px < max_x {
+                            self.framebuffer
+                                .fill_span(span_px, py, span_w, cell_h, span_bg);
+                        }
                     }
 
                     // Pass B: Glyphs, Primitives, Decorations
@@ -540,7 +557,7 @@ impl CpuRenderer {
                         }
 
                         let px = px_offset + (col as u32) * cell_w;
-                        if px + cell_w > self.framebuffer.width {
+                        if px + cell_w > max_x {
                             break;
                         }
 
@@ -721,16 +738,18 @@ impl CpuRenderer {
                         self.palette.default_fg
                     };
 
-                    draw_cursor(
-                        &mut self.framebuffer,
-                        cursor_px,
-                        cursor_py,
-                        cell_w,
-                        cell_h,
-                        cursor_shape,
-                        is_focused && pane.is_active,
-                        cursor_color,
-                    );
+                    if cursor_px + cell_w <= max_x && cursor_py + cell_h <= max_y {
+                        draw_cursor(
+                            &mut self.framebuffer,
+                            cursor_px,
+                            cursor_py,
+                            cell_w,
+                            cell_h,
+                            cursor_shape,
+                            is_focused && pane.is_active,
+                            cursor_color,
+                        );
+                    }
                 }
             }
         }
@@ -1023,6 +1042,7 @@ impl CpuRenderer {
         // Present to target slice
         if target_buffer.len() == self.framebuffer.pixels.len() {
             target_buffer.copy_from_slice(self.framebuffer.as_slice());
+            self.last_target_ptr = target_buffer.as_ptr() as usize;
         }
 
         self.damage.clear();

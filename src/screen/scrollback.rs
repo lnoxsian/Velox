@@ -352,12 +352,18 @@ impl ScrollbackStorage {
 
 #[inline(always)]
 pub fn trim_trailing_blank_cells(cells: &[Cell], default_bg: Option<Color>) -> &[Cell] {
-    if let Some(pos) = cells.iter().rposition(|c| {
-        c.character != ' '
-            || !c.flags.is_empty()
-            || c.underline_color.is_some()
-            || default_bg.is_some_and(|bg| c.background != bg)
-    }) {
+    let pos = match default_bg {
+        Some(bg) => cells.iter().rposition(|c| {
+            c.character != ' '
+                || !c.flags.is_empty()
+                || c.underline_color.is_some()
+                || c.background != bg
+        }),
+        None => cells.iter().rposition(|c| {
+            c.character != ' ' || !c.flags.is_empty() || c.underline_color.is_some()
+        }),
+    };
+    if let Some(pos) = pos {
         &cells[..pos + 1]
     } else {
         &[]
@@ -428,9 +434,6 @@ impl Scrollback {
                 oldest.cells.clear();
                 oldest.cells.extend_from_slice(target_cells);
                 oldest.wrapped = wrapped;
-                if oldest.cells.capacity() > 128 && target_cells.len() < 32 {
-                    oldest.cells.shrink_to(32);
-                }
                 self.hot_rows.push_back(oldest);
             } else {
                 self.hot_rows.push_back(Row {
@@ -446,9 +449,6 @@ impl Scrollback {
                 reused.cells.clear();
                 reused.cells.extend_from_slice(target_cells);
                 reused.wrapped = wrapped;
-                if reused.cells.capacity() > 128 && target_cells.len() < 32 {
-                    reused.cells.shrink_to(32);
-                }
                 self.hot_rows.push_back(reused);
                 return;
             }

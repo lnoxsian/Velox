@@ -373,8 +373,8 @@ impl WindowState {
         let tab_bar_h = self.tab_bar_height();
         let avail_w = (width as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h = (height as f32 - tab_bar_h - self.padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / self.cell_width()).max(20);
-        let rows = ((avail_h as u32) / self.cell_height()).max(10);
+        let cols = ((avail_w as u32) / self.cell_width()).max(1);
+        let rows = ((avail_h as u32) / self.cell_height()).max(1);
         (cols, rows)
     }
 
@@ -476,12 +476,20 @@ impl WindowState {
         let split_id = self.next_split_id;
         self.next_split_id += 1;
 
-        let (cols, rows) = self.recalculate_grid_size();
+        let avail_w =
+            (self.window.inner_size().width.max(1) as f32 - self.padding_x * 2.0).max(10.0);
+        let avail_h = (self.window.inner_size().height.max(1) as f32
+            - self.tab_bar_height()
+            - self.padding_y * 2.0)
+            .max(10.0);
+        let cols = ((avail_w as u32) / self.base_cell_width.max(1)).max(1);
+        let rows = ((avail_h as u32) / self.base_cell_height.max(1)).max(1);
+
         let pty_master = Arc::new(spawn_process(&self.shell_path, None, None).ok()?);
         let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::new(cols as usize, rows as usize);
-        terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
+        terminal.set_cell_dimensions(self.base_cell_width, self.base_cell_height);
 
         spawn_pty_reader(
             pty_master.clone(),
@@ -491,7 +499,7 @@ impl WindowState {
             new_pane_id,
         );
 
-        let font_size = self.active_pane().font_size;
+        let font_size = self.default_font_size;
         let new_pane = Pane::new(new_pane_id, pty_master, terminal, font_size, false);
 
         let tab = self.active_tab_mut();
@@ -1165,8 +1173,8 @@ impl App {
 
         let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
         let avail_h = (win_height as f32 - tab_bar_h - padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / backend.cell_width()).max(20);
-        let rows = ((avail_h as u32) / backend.cell_height()).max(10);
+        let cols = ((avail_w as u32) / backend.cell_width()).max(1);
+        let rows = ((avail_h as u32) / backend.cell_height()).max(1);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
 

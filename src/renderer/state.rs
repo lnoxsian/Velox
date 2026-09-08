@@ -1,13 +1,24 @@
 use crate::app::split::PaneRect;
 use crate::screen::cursor::CursorShape;
 
+/// Compact 20-byte OpenGL vertex representation with packed RGBA32 color.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GlVertex {
+    pub x: f32,
+    pub y: f32,
+    pub u: f32,
+    pub v: f32,
+    pub color: [u8; 4],
+}
+
 /// Cached CPU-side render data for a single row of a terminal pane.
 #[derive(Debug, Clone, Default)]
 pub struct RowRenderCache {
-    /// Cached background vertices for this row (8 floats per vertex, 6 vertices per quad).
-    pub bg_vertices: Vec<f32>,
+    /// Cached background vertices for this row (4 vertices per quad, indexed via EBO).
+    pub bg_vertices: Vec<GlVertex>,
     /// Cached foreground vertices (glyphs, underlines, strike, decorations) for this row.
-    pub fg_vertices: Vec<f32>,
+    pub fg_vertices: Vec<GlVertex>,
     /// Cached cursor state when this row was built (to detect cursor move/shape/blink changes).
     pub last_cursor: Option<(usize, CursorShape, bool)>,
     /// Cached selection range for this row (to detect selection drag/changes).
@@ -102,6 +113,8 @@ pub struct PaneRenderState {
     pub last_dim: f32,
     pub last_blink_on: bool,
     pub last_scroll_offset: usize,
+    pub last_atlas_texture: Option<glow::Texture>,
+    pub last_atlas_generation: u64,
 }
 
 impl Default for PaneRenderState {
@@ -124,6 +137,8 @@ impl PaneRenderState {
             last_dim: 0.0,
             last_blink_on: true,
             last_scroll_offset: 0,
+            last_atlas_texture: None,
+            last_atlas_generation: 0,
         }
     }
 

@@ -1068,3 +1068,282 @@ fn test_active_split_separator_accent_color_matches_tab_bar_and_config() {
         Some(theme.ansi_colors[5])
     );
 }
+
+#[test]
+fn test_large_font_split_pane_layout_does_not_overflow() {
+    let mut tree = SplitTree::new(create_test_pane(1, 80, 24));
+    // Set pane 1 font size to large 48.0 px (base is 14.0)
+    tree.find_pane_mut(1).unwrap().font_size = 48.0;
+
+    // Split pane 1 vertically with 0.5 ratio
+    let p2 = create_test_pane(2, 80, 24);
+    assert!(tree.split_pane(1, p2, SplitDirection::Vertical, 0.5, 100));
+
+    // Layout within an 800x600 window with 4px separator and 4px padding
+    let (pane_rects, _) = tree.calculate_layout(
+        0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, 14.0, 20, 10,
+    );
+
+    assert_eq!(pane_rects.len(), 2);
+    for rect in &pane_rects {
+        let text_pixel_width = rect.cols as f32 * rect.cell_width;
+        let available_width = rect.width - rect.padding_x * 2.0;
+        assert!(
+            text_pixel_width <= available_width + 0.01,
+            "Pane {} text width ({} cols * {} cell_w = {}) exceeded available width {} (rect width: {})",
+            rect.pane_id,
+            rect.cols,
+            rect.cell_width,
+            text_pixel_width,
+            available_width,
+            rect.width
+        );
+
+        let text_pixel_height = rect.rows as f32 * rect.cell_height;
+        let available_height = rect.height - rect.padding_y * 2.0;
+        assert!(
+            text_pixel_height <= available_height + 0.01,
+            "Pane {} text height ({} rows * {} cell_h = {}) exceeded available height {} (rect height: {})",
+            rect.pane_id,
+            rect.rows,
+            rect.cell_height,
+            text_pixel_height,
+            available_height,
+            rect.height
+        );
+    }
+
+    // For the large font pane (rect.cell_width is ~27px), only ~14 cols fit in ~398px.
+    // Ensure rect.cols was NOT clamped to min_cols (20), which would overflow by ~150px.
+    let large_pane_rect = pane_rects.iter().find(|r| r.pane_id == 1).unwrap();
+    assert!(
+        large_pane_rect.cols < 20,
+        "Large font pane should fit fewer than 20 columns in 398px, got {}",
+        large_pane_rect.cols
+    );
+}
+
+#[test]
+fn test_software_renderer_large_font_split_does_not_spill_pixels() {
+    let theme = Theme::new();
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 800, 600, true, 1.0);
+    let mut target_buf = vec![0u32; 800 * 600];
+
+    // Left pane with large font (36px) spanning x: 0..398
+    let mut p1 = create_test_pane(1, 10, 10);
+    p1.font_size = 36.0;
+    p1.terminal.feed(b"\x1b[31mXXXXXXXXXX\x1b[0m\r\n");
+
+    let left_rect = PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: 398.0,
+        height: 600.0,
+        padding_x: 2.0,
+        padding_y: 2.0,
+        cols: 10,
+        rows: 10,
+        cell_width: 25.0,
+        cell_height: 45.0,
+    };
+    let left_pane_data = CpuPaneRenderData {
+        pane_id: 1,
+        rect: left_rect,
+        cells: &p1.terminal.grid.cells,
+        grid: &p1.terminal.grid,
+        font_size: 36.0,
+        theme: &theme,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    // Right pane with normal font (14px) spanning x: 402..800
+    let mut p2 = create_test_pane(2, 30, 20);
+    p2.font_size = 14.0;
+    p2.terminal.feed(b"\x1b[32mOOOOOOOOOO\x1b[0m\r\n");
+
+    let right_rect = PaneRect {
+        pane_id: 2,
+        x: 402.0,
+        y: 0.0,
+        width: 398.0,
+        height: 600.0,
+        padding_x: 2.0,
+        padding_y: 2.0,
+        cols: 30,
+        rows: 20,
+        cell_width: 8.0,
+        cell_height: 16.0,
+    };
+    let right_pane_data = CpuPaneRenderData {
+        pane_id: 2,
+        rect: right_rect,
+        cells: &p2.terminal.grid.cells,
+        grid: &p2.terminal.grid,
+        font_size: 14.0,
+        theme: &theme,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: false,
+    };
+
+    let sep = SeparatorRect {
+        split_id: 1,
+        direction: SplitDirection::Vertical,
+        x: 398.0,
+        y: 0.0,
+        width: 4.0,
+        height: 600.0,
+        bounds_x: 0.0,
+        bounds_y: 0.0,
+        bounds_w: 800.0,
+        bounds_h: 600.0,
+    };
+    let sep_data = SeparatorRenderData {
+        rect: sep,
+        is_active: false,
+        active_segment: None,
+        is_hovered: false,
+        is_dragging: false,
+    };
+
+    renderer.render_splits(
+        &[left_pane_data, right_pane_data],
+        &[sep_data],
+        1.0,
+        0.0,
+        true,
+        &mut target_buf,
+        None,
+        None,
+        None,
+    );
+
+    // Verify: Separator region (x: 398..402) has no red pixels from left pane
+    let red_ansi = theme.ansi_colors[1];
+    let red_packed = ((red_ansi.r as u32) << 16) | ((red_ansi.g as u32) << 8) | (red_ansi.b as u32);
+    for y in 0..600 {
+        for x in 398..402 {
+            let p = renderer.framebuffer.pixels[(y * 800 + x) as usize];
+            assert_ne!(
+                p & 0x00FFFFFF,
+                red_packed,
+                "Separator region ({}, {}) was overwritten by red pixel from left pane",
+                x,
+                y
+            );
+        }
+    }
+}
+
+#[test]
+fn test_font_loader_initial_atlas_dim_scales_for_large_fonts() {
+    use velox::font::loader::compute_initial_atlas_dim;
+
+    // Small/normal fonts: cell dims around 8x16 -> 512
+    assert_eq!(compute_initial_atlas_dim(8, 16), 512);
+    assert_eq!(compute_initial_atlas_dim(10, 20), 512);
+
+    // Medium-large fonts (e.g. 24px - 32px): cell dims around 18x36
+    let dim_medium = compute_initial_atlas_dim(18, 36);
+    assert!(dim_medium >= 1024, "Atlas dim should be >= 1024 for 18x36, got {}", dim_medium);
+
+    // Very large fonts (e.g. 48px - 72px): cell dims around 35x70 or 50x100
+    let dim_large = compute_initial_atlas_dim(35, 70);
+    assert!(dim_large >= 2048, "Atlas dim should be >= 2048 for 35x70, got {}", dim_large);
+}
+
+#[test]
+fn test_pane_render_state_atlas_tracking() {
+    use velox::renderer::state::PaneRenderState;
+
+    let mut state = PaneRenderState::default();
+    assert_eq!(state.last_atlas_texture, None);
+    assert_eq!(state.last_atlas_generation, 0);
+
+    // Simulate texture and generation updates
+    state.last_atlas_generation = 1;
+    state.ensure_rows(24);
+    assert_eq!(state.row_cache.len(), 24);
+
+    // Marking full redraw clears row cache validity
+    state.row_cache[0].valid = true;
+    state.mark_full_redraw();
+    assert!(!state.row_cache[0].valid);
+    assert!(state.full_redraw);
+}
+
+#[test]
+fn test_new_split_and_tab_font_size_defaults_to_config_not_zoomed() {
+    let config_default_font_size = 14.0;
+
+    // Create a tab with pane 1 at config default font size
+    let mut tab = Tab::new(
+        1,
+        Arc::new(spawn_process("/bin/sh", None, None).unwrap()),
+        Terminal::new(80, 24),
+        None,
+        "tab 1".to_string(),
+        false,
+        config_default_font_size,
+    );
+
+    // Simulate zooming in pane 1 to 32.0 px
+    let zoomed_font_size = 32.0;
+    tab.tree.find_pane_mut(1).unwrap().font_size = zoomed_font_size;
+    tab.font_size = zoomed_font_size;
+    assert_eq!(tab.active_pane().font_size, zoomed_font_size);
+
+    // Now spawn a new split pane (pane 2) using config_default_font_size
+    let mut p2_terminal = Terminal::new(80, 24);
+    p2_terminal.set_cell_dimensions(8, 16);
+    let p2 = Pane::new(
+        2,
+        Arc::new(spawn_process("/bin/sh", None, None).unwrap()),
+        p2_terminal,
+        config_default_font_size,
+        false,
+    );
+
+    assert!(tab.tree.split_pane(1, p2, SplitDirection::Vertical, 0.5, 100));
+    tab.set_active_pane(2);
+
+    // Verify pane 1 retains its zoomed font size
+    assert_eq!(tab.tree.find_pane(1).unwrap().font_size, zoomed_font_size);
+
+    // Verify newly spawned pane 2 starts at config default font size, NOT the zoomed font size
+    assert_eq!(tab.tree.find_pane(2).unwrap().font_size, config_default_font_size);
+    assert_eq!(tab.active_pane().font_size, config_default_font_size);
+
+    // Recalculate layout and verify cell scaling respects each pane's respective font size
+    let (pane_rects, _) = tab.tree.calculate_layout(
+        0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, config_default_font_size, 20, 10,
+    );
+
+    let r1 = pane_rects.iter().find(|r| r.pane_id == 1).unwrap();
+    let r2 = pane_rects.iter().find(|r| r.pane_id == 2).unwrap();
+
+    // Pane 1 (zoomed 32.0) has larger cell dimensions than pane 2 (default 14.0)
+    assert!(r1.cell_width > r2.cell_width);
+    assert!(r1.cell_height > r2.cell_height);
+    // Pane 2 (default 14.0) should have base cell dimensions (8x16)
+    assert_eq!(r2.cell_width, 8.0);
+    assert_eq!(r2.cell_height, 16.0);
+
+    // Also verify new tab creation always uses config default font size
+    let new_tab = Tab::new(
+        2,
+        Arc::new(spawn_process("/bin/sh", None, None).unwrap()),
+        Terminal::new(80, 24),
+        None,
+        "tab 2".to_string(),
+        false,
+        config_default_font_size,
+    );
+    assert_eq!(new_tab.font_size, config_default_font_size);
+    assert_eq!(new_tab.active_pane().font_size, config_default_font_size);
+}

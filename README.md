@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.2.0-blue.svg?style=for-the-badge" alt="Version 0.2.0">
+  <img src="https://img.shields.io/badge/version-v0.2.1-blue.svg?style=for-the-badge" alt="Version 0.2.1">
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg?style=for-the-badge&logo=rust" alt="Rust"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License"></a>
   <a href="https://platform.linux.org"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20Wayland%20%7C%20X11-informational.svg?style=for-the-badge&logo=linux" alt="Platform"></a>
@@ -31,7 +31,7 @@
 ---
 
 > [!NOTE]
-> **Velox v0.2.0** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, OpenGL text rendering, native CPU software fallback via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
+> **Velox v0.2.1** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, OpenGL text rendering, native CPU software fallback via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
 
 ---
 

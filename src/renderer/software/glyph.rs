@@ -2,7 +2,7 @@ use super::atlas::{GlyphAtlas, GlyphRef};
 use crate::font::fallback::FallbackManager;
 use crate::font::loader::{is_nerd_font_or_pua, is_powerline};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 /// Reusable temporary scratch storage for decoding PNG emojis and rasterizing glyph outlines.
 #[derive(Default)]
@@ -91,7 +91,7 @@ pub struct GlyphCache {
     /// Fast direct lookup table for ASCII 0..127 across 4 styles (regular, bold, italic, bold_italic)
     ascii_table: [Option<GlyphRef>; 512],
     /// Bounded LRU-style cache for Unicode and emoji
-    unicode_table: HashMap<GlyphKey, GlyphRef>,
+    unicode_table: AHashMap<GlyphKey, GlyphRef>,
     max_unicode_entries: usize,
 }
 
@@ -124,7 +124,7 @@ impl GlyphCache {
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: HashMap::with_capacity(1024),
+            unicode_table: AHashMap::with_capacity(1024),
             max_unicode_entries: 4096,
         };
 
@@ -178,7 +178,7 @@ impl GlyphCache {
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: HashMap::with_capacity(1024),
+            unicode_table: AHashMap::with_capacity(1024),
             max_unicode_entries: 4096,
         };
         cache.preload_common_glyphs();
@@ -216,7 +216,7 @@ impl GlyphCache {
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: HashMap::with_capacity(1024),
+            unicode_table: AHashMap::with_capacity(1024),
             max_unicode_entries: 4096,
         };
         cache.preload_common_glyphs();
@@ -254,7 +254,7 @@ impl GlyphCache {
             atlas: GlyphAtlas::with_capacity(16 * 1024, 0),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: HashMap::with_capacity(16),
+            unicode_table: AHashMap::with_capacity(16),
             max_unicode_entries: 32,
         };
         cache.preload_tab_glyphs();
@@ -369,9 +369,10 @@ impl GlyphCache {
         let mut glyph_h = 0.0f32;
         let mut bounds_min_x = 0.0f32;
         let mut bounds_min_y = 0.0f32;
+        let mut ascent = 0.0f32;
+        let mut font_adv = 0.0f32;
         let mut has_outline = false;
         let mut the_outlined: Option<ab_glyph::OutlinedGlyph> = None;
-        let mut ascent = 0.0f32;
 
         let resolved_font = self.font_set.get(key.bold, key.italic);
         let mut char_font = &resolved_font.font;
@@ -437,6 +438,7 @@ impl GlyphCache {
 
                 let scaled_font = char_font.as_scaled(scale);
                 ascent = scaled_font.ascent();
+                font_adv = scaled_font.h_advance(char_glyph_id);
 
                 let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
                 let outlined_opt = crate::font::resolved::get_or_create_outlined_glyph(
@@ -549,12 +551,8 @@ impl GlyphCache {
                 } else if is_box {
                     (bounds_min_x, ascent + bounds_min_y)
                 } else {
-                    let xo = if glyph_w < base_target_width as f32 {
-                        let calc = (base_target_width as f32 - glyph_w) / 2.0;
-                        if calc > 0.0 { calc } else { bounds_min_x }
-                    } else {
-                        bounds_min_x
-                    };
+                    let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+                    let xo = pad_x + bounds_min_x;
                     let yo = ascent + bounds_min_y;
                     (xo, yo)
                 };

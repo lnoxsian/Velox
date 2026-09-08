@@ -397,8 +397,8 @@ impl SplitNode {
                 let pane_ch = (base_ch_f * scale).round().max(1.0);
                 let text_w = (w - padding_x * 2.0).max(pane_cw);
                 let text_h = (h - padding_y * 2.0).max(pane_ch);
-                let cols = ((text_w / pane_cw).floor() as usize).max(min_cols);
-                let rows = ((text_h / pane_ch).floor() as usize).max(min_rows);
+                let cols = ((text_w / pane_cw).floor() as usize).max(1);
+                let rows = ((text_h / pane_ch).floor() as usize).max(1);
                 pane_rects.push(PaneRect {
                     pane_id: pane.id,
                     x,
