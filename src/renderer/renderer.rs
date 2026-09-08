@@ -1508,16 +1508,21 @@ impl Renderer {
 
             // Fill entire pane rectangle default background to eliminate gaps if opaque or if pane has a custom background
             if opacity >= 1.0 || pane_theme.default_bg != base_theme.default_bg {
+                let (p_wu, p_wv) = if (self.font_loader.font_size - font_size).abs() < 0.01 {
+                    (wu, wv)
+                } else {
+                    self.pane_font_loaders.get(&key).unwrap().white_pixel_uv()
+                };
                 push_quad(
                     &mut vertices,
                     pane.rect.x,
                     pane.rect.y,
                     pane.rect.width,
                     pane.rect.height,
-                    wu,
-                    wv,
-                    wu,
-                    wv,
+                    p_wu,
+                    p_wv,
+                    p_wu,
+                    p_wv,
                     pane_theme.default_bg,
                     false,
                 );

@@ -190,13 +190,12 @@ impl AnsiParser {
                         .cells
                         .get(row_start..row_start + active.width)
                         .is_some_and(|slice| {
-                            if let Some(first) = slice.first() {
-                                if first.character != ' '
+                            if let Some(first) = slice.first()
+                                && (first.character != ' '
                                     || !first.flags.is_empty()
-                                    || first.background != bg
-                                {
-                                    return false;
-                                }
+                                    || first.background != bg)
+                            {
+                                return false;
                             }
                             slice.iter().all(|c| {
                                 c.character == ' ' && c.flags.is_empty() && c.background == bg

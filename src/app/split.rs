@@ -699,16 +699,6 @@ impl SplitTree {
             .adjust_ancestor_split_ratio(target_pane_id, direction, delta)
     }
 
-    pub fn adjust_split_ratio_by_delta(
-        &mut self,
-        target_pane_id: PaneId,
-        direction: SplitDirection,
-        delta: f32,
-    ) -> bool {
-        self.root
-            .adjust_ancestor_split_ratio(target_pane_id, direction, delta)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn calculate_layout(
         &self,

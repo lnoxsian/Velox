@@ -143,7 +143,7 @@ pub fn compute_initial_atlas_dim(cell_width: u32, cell_height: u32) -> u32 {
     let glyph_w = cell_width + GLYPH_PADDING;
     let glyph_h = cell_height + GLYPH_PADDING;
     // 380 ASCII glyphs + generous headroom for dynamic unicode / nerd font / powerline
-    let needed_pixels = (glyph_w * glyph_h * 500) as u32;
+    let needed_pixels = glyph_w * glyph_h * 500;
     let mut dim = 512;
     while (dim * dim) < needed_pixels && dim < 4096 {
         dim *= 2;
