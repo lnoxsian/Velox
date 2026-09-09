@@ -532,6 +532,7 @@ fn test_software_renderer_multi_pane_rendering() {
         grid: &p1.terminal.grid,
         font_size: p1.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: true,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -544,6 +545,7 @@ fn test_software_renderer_multi_pane_rendering() {
         grid: &p2.terminal.grid,
         font_size: p2.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: true,
         cursor_shape: CursorShape::HollowBlock,
         display_cursor_x: 0,
@@ -710,6 +712,7 @@ fn test_unfocused_pane_selection_and_cursor_isolation() {
         grid: &p1_ref.terminal.grid,
         font_size: p1_ref.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: false, // Inactive pane
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -722,6 +725,7 @@ fn test_unfocused_pane_selection_and_cursor_isolation() {
         grid: &p2_ref.terminal.grid,
         font_size: p2_ref.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: true,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -921,6 +925,7 @@ fn test_multi_pane_independent_font_glyph_cache_stability() {
         grid: &p1.terminal.grid,
         font_size: p1.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: true,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -933,6 +938,7 @@ fn test_multi_pane_independent_font_glyph_cache_stability() {
         grid: &p2.terminal.grid,
         font_size: p2.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: false,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -980,6 +986,7 @@ fn test_multi_pane_independent_font_glyph_cache_stability() {
         grid: &p1.terminal.grid,
         font_size: p1.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: true,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -992,6 +999,7 @@ fn test_multi_pane_independent_font_glyph_cache_stability() {
         grid: &p2.terminal.grid,
         font_size: p2.font_size,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: false,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -1153,6 +1161,7 @@ fn test_software_renderer_large_font_split_does_not_spill_pixels() {
         grid: &p1.terminal.grid,
         font_size: 36.0,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: false,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -1184,6 +1193,7 @@ fn test_software_renderer_large_font_split_does_not_spill_pixels() {
         grid: &p2.terminal.grid,
         font_size: 14.0,
         theme: &theme,
+        bold_is_bright: true,
         cursor_visible: false,
         cursor_shape: CursorShape::Block,
         display_cursor_x: 0,
@@ -1371,3 +1381,383 @@ fn test_new_split_and_tab_font_size_defaults_to_config_not_zoomed() {
     assert_eq!(new_tab.font_size, config_default_font_size);
     assert_eq!(new_tab.active_pane().font_size, config_default_font_size);
 }
+
+#[test]
+fn test_drag_selection_across_split_clamps_to_originating_pane() {
+    let mut tree = SplitTree::new(create_test_pane(1, 40, 24));
+    let p2 = create_test_pane(2, 40, 24);
+    tree.split_pane(1, p2, SplitDirection::Vertical, 0.5, 100);
+
+    let (pane_rects, _) = tree.calculate_layout(
+        0.0, 0.0, 800.0, 600.0, 4.0, 0.0, 0.0, 10, 20, 14.0, 10, 5,
+    );
+    let r1 = pane_rects.iter().find(|r| r.pane_id == 1).unwrap();
+    let r2 = pane_rects.iter().find(|r| r.pane_id == 2).unwrap();
+
+    // Verify layout: Pane 1 is on the left, Pane 2 on the right
+    assert_eq!(r1.x, 0.0);
+    assert!(r2.x >= 400.0);
+
+    // Compute col_idx and row_idx helper using the pane capture clamping formula
+    let calc_cell = |rect: &PaneRect, mouse_x: f64, mouse_y: f64| -> (usize, usize) {
+        let px = (rect.x + rect.padding_x) as f64;
+        let py = (rect.y + rect.padding_y) as f64;
+        let cw = rect.cell_width as f64;
+        let ch = rect.cell_height as f64;
+        let grid_width = rect.cols;
+        let grid_height = rect.rows;
+
+        let col_idx = if cw > 0.0 {
+            let raw = ((mouse_x - px) / cw).floor() as i64;
+            raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+        } else {
+            0
+        };
+        let row_idx = if ch > 0.0 {
+            let raw = ((mouse_y - py) / ch).floor() as i64;
+            raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+        } else {
+            0
+        };
+        (col_idx, row_idx)
+    };
+
+    // User starts drag at cell (5, 5) in Pane 1
+    let (c_start, r_start) = calc_cell(r1, 55.0, 105.0);
+    assert_eq!((c_start, r_start), (5, 5));
+
+    // Mouse moves deep into Pane 2 (e.g. x = 600.0, inside Pane 2)
+    // Relative to Pane 1, this clamps to the rightmost column of Pane 1
+    let (c_in_pane2, r_in_pane2) = calc_cell(r1, 600.0, 105.0);
+    assert_eq!(c_in_pane2, r1.cols - 1);
+    assert_eq!(r_in_pane2, 5);
+
+    // Mouse moves above Pane 1 (e.g. into tab bar at y = -10.0)
+    let (c_above, r_above) = calc_cell(r1, 55.0, -10.0);
+    assert_eq!(c_above, 5);
+    assert_eq!(r_above, 0);
+
+    // Mouse moves below Pane 1 (y = 700.0)
+    let (c_below, r_below) = calc_cell(r1, 55.0, 700.0);
+    assert_eq!(c_below, 5);
+    assert_eq!(r_below, r1.rows - 1);
+}
+
+#[test]
+fn test_software_renderer_multi_pane_focus_switching() {
+    let mut p1 = create_test_pane(1, 49, 39);
+    let mut p2 = create_test_pane(2, 49, 39);
+    let theme = p1.terminal.theme.clone();
+    p2.terminal.theme = theme.clone();
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 1000, 800, false, 1.0);
+
+    // Feed bold red text at column 1, leaving cursor at (0,0) and cell 0 blank
+    p1.terminal.feed(b" \x1b[1;31mA\x1b[0m\x1b[1;1H");
+    p2.terminal.feed(b" \x1b[1;31mA\x1b[0m\x1b[1;1H");
+
+    let rect1 = PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: 498.0,
+        height: 800.0,
+        padding_x: 8.0,
+        padding_y: 4.0,
+        cols: 49,
+        rows: 39,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+    let rect2 = PaneRect {
+        pane_id: 2,
+        x: 502.0,
+        y: 0.0,
+        width: 498.0,
+        height: 800.0,
+        padding_x: 8.0,
+        padding_y: 4.0,
+        cols: 49,
+        rows: 39,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+
+    let mut target_buffer = vec![0u32; 1000 * 800];
+
+    // Frame 1: Pane 1 is active (cursor visible, bold_is_bright: true), Pane 2 is inactive (cursor hidden, bold_is_bright: false)
+    let pane1_frame1 = CpuPaneRenderData {
+        pane_id: 1,
+        rect: rect1,
+        cells: &p1.terminal.grid.cells,
+        grid: &p1.terminal.grid,
+        font_size: p1.font_size,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: true,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+    let pane2_frame1 = CpuPaneRenderData {
+        pane_id: 2,
+        rect: rect2,
+        cells: &p2.terminal.grid.cells,
+        grid: &p2.terminal.grid,
+        font_size: p2.font_size,
+        theme: &theme,
+        bold_is_bright: false,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: false,
+    };
+
+    renderer.render_splits(
+        &[pane1_frame1, pane2_frame1],
+        &[],
+        1.0,
+        0.0,
+        true,
+        &mut target_buffer,
+        None,
+        None,
+        None,
+    );
+
+    let cursor_pixel_idx = (4 + 2) * 1000 + (8 + 2);
+    let cursor_color = velox::renderer::software::color::PackedColor::from_color(
+        theme.resolve_cursor_color(theme.default_fg),
+    )
+    .to_u32();
+    let bg_color = velox::renderer::software::color::PackedColor::from_color(
+        theme.default_bg,
+    )
+    .to_u32();
+
+    // Verify cursor on active pane
+    assert_eq!(target_buffer[cursor_pixel_idx], cursor_color, "Pane 1 cursor must be drawn in Frame 1");
+
+    // Verify per-pane bold_is_bright mapping on cell 1
+    let cell1 = &p1.terminal.grid.cells[1];
+    let (fg1, _) = renderer.palette.resolve_cell_colors_pane(cell1, false, true, 0.0, &theme, 0);
+    let cell2 = &p2.terminal.grid.cells[1];
+    let (fg2, _) = renderer.palette.resolve_cell_colors_pane(cell2, false, false, 0.0, &theme, 0);
+    let bright_red = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+    let regular_red = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1]).to_u32();
+    assert_eq!(fg1, bright_red, "Pane 1 with bold_is_bright: true must use bright ANSI color 9");
+    assert_eq!(fg2, regular_red, "Pane 2 with bold_is_bright: false must use regular ANSI color 1");
+
+    // Verify focus dimming in Frame 1 (Pane 1 active dim 0.0, Pane 2 inactive dim 0.15)
+    let (p1_f1_fg, _) = renderer.palette.resolve_cell_colors_pane(cell1, false, true, 0.0, &theme, 0);
+    let (p2_f1_fg, _) = renderer.palette.resolve_cell_colors_pane(cell2, false, false, 0.15, &theme, 0);
+    let undimmed_fg = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+    let dimmed_fg = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15)).to_u32();
+    assert_eq!(p1_f1_fg, undimmed_fg, "Pane 1 should be undimmed in Frame 1");
+    assert_eq!(p2_f1_fg, dimmed_fg, "Pane 2 should be dimmed in Frame 1");
+
+    // Frame 2: Focus moves to Pane 2! Grids have clear_damage() called between frames
+    p1.terminal.active_grid_mut().clear_damage();
+    p2.terminal.active_grid_mut().clear_damage();
+
+    let pane1_frame2 = CpuPaneRenderData {
+        pane_id: 1,
+        rect: rect1,
+        cells: &p1.terminal.grid.cells,
+        grid: &p1.terminal.grid,
+        font_size: p1.font_size,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: false,
+    };
+    let pane2_frame2 = CpuPaneRenderData {
+        pane_id: 2,
+        rect: rect2,
+        cells: &p2.terminal.grid.cells,
+        grid: &p2.terminal.grid,
+        font_size: p2.font_size,
+        theme: &theme,
+        bold_is_bright: false,
+        cursor_visible: true,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    renderer.render_splits(
+        &[pane1_frame2, pane2_frame2],
+        &[],
+        1.0,
+        0.0,
+        true,
+        &mut target_buffer,
+        None,
+        None,
+        None,
+    );
+
+    // Verify Pane 1 cursor was erased despite clean damage
+    assert_eq!(
+        target_buffer[cursor_pixel_idx],
+        bg_color,
+        "Pane 1 cursor must be erased after losing focus even with clean grid damage"
+    );
+
+    // Verify updated dimming states tracked in renderer
+    assert_eq!(renderer.pane_states.get(&1).unwrap().last_dim, 0.15);
+    assert_eq!(renderer.pane_states.get(&2).unwrap().last_dim, 0.0);
+}
+
+#[test]
+fn test_zoom_limits_and_clamping_parity() {
+    use velox::app::split::{clamp_font_size, MAX_FONT_SIZE_SCALE, MIN_FONT_SIZE_SCALE};
+
+    let base = 14.0;
+    let min_expected = (base * MIN_FONT_SIZE_SCALE).max(1.0); // 2.8
+    let max_expected = base * MAX_FONT_SIZE_SCALE; // 70.0
+
+    // 1. clamp_font_size function bounds
+    assert_eq!(clamp_font_size(14.0, base), 14.0);
+    assert_eq!(clamp_font_size(28.0, base), 28.0);
+    assert_eq!(clamp_font_size(min_expected, base), min_expected);
+    assert_eq!(clamp_font_size(max_expected, base), max_expected);
+    assert_eq!(clamp_font_size(1.0, base), min_expected);
+    assert_eq!(clamp_font_size(0.0, base), min_expected);
+    assert_eq!(clamp_font_size(-10.0, base), min_expected);
+    assert_eq!(clamp_font_size(75.0, base), max_expected);
+    assert_eq!(clamp_font_size(150.0, base), max_expected);
+    assert_eq!(clamp_font_size(500.0, base), max_expected);
+    assert_eq!(clamp_font_size(0.5, 3.0), 1.0); // small base floor
+    assert_eq!(clamp_font_size(20.0, 3.0), 15.0);
+
+    // 2. CpuRenderer::update_font_size clamping
+    let theme = Theme::default();
+    let mut renderer = CpuRenderer::new("monospace", base, 1.0, &theme, 1000, 800, true, 1.0);
+    assert_eq!(renderer.default_font_size, base);
+    assert_eq!(renderer.glyph_cache.font_size, base);
+
+    for zoom_in in [18.0, 30.0, 50.0, 70.0, 80.0, 100.0, 200.0, 500.0] {
+        renderer.update_font_size(zoom_in);
+    }
+    assert_eq!(renderer.glyph_cache.font_size, max_expected);
+
+    for zoom_out in [60.0, 40.0, 14.0, 5.0, 2.8, 1.5, 0.5, -10.0] {
+        renderer.update_font_size(zoom_out);
+    }
+    assert_eq!(renderer.glyph_cache.font_size, min_expected);
+
+    // Reset base font size so glyph_cache is at base (14.0) before testing per-pane caches
+    renderer.update_font_size(base);
+    assert_eq!(renderer.glyph_cache.font_size, base);
+
+    // 3. CpuRenderer::render_splits clamps per-pane font sizes
+    let p1 = create_test_pane(1, 49, 39);
+    let p2 = create_test_pane(2, 49, 39);
+    let rect1 = PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: 498.0,
+        height: 800.0,
+        padding_x: 8.0,
+        padding_y: 4.0,
+        cols: 49,
+        rows: 39,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+    let rect2 = PaneRect {
+        pane_id: 2,
+        x: 502.0,
+        y: 0.0,
+        width: 498.0,
+        height: 800.0,
+        padding_x: 8.0,
+        padding_y: 4.0,
+        cols: 49,
+        rows: 39,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+
+    let pane1_data = CpuPaneRenderData {
+        pane_id: 1,
+        rect: rect1,
+        cells: &p1.terminal.grid.cells,
+        grid: &p1.terminal.grid,
+        font_size: 200.0, // extreme zoom in
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+    let pane2_data = CpuPaneRenderData {
+        pane_id: 2,
+        rect: rect2,
+        cells: &p2.terminal.grid.cells,
+        grid: &p2.terminal.grid,
+        font_size: 0.1, // extreme zoom out
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: false,
+    };
+
+    let mut target_buffer = vec![0u32; 1000 * 800];
+    renderer.render_splits(
+        &[pane1_data, pane2_data],
+        &[],
+        1.0,
+        0.0,
+        true,
+        &mut target_buffer,
+        None,
+        None,
+        None,
+    );
+
+    assert!(renderer.pane_glyph_caches.contains_key(&7000));
+    assert!(!renderer.pane_glyph_caches.contains_key(&20000));
+    assert_eq!(renderer.pane_glyph_caches.get(&7000).unwrap().font_size, 70.0);
+    assert!(renderer.pane_glyph_caches.contains_key(&280));
+    assert!(!renderer.pane_glyph_caches.contains_key(&10));
+    assert_eq!(renderer.pane_glyph_caches.get(&280).unwrap().font_size, 2.8);
+    assert_eq!(renderer.pane_states.get(&1).unwrap().last_font_size, 70.0);
+    assert_eq!(renderer.pane_states.get(&2).unwrap().last_font_size, 2.8);
+
+    // 4. SplitTree::calculate_layout clamps dimensions identically
+    let mut tab = Tab::new(
+        1,
+        Arc::new(spawn_process("/bin/sh", None, None).unwrap()),
+        Terminal::new(80, 24),
+        None,
+        "tab 1".to_string(),
+        false,
+        base,
+    );
+    tab.tree.find_pane_mut(1).unwrap().font_size = 70.0;
+    let (rects_70, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    tab.tree.find_pane_mut(1).unwrap().font_size = 200.0;
+    let (rects_200, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    assert_eq!(rects_70[0].cell_width, rects_200[0].cell_width);
+    assert_eq!(rects_70[0].cell_height, rects_200[0].cell_height);
+    assert_eq!(rects_70[0].cols, rects_200[0].cols);
+    assert_eq!(rects_70[0].rows, rects_200[0].rows);
+
+    tab.tree.find_pane_mut(1).unwrap().font_size = 2.8;
+    let (rects_2_8, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    tab.tree.find_pane_mut(1).unwrap().font_size = 0.1;
+    let (rects_0_1, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    assert_eq!(rects_2_8[0].cell_width, rects_0_1[0].cell_width);
+    assert_eq!(rects_2_8[0].cell_height, rects_0_1[0].cell_height);
+    assert_eq!(rects_2_8[0].cols, rects_0_1[0].cols);
+    assert_eq!(rects_2_8[0].rows, rects_0_1[0].rows);
+}
+
+

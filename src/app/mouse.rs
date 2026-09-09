@@ -18,9 +18,149 @@ impl WindowState {
         self.mouse_x = position.x;
         self.mouse_y = position.y;
 
+        // ── 1. Separator Dragging ────────────────────────────────────────────
+        if let Some(dragging) = self.dragging_separator {
+            if self.is_mouse_down {
+                let ratio = match dragging.direction {
+                    SplitDirection::Horizontal => {
+                        let rel_y = (self.mouse_y as f32) - dragging.bounds_y;
+                        (rel_y / dragging.bounds_h.max(1.0)).clamp(0.05, 0.95)
+                    }
+                    SplitDirection::Vertical => {
+                        let rel_x = (self.mouse_x as f32) - dragging.bounds_x;
+                        (rel_x / dragging.bounds_w.max(1.0)).clamp(0.05, 0.95)
+                    }
+                };
+                let tab = self.active_tab_mut();
+                if tab.tree.set_split_ratio(dragging.split_id, ratio) {
+                    self.sync_active_tab_layout();
+                    self.needs_redraw = true;
+                    self.content_dirty = true;
+                }
+                return;
+            } else {
+                self.dragging_separator = None;
+            }
+        }
+
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+
+        // ── 2. Pane Mouse Dragging (Active Selection or App Mouse Drag) ──────
+        if self.is_mouse_down
+            && let Some(drag_pane_id) = self.mouse_down_pane_id
+            && let Some(pane_rect) = pane_rects.iter().find(|r| r.pane_id == drag_pane_id).copied()
+        {
+            let cw = pane_rect.cell_width as f64;
+            let ch = pane_rect.cell_height as f64;
+                    let px = (pane_rect.x + pane_rect.padding_x) as f64;
+                    let py = (pane_rect.y + pane_rect.padding_y) as f64;
+                    let grid_width = pane_rect.cols;
+                    let grid_height = pane_rect.rows;
+
+                    let col_idx = if cw > 0.0 {
+                        let raw = ((self.mouse_x - px) / cw).floor() as i64;
+                        raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+                    } else {
+                        0
+                    };
+                    let row_idx = if ch > 0.0 {
+                        let raw = ((self.mouse_y - py) / ch).floor() as i64;
+                        raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+                    } else {
+                        0
+                    };
+
+                    if self.last_mouse_pane_id != Some(drag_pane_id) || (col_idx, row_idx) != self.last_mouse_cell {
+                        self.last_mouse_pane_id = Some(drag_pane_id);
+                        self.last_mouse_cell = (col_idx, row_idx);
+
+                        let (mouse_mode, mouse_sgr, pty_master) = {
+                            let tab = self.active_tab();
+                            if let Some(pane) = tab.tree.find_pane(drag_pane_id) {
+                                (
+                                    pane.terminal.mouse_mode,
+                                    pane.terminal.mouse_sgr,
+                                    Some(pane.pty_master.clone()),
+                                )
+                            } else {
+                                (0, false, None)
+                            }
+                        };
+
+                        let should_report_motion =
+                            (mouse_mode == 1003 || mouse_mode == 1002) && !modifiers.shift_key();
+
+                        if should_report_motion {
+                            self.set_cursor_cached(winit::window::CursorIcon::Default);
+                            if let Some(pty_master) = pty_master {
+                                let base_code = 32 + self.last_mouse_button;
+                                let mut btn_code = base_code;
+                                if modifiers.shift_key() {
+                                    btn_code += 4;
+                                }
+                                if modifiers.alt_key() {
+                                    btn_code += 8;
+                                }
+                                if modifiers.control_key() {
+                                    btn_code += 16;
+                                }
+
+                                let mut buf = [0u8; 32];
+                                let written = if mouse_sgr {
+                                    use std::io::Write;
+                                    let mut cur = std::io::Cursor::new(&mut buf[..]);
+                                    let _ = write!(
+                                        cur,
+                                        "\x1b[<{};{};{}M",
+                                        btn_code,
+                                        col_idx + 1,
+                                        row_idx + 1
+                                    );
+                                    cur.position() as usize
+                                } else {
+                                    let cb = 32 + btn_code;
+                                    let cx = 32 + col_idx + 1;
+                                    let cy = 32 + row_idx + 1;
+                                    if cx <= 255 && cy <= 255 {
+                                        buf[0] = 0x1b;
+                                        buf[1] = b'M';
+                                        buf[2] = cb;
+                                        buf[3] = cx as u8;
+                                        buf[4] = cy as u8;
+                                        5
+                                    } else {
+                                        0
+                                    }
+                                };
+                                if written > 0 {
+                                    let _ = pty_master.write(&buf[..written]);
+                                }
+                            }
+                        } else {
+                            self.set_cursor_cached(winit::window::CursorIcon::Text);
+                            let tab = self.active_tab_mut();
+                            if let Some(pane) = tab.tree.find_pane_mut(drag_pane_id) {
+                                let active_grid = pane.terminal.active_grid_mut();
+                                if active_grid.selection.active {
+                                    let offset = active_grid.scroll_offset;
+                                    let history_len = active_grid.scrollback.len();
+                                    let abs_y = (history_len + row_idx).saturating_sub(offset);
+                                    active_grid.selection.update_selection(col_idx, abs_y);
+                                    self.needs_redraw = true;
+                                }
+                            }
+                        }
+                    }
+                    return;
+        }
+
         let tab_bar_h = self.tab_bar_height() as f64;
 
-        // ── 1. Tab Bar Hover & Hit-Testing ───────────────────────────────────
+        // ── 3. Tab Bar Hover & Hit-Testing (When not dragging) ───────────────
         if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
             let win_w = self.window.inner_size().width as f32;
             let hit = self.tab_bar.hit_test(
@@ -81,36 +221,7 @@ impl WindowState {
             self.needs_redraw = true;
         }
 
-        // ── 2. Separator Dragging ────────────────────────────────────────────
-        if let Some(dragging) = self.dragging_separator {
-            if self.is_mouse_down {
-                let ratio = match dragging.direction {
-                    SplitDirection::Horizontal => {
-                        let rel_y = (self.mouse_y as f32) - dragging.bounds_y;
-                        (rel_y / dragging.bounds_h.max(1.0)).clamp(0.05, 0.95)
-                    }
-                    SplitDirection::Vertical => {
-                        let rel_x = (self.mouse_x as f32) - dragging.bounds_x;
-                        (rel_x / dragging.bounds_w.max(1.0)).clamp(0.05, 0.95)
-                    }
-                };
-                let tab = self.active_tab_mut();
-                if tab.tree.set_split_ratio(dragging.split_id, ratio) {
-                    self.sync_active_tab_layout();
-                    self.needs_redraw = true;
-                    self.content_dirty = true;
-                }
-                return;
-            } else {
-                self.dragging_separator = None;
-            }
-        }
-
-        // ── 3. Separator Hover Hit-testing ───────────────────────────────────
-        if self.tabs.is_empty() {
-            return;
-        }
-        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+        // ── 4. Separator Hover Hit-testing (When not dragging) ───────────────
         let mut hit_sep = None;
         for sep in &sep_rects {
             if sep.contains(self.mouse_x as f32, self.mouse_y as f32) {
@@ -138,7 +249,7 @@ impl WindowState {
             self.needs_redraw = true;
         }
 
-        // ── 4. Pane Hover & Selection Dragging ───────────────────────────────
+        // ── 5. Pane Hover (When not dragging) ────────────────────────────────
         let hit_pane_rect = pane_rects
             .iter()
             .find(|r| r.contains(self.mouse_x as f32, self.mouse_y as f32))
@@ -153,12 +264,21 @@ impl WindowState {
             let grid_width = pane_rect.cols;
             let grid_height = pane_rect.rows;
 
-            let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-                .min(grid_width.saturating_sub(1));
-            let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-                .min(grid_height.saturating_sub(1));
+            let col_idx = if cw > 0.0 {
+                let raw = ((self.mouse_x - px) / cw).floor() as i64;
+                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
+            let row_idx = if ch > 0.0 {
+                let raw = ((self.mouse_y - py) / ch).floor() as i64;
+                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
 
-            if (col_idx, row_idx) != self.last_mouse_cell {
+            if self.last_mouse_pane_id != Some(pane_rect.pane_id) || (col_idx, row_idx) != self.last_mouse_cell {
+                self.last_mouse_pane_id = Some(pane_rect.pane_id);
                 self.last_mouse_cell = (col_idx, row_idx);
 
                 let (mouse_mode, mouse_sgr, is_link, pty_master) = {
@@ -238,26 +358,10 @@ impl WindowState {
                         self.set_cursor_cached(winit::window::CursorIcon::Default);
                     }
 
-                    let should_report_motion =
-                        mouse_mode == 1003 || (mouse_mode == 1002 && self.is_mouse_down);
+                    let should_report_motion = mouse_mode == 1003 && !modifiers.shift_key();
 
-                    if should_report_motion && !modifiers.shift_key() {
-                        let base_code = if self.is_mouse_down {
-                            32 + self.last_mouse_button
-                        } else {
-                            35
-                        };
-                        let mut btn_code = base_code;
-                        if modifiers.shift_key() {
-                            btn_code += 4;
-                        }
-                        if modifiers.alt_key() {
-                            btn_code += 8;
-                        }
-                        if modifiers.control_key() {
-                            btn_code += 16;
-                        }
-
+                    if should_report_motion {
+                        let btn_code = 35;
                         let mut buf = [0u8; 32];
                         let written = if mouse_sgr {
                             use std::io::Write;
@@ -283,19 +387,6 @@ impl WindowState {
                         if written > 0 {
                             let _ = pty_master.write(&buf[..written]);
                         }
-                    } else if self.is_mouse_down {
-                        let tab = self.active_tab_mut();
-                        let active_id = tab.active_pane_id;
-                        if let Some(pane) = tab.tree.find_pane_mut(active_id) {
-                            let active_grid = pane.terminal.active_grid_mut();
-                            if active_grid.selection.active {
-                                let offset = active_grid.scroll_offset;
-                                let history_len = active_grid.scrollback.len();
-                                let abs_y = (history_len + row_idx).saturating_sub(offset);
-                                active_grid.selection.update_selection(col_idx, abs_y);
-                                self.needs_redraw = true;
-                            }
-                        }
                     }
                 }
             }
@@ -313,10 +404,8 @@ impl WindowState {
             if modifiers.control_key() {
                 let current_size = self.active_pane().font_size;
                 let step = if lines > 0 { 1.0 } else { -1.0 };
-                let new_size = (current_size + step).max(1.0);
-                if (new_size - current_size).abs() > 0.01 {
-                    self.set_font_size(new_size);
-                }
+                let new_size = current_size + step;
+                self.set_font_size(new_size);
                 return;
             }
 
@@ -434,11 +523,12 @@ impl WindowState {
         if self.hide_mouse_on_typing {
             self.window.set_cursor_visible(true);
         }
-        let tab_bar_h = self.tab_bar_height() as f64;
 
-        // ── 1. Tab Bar Mouse Clicks ──────────────────────────────────────────
-        if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
-            if state.is_pressed() {
+        if state.is_pressed() {
+            let tab_bar_h = self.tab_bar_height() as f64;
+
+            // ── 1. Tab Bar Mouse Clicks ──────────────────────────────────────
+            if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
                 let win_w = self.window.inner_size().width as f32;
                 let hit = self.tab_bar.hit_test(
                     self.mouse_x as f32,
@@ -471,12 +561,14 @@ impl WindowState {
                             let now = std::time::Instant::now();
                             let is_double_click = if let Some(last_time) = self.last_click_instant {
                                 self.last_click_pos == (0, 0)
+                                    && self.last_click_pane_id.is_none()
                                     && last_time.elapsed().as_millis() < 400
                             } else {
                                 false
                             };
                             self.last_click_instant = Some(now);
                             self.last_click_pos = (0, 0);
+                            self.last_click_pane_id = None;
                             if is_double_click {
                                 self.create_tab(None, None, None, None);
                             }
@@ -484,22 +576,21 @@ impl WindowState {
                     }
                     TabBarHitResult::None => {}
                 }
+                return;
             }
-            return;
-        }
 
-        if self.tabs.is_empty() {
-            return;
-        }
+            if self.tabs.is_empty() {
+                return;
+            }
 
-        // ── 2. Separator Clicks & Drag Initiation ────────────────────────────
-        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+            // ── 2. Separator Clicks & Drag Initiation ────────────────────────
+            let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
 
-        if button == MouseButton::Left {
-            if state.is_pressed() {
+            if button == MouseButton::Left {
                 for sep in &sep_rects {
                     if sep.contains(self.mouse_x as f32, self.mouse_y as f32) {
                         self.is_mouse_down = true;
+                        self.mouse_down_pane_id = None;
                         self.dragging_separator = Some(DraggingSeparator {
                             split_id: sep.split_id,
                             direction: sep.direction,
@@ -511,26 +602,24 @@ impl WindowState {
                         return;
                     }
                 }
-            } else {
-                self.dragging_separator = None;
             }
-        }
 
-        // ── 3. Pane Clicks & Focus ───────────────────────────────────────────
-        let hit_pane_rect = pane_rects
-            .iter()
-            .find(|r| r.contains(self.mouse_x as f32, self.mouse_y as f32))
-            .copied()
-            .or_else(|| pane_rects.first().copied());
+            // ── 3. Pane Clicks & Focus ───────────────────────────────────────
+            let hit_pane_rect = pane_rects
+                .iter()
+                .find(|r| r.contains(self.mouse_x as f32, self.mouse_y as f32))
+                .copied()
+                .or_else(|| pane_rects.first().copied());
 
-        let pane_rect = match hit_pane_rect {
-            Some(r) => r,
-            None => return,
-        };
+            let pane_rect = match hit_pane_rect {
+                Some(r) => r,
+                None => return,
+            };
 
-        // Switch active pane to clicked pane if different
-        if state.is_pressed() {
             let clicked_pane_id = pane_rect.pane_id;
+            self.mouse_down_pane_id = Some(clicked_pane_id);
+
+            // Switch active pane to clicked pane if different
             if self.active_tab().active_pane_id != clicked_pane_id {
                 self.active_tab_mut().set_active_pane(clicked_pane_id);
                 self.sync_active_pane_font_size();
@@ -538,110 +627,109 @@ impl WindowState {
                 self.content_dirty = true;
             }
             self.active_tab_mut().clear_unfocused_selections();
-        }
 
-        let px = (pane_rect.x + pane_rect.padding_x) as f64;
-        let py = (pane_rect.y + pane_rect.padding_y) as f64;
-        let cw = pane_rect.cell_width as f64;
-        let ch = pane_rect.cell_height as f64;
-        let grid_width = pane_rect.cols;
-        let grid_height = pane_rect.rows;
+            let px = (pane_rect.x + pane_rect.padding_x) as f64;
+            let py = (pane_rect.y + pane_rect.padding_y) as f64;
+            let cw = pane_rect.cell_width as f64;
+            let ch = pane_rect.cell_height as f64;
+            let grid_width = pane_rect.cols;
+            let grid_height = pane_rect.rows;
 
-        let col_idx = (((self.mouse_x - px).max(0.0) / cw).floor() as usize)
-            .min(grid_width.saturating_sub(1));
-        let row_idx = (((self.mouse_y - py).max(0.0) / ch).floor() as usize)
-            .min(grid_height.saturating_sub(1));
-
-        let (mouse_mode, mouse_sgr) = {
-            let pane = match self.active_tab().tree.find_pane(pane_rect.pane_id) {
-                Some(p) => p,
-                None => return,
+            let col_idx = if cw > 0.0 {
+                let raw = ((self.mouse_x - px) / cw).floor() as i64;
+                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+            } else {
+                0
             };
-            (pane.terminal.mouse_mode, pane.terminal.mouse_sgr)
-        };
+            let row_idx = if ch > 0.0 {
+                let raw = ((self.mouse_y - py) / ch).floor() as i64;
+                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
 
-        let btn_code = match button {
-            MouseButton::Left => Some(0),
-            MouseButton::Middle => Some(1),
-            MouseButton::Right => Some(2),
-            _ => None,
-        };
+            let (mouse_mode, mouse_sgr) = {
+                let pane = match self.active_tab().tree.find_pane(clicked_pane_id) {
+                    Some(p) => p,
+                    None => return,
+                };
+                (pane.terminal.mouse_mode, pane.terminal.mouse_sgr)
+            };
 
-        // Application Mouse Reporting
-        if mouse_mode > 0 && !modifiers.shift_key() {
-            if let Some(btn) = btn_code {
-                self.is_mouse_down = state.is_pressed();
-                if state.is_pressed() {
+            let btn_code = match button {
+                MouseButton::Left => Some(0),
+                MouseButton::Middle => Some(1),
+                MouseButton::Right => Some(2),
+                _ => None,
+            };
+
+            // Application Mouse Reporting
+            if mouse_mode > 0 && !modifiers.shift_key() {
+                if let Some(btn) = btn_code {
+                    self.is_mouse_down = true;
                     self.last_mouse_button = btn;
-                }
 
-                let mut report_btn = btn;
-                if modifiers.shift_key() {
-                    report_btn += 4;
-                }
-                if modifiers.alt_key() {
-                    report_btn += 8;
-                }
-                if modifiers.control_key() {
-                    report_btn += 16;
-                }
+                    let mut report_btn = btn;
+                    if modifiers.shift_key() {
+                        report_btn += 4;
+                    }
+                    if modifiers.alt_key() {
+                        report_btn += 8;
+                    }
+                    if modifiers.control_key() {
+                        report_btn += 16;
+                    }
 
-                let pty_master = self
-                    .active_tab()
-                    .tree
-                    .find_pane(pane_rect.pane_id)
-                    .map(|p| p.pty_master.clone());
-                if let Some(pty) = pty_master {
-                    let mut buf = [0u8; 32];
-                    let written = if mouse_sgr {
-                        use std::io::Write;
-                        let mut cur = std::io::Cursor::new(&mut buf[..]);
-                        let terminator = if state.is_pressed() { 'M' } else { 'm' };
-                        let _ = write!(
-                            cur,
-                            "\x1b[<{};{};{}{}",
-                            report_btn,
-                            col_idx + 1,
-                            row_idx + 1,
-                            terminator
-                        );
-                        cur.position() as usize
-                    } else {
-                        let cb = if state.is_pressed() {
-                            32 + report_btn
+                    let pty_master = self
+                        .active_tab()
+                        .tree
+                        .find_pane(clicked_pane_id)
+                        .map(|p| p.pty_master.clone());
+                    if let Some(pty) = pty_master {
+                        let mut buf = [0u8; 32];
+                        let written = if mouse_sgr {
+                            use std::io::Write;
+                            let mut cur = std::io::Cursor::new(&mut buf[..]);
+                            let _ = write!(
+                                cur,
+                                "\x1b[<{};{};{}M",
+                                report_btn,
+                                col_idx + 1,
+                                row_idx + 1
+                            );
+                            cur.position() as usize
                         } else {
-                            32 + 3
+                            let cb = 32 + report_btn;
+                            let cx = 32 + col_idx + 1;
+                            let cy = 32 + row_idx + 1;
+                            if cx <= 255 && cy <= 255 {
+                                buf[0] = 0x1b;
+                                buf[1] = b'M';
+                                buf[2] = cb;
+                                buf[3] = cx as u8;
+                                buf[4] = cy as u8;
+                                5
+                            } else {
+                                0
+                            }
                         };
-                        let cx = 32 + col_idx + 1;
-                        let cy = 32 + row_idx + 1;
-                        if cx <= 255 && cy <= 255 {
-                            buf[0] = 0x1b;
-                            buf[1] = b'M';
-                            buf[2] = cb;
-                            buf[3] = cx as u8;
-                            buf[4] = cy as u8;
-                            5
-                        } else {
-                            0
+                        if written > 0 {
+                            let _ = pty.write(&buf[..written]);
                         }
-                    };
-                    if written > 0 {
-                        let _ = pty.write(&buf[..written]);
                     }
                 }
+                return;
             }
-            return;
-        }
 
-        // Terminal Local Mouse Behavior (Selection / URL clicking / Middle-paste)
-        match button {
-            MouseButton::Left => {
-                if state.is_pressed() {
+            // Terminal Local Mouse Behavior (Selection / URL clicking / Middle-paste)
+            match button {
+                MouseButton::Left => {
                     self.is_mouse_down = true;
                     if col_idx < grid_width && row_idx < grid_height {
                         let now = std::time::Instant::now();
                         let is_double_click = if let Some(last_time) = self.last_click_instant {
-                            self.last_click_pos == (col_idx, row_idx)
+                            self.last_click_pane_id == Some(clicked_pane_id)
+                                && self.last_click_pos == (col_idx, row_idx)
                                 && last_time.elapsed().as_millis() < 400
                         } else {
                             false
@@ -654,11 +742,12 @@ impl WindowState {
                         }
                         self.last_click_instant = Some(now);
                         self.last_click_pos = (col_idx, row_idx);
+                        self.last_click_pane_id = Some(clicked_pane_id);
                         let click_count = self.click_count;
 
                         let mut url_opened = false;
                         let tab = self.active_tab_mut();
-                        if let Some(pane) = tab.tree.find_pane_mut(pane_rect.pane_id) {
+                        if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
                             let active_grid = pane.terminal.active_grid_mut();
                             let offset = active_grid.scroll_offset;
                             let history_len = active_grid.scrollback.len();
@@ -750,27 +839,8 @@ impl WindowState {
                             self.needs_redraw = true;
                         }
                     }
-                } else {
-                    self.is_mouse_down = false;
-                    let tab = self.active_tab_mut();
-                    if let Some(pane) = tab.tree.find_pane_mut(pane_rect.pane_id) {
-                        let active_grid = pane.terminal.active_grid_mut();
-                        if active_grid.selection.active {
-                            if active_grid.selection.is_empty() {
-                                active_grid.selection.clear();
-                                self.needs_redraw = true;
-                            } else {
-                                let text = active_grid.extract_selection_text();
-                                if !text.is_empty() {
-                                    crate::clipboard::clipboard::copy(text);
-                                }
-                            }
-                        }
-                    }
                 }
-            }
-            MouseButton::Middle => {
-                if state.is_pressed() {
+                MouseButton::Middle => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 1;
                     let mut text = crate::clipboard::clipboard::primary_selection();
@@ -779,7 +849,7 @@ impl WindowState {
                     }
                     if !text.is_empty() {
                         let tab = self.active_tab_mut();
-                        if let Some(pane) = tab.tree.find_pane_mut(pane_rect.pane_id) {
+                        if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
                             let scroll_on_keystroke = pane.terminal.scroll_on_keystroke;
                             let formatted = pane.terminal.format_paste(&text);
                             if scroll_on_keystroke {
@@ -789,27 +859,159 @@ impl WindowState {
                             self.needs_redraw = true;
                         }
                     }
-                } else {
-                    self.is_mouse_down = false;
                 }
-            }
-            MouseButton::Right => {
-                if state.is_pressed() {
+                MouseButton::Right => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 2;
                     let tab = self.active_tab_mut();
-                    if let Some(pane) = tab.tree.find_pane_mut(pane_rect.pane_id) {
+                    if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
                         let active_grid = pane.terminal.active_grid_mut();
                         if active_grid.selection.active {
                             active_grid.selection.active = false;
                             self.needs_redraw = true;
                         }
                     }
-                } else {
-                    self.is_mouse_down = false;
+                }
+                _ => {}
+            }
+        } else {
+            // ── Mouse Button Release ─────────────────────────────────────────
+            self.is_mouse_down = false;
+
+            if self.dragging_separator.take().is_some() {
+                return;
+            }
+
+            if self.tabs.is_empty() {
+                return;
+            }
+
+            let (pane_rects, _) = self.recalculate_panes_layout(self.active_tab_index);
+            let target_pane_id = self.mouse_down_pane_id.take().or_else(|| {
+                pane_rects
+                    .iter()
+                    .find(|r| r.contains(self.mouse_x as f32, self.mouse_y as f32))
+                    .map(|r| r.pane_id)
+            });
+
+            let target_pane_id = match target_pane_id {
+                Some(id) => id,
+                None => return,
+            };
+
+            let pane_rect = match pane_rects.iter().find(|r| r.pane_id == target_pane_id).copied() {
+                Some(r) => r,
+                None => return,
+            };
+
+            let px = (pane_rect.x + pane_rect.padding_x) as f64;
+            let py = (pane_rect.y + pane_rect.padding_y) as f64;
+            let cw = pane_rect.cell_width as f64;
+            let ch = pane_rect.cell_height as f64;
+            let grid_width = pane_rect.cols;
+            let grid_height = pane_rect.rows;
+
+            let col_idx = if cw > 0.0 {
+                let raw = ((self.mouse_x - px) / cw).floor() as i64;
+                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
+            let row_idx = if ch > 0.0 {
+                let raw = ((self.mouse_y - py) / ch).floor() as i64;
+                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
+
+            let (mouse_mode, mouse_sgr) = {
+                let pane = match self.active_tab().tree.find_pane(target_pane_id) {
+                    Some(p) => p,
+                    None => return,
+                };
+                (pane.terminal.mouse_mode, pane.terminal.mouse_sgr)
+            };
+
+            let btn_code = match button {
+                MouseButton::Left => Some(0),
+                MouseButton::Middle => Some(1),
+                MouseButton::Right => Some(2),
+                _ => None,
+            };
+
+            // Application Mouse Reporting on Release
+            if mouse_mode > 0 && !modifiers.shift_key() {
+                if let Some(btn) = btn_code {
+                    let mut report_btn = btn;
+                    if modifiers.shift_key() {
+                        report_btn += 4;
+                    }
+                    if modifiers.alt_key() {
+                        report_btn += 8;
+                    }
+                    if modifiers.control_key() {
+                        report_btn += 16;
+                    }
+
+                    let pty_master = self
+                        .active_tab()
+                        .tree
+                        .find_pane(target_pane_id)
+                        .map(|p| p.pty_master.clone());
+                    if let Some(pty) = pty_master {
+                        let mut buf = [0u8; 32];
+                        let written = if mouse_sgr {
+                            use std::io::Write;
+                            let mut cur = std::io::Cursor::new(&mut buf[..]);
+                            let _ = write!(
+                                cur,
+                                "\x1b[<{};{};{}m",
+                                report_btn,
+                                col_idx + 1,
+                                row_idx + 1
+                            );
+                            cur.position() as usize
+                        } else {
+                            let cb = 32 + 3;
+                            let cx = 32 + col_idx + 1;
+                            let cy = 32 + row_idx + 1;
+                            if cx <= 255 && cy <= 255 {
+                                buf[0] = 0x1b;
+                                buf[1] = b'M';
+                                buf[2] = cb;
+                                buf[3] = cx as u8;
+                                buf[4] = cy as u8;
+                                5
+                            } else {
+                                0
+                            }
+                        };
+                        if written > 0 {
+                            let _ = pty.write(&buf[..written]);
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Terminal Local Mouse Behavior on Release
+            if button == MouseButton::Left {
+                let tab = self.active_tab_mut();
+                if let Some(pane) = tab.tree.find_pane_mut(target_pane_id) {
+                    let active_grid = pane.terminal.active_grid_mut();
+                    if active_grid.selection.active {
+                        if active_grid.selection.is_empty() {
+                            active_grid.selection.clear();
+                            self.needs_redraw = true;
+                        } else {
+                            let text = active_grid.extract_selection_text();
+                            if !text.is_empty() {
+                                crate::clipboard::clipboard::copy(text);
+                            }
+                        }
+                    }
                 }
             }
-            _ => {}
         }
     }
 }

@@ -169,11 +169,14 @@ pub struct WindowState {
     pub padding_x: f32,
     pub padding_y: f32,
     pub is_mouse_down: bool,
+    pub mouse_down_pane_id: Option<PaneId>,
     pub last_mouse_button: u8,
     pub last_click_instant: Option<std::time::Instant>,
     pub last_click_pos: (usize, usize),
+    pub last_click_pane_id: Option<PaneId>,
     pub click_count: u8,
     pub last_mouse_cell: (usize, usize),
+    pub last_mouse_pane_id: Option<PaneId>,
     pub is_focused: bool,
     pub current_cursor_icon: winit::window::CursorIcon,
     pub needs_redraw: bool,
@@ -404,7 +407,14 @@ impl WindowState {
         if self.tabs.is_empty() {
             return;
         }
-        let active_pane_font_size = self.active_pane().font_size;
+        let active_pane_font_size = crate::app::split::clamp_font_size(
+            self.active_pane().font_size,
+            self.default_font_size,
+        );
+        let active_pane_id = self.active_tab().active_pane_id;
+        if let Some(pane) = self.active_tab_mut().tree.find_pane_mut(active_pane_id) {
+            pane.font_size = active_pane_font_size;
+        }
         self.active_tab_mut().font_size = active_pane_font_size;
         if (self.current_font_size - active_pane_font_size).abs() > 0.01 {
             self.current_font_size = active_pane_font_size;
@@ -414,7 +424,13 @@ impl WindowState {
     }
 
     pub fn set_font_size(&mut self, size: f32) {
-        let size = size.max(1.0);
+        let size = crate::app::split::clamp_font_size(size, self.default_font_size);
+        if (self.current_font_size - size).abs() < 0.01
+            && !self.tabs.is_empty()
+            && (self.active_pane().font_size - size).abs() < 0.01
+        {
+            return;
+        }
         self.current_font_size = size;
         if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
             tab.font_size = size;
@@ -1015,6 +1031,7 @@ impl WindowState {
                             grid: active_grid,
                             font_size: pane.font_size,
                             theme: &pane.terminal.theme,
+                            bold_is_bright: pane.terminal.bold_is_bright,
                             cursor_visible,
                             cursor_shape,
                             display_cursor_x,
@@ -1028,7 +1045,7 @@ impl WindowState {
                         &cpu_pane_render_datas,
                         &separator_render_datas,
                         self.opacity,
-                        self.window_dim,
+                        effective_dim,
                         self.is_focused,
                         &mut buffer,
                         tab_bar_info,
@@ -1041,6 +1058,7 @@ impl WindowState {
                 if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
                     for pane in active_tab.tree.panes_mut() {
                         pane.terminal.active_grid_mut().clear_damage();
+                        pane.render_state.clear_damage();
                     }
                 }
             }
@@ -1239,11 +1257,14 @@ impl App {
             padding_x,
             padding_y,
             is_mouse_down: false,
+            mouse_down_pane_id: None,
             last_mouse_button: 0,
             last_click_instant: None,
             last_click_pos: (0, 0),
+            last_click_pane_id: None,
             click_count: 0,
             last_mouse_cell: (0, 0),
+            last_mouse_pane_id: None,
             is_focused: true,
             current_cursor_icon: winit::window::CursorIcon::Default,
             needs_redraw: false,
@@ -1369,6 +1390,8 @@ impl ApplicationHandler<CustomEvent> for App {
                     ws.is_focused = focused;
                     if !focused {
                         ws.is_mouse_down = false;
+                        ws.mouse_down_pane_id = None;
+                        ws.dragging_separator = None;
                         ws.cursor_blink_on = true;
                         ws.release_memory();
                     } else {

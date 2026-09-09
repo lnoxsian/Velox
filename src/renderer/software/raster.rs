@@ -32,9 +32,10 @@ pub fn blend_alpha(dst: u32, src: u32, alpha: u8) -> u32 {
     (res_a << 24) | res_rb | res_g
 }
 
-/// Blit an 8-bit alpha mask onto the framebuffer tinted by `fg` color.
+/// Blit an 8-bit alpha mask onto the framebuffer tinted by `fg` color, clipped to `clip_w` and `clip_h`.
 #[inline(always)]
-pub fn blit_alpha_glyph(
+#[allow(clippy::too_many_arguments)]
+pub fn blit_alpha_glyph_clipped(
     fb: &mut Framebuffer,
     px: u32,
     py: u32,
@@ -42,6 +43,8 @@ pub fn blit_alpha_glyph(
     glyph_w: u16,
     glyph_h: u16,
     fg: u32,
+    clip_w: u32,
+    clip_h: u32,
 ) {
     let gw = glyph_w as usize;
     let gh = glyph_h as usize;
@@ -53,8 +56,11 @@ pub fn blit_alpha_glyph(
         return;
     }
 
-    let max_y = (gh).min(fb_h.saturating_sub(py as usize));
-    let max_x = (gw).min(fb_w.saturating_sub(px as usize));
+    let max_y = (gh).min(fb_h.saturating_sub(py as usize)).min(clip_h as usize);
+    let max_x = (gw).min(fb_w.saturating_sub(px as usize)).min(clip_w as usize);
+    if max_x == 0 || max_y == 0 {
+        return;
+    }
 
     let pixels = fb.as_mut_slice();
 
@@ -91,15 +97,32 @@ pub fn blit_alpha_glyph(
     }
 }
 
-/// Blit a 32-bit ARGB color bitmap (emoji) onto the framebuffer.
+/// Blit an 8-bit alpha mask onto the framebuffer tinted by `fg` color.
 #[inline(always)]
-pub fn blit_color_glyph(
+pub fn blit_alpha_glyph(
+    fb: &mut Framebuffer,
+    px: u32,
+    py: u32,
+    mask: &[u8],
+    glyph_w: u16,
+    glyph_h: u16,
+    fg: u32,
+) {
+    blit_alpha_glyph_clipped(fb, px, py, mask, glyph_w, glyph_h, fg, u32::MAX, u32::MAX);
+}
+
+/// Blit a 32-bit ARGB color bitmap (emoji) onto the framebuffer, clipped to `clip_w` and `clip_h`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub fn blit_color_glyph_clipped(
     fb: &mut Framebuffer,
     px: u32,
     py: u32,
     color_pixels: &[u32],
     glyph_w: u16,
     glyph_h: u16,
+    clip_w: u32,
+    clip_h: u32,
 ) {
     let gw = glyph_w as usize;
     let gh = glyph_h as usize;
@@ -111,8 +134,11 @@ pub fn blit_color_glyph(
         return;
     }
 
-    let max_y = (gh).min(fb_h.saturating_sub(py as usize));
-    let max_x = (gw).min(fb_w.saturating_sub(px as usize));
+    let max_y = (gh).min(fb_h.saturating_sub(py as usize)).min(clip_h as usize);
+    let max_x = (gw).min(fb_w.saturating_sub(px as usize)).min(clip_w as usize);
+    if max_x == 0 || max_y == 0 {
+        return;
+    }
 
     let pixels = fb.as_mut_slice();
 
@@ -135,6 +161,19 @@ pub fn blit_color_glyph(
             }
         }
     }
+}
+
+/// Blit a 32-bit ARGB color bitmap (emoji) onto the framebuffer.
+#[inline(always)]
+pub fn blit_color_glyph(
+    fb: &mut Framebuffer,
+    px: u32,
+    py: u32,
+    color_pixels: &[u32],
+    glyph_w: u16,
+    glyph_h: u16,
+) {
+    blit_color_glyph_clipped(fb, px, py, color_pixels, glyph_w, glyph_h, u32::MAX, u32::MAX);
 }
 
 #[cfg(test)]

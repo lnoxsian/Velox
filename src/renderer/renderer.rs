@@ -73,6 +73,7 @@ pub struct Renderer {
     pub pane_render_states: HashMap<PaneId, PaneRenderState>,
     pub font_family: String,
     pub font_scale_multiplier: f32,
+    pub default_font_size: f32,
     viewport_width: u32,
     viewport_height: u32,
     start_time: std::time::Instant,
@@ -599,6 +600,7 @@ impl Renderer {
                 pane_render_states: HashMap::new(),
                 font_family: font_family.to_string(),
                 font_scale_multiplier,
+                default_font_size: font_size.max(1.0),
                 viewport_width,
                 viewport_height,
                 start_time: std::time::Instant::now(),
@@ -671,6 +673,10 @@ impl Renderer {
     }
 
     pub fn set_font_size(&mut self, font_size: f32) {
+        let font_size = crate::app::split::clamp_font_size(font_size, self.default_font_size);
+        if (self.font_loader.font_size - font_size).abs() < 0.01 {
+            return;
+        }
         self.font_loader.update_font_size(font_size);
         for state in self.pane_render_states.values_mut() {
             state.mark_full_redraw();
@@ -1284,7 +1290,8 @@ impl Renderer {
 
         // Pre-ensure font loaders exist for all panes
         for pane in panes {
-            let font_size = pane.font_size;
+            let font_size =
+                crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
             let key = (font_size * 100.0).round() as u32;
             if (self.font_loader.font_size - font_size).abs() >= 0.01
                 && !self.pane_font_loaders.contains_key(&key)
@@ -1303,9 +1310,12 @@ impl Renderer {
         // Prune stale pane font loaders from closed panes or obsolete font sizes
         if self.pane_font_loaders.len() > panes.len() {
             self.pane_font_loaders.retain(|&k, _| {
-                panes
-                    .iter()
-                    .any(|p| (p.font_size * 100.0).round() as u32 == k)
+                panes.iter().any(|p| {
+                    (crate::app::split::clamp_font_size(p.font_size, self.default_font_size)
+                        * 100.0)
+                        .round() as u32
+                        == k
+                })
             });
         }
 
@@ -1321,7 +1331,8 @@ impl Renderer {
         // ── Update per-pane render states and rebuild only dirty rows ───────────
         for pane in panes {
             let state = self.pane_render_states.entry(pane.pane_id).or_default();
-            let font_size = pane.font_size;
+            let font_size =
+                crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
             let key = (font_size * 100.0).round() as u32;
             let font_loader = if (self.font_loader.font_size - font_size).abs() < 0.01 {
                 &mut self.font_loader
@@ -1355,7 +1366,7 @@ impl Renderer {
             let is_full_redraw = state.full_redraw
                 || state.last_cols != pane.cols
                 || state.last_rows != pane.rows
-                || (state.last_font_size - pane.font_size).abs() > 0.01
+                || (state.last_font_size - font_size).abs() > 0.01
                 || state.last_rect != Some(pane.rect)
                 || (state.last_dim - pane_effective_dim).abs() > 0.001
                 || state.last_scroll_offset != pane.scroll_offset
@@ -1370,7 +1381,7 @@ impl Renderer {
             state.ensure_rows(rows);
             state.last_cols = pane.cols;
             state.last_rows = pane.rows;
-            state.last_font_size = pane.font_size;
+            state.last_font_size = font_size;
             state.last_rect = Some(pane.rect);
             state.last_dim = pane_effective_dim;
             state.last_blink_on = blink_on;
@@ -1498,7 +1509,8 @@ impl Renderer {
         for pane in panes {
             let pane_start_quads = (vertices.len() / 4) as i32;
             let pane_theme = pane.theme;
-            let font_size = pane.font_size;
+            let font_size =
+                crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
             let key = (font_size * 100.0).round() as u32;
             let atlas_texture = if (self.font_loader.font_size - font_size).abs() < 0.01 {
                 self.font_loader.atlas_texture
@@ -1701,7 +1713,8 @@ impl Renderer {
         // ── Pass 2: Foreground glyphs + cursor + decorations for each pane ────
         for pane in panes {
             let pane_start_quads = (vertices.len() / 4) as i32;
-            let font_size = pane.font_size;
+            let font_size =
+                crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
             let key = (font_size * 100.0).round() as u32;
             let atlas_texture = if (self.font_loader.font_size - font_size).abs() < 0.01 {
                 self.font_loader.atlas_texture

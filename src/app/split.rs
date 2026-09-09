@@ -18,6 +18,22 @@ pub enum FocusDirection {
     Down,
 }
 
+pub const MIN_FONT_SIZE_SCALE: f32 = 0.2;
+pub const MAX_FONT_SIZE_SCALE: f32 = 5.0;
+
+/// Clamps a font size to between 20% and 500% of base font size, with a minimum of 1.0 px.
+#[inline]
+pub fn clamp_font_size(font_size: f32, base_font_size: f32) -> f32 {
+    let base = if base_font_size > 0.0 {
+        base_font_size
+    } else {
+        14.0
+    };
+    let min_size = (base * MIN_FONT_SIZE_SCALE).max(1.0);
+    let max_size = (base * MAX_FONT_SIZE_SCALE).max(min_size);
+    font_size.clamp(min_size, max_size)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PaneRect {
     pub pane_id: PaneId,
@@ -389,7 +405,7 @@ impl SplitNode {
         match self {
             Self::Pane(pane) => {
                 let scale = if base_font_size > 0.0 {
-                    (pane.font_size / base_font_size).clamp(0.2, 5.0)
+                    (pane.font_size / base_font_size).clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
                 } else {
                     1.0
                 };

@@ -475,41 +475,44 @@ impl Config {
     }
 
     pub fn renderer_backend(&self) -> RendererBackendConfig {
-        if let Some(backend) = self
+        let backend = self
             .window
             .renderer_backend
-            .or(self.renderer_backend_legacy)
-        {
-            backend
-        } else if let Some(gpu) = self
+            .or(self.renderer_backend_legacy);
+        let gpu = self
             .window
             .gpu_acceleration
-            .or(self.gpu_acceleration_legacy)
-        {
-            if gpu {
-                RendererBackendConfig::Auto
-            } else {
-                RendererBackendConfig::Software
-            }
-        } else {
-            RendererBackendConfig::Auto
+            .or(self.gpu_acceleration_legacy);
+
+        match (backend, gpu) {
+            (Some(RendererBackendConfig::Opengl), _) => RendererBackendConfig::Opengl,
+            (Some(RendererBackendConfig::Software), _) => RendererBackendConfig::Software,
+            (Some(RendererBackendConfig::Auto), Some(false)) => RendererBackendConfig::Software,
+            (Some(RendererBackendConfig::Auto), _) => RendererBackendConfig::Auto,
+            (None, Some(false)) => RendererBackendConfig::Software,
+            (None, Some(true)) => RendererBackendConfig::Auto,
+            (None, None) => RendererBackendConfig::Auto,
         }
     }
 
     pub fn gpu_acceleration(&self) -> Option<bool> {
-        if let Some(backend) = self
+        let backend = self
             .window
             .renderer_backend
-            .or(self.renderer_backend_legacy)
-        {
-            match backend {
-                RendererBackendConfig::Software => Some(false),
-                RendererBackendConfig::Opengl | RendererBackendConfig::Auto => Some(true),
-            }
-        } else {
-            self.window
-                .gpu_acceleration
-                .or(self.gpu_acceleration_legacy)
+            .or(self.renderer_backend_legacy);
+        let gpu = self
+            .window
+            .gpu_acceleration
+            .or(self.gpu_acceleration_legacy);
+
+        match (backend, gpu) {
+            (Some(RendererBackendConfig::Software), _) => Some(false),
+            (Some(RendererBackendConfig::Opengl), _) => Some(true),
+            (Some(RendererBackendConfig::Auto), Some(false)) => Some(false),
+            (Some(RendererBackendConfig::Auto), Some(true)) => Some(true),
+            (Some(RendererBackendConfig::Auto), None) => Some(true),
+            (None, Some(val)) => Some(val),
+            (None, None) => None,
         }
     }
 
@@ -1025,5 +1028,43 @@ mod tests {
         "#;
         let cfg_flat: Config = toml::from_str(toml_flat).unwrap();
         assert_eq!(cfg_flat.renderer_backend(), RendererBackendConfig::Software);
+
+        // renderer_backend = "auto" with explicit gpu_acceleration = false resolves to Software
+        let toml_auto_gpu_false = r#"
+            [window]
+            gpu_acceleration = false
+            renderer_backend = "auto"
+        "#;
+        let cfg_auto_gpu_false: Config = toml::from_str(toml_auto_gpu_false).unwrap();
+        assert_eq!(
+            cfg_auto_gpu_false.renderer_backend(),
+            RendererBackendConfig::Software
+        );
+        assert_eq!(cfg_auto_gpu_false.gpu_acceleration(), Some(false));
+
+        // renderer_backend = "auto" with explicit gpu_acceleration = true resolves to Auto
+        let toml_auto_gpu_true = r#"
+            [window]
+            gpu_acceleration = true
+            renderer_backend = "auto"
+        "#;
+        let cfg_auto_gpu_true: Config = toml::from_str(toml_auto_gpu_true).unwrap();
+        assert_eq!(
+            cfg_auto_gpu_true.renderer_backend(),
+            RendererBackendConfig::Auto
+        );
+        assert_eq!(cfg_auto_gpu_true.gpu_acceleration(), Some(true));
+
+        // Flat legacy renderer_backend = "auto" with gpu_acceleration = false resolves to Software
+        let toml_flat_auto_false = r#"
+            gpu_acceleration = false
+            renderer_backend = "auto"
+        "#;
+        let cfg_flat_auto_false: Config = toml::from_str(toml_flat_auto_false).unwrap();
+        assert_eq!(
+            cfg_flat_auto_false.renderer_backend(),
+            RendererBackendConfig::Software
+        );
+        assert_eq!(cfg_flat_auto_false.gpu_acceleration(), Some(false));
     }
 }

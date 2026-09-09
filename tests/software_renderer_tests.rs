@@ -142,12 +142,15 @@ fn test_software_renderer_selection_and_cursor() {
     let theme = Theme::new();
     let mut target = vec![0u32; 800 * 600];
 
+    let cell_w = renderer.glyph_cache.cell_width;
+    let cell_h = renderer.glyph_cache.cell_height;
+
+    // Frame 1: Selection active (cols 2..10 at row 2) + cursor visible at (5, 2)
     grid.cursor.x = 5;
     grid.cursor.y = 2;
     grid.cursor.shape = CursorShape::Block;
     grid.cursor.visible = true;
 
-    // Start selection
     grid.selection.start_selection(2, 2);
     grid.selection.update_selection(10, 2);
 
@@ -164,18 +167,93 @@ fn test_software_renderer_selection_and_cursor() {
         1.0,
         &mut target,
     );
-    assert!(!renderer.damage.has_damage());
-    // Verify that selected cell at (3, 2) has inverted background (grid.default_fg)
-    let cell_w = renderer.glyph_cache.cell_width;
-    let cell_h = renderer.glyph_cache.cell_height;
+    grid.clear_damage();
+
     let sample_x = 8 + 3 * cell_w + 2;
     let sample_y = 4 + 2 * cell_h + 2;
-    let expected_inverted_bg =
+    let cursor_pixel_idx = ((4 + 2 * cell_h + 2) as usize) * 800 + ((8 + 5 * cell_w + 2) as usize);
+
+    let default_bg =
+        velox::renderer::software::color::PackedColor::from_color(grid.default_bg).to_u32();
+    let inverted_bg =
         velox::renderer::software::color::PackedColor::from_color(grid.default_fg).to_u32();
+    let cursor_color = velox::renderer::software::color::PackedColor::from_color(
+        theme.resolve_cursor_color(grid.default_fg),
+    )
+    .to_u32();
+
+    // Verify selected cell is inverted
     assert_eq!(
         target[(sample_y as usize) * 800 + (sample_x as usize)],
-        expected_inverted_bg,
-        "Selected cell background must be inverted to grid.default_fg"
+        inverted_bg,
+        "Selected cell background must be inverted"
+    );
+    // Verify cursor is drawn
+    assert_eq!(
+        target[cursor_pixel_idx], cursor_color,
+        "Cursor must be drawn at (col 5, row 2)"
+    );
+
+    // Frame 2: Cursor disappears / blinks off with clean grid damage
+    grid.cursor.visible = false;
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        false,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    grid.clear_damage();
+
+    // Since (5, 2) is still in selection, it should revert to selection color (inverted_bg), not cursor_color
+    assert_eq!(
+        target[cursor_pixel_idx], inverted_bg,
+        "Cursor must disappear when cursor_visible is false even with clean grid damage"
+    );
+
+    // Frame 3: Clear selection and move cursor to (10, 3) with clean damage
+    grid.selection.clear();
+    grid.cursor.x = 10;
+    grid.cursor.y = 3;
+    grid.cursor.visible = true;
+
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        8.0,
+        4.0,
+        true,
+        CursorShape::Block,
+        grid.cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    grid.clear_damage();
+
+    // Sample cell at (3, 2) must revert to default background
+    assert_eq!(
+        target[(sample_y as usize) * 800 + (sample_x as usize)],
+        default_bg,
+        "Previously selected cell must revert to default background"
+    );
+    // Old cursor position must be default background
+    assert_eq!(
+        target[cursor_pixel_idx], default_bg,
+        "Old cursor position must revert to default background"
+    );
+    // New cursor position must be drawn
+    let new_cursor_pixel = ((4 + 3 * cell_h + 2) as usize) * 800 + ((8 + 10 * cell_w + 2) as usize);
+    assert_eq!(
+        target[new_cursor_pixel], cursor_color,
+        "New cursor position must be drawn at (col 10, row 3)"
     );
 }
 
@@ -1315,3 +1393,4 @@ fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
         "Translucent grid cell pixel must match translucent padding pixel exactly"
     );
 }
+
