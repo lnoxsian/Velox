@@ -17,6 +17,10 @@ pub fn get_system_font_db() -> &'static Arc<Database> {
     SYSTEM_FONT_DB.get_or_init(|| {
         let mut db = Database::new();
         db.load_system_fonts();
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::malloc_trim(0);
+        }
         Arc::new(db)
     })
 }

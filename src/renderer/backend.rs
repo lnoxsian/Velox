@@ -100,12 +100,17 @@ impl GlDisplayManager {
             .with_transparency(true);
 
         let display_builder =
-            glutin_winit::DisplayBuilder::new().with_preference(ApiPreference::PreferEgl);
+            glutin_winit::DisplayBuilder::new().with_preference(ApiPreference::FallbackEgl);
 
         let (opt_window, gl_config) = display_builder
             .build(event_loop, template_builder, |configs| {
                 configs
-                    .max_by_key(|c| (c.supports_transparency().unwrap_or(false), c.num_samples()))
+                    .max_by_key(|c| {
+                        (
+                            c.supports_transparency().unwrap_or(false),
+                            -(c.num_samples() as i32),
+                        )
+                    })
                     .unwrap()
             })
             .map_err(|e| RendererInitError::DisplayCreation(e.to_string()))?;
@@ -135,13 +140,18 @@ pub fn probe_opengl() -> Result<GlInfo, String> {
         .with_inner_size(winit::dpi::PhysicalSize::new(1, 1));
 
     let display_builder = glutin_winit::DisplayBuilder::new()
-        .with_preference(ApiPreference::PreferEgl)
+        .with_preference(ApiPreference::FallbackEgl)
         .with_window_attributes(Some(window_attrs));
 
     let (opt_window, gl_config) = display_builder
         .build(&event_loop, template_builder, |configs| {
             configs
-                .max_by_key(|c| (c.supports_transparency().unwrap_or(false), c.num_samples()))
+                .max_by_key(|c| {
+                    (
+                        c.supports_transparency().unwrap_or(false),
+                        -(c.num_samples() as i32),
+                    )
+                })
                 .unwrap()
         })
         .map_err(|e| format!("Display creation error: {}", e))?;
@@ -365,6 +375,8 @@ fn try_create_opengl_window_and_renderer(
         win_h,
     )
     .map_err(RendererInitError::ShaderCompilation)?;
+
+    crate::memory::trim_allocator_memory();
 
     log::info!(
         "OpenGL initialized successfully: {} ({}) - {}",

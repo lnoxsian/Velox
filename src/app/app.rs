@@ -1507,11 +1507,11 @@ impl ApplicationHandler<CustomEvent> for App {
         let mut min_next_wake: Option<std::time::Instant> = None;
 
         for ws in self.windows.values_mut() {
-            // Idle memory trimming (2.5s of PTY inactivity after burst activity)
+            // Idle memory trimming (1.5s of PTY inactivity after burst activity / startup)
             let mut should_release = false;
             for tab in &mut ws.tabs {
-                if now.duration_since(tab.last_activity) >= std::time::Duration::from_millis(2500)
-                    && tab.last_activity > tab.last_cleanup
+                if now.duration_since(tab.last_activity) >= std::time::Duration::from_millis(1500)
+                    && tab.last_activity >= tab.last_cleanup
                 {
                     should_release = true;
                     tab.last_cleanup = now;

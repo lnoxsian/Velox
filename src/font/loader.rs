@@ -457,6 +457,9 @@ impl FontLoader {
     }
 
     pub fn update_font_size(&mut self, font_size: f32) {
+        if (self.font_size - font_size).abs() < f32::EPSILON {
+            return;
+        }
         self.font_size = font_size;
         let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
@@ -477,6 +480,35 @@ impl FontLoader {
             self.reset_atlas_allocator();
         }
         self.preload_ascii();
+    }
+
+    pub fn update_tab_font_size(&mut self, tab_font_size: f32) {
+        if (self.font_size - tab_font_size).abs() < f32::EPSILON {
+            return;
+        }
+        self.font_size = tab_font_size;
+        let px_size = (tab_font_size * self.font_scale_multiplier)
+            .round()
+            .max(1.0);
+        let scale = PxScale::from(px_size);
+        let scaled_font = self.font.as_scaled(scale);
+        self.cell_width = scaled_font
+            .h_advance(self.font.glyph_id('A'))
+            .ceil()
+            .max(1.0) as u32;
+        self.cell_height = (scaled_font.ascent() - scaled_font.descent()
+            + scaled_font.line_gap().max(0.0))
+        .ceil()
+        .max(1.0) as u32;
+
+        let dim = compute_initial_atlas_dim(self.cell_width, self.cell_height);
+        let target_dim = 256.max(dim / 2);
+        if target_dim != self.atlas_width {
+            self.reallocate_atlas(target_dim, target_dim);
+        } else {
+            self.reset_atlas_allocator();
+        }
+        self.preload_tab_ascii();
     }
 
     /// Full memory cleanup for FontLoader: prunes fallback fonts and trims oversized scratch buffers.
@@ -512,8 +544,6 @@ impl FontLoader {
             let ch = c as char;
             self.get_glyph_uv(ch, false, false, false);
             self.get_glyph_uv(ch, false, true, false);
-            self.get_glyph_uv(ch, false, false, true);
-            self.get_glyph_uv(ch, false, true, true);
         }
     }
 
@@ -880,7 +910,8 @@ impl FontLoader {
                 self.preload_ascii();
             }
 
-            if !is_wide && let Some(idx) = Self::ascii_cache_idx(key.c, key.is_bold, key.is_italic) {
+            if !is_wide && let Some(idx) = Self::ascii_cache_idx(key.c, key.is_bold, key.is_italic)
+            {
                 if let Some(uv) = self.ascii_cache[idx] {
                     return uv;
                 }

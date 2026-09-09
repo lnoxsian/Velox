@@ -678,7 +678,7 @@ impl Renderer {
     }
 
     pub fn set_tab_font_size(&mut self, font_size: f32) {
-        self.tab_font_loader.update_font_size(font_size);
+        self.tab_font_loader.update_tab_font_size(font_size);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2020,7 +2020,8 @@ impl Renderer {
 
                 if let Some(rect) = scissor {
                     let sx = (rect.x.floor() as i32).max(0);
-                    let sy = ((self.viewport_height as f32 - (rect.y + rect.height)).floor() as i32)
+                    let sy = ((self.viewport_height as f32 - (rect.y + rect.height)).floor()
+                        as i32)
                         .max(0);
                     let sw = ((rect.width.ceil() as i32).max(0))
                         .min((self.viewport_width as i32 - sx).max(0));

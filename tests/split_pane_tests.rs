@@ -1080,9 +1080,8 @@ fn test_large_font_split_pane_layout_does_not_overflow() {
     assert!(tree.split_pane(1, p2, SplitDirection::Vertical, 0.5, 100));
 
     // Layout within an 800x600 window with 4px separator and 4px padding
-    let (pane_rects, _) = tree.calculate_layout(
-        0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, 14.0, 20, 10,
-    );
+    let (pane_rects, _) =
+        tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, 14.0, 20, 10);
 
     assert_eq!(pane_rects.len(), 2);
     for rect in &pane_rects {
@@ -1250,11 +1249,19 @@ fn test_font_loader_initial_atlas_dim_scales_for_large_fonts() {
 
     // Medium-large fonts (e.g. 24px - 32px): cell dims around 18x36
     let dim_medium = compute_initial_atlas_dim(18, 36);
-    assert!(dim_medium >= 1024, "Atlas dim should be >= 1024 for 18x36, got {}", dim_medium);
+    assert!(
+        dim_medium >= 1024,
+        "Atlas dim should be >= 1024 for 18x36, got {}",
+        dim_medium
+    );
 
     // Very large fonts (e.g. 48px - 72px): cell dims around 35x70 or 50x100
     let dim_large = compute_initial_atlas_dim(35, 70);
-    assert!(dim_large >= 2048, "Atlas dim should be >= 2048 for 35x70, got {}", dim_large);
+    assert!(
+        dim_large >= 2048,
+        "Atlas dim should be >= 2048 for 35x70, got {}",
+        dim_large
+    );
 }
 
 #[test]
@@ -1309,19 +1316,36 @@ fn test_new_split_and_tab_font_size_defaults_to_config_not_zoomed() {
         false,
     );
 
-    assert!(tab.tree.split_pane(1, p2, SplitDirection::Vertical, 0.5, 100));
+    assert!(
+        tab.tree
+            .split_pane(1, p2, SplitDirection::Vertical, 0.5, 100)
+    );
     tab.set_active_pane(2);
 
     // Verify pane 1 retains its zoomed font size
     assert_eq!(tab.tree.find_pane(1).unwrap().font_size, zoomed_font_size);
 
     // Verify newly spawned pane 2 starts at config default font size, NOT the zoomed font size
-    assert_eq!(tab.tree.find_pane(2).unwrap().font_size, config_default_font_size);
+    assert_eq!(
+        tab.tree.find_pane(2).unwrap().font_size,
+        config_default_font_size
+    );
     assert_eq!(tab.active_pane().font_size, config_default_font_size);
 
     // Recalculate layout and verify cell scaling respects each pane's respective font size
     let (pane_rects, _) = tab.tree.calculate_layout(
-        0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, config_default_font_size, 20, 10,
+        0.0,
+        0.0,
+        800.0,
+        600.0,
+        4.0,
+        4.0,
+        4.0,
+        8,
+        16,
+        config_default_font_size,
+        20,
+        10,
     );
 
     let r1 = pane_rects.iter().find(|r| r.pane_id == 1).unwrap();
