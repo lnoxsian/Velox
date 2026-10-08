@@ -73,7 +73,7 @@ Velox guarantees strict performance metrics across runtime workloads:
 
 - **Rust**: 1.75+ (Stable toolchain)
 - **Platform**: Linux (Wayland or X11)
-- **Graphics**: Linux display server with shared-memory support (no GPU required)
+- **Display**: Linux display server with shared-memory support (X11 MIT-SHM or Wayland wl_shm)
 
 ### 1. Build
 

@@ -920,8 +920,7 @@ mod tests {
             padding_y = 5.0
             cursor_shape = "block"
             cursor_blink = false
-            gpu_acceleration = true
-            renderer_backend = "opengl"
+            unrecognized_legacy_key = true
         "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.scrollback_limit(), Some(5000));

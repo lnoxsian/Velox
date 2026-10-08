@@ -8,7 +8,7 @@ Velox is a modular, high-performance terminal emulator built around focused, dec
 
 ```text
 1. Single Responsibility: Each module strictly owns one functional domain.
-2. Software-Only Rendering: Pure CPU rasterization and composition without GPU dependencies.
+2. Software-Only Rendering: Pure CPU rasterization and composition.
 3. Zero-Allocation Hot Paths: Reuse cell buffers and scratch pixel vectors.
 4. Bounded Memory Budgets: Fallback fonts, scrollback history, and glyph caches enforce strict limits.
 5. Async/Non-Blocking I/O: PTY readers run on dedicated threads communicating via event loop proxies.
@@ -78,7 +78,7 @@ Velox initializes native Linux windows and display surfaces via `create_window_a
 - **Winit Windowing**: Creates windows with explicit Wayland/X11 attributes, initially hidden for zero cold-start flicker.
 - **`softbuffer` Surface**: Binds a CPU-accessible shared memory presentation surface (`wl_shm` on Wayland or X11 MIT-SHM on X11) directly to the window.
 - **Zero-Size Protection**: Both surface creation and resizing guard against zero width or height by clamping dimensions with `NonZeroU32`, preventing driver panics on Wayland compositors during minimize/unmap transitions.
-- **Diagnostics (`src/diagnostics.rs`)**: Standalone system checks inspecting Linux display server connection, font database status, and desktop integration without GPU dependencies.
+- **Diagnostics (`src/diagnostics.rs`)**: Standalone system checks inspecting Linux display server connection, font database status, and desktop integration.
 
 ### 4. Pure CPU Software Renderer (`renderer::software::CpuRenderer`)
 

@@ -40,7 +40,6 @@ pub fn run_diagnostics(_config: &Config) {
     println!("  Rendering Pipeline: Pure CPU Software Renderer");
     println!("  Framebuffer:        CPU-owned 32-bit linear memory buffer (0x00RRGGBB)");
     println!("  Presentation:       Pure-Rust Native Shared Memory Display (X11 MIT-SHM / Wayland wl_shm)");
-    println!("  Graphics APIs:      None (Zero GPU dependencies / Pure CPU execution)");
 
     println!("\n[Desktop & Icon Integration]");
     println!("  Canonical App ID:   {}", CANONICAL_APP_ID);
