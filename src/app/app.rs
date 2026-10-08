@@ -2,18 +2,19 @@ use crate::app::pane::{Pane, PaneId};
 use crate::app::split::{FocusDirection, PaneRect, SeparatorRect, SplitDirection, SplitId};
 use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
-use crate::ipc::{IpcListenerHandle, start_ipc_server};
+use crate::ipc::{start_ipc_server, IpcListenerHandle};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_process;
 use crate::renderer::{CpuPaneRenderData, CpuRenderer, SeparatorRenderData};
 use crate::terminal::terminal::Terminal;
+use crate::window::event::{CursorIcon, ModifiersState, PlatformEvent};
+use crate::window::PlatformWindow;
 use std::collections::HashMap;
-use std::num::NonZeroU32;
+use std::os::fd::RawFd;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::window::{Window, WindowId};
+
+pub type WindowId = u64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DraggingSeparator {
@@ -51,9 +52,34 @@ pub enum CustomEvent {
     },
 }
 
+#[derive(Clone)]
+pub struct EventLoopProxy {
+    sender: Sender<CustomEvent>,
+    wake_fd: RawFd,
+}
+
+impl EventLoopProxy {
+    pub fn new(sender: Sender<CustomEvent>, wake_fd: RawFd) -> Self {
+        Self { sender, wake_fd }
+    }
+
+    pub fn send(&self, event: CustomEvent) -> Result<(), std::sync::mpsc::SendError<CustomEvent>> {
+        self.sender.send(event)?;
+        let val = 1u64;
+        unsafe {
+            libc::write(
+                self.wake_fd,
+                &val as *const _ as *const libc::c_void,
+                std::mem::size_of::<u64>(),
+            );
+        }
+        Ok(())
+    }
+}
+
 fn spawn_pty_reader(
     pty_reader: Arc<PtyMaster>,
-    proxy: EventLoopProxy<CustomEvent>,
+    proxy: EventLoopProxy,
     window_id: WindowId,
     tab_id: u64,
     pane_id: u64,
@@ -64,7 +90,7 @@ fn spawn_pty_reader(
             match pty_reader.read(&mut buf) {
                 Ok(0) => {
                     crate::pty::recycle_pty_buffer(buf);
-                    let _ = proxy.send_event(CustomEvent::PtyExit {
+                    let _ = proxy.send(CustomEvent::PtyExit {
                         window_id,
                         tab_id,
                         pane_id,
@@ -75,7 +101,7 @@ fn spawn_pty_reader(
                     let mut send_buf = crate::pty::acquire_pty_buffer();
                     send_buf[..n].copy_from_slice(&buf[..n]);
                     send_buf.truncate(n);
-                    let _ = proxy.send_event(CustomEvent::PtyData {
+                    let _ = proxy.send(CustomEvent::PtyData {
                         window_id,
                         tab_id,
                         pane_id,
@@ -84,7 +110,7 @@ fn spawn_pty_reader(
                 }
                 Err(_) => {
                     crate::pty::recycle_pty_buffer(buf);
-                    let _ = proxy.send_event(CustomEvent::PtyExit {
+                    let _ = proxy.send(CustomEvent::PtyExit {
                         window_id,
                         tab_id,
                         pane_id,
@@ -97,9 +123,9 @@ fn spawn_pty_reader(
 }
 
 pub struct WindowState {
+    pub window_id: WindowId,
     pub renderer: CpuRenderer,
-    pub surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
-    pub window: Arc<Window>,
+    pub window: PlatformWindow,
     pub mouse_x: f64,
     pub mouse_y: f64,
     pub scroll_multiplier: f64,
@@ -122,7 +148,7 @@ pub struct WindowState {
     pub last_mouse_cell: (usize, usize),
     pub last_mouse_pane_id: Option<PaneId>,
     pub is_focused: bool,
-    pub current_cursor_icon: winit::window::CursorIcon,
+    pub current_cursor_icon: CursorIcon,
     pub needs_redraw: bool,
     pub content_dirty: bool,
     pub cursor_blink_enabled: bool,
@@ -138,7 +164,7 @@ pub struct WindowState {
     pub next_pane_id: u64,
     pub next_split_id: u64,
     pub tab_bar: TabBar,
-    pub event_loop_proxy: EventLoopProxy<CustomEvent>,
+    pub event_loop_proxy: EventLoopProxy,
     pub tab_bar_dirty: bool,
     pub tab_bar_render_cache: Option<TabBarRenderInfo>,
     pub dragging_separator: Option<DraggingSeparator>,
@@ -233,7 +259,7 @@ impl WindowState {
     }
 
     #[inline(always)]
-    pub fn set_cursor_cached(&mut self, icon: winit::window::CursorIcon) {
+    pub fn set_cursor_cached(&mut self, icon: CursorIcon) {
         if self.current_cursor_icon != icon {
             self.current_cursor_icon = icon;
             self.window.set_cursor(icon);
@@ -373,9 +399,6 @@ impl WindowState {
         if width == 0 || height == 0 {
             return;
         }
-        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            let _ = self.surface.resize(w, h);
-        }
         self.renderer.resize(width, height);
         self.resize_active_tab();
         self.needs_redraw = true;
@@ -421,7 +444,7 @@ impl WindowState {
         spawn_pty_reader(
             pty_master.clone(),
             self.event_loop_proxy.clone(),
-            self.window.id(),
+            self.window_id,
             tab_id,
             new_pane_id,
         );
@@ -594,7 +617,7 @@ impl WindowState {
         spawn_pty_reader(
             pty_master.clone(),
             self.event_loop_proxy.clone(),
-            self.window.id(),
+            self.window_id,
             tab_id,
             pane_id,
         );
@@ -873,20 +896,18 @@ impl WindowState {
             }
         }
 
-        if let Ok(mut buffer) = self.surface.buffer_mut() {
-            self.renderer.render_splits(
-                &cpu_pane_render_datas,
-                &separator_render_datas,
-                self.opacity,
-                effective_dim,
-                self.is_focused,
-                &mut buffer,
-                tab_bar_info,
-                effective_separator_color,
-                effective_active_separator_color,
-            );
-            let _ = buffer.present();
-        }
+        self.renderer.render_splits(
+            &cpu_pane_render_datas,
+            &separator_render_datas,
+            self.opacity,
+            effective_dim,
+            self.is_focused,
+            None,
+            tab_bar_info,
+            effective_separator_color,
+            effective_active_separator_color,
+        );
+        self.window.present_frame(self.renderer.framebuffer.as_slice());
 
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
             for pane in active_tab.tree.panes_mut() {
@@ -897,39 +918,61 @@ impl WindowState {
 }
 
 pub struct App {
-    pub(crate) event_loop_proxy: EventLoopProxy<CustomEvent>,
-    pub(crate) modifiers: winit::keyboard::ModifiersState,
+    pub(crate) event_loop_proxy: EventLoopProxy,
+    pub(crate) event_receiver: Receiver<CustomEvent>,
+    pub(crate) wake_fd: RawFd,
+    pub(crate) modifiers: ModifiersState,
     pub(crate) windows: HashMap<WindowId, WindowState>,
+    pub(crate) next_window_id: u64,
     pub(crate) daemon_mode: bool,
     pub(crate) single_instance_mode: bool,
     pub(crate) ipc_listener: Option<IpcListenerHandle>,
     pub(crate) initial_options: Option<CliOptions>,
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        if self.wake_fd >= 0 {
+            unsafe {
+                libc::close(self.wake_fd);
+            }
+        }
+    }
+}
+
 impl App {
-    pub fn new(event_loop_proxy: EventLoopProxy<CustomEvent>, options: CliOptions) -> Self {
+    pub fn new(options: CliOptions) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if wake_fd < 0 {
+            return Err("Failed to create eventfd for main loop wakeup".into());
+        }
+
+        let proxy = EventLoopProxy::new(sender, wake_fd);
         let daemon_mode = options.daemon;
         let single_instance_mode = options.single_instance;
 
-        Self {
-            event_loop_proxy,
-            modifiers: winit::keyboard::ModifiersState::default(),
+        Ok(Self {
+            event_loop_proxy: proxy,
+            event_receiver: receiver,
+            wake_fd,
+            modifiers: ModifiersState::empty(),
             windows: HashMap::new(),
+            next_window_id: 1,
             daemon_mode,
             single_instance_mode,
             ipc_listener: None,
             initial_options: Some(options),
-        }
+        })
     }
 
     pub fn create_window(
         &mut self,
-        event_loop: &ActiveEventLoop,
         working_directory: Option<String>,
         command: Option<Vec<String>>,
         custom_title: Option<String>,
         hold: Option<bool>,
-    ) {
+    ) -> Result<WindowId, Box<dyn std::error::Error>> {
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
 
@@ -941,39 +984,12 @@ impl App {
             },
         };
 
-        let icon = load_app_icon();
-        let opacity = config.opacity();
-        let window_dim = config.window_dim();
-
-        let is_transparent = opacity < 1.0;
-        let mut window_attributes = Window::default_attributes()
-            .with_title(&initial_title)
-            .with_transparent(is_transparent)
-            .with_visible(false)
-            .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
-
-        if let Some(icon) = icon {
-            window_attributes = window_attributes.with_window_icon(Some(icon));
-        }
-
-        // Apply platform identity (Wayland app-id & X11 WM_CLASS)
-        window_attributes =
-            crate::platform::apply_platform_window_attributes(event_loop, window_attributes);
-
-        let (window, mut renderer, surface) = match crate::renderer::create_window_and_renderer(
-            event_loop,
-            window_attributes,
+        let (window, mut renderer) = crate::renderer::create_window_and_renderer(
+            &initial_title,
+            800,
+            600,
             &config,
-        ) {
-            Ok(res) => res,
-            Err(e) => {
-                log::error!("Failed to initialize window renderer backend: {}", e);
-                if self.windows.is_empty() && !self.daemon_mode {
-                    event_loop.exit();
-                }
-                return;
-            }
-        };
+        )?;
 
         let size = window.inner_size();
         let win_width = size.width.max(1);
@@ -1019,11 +1035,14 @@ impl App {
                 command.as_deref(),
                 working_directory.as_deref(),
             )
-            .unwrap(),
+            .map_err(|e| format!("Failed to spawn shell process: {}", e))?,
         );
-        pty_master.resize(cols as u16, rows as u16).unwrap();
+        pty_master
+            .resize(cols as u16, rows as u16)
+            .map_err(|e| format!("Failed to resize PTY: {}", e))?;
 
-        let window_id = window.id();
+        let window_id = self.next_window_id;
+        self.next_window_id += 1;
         let tab_id = 0u64;
         let pane_id = 0u64;
         spawn_pty_reader(
@@ -1051,8 +1070,8 @@ impl App {
         let active_separator_color = config.pane_active_separator_color().map(String::from);
 
         let mut window_state = WindowState {
+            window_id,
             renderer,
-            surface,
             window,
             mouse_x: 0.0,
             mouse_y: 0.0,
@@ -1078,15 +1097,15 @@ impl App {
             last_mouse_cell: (0, 0),
             last_mouse_pane_id: None,
             is_focused: true,
-            current_cursor_icon: winit::window::CursorIcon::Default,
+            current_cursor_icon: CursorIcon::Default,
             needs_redraw: false,
             content_dirty: false,
             cursor_blink_enabled,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
             hide_mouse_on_typing,
-            opacity,
-            window_dim,
+            opacity: config.opacity(),
+            window_dim: config.window_dim(),
             shell_path,
             tabs: vec![tab],
             active_tab_index: 0,
@@ -1111,40 +1130,11 @@ impl App {
 
         self.windows.insert(window_id, window_state);
         crate::memory::trim_allocator_memory();
+        Ok(window_id)
     }
-}
 
-fn load_app_icon() -> Option<winit::window::Icon> {
-    let icon_bytes = include_bytes!("../../assets/generated_icons/icon_128x128.png");
-    let decoder = png::Decoder::new(std::io::Cursor::new(icon_bytes));
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).ok()?;
-
-    let raw_bytes = &buf[..info.buffer_size()];
-
-    let rgba_bytes = match info.color_type {
-        png::ColorType::Rgba => raw_bytes.to_vec(),
-        png::ColorType::Rgb => {
-            let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
-            for chunk in raw_bytes.chunks(3) {
-                if chunk.len() == 3 {
-                    rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
-                }
-            }
-            rgba
-        }
-        _ => return None,
-    };
-
-    winit::window::Icon::from_rgba(rgba_bytes, info.width, info.height).ok()
-}
-
-impl ApplicationHandler<CustomEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let backend = crate::platform::detect_backend_from_event_loop(event_loop);
-        log::info!("Velox starting");
-        log::info!("Window backend: {}", backend);
+    pub fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!("Velox starting (pure Rust zero-C-libraries windowing)");
 
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
@@ -1168,89 +1158,17 @@ impl ApplicationHandler<CustomEvent> for App {
             && !opts.daemon
         {
             self.create_window(
-                event_loop,
                 opts.working_directory,
                 opts.command,
                 opts.title,
                 Some(opts.hold),
-            );
+            )?;
         }
+
+        Ok(())
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        if matches!(event, WindowEvent::CloseRequested) {
-            self.windows.remove(&window_id);
-            if self.windows.is_empty() && !self.daemon_mode {
-                event_loop.exit();
-            }
-            return;
-        }
-
-        if let WindowEvent::ModifiersChanged(ref mods) = event {
-            self.modifiers = mods.state();
-        }
-
-        let modifiers = self.modifiers;
-        if let Some(ws) = self.windows.get_mut(&window_id) {
-            match event {
-                WindowEvent::Focused(focused) => {
-                    ws.is_focused = focused;
-                    if !focused {
-                        ws.is_mouse_down = false;
-                        ws.mouse_down_pane_id = None;
-                        ws.dragging_separator = None;
-                        ws.cursor_blink_on = true;
-                        ws.release_memory();
-                    } else {
-                        ws.mark_interaction();
-                    }
-                    let active_pane = ws.active_pane();
-                    if active_pane.terminal.focus_tracking {
-                        let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
-                        let _ = active_pane.pty_master.write(seq);
-                    }
-                    ws.content_dirty = true;
-                    ws.tab_bar_dirty = true;
-                    ws.needs_redraw = true;
-                }
-                WindowEvent::Resized(size) => {
-                    if size.width > 0 && size.height > 0 {
-                        ws.resize_renderer(size.width, size.height);
-                    }
-                }
-                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                    log::debug!("Window scale factor changed: {}", scale_factor);
-                    let size = ws.window.inner_size();
-                    if size.width > 0 && size.height > 0 {
-                        ws.resize_renderer(size.width, size.height);
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    ws.handle_keyboard_input(event, modifiers);
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    ws.handle_cursor_moved(position, modifiers);
-                }
-                WindowEvent::MouseWheel { delta, .. } => {
-                    ws.handle_mouse_wheel(delta, modifiers);
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-                    ws.handle_mouse_input(state, button, modifiers);
-                }
-                WindowEvent::RedrawRequested => {
-                    ws.draw();
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: CustomEvent) {
+    pub fn handle_custom_event(&mut self, event: CustomEvent) {
         match event {
             CustomEvent::PtyData {
                 window_id,
@@ -1285,6 +1203,7 @@ impl ApplicationHandler<CustomEvent> for App {
                 tab_id,
                 pane_id,
             } => {
+                let mut should_remove_window = false;
                 if let Some(ws) = self.windows.get_mut(&window_id)
                     && let Some(tab_idx) = ws.tabs.iter().position(|t| t.id == tab_id)
                 {
@@ -1303,24 +1222,20 @@ impl ApplicationHandler<CustomEvent> for App {
                         ws.needs_redraw = true;
                         return;
                     }
-                    let should_close_window = ws.close_pane_in_tab(tab_id, pane_id);
-                    if should_close_window {
-                        self.windows.remove(&window_id);
-                        crate::memory::trim_allocator_memory();
-                        if self.windows.is_empty() && !self.daemon_mode {
-                            event_loop.exit();
-                        }
-                    }
+                    should_remove_window = ws.close_pane_in_tab(tab_id, pane_id);
+                }
+                if should_remove_window {
+                    self.windows.remove(&window_id);
+                    crate::memory::trim_allocator_memory();
                 }
             }
-
             CustomEvent::IpcCreateWindow {
                 working_directory,
                 command,
                 title,
                 hold,
             } => {
-                self.create_window(event_loop, working_directory, command, title, hold);
+                let _ = self.create_window(working_directory, command, title, hold);
             }
             CustomEvent::IpcCreateTab {
                 working_directory,
@@ -1331,77 +1246,212 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let Some((_, ws)) = self.windows.iter_mut().next() {
                     ws.create_tab(working_directory, command, title, hold);
                 } else {
-                    self.create_window(event_loop, working_directory, command, title, hold);
+                    let _ = self.create_window(working_directory, command, title, hold);
                 }
             }
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = std::time::Instant::now();
-        let mut min_next_wake: Option<std::time::Instant> = None;
-
-        for ws in self.windows.values_mut() {
-            // Idle memory trimming (1.5s of PTY inactivity after burst activity / startup)
-            let mut should_release = false;
-            for tab in &mut ws.tabs {
-                if now.duration_since(tab.last_activity) >= std::time::Duration::from_millis(1500)
-                    && tab.last_activity >= tab.last_cleanup
-                {
-                    should_release = true;
-                    tab.last_cleanup = now;
-                }
-            }
-            if should_release {
-                ws.release_memory();
-            }
-
-            // Cursor blink toggle (500ms cycle) - only when focused and cursor is visible
-            let cursor_blink_active = ws.is_cursor_blink_active();
-            if cursor_blink_active
-                && now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500)
-            {
-                ws.cursor_blink_on = !ws.cursor_blink_on;
-                ws.last_cursor_blink = now;
-                ws.needs_redraw = true;
-            }
-
-            if cursor_blink_active {
-                let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
-                min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
-            }
-
-            // Redraw scheduling
-            if ws.needs_redraw {
-                if let Some(active_tab) = ws.tabs.get_mut(ws.active_tab_index)
-                    && active_tab
-                        .active_pane_mut()
-                        .terminal
-                        .is_synchronized_output_active()
-                {
-                    continue;
-                }
-
-                let frame_duration = ws
-                    .fps_limit
-                    .filter(|&l| l > 0)
-                    .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
-                    .unwrap_or(std::time::Duration::from_millis(8));
-
-                let next_frame = ws.last_frame_instant + frame_duration;
-                if now >= next_frame {
-                    ws.window.request_redraw();
-                    ws.needs_redraw = false;
-                } else {
-                    min_next_wake = Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
-                }
-            }
+    pub fn run(&mut self) {
+        if let Err(e) = self.init() {
+            log::error!("Initialization failed: {}", e);
+            return;
         }
 
-        if let Some(wake_time) = min_next_wake {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(wake_time));
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+        while !self.windows.is_empty() || self.daemon_mode {
+            let mut closed_windows = Vec::new();
+
+            for (&window_id, ws) in &mut self.windows {
+                while let Some(event) = ws.window.poll_event() {
+                    match event {
+                        PlatformEvent::CloseRequested => {
+                            closed_windows.push(window_id);
+                            break;
+                        }
+                        PlatformEvent::ModifiersChanged(mods) => {
+                            self.modifiers = mods;
+                        }
+                        PlatformEvent::Focused(focused) => {
+                            ws.is_focused = focused;
+                            if !focused {
+                                ws.is_mouse_down = false;
+                                ws.mouse_down_pane_id = None;
+                                ws.dragging_separator = None;
+                                ws.cursor_blink_on = true;
+                                ws.release_memory();
+                            } else {
+                                ws.mark_interaction();
+                            }
+                            let active_pane = ws.active_pane();
+                            if active_pane.terminal.focus_tracking {
+                                let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
+                                let _ = active_pane.pty_master.write(seq);
+                            }
+                            ws.content_dirty = true;
+                            ws.tab_bar_dirty = true;
+                            ws.needs_redraw = true;
+                        }
+                        PlatformEvent::Resized { width, height } => {
+                            if width > 0 && height > 0 {
+                                ws.resize_renderer(width, height);
+                            }
+                        }
+                        PlatformEvent::KeyPressed {
+                            key,
+                            text,
+                            modifiers,
+                        } => {
+                            self.modifiers = modifiers;
+                            ws.handle_keyboard_input(&key, text.as_deref(), modifiers);
+                        }
+                        PlatformEvent::KeyReleased { modifiers, .. } => {
+                            self.modifiers = modifiers;
+                        }
+                        PlatformEvent::CursorMoved { x, y } => {
+                            ws.handle_cursor_moved((x, y), self.modifiers);
+                        }
+                        PlatformEvent::MouseWheel { delta_y } => {
+                            ws.handle_mouse_wheel(delta_y, self.modifiers);
+                        }
+                        PlatformEvent::MouseInput { state, button } => {
+                            ws.handle_mouse_input(state, button, self.modifiers);
+                        }
+                        PlatformEvent::RedrawRequested => {
+                            ws.draw();
+                        }
+                    }
+                }
+            }
+
+            for wid in closed_windows {
+                self.windows.remove(&wid);
+                crate::memory::trim_allocator_memory();
+            }
+
+            if self.windows.is_empty() && !self.daemon_mode {
+                break;
+            }
+
+            while let Ok(event) = self.event_receiver.try_recv() {
+                self.handle_custom_event(event);
+            }
+
+            if self.windows.is_empty() && !self.daemon_mode {
+                break;
+            }
+
+            let now = std::time::Instant::now();
+            let mut min_next_wake: Option<std::time::Instant> = None;
+
+            for ws in self.windows.values_mut() {
+                let mut should_release = false;
+                for tab in &mut ws.tabs {
+                    if now.duration_since(tab.last_activity)
+                        >= std::time::Duration::from_millis(1500)
+                        && tab.last_activity >= tab.last_cleanup
+                    {
+                        should_release = true;
+                        tab.last_cleanup = now;
+                    }
+                }
+                if should_release {
+                    ws.release_memory();
+                }
+
+                let cursor_blink_active = ws.is_cursor_blink_active();
+                if cursor_blink_active
+                    && now.duration_since(ws.last_cursor_blink)
+                        >= std::time::Duration::from_millis(500)
+                {
+                    ws.cursor_blink_on = !ws.cursor_blink_on;
+                    ws.last_cursor_blink = now;
+                    ws.needs_redraw = true;
+                }
+
+                if cursor_blink_active {
+                    let next_blink =
+                        ws.last_cursor_blink + std::time::Duration::from_millis(500);
+                    min_next_wake =
+                        Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
+                }
+
+                if ws.needs_redraw {
+                    if let Some(active_tab) = ws.tabs.get_mut(ws.active_tab_index)
+                        && active_tab
+                            .active_pane_mut()
+                            .terminal
+                            .is_synchronized_output_active()
+                    {
+                        continue;
+                    }
+
+                    let frame_duration = ws
+                        .fps_limit
+                        .filter(|&l| l > 0)
+                        .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
+                        .unwrap_or(std::time::Duration::from_millis(8));
+
+                    let next_frame = ws.last_frame_instant + frame_duration;
+                    if now >= next_frame {
+                        ws.draw();
+                        ws.needs_redraw = false;
+                    } else {
+                        min_next_wake =
+                            Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
+                    }
+                }
+            }
+
+            let timeout_ms = match min_next_wake {
+                Some(wake_time) => {
+                    let cur = std::time::Instant::now();
+                    if wake_time > cur {
+                        let diff = wake_time.duration_since(cur).as_millis();
+                        (diff as i32).clamp(1, 100)
+                    } else {
+                        0
+                    }
+                }
+                None => {
+                    if self.windows.iter().any(|(_, w)| w.needs_redraw) {
+                        0
+                    } else {
+                        -1
+                    }
+                }
+            };
+
+            if timeout_ms != 0 {
+                let mut poll_fds: Vec<libc::pollfd> =
+                    Vec::with_capacity(self.windows.len() + 1);
+                poll_fds.push(libc::pollfd {
+                    fd: self.wake_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+                for ws in self.windows.values() {
+                    poll_fds.push(libc::pollfd {
+                        fd: ws.window.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                }
+
+                unsafe {
+                    libc::poll(
+                        poll_fds.as_mut_ptr(),
+                        poll_fds.len() as libc::nfds_t,
+                        timeout_ms,
+                    );
+                }
+
+                if poll_fds[0].revents & libc::POLLIN != 0 {
+                    let mut buf = [0u8; 8];
+                    unsafe {
+                        libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+                    }
+                }
+            }
         }
     }
 }

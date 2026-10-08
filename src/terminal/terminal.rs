@@ -1213,7 +1213,7 @@ mod tests {
 
     #[test]
     fn test_xterm_modified_arrow_and_kitty_keyboard_translation() {
-        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        use crate::window::event::{Key, ModifiersState, NamedKey};
 
         // Shift+Tab -> CBT (\x1b[Z)
         let cbt = crate::input::keyboard::translate_key(

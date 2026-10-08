@@ -39,7 +39,7 @@ pub fn run_diagnostics(_config: &Config) {
     println!("\n[Renderer Architecture]");
     println!("  Rendering Pipeline: Pure CPU Software Renderer");
     println!("  Framebuffer:        CPU-owned 32-bit linear memory buffer (0x00RRGGBB)");
-    println!("  Presentation:       Linux Native Shared Memory Display (softbuffer)");
+    println!("  Presentation:       Pure-Rust Native Shared Memory Display (X11 MIT-SHM / Wayland wl_shm)");
     println!("  Graphics APIs:      None (Zero GPU dependencies / Pure CPU execution)");
 
     println!("\n[Desktop & Icon Integration]");

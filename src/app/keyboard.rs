@@ -1,19 +1,19 @@
 use crate::app::app::WindowState;
 use crate::app::split::FocusDirection;
-use winit::event::KeyEvent;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use crate::window::event::{Key, ModifiersState, NamedKey};
 
 impl WindowState {
-    pub fn handle_keyboard_input(&mut self, event: KeyEvent, modifiers: ModifiersState) {
-        if event.state.is_pressed() {
-            self.mark_interaction();
-            if self.hide_mouse_on_typing {
-                self.window.set_cursor_visible(false);
-            }
+    pub fn handle_keyboard_input(
+        &mut self,
+        logical_key: &Key,
+        text: Option<&str>,
+        modifiers: ModifiersState,
+    ) {
+        self.mark_interaction();
 
             // ── Split Pane Divider Resizing (Ctrl+Alt+Arrows) ────────────────
             if modifiers.control_key() && modifiers.alt_key() {
-                match event.logical_key {
+                match logical_key {
                     Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
                         if self.adjust_active_split_ratio(-0.05) {
                             return;
@@ -30,7 +30,7 @@ impl WindowState {
 
             // ── Split Pane Navigation (Alt+Arrows) ────────────────────────────
             if modifiers.alt_key() && !modifiers.control_key() && !modifiers.shift_key() {
-                match event.logical_key {
+                match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
                         if self.focus_direction(FocusDirection::Left) {
                             return;
@@ -57,7 +57,7 @@ impl WindowState {
 
             // ── Tab Management & Split Shortcuts (Ctrl+Shift) ─────────────────
             if modifiers.control_key() && modifiers.shift_key() {
-                if let Key::Character(s) = &event.logical_key {
+                if let Key::Character(s) = &logical_key {
                     let ch = s.to_lowercase();
                     match ch.as_str() {
                         "t" => {
@@ -134,7 +134,7 @@ impl WindowState {
                     }
                 }
 
-                match event.logical_key {
+                match logical_key {
                     Key::Named(NamedKey::Tab) => {
                         self.prev_tab();
                         return;
@@ -169,18 +169,18 @@ impl WindowState {
             }
 
             if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
-                if let Key::Named(NamedKey::Tab) = event.logical_key {
+                if let Key::Named(NamedKey::Tab) = logical_key {
                     self.next_tab();
                     return;
-                } else if let Key::Named(NamedKey::PageDown) = event.logical_key {
+                } else if let Key::Named(NamedKey::PageDown) = logical_key {
                     self.next_tab();
                     return;
-                } else if let Key::Named(NamedKey::PageUp) = event.logical_key {
+                } else if let Key::Named(NamedKey::PageUp) = logical_key {
                     self.prev_tab();
                     return;
                 }
 
-                if let Key::Character(ref s) = event.logical_key {
+                if let Key::Character(s) = logical_key {
                     match s.as_str() {
                         "1" => {
                             self.switch_tab(0);
@@ -243,7 +243,7 @@ impl WindowState {
             }
 
             if modifiers.shift_key() {
-                if let Key::Named(NamedKey::PageUp) = event.logical_key {
+                if let Key::Named(NamedKey::PageUp) = logical_key {
                     let active_pane = self.active_pane_mut();
                     let active_grid = if active_pane.terminal.is_alt_screen {
                         &mut active_pane.terminal.alt_grid
@@ -256,7 +256,7 @@ impl WindowState {
                     active_grid.damage.mark_all();
                     self.needs_redraw = true;
                     return;
-                } else if let Key::Named(NamedKey::PageDown) = event.logical_key {
+                } else if let Key::Named(NamedKey::PageDown) = logical_key {
                     let active_pane = self.active_pane_mut();
                     let active_grid = if active_pane.terminal.is_alt_screen {
                         &mut active_pane.terminal.alt_grid
@@ -276,8 +276,8 @@ impl WindowState {
             let cursor_keys_mode = self.active_pane().terminal.cursor_keys_mode;
             let kitty_flags = self.active_pane().terminal.kitty_keyboard_flags;
             if let Some(bytes) = crate::input::keyboard::translate_key(
-                &event.logical_key,
-                event.text.as_deref(),
+                logical_key,
+                text,
                 modifiers,
                 cursor_keys_mode,
                 kitty_flags,
@@ -300,6 +300,6 @@ impl WindowState {
                     self.needs_redraw = true;
                 }
             }
-        }
     }
 }
+

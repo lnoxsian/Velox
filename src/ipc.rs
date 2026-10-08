@@ -1,4 +1,4 @@
-use crate::app::app::CustomEvent;
+use crate::app::app::{CustomEvent, EventLoopProxy};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-use winit::event_loop::EventLoopProxy;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum IpcMessage {
@@ -109,7 +108,7 @@ impl Drop for IpcListenerHandle {
     }
 }
 
-pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListenerHandle, String> {
+pub fn start_ipc_server(proxy: EventLoopProxy) -> Result<IpcListenerHandle, String> {
     let path = socket_path();
 
     // Check if a stale socket exists
@@ -182,7 +181,7 @@ pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListene
 
 fn handle_client_stream(
     stream: &mut UnixStream,
-    proxy: &EventLoopProxy<CustomEvent>,
+    proxy: &EventLoopProxy,
 ) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -216,7 +215,7 @@ fn handle_client_stream(
                 title,
                 hold,
             };
-            if proxy.send_event(event).is_ok() {
+            if proxy.send(event).is_ok() {
                 IpcResponse::Ok
             } else {
                 IpcResponse::Error("Event loop shut down".to_string())
@@ -234,7 +233,7 @@ fn handle_client_stream(
                 title,
                 hold,
             };
-            if proxy.send_event(event).is_ok() {
+            if proxy.send(event).is_ok() {
                 IpcResponse::Ok
             } else {
                 IpcResponse::Error("Event loop shut down".to_string())

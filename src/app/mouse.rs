@@ -1,22 +1,17 @@
 use crate::app::app::{DraggingSeparator, WindowState};
 use crate::app::split::SplitDirection;
 use crate::app::tab::TabBarHitResult;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta};
-use winit::keyboard::ModifiersState;
+use crate::window::event::{ElementState, MouseButton, ModifiersState};
 
 impl WindowState {
     pub fn handle_cursor_moved(
         &mut self,
-        position: PhysicalPosition<f64>,
+        position: (f64, f64),
         modifiers: ModifiersState,
     ) {
         self.mark_interaction();
-        if self.hide_mouse_on_typing {
-            self.window.set_cursor_visible(true);
-        }
-        self.mouse_x = position.x;
-        self.mouse_y = position.y;
+        self.mouse_x = position.0;
+        self.mouse_y = position.1;
 
         // ── 1. Separator Dragging ────────────────────────────────────────────
         if let Some(dragging) = self.dragging_separator {
@@ -100,7 +95,7 @@ impl WindowState {
                     (mouse_mode == 1003 || mouse_mode == 1002) && !modifiers.shift_key();
 
                 if should_report_motion {
-                    self.set_cursor_cached(winit::window::CursorIcon::Default);
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Default);
                     if let Some(pty_master) = pty_master {
                         let base_code = 32 + self.last_mouse_button;
                         let mut btn_code = base_code;
@@ -141,7 +136,7 @@ impl WindowState {
                         }
                     }
                 } else {
-                    self.set_cursor_cached(winit::window::CursorIcon::Text);
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Text);
                     let tab = self.active_tab_mut();
                     if let Some(pane) = tab.tree.find_pane_mut(drag_pane_id) {
                         let active_grid = pane.terminal.active_grid_mut();
@@ -162,7 +157,7 @@ impl WindowState {
 
         // ── 3. Tab Bar Hover & Hit-Testing (When not dragging) ───────────────
         if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
-            let win_w = self.window.inner_size().width as f32;
+            let win_w = self.window.width() as f32;
             let hit = self.tab_bar.hit_test(
                 self.mouse_x as f32,
                 self.mouse_y as f32,
@@ -180,25 +175,25 @@ impl WindowState {
                     self.tab_bar.hovered_tab = Some(idx);
                     self.tab_bar.hovered_close = None;
                     self.tab_bar.hovered_new_tab = false;
-                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
                 }
                 TabBarHitResult::CloseTab(idx) => {
                     self.tab_bar.hovered_tab = Some(idx);
                     self.tab_bar.hovered_close = Some(idx);
                     self.tab_bar.hovered_new_tab = false;
-                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
                 }
                 TabBarHitResult::NewTab => {
                     self.tab_bar.hovered_tab = None;
                     self.tab_bar.hovered_close = None;
                     self.tab_bar.hovered_new_tab = true;
-                    self.set_cursor_cached(winit::window::CursorIcon::Pointer);
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
                 }
                 _ => {
                     self.tab_bar.hovered_tab = None;
                     self.tab_bar.hovered_close = None;
                     self.tab_bar.hovered_new_tab = false;
-                    self.set_cursor_cached(winit::window::CursorIcon::Default);
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Default);
                 }
             }
 
@@ -237,10 +232,10 @@ impl WindowState {
             }
             match sep.direction {
                 SplitDirection::Horizontal => {
-                    self.set_cursor_cached(winit::window::CursorIcon::RowResize)
+                    self.set_cursor_cached(crate::window::event::CursorIcon::RowResize)
                 }
                 SplitDirection::Vertical => {
-                    self.set_cursor_cached(winit::window::CursorIcon::ColResize)
+                    self.set_cursor_cached(crate::window::event::CursorIcon::ColResize)
                 }
             }
             return;
@@ -352,12 +347,12 @@ impl WindowState {
                 {
                     if mouse_mode == 0 {
                         if is_link {
-                            self.set_cursor_cached(winit::window::CursorIcon::Pointer);
+                            self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
                         } else {
-                            self.set_cursor_cached(winit::window::CursorIcon::Text);
+                            self.set_cursor_cached(crate::window::event::CursorIcon::Text);
                         }
                     } else {
-                        self.set_cursor_cached(winit::window::CursorIcon::Default);
+                        self.set_cursor_cached(crate::window::event::CursorIcon::Default);
                     }
 
                     let should_report_motion = mouse_mode == 1003 && !modifiers.shift_key();
@@ -395,12 +390,9 @@ impl WindowState {
         }
     }
 
-    pub fn handle_mouse_wheel(&mut self, delta: MouseScrollDelta, modifiers: ModifiersState) {
+    pub fn handle_mouse_wheel(&mut self, delta_y: f32, modifiers: ModifiersState) {
         self.mark_interaction();
-        let lines_f = match delta {
-            MouseScrollDelta::LineDelta(_, y) => y as f64,
-            MouseScrollDelta::PixelDelta(pos) => pos.y / 15.0,
-        };
+        let lines_f = delta_y as f64;
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
             if modifiers.control_key() {
@@ -522,16 +514,13 @@ impl WindowState {
         modifiers: ModifiersState,
     ) {
         self.mark_interaction();
-        if self.hide_mouse_on_typing {
-            self.window.set_cursor_visible(true);
-        }
 
-        if state.is_pressed() {
+        if state == ElementState::Pressed {
             let tab_bar_h = self.tab_bar_height() as f64;
 
             // ── 1. Tab Bar Mouse Clicks ──────────────────────────────────────
             if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
-                let win_w = self.window.inner_size().width as f32;
+                let win_w = self.window.width() as f32;
                 let hit = self.tab_bar.hit_test(
                     self.mouse_x as f32,
                     self.mouse_y as f32,

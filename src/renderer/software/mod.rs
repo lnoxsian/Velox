@@ -288,7 +288,7 @@ impl CpuRenderer {
             opacity,
             window_dim,
             is_focused,
-            target_buffer,
+            Some(target_buffer),
             tab_bar_info,
             None,
             None,
@@ -367,7 +367,7 @@ impl CpuRenderer {
         opacity: f32,
         window_dim: f32,
         is_focused: bool,
-        target_buffer: &mut [u32],
+        target_buffer: Option<&mut [u32]>,
         tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
         separator_color_override: Option<crate::screen::cell::Color>,
         active_separator_color_override: Option<crate::screen::cell::Color>,
@@ -517,12 +517,12 @@ impl CpuRenderer {
             self.damage.full_redraw || any_pane_damage || blink_changed || tab_bar_dirty;
 
         if !force_redraw && !self.damage.has_damage() {
-            let current_ptr = target_buffer.as_ptr() as usize;
-            if current_ptr != self.last_target_ptr
-                && target_buffer.len() == self.framebuffer.pixels.len()
-            {
-                target_buffer.copy_from_slice(self.framebuffer.as_slice());
-                self.last_target_ptr = current_ptr;
+            if let Some(buf) = target_buffer {
+                let current_ptr = buf.as_ptr() as usize;
+                if current_ptr != self.last_target_ptr && buf.len() == self.framebuffer.pixels.len() {
+                    buf.copy_from_slice(self.framebuffer.as_slice());
+                    self.last_target_ptr = current_ptr;
+                }
             }
             return;
         }
@@ -1259,10 +1259,12 @@ impl CpuRenderer {
 
         self.prev_tab_bar_hash = new_tab_bar_hash;
 
-        // Present to target slice
-        if target_buffer.len() == self.framebuffer.pixels.len() {
-            target_buffer.copy_from_slice(self.framebuffer.as_slice());
-            self.last_target_ptr = target_buffer.as_ptr() as usize;
+        // Present to target slice (if provided)
+        if let Some(buf) = target_buffer
+            && buf.len() == self.framebuffer.pixels.len()
+        {
+            buf.copy_from_slice(self.framebuffer.as_slice());
+            self.last_target_ptr = buf.as_ptr() as usize;
         }
 
         self.damage.clear();

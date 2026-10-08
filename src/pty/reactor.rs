@@ -1,4 +1,4 @@
-use crate::app::app::CustomEvent;
+use crate::app::app::{CustomEvent, EventLoopProxy};
 use crate::pty::buffer_pool::{acquire_pty_buffer, recycle_pty_buffer};
 use crate::pty::master::PtyMaster;
 use std::collections::HashMap;
@@ -6,8 +6,8 @@ use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use winit::event_loop::EventLoopProxy;
-use winit::window::WindowId;
+
+pub type WindowId = u64;
 
 const WAKE_EVENT_TOKEN: u64 = u64::MAX;
 
@@ -39,7 +39,7 @@ pub struct PtyReactor {
 }
 
 impl PtyReactor {
-    pub fn new(proxy: EventLoopProxy<CustomEvent>) -> Option<Self> {
+    pub fn new(proxy: EventLoopProxy) -> Option<Self> {
         let epoll_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
         if epoll_fd < 0 {
             return None;
@@ -179,7 +179,7 @@ impl PtyReactor {
                             match entry.pty_master.read(&mut buf) {
                                 Ok(0) => {
                                     recycle_pty_buffer(buf);
-                                    let _ = proxy.send_event(CustomEvent::PtyExit {
+                                    let _ = proxy.send(CustomEvent::PtyExit {
                                         window_id: entry.window_id,
                                         tab_id: entry.tab_id,
                                         pane_id: entry.pane_id,
@@ -198,7 +198,7 @@ impl PtyReactor {
                                 }
                                 Ok(n) => {
                                     buf.truncate(n);
-                                    let _ = proxy.send_event(CustomEvent::PtyData {
+                                    let _ = proxy.send(CustomEvent::PtyData {
                                         window_id: entry.window_id,
                                         tab_id: entry.tab_id,
                                         pane_id: entry.pane_id,
@@ -210,7 +210,7 @@ impl PtyReactor {
                                     if e.raw_os_error() != Some(libc::EAGAIN)
                                         && e.raw_os_error() != Some(libc::EWOULDBLOCK)
                                     {
-                                        let _ = proxy.send_event(CustomEvent::PtyExit {
+                                        let _ = proxy.send(CustomEvent::PtyExit {
                                             window_id: entry.window_id,
                                             tab_id: entry.tab_id,
                                             pane_id: entry.pane_id,

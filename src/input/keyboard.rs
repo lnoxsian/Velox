@@ -1,5 +1,5 @@
+use crate::window::event::{Key, ModifiersState, NamedKey};
 use smallvec::{SmallVec, smallvec};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 pub fn translate_key(
     key: &Key,

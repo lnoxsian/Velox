@@ -1,8 +1,7 @@
-use velox::app::app::{App, CustomEvent};
+use velox::app::app::App;
 use velox::cli::CliOptions;
 use velox::config;
 use velox::ipc;
-use winit::event_loop::EventLoop;
 
 fn main() {
     env_logger::init();
@@ -50,10 +49,10 @@ fn main() {
 
     cli_opts.single_instance = single_instance;
 
-    log::info!("Initialized Velox with native CPU software renderer via softbuffer.");
+    log::info!("Initialized Velox with native pure-Rust zero-C-libraries display backend and CPU software renderer.");
 
-    let event_loop = match EventLoop::<CustomEvent>::with_user_event().build() {
-        Ok(el) => el,
+    let mut app = match App::new(cli_opts) {
+        Ok(app) => app,
         Err(e) => {
             eprintln!("Error: Failed to initialize display backend: {}", e);
             eprintln!(
@@ -62,10 +61,5 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy, cli_opts);
-    if let Err(e) = event_loop.run_app(&mut app) {
-        eprintln!("Error running Velox application: {}", e);
-        std::process::exit(1);
-    }
+    app.run();
 }

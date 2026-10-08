@@ -1,6 +1,4 @@
 use std::fmt;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::window::WindowAttributes;
 
 /// Canonical application identity used across Wayland app-id, X11 WM_CLASS,
 /// .desktop entry, and desktop icon hierarchies.
@@ -33,29 +31,7 @@ impl fmt::Display for LinuxWindowBackend {
     }
 }
 
-/// Detect windowing backend using winit's ActiveEventLoop platform extensions.
-/// This is the primary and most authoritative detection mechanism.
-pub fn detect_backend_from_event_loop(event_loop: &ActiveEventLoop) -> LinuxWindowBackend {
-    use winit::platform::wayland::ActiveEventLoopExtWayland;
-    if event_loop.is_wayland() {
-        LinuxWindowBackend::Wayland
-    } else {
-        LinuxWindowBackend::X11
-    }
-}
-
-/// Detect windowing backend from an initialized EventLoop prior to running.
-pub fn detect_backend_from_loop<T: 'static>(event_loop: &EventLoop<T>) -> LinuxWindowBackend {
-    use winit::platform::wayland::EventLoopExtWayland;
-    if event_loop.is_wayland() {
-        LinuxWindowBackend::Wayland
-    } else {
-        LinuxWindowBackend::X11
-    }
-}
-
 /// Diagnostic helper that inspects environment variables.
-/// Note: This is an advisory hint when no active event loop is available.
 pub fn detect_backend_from_env() -> LinuxWindowBackend {
     let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     let x11_display = std::env::var("DISPLAY").ok();
@@ -85,30 +61,6 @@ pub fn detect_backend_from_env() -> LinuxWindowBackend {
     LinuxWindowBackend::Unknown
 }
 
-/// Configure Wayland app-id or X11 WM_CLASS window attributes to match the
-/// canonical desktop application identity.
-pub fn apply_platform_window_attributes(
-    event_loop: &ActiveEventLoop,
-    mut attrs: WindowAttributes,
-) -> WindowAttributes {
-    use winit::platform::wayland::ActiveEventLoopExtWayland;
-    use winit::platform::wayland::WindowAttributesExtWayland;
-    use winit::platform::x11::WindowAttributesExtX11;
-
-    if event_loop.is_wayland() {
-        attrs = WindowAttributesExtWayland::with_name(
-            attrs,
-            CANONICAL_APP_ID,
-            CANONICAL_WM_CLASS_INSTANCE,
-        );
-    } else {
-        attrs =
-            WindowAttributesExtX11::with_name(attrs, CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE);
-    }
-
-    attrs
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,7 +80,6 @@ mod tests {
 
     #[test]
     fn test_backend_env_detection() {
-        // Test that detect_backend_from_env does not panic and returns a valid variant
         let backend = detect_backend_from_env();
         assert!(matches!(
             backend,
