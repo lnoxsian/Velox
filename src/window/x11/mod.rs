@@ -10,7 +10,8 @@ use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    self, AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, KeyPressEvent, WindowClass,
+    self, AtomEnum, ColormapAlloc, ConnectionExt as _, CreateWindowAux, EventMask, KeyPressEvent,
+    VisualClass, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -23,11 +24,31 @@ pub struct X11Window {
     pub fb: X11Framebuffer,
     pub gc: xproto::Gcontext,
     pub visual: xproto::Visualid,
+    pub depth: u8,
+    pub colormap: Option<xproto::Colormap>,
     pub wm_delete_window: xproto::Atom,
     pub net_wm_name: xproto::Atom,
     pub net_wm_icon_name: xproto::Atom,
     pub utf8_string: xproto::Atom,
     pub modifiers: ModifiersState,
+}
+
+/// Find a 32-bit TrueColor visual supporting ARGB compositing with per-pixel alpha.
+pub fn find_32bit_visual(
+    conn: &RustConnection,
+    screen_num: usize,
+) -> Option<(xproto::Visualid, u8)> {
+    let screen = conn.setup().roots.get(screen_num)?;
+    for depth in &screen.allowed_depths {
+        if depth.depth == 32 {
+            for visual in &depth.visuals {
+                if visual.class == VisualClass::TRUE_COLOR {
+                    return Some((visual.visual_id, depth.depth));
+                }
+            }
+        }
+    }
+    None
 }
 
 impl X11Window {
@@ -52,12 +73,30 @@ impl X11Window {
             | EventMask::POINTER_MOTION
             | EventMask::FOCUS_CHANGE;
 
-        let win_aux = CreateWindowAux::new()
-            .event_mask(event_mask)
-            .background_pixel(black_pixel);
+        // Try to find a 32-bit ARGB TrueColor visual for true alpha transparency
+        let (visual, depth, colormap) =
+            if let Some((vis32, depth32)) = find_32bit_visual(&conn, screen_num) {
+                let colormap = conn.generate_id()?;
+                conn.create_colormap(ColormapAlloc::NONE, colormap, root, vis32)?;
+                (vis32, depth32, Some(colormap))
+            } else {
+                (root_visual, 24u8, None)
+            };
+
+        let mut win_aux = CreateWindowAux::new().event_mask(event_mask);
+        if let Some(cmap) = colormap {
+            // When creating a window with depth different from root (e.g. 32 on 24-bit root),
+            // X11 protocol mandates colormap and border_pixel to avoid BadMatch.
+            win_aux = win_aux
+                .colormap(cmap)
+                .border_pixel(0)
+                .background_pixel(0);
+        } else {
+            win_aux = win_aux.background_pixel(black_pixel);
+        }
 
         conn.create_window(
-            x11rb::COPY_FROM_PARENT as u8,
+            depth,
             window_id,
             root,
             0,
@@ -66,7 +105,7 @@ impl X11Window {
             win_height as u16,
             0,
             WindowClass::INPUT_OUTPUT,
-            root_visual,
+            visual,
             &win_aux,
         )?;
 
@@ -170,7 +209,7 @@ impl X11Window {
         conn.map_window(window_id)?;
         conn.flush()?;
 
-        let fb = X11Framebuffer::new(&conn, win_width, win_height);
+        let fb = X11Framebuffer::new(&conn, win_width, win_height, depth);
 
         Ok(Self {
             conn,
@@ -179,7 +218,9 @@ impl X11Window {
             height: win_height,
             fb,
             gc,
-            visual: root_visual,
+            visual,
+            depth,
+            colormap,
             wm_delete_window,
             net_wm_name,
             net_wm_icon_name,
@@ -226,6 +267,26 @@ impl X11Window {
 
     pub fn set_cursor(&self, _icon: CursorIcon) {
         // Standard X11 font cursor or xc_cursor can be bound without C libraries if desired
+    }
+
+    pub fn set_opacity(&self, opacity: f32) {
+        if self.colormap.is_none() {
+            // Depth 24 fallback: set _NET_WM_WINDOW_OPACITY for window-level opacity
+            if let Ok(cookie) = self.conn.intern_atom(false, b"_NET_WM_WINDOW_OPACITY")
+                && let Ok(reply) = cookie.reply()
+            {
+                let op = opacity.clamp(0.0, 1.0);
+                let cardinal = (op * (u32::MAX as f32)).round() as u32;
+                let _ = self.conn.change_property32(
+                    xproto::PropMode::REPLACE,
+                    self.window_id,
+                    reply.atom,
+                    AtomEnum::CARDINAL,
+                    &[cardinal],
+                );
+                let _ = self.conn.flush();
+            }
+        }
     }
 
     pub fn present_frame(&mut self, src_pixels: &[u32]) {
@@ -403,3 +464,45 @@ impl X11Window {
         (None, None)
     }
 }
+
+impl Drop for X11Window {
+    fn drop(&mut self) {
+        if let Some(cmap) = self.colormap.take() {
+            let _ = self.conn.free_colormap(cmap);
+        }
+        let _ = self.conn.destroy_window(self.window_id);
+        let _ = self.conn.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_x11_32bit_visual_detection() {
+        if let Ok((conn, screen_num)) = RustConnection::connect(None) {
+            let vis32 = find_32bit_visual(&conn, screen_num);
+            if let Some((visual_id, depth)) = vis32 {
+                assert_eq!(depth, 32);
+                assert_ne!(visual_id, 0);
+
+                let win = X11Window::new("Velox ARGB32 Test", 300, 200);
+                assert!(
+                    win.is_ok(),
+                    "X11 window creation with 32-bit visual failed: {:?}",
+                    win.err()
+                );
+                let mut win = win.unwrap();
+                assert_eq!(win.depth, 32);
+                assert!(win.colormap.is_some());
+                assert_eq!(win.fb.depth, 32);
+
+                // Present a frame with semi-transparent ARGB pixels
+                let frame = vec![0x80123456u32; (win.width * win.height) as usize];
+                win.present_frame(&frame);
+            }
+        }
+    }
+}
+

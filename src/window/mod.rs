@@ -135,6 +135,14 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn set_opacity(&self, opacity: f32) {
+        match self {
+            Self::X11(w) => w.set_opacity(opacity),
+            Self::Wayland(_) => {}
+        }
+    }
+
+    #[inline]
     pub fn present_frame(&mut self, src_pixels: &[u32]) {
         match self {
             Self::X11(w) => w.present_frame(src_pixels),

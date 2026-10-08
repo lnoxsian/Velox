@@ -1116,6 +1116,7 @@ impl App {
             active_separator_color,
         };
 
+        window_state.window.set_opacity(window_state.opacity);
         window_state.draw();
         window_state.window.set_visible(true);
 

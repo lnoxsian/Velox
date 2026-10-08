@@ -10,6 +10,7 @@ use x11rb::rust_connection::RustConnection;
 pub struct X11Framebuffer {
     pub width: u32,
     pub height: u32,
+    pub depth: u8,
     shm_seg: Option<shm::Seg>,
     shm_id: i32,
     shm_addr: *mut u32,
@@ -18,7 +19,7 @@ pub struct X11Framebuffer {
 }
 
 impl X11Framebuffer {
-    pub fn new(conn: &RustConnection, width: u32, height: u32) -> Self {
+    pub fn new(conn: &RustConnection, width: u32, height: u32, depth: u8) -> Self {
         let has_shm = conn
             .shm_query_version()
             .ok()
@@ -28,6 +29,7 @@ impl X11Framebuffer {
         let mut fb = Self {
             width: 0,
             height: 0,
+            depth,
             shm_seg: None,
             shm_id: -1,
             shm_addr: ptr::null_mut(),
@@ -105,7 +107,7 @@ impl X11Framebuffer {
                 self.height as u16,
                 0,
                 0,
-                24,
+                self.depth,
                 xproto::ImageFormat::Z_PIXMAP.into(),
                 false,
                 seg,
@@ -124,7 +126,7 @@ impl X11Framebuffer {
                 0,
                 0,
                 0,
-                24,
+                self.depth,
                 bytes,
             );
         }
