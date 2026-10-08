@@ -5,6 +5,7 @@ use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, Platfo
 use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
 use shm::WaylandShmBuffer;
 use std::collections::VecDeque;
+use std::os::fd::{AsFd, AsRawFd};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
     wl_surface,
@@ -122,6 +123,14 @@ impl WaylandWindow {
         let buffer = WaylandShmBuffer::new(shm, &qh, state.width, state.height)?;
         state.buffer = Some(buffer);
 
+        let raw_fd = conn.as_fd().as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(raw_fd, libc::F_GETFL, 0);
+            if flags >= 0 {
+                libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+
         Ok(Self {
             conn,
             event_queue,
@@ -157,6 +166,10 @@ impl WaylandWindow {
     }
 
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
+        let _ = self.conn.flush();
+        if let Some(guard) = self.conn.prepare_read() {
+            let _ = guard.read();
+        }
         let _ = self.event_queue.dispatch_pending(&mut self.state);
         self.state.events.pop_front()
     }

@@ -122,6 +122,7 @@ pub struct WindowState {
     pub scroll_multiplier: f64,
     pub fps_limit: Option<u32>,
     pub last_frame_instant: std::time::Instant,
+    pub last_input_instant: std::time::Instant,
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
@@ -176,11 +177,13 @@ impl Drop for WindowState {
 impl WindowState {
     #[inline]
     pub fn mark_interaction(&mut self) {
+        let now = std::time::Instant::now();
+        self.last_input_instant = now;
         if self.cursor_blink_enabled && !self.cursor_blink_on {
             self.cursor_blink_on = true;
             self.needs_redraw = true;
         }
-        self.last_cursor_blink = std::time::Instant::now();
+        self.last_cursor_blink = now;
     }
 
     #[inline]
@@ -1082,6 +1085,9 @@ impl App {
             last_frame_instant: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or_else(std::time::Instant::now),
+            last_input_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now),
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
@@ -1265,6 +1271,7 @@ impl App {
 
         while !self.windows.is_empty() || self.daemon_mode {
             let mut closed_windows = Vec::new();
+            let mut had_input = false;
 
             for (&window_id, ws) in &mut self.windows {
                 while let Some(event) = ws.window.poll_event() {
@@ -1308,6 +1315,7 @@ impl App {
                         } => {
                             self.modifiers = modifiers;
                             ws.handle_keyboard_input(&key, text.as_deref(), modifiers);
+                            had_input = true;
                         }
                         PlatformEvent::KeyReleased { modifiers, .. } => {
                             self.modifiers = modifiers;
@@ -1317,9 +1325,11 @@ impl App {
                         }
                         PlatformEvent::MouseWheel { delta_y } => {
                             ws.handle_mouse_wheel(delta_y, self.modifiers);
+                            had_input = true;
                         }
                         PlatformEvent::MouseInput { state, button } => {
                             ws.handle_mouse_input(state, button, self.modifiers);
+                            had_input = true;
                         }
                         PlatformEvent::RedrawRequested => {
                             ws.draw();
@@ -1339,6 +1349,17 @@ impl App {
 
             while let Ok(event) = self.event_receiver.try_recv() {
                 self.handle_custom_event(event);
+            }
+
+            if had_input {
+                // If keyboard or mouse input was just dispatched to PTY, give the shell up to 500µs to return its echo.
+                // This catches instant shell typing echoes in the exact same frame without sleeping in libc::poll.
+                if let Ok(event) = self.event_receiver.recv_timeout(std::time::Duration::from_micros(500)) {
+                    self.handle_custom_event(event);
+                    while let Ok(event) = self.event_receiver.try_recv() {
+                        self.handle_custom_event(event);
+                    }
+                }
             }
 
             if self.windows.is_empty() && !self.daemon_mode {
@@ -1397,9 +1418,13 @@ impl App {
                         .unwrap_or(std::time::Duration::from_millis(8));
 
                     let next_frame = ws.last_frame_instant + frame_duration;
-                    if now >= next_frame {
+                    let is_interactive = now.duration_since(ws.last_input_instant)
+                        < std::time::Duration::from_millis(200);
+
+                    if is_interactive || now >= next_frame {
                         ws.draw();
                         ws.needs_redraw = false;
+                        ws.last_frame_instant = now;
                     } else {
                         min_next_wake =
                             Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));

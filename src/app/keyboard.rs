@@ -296,6 +296,7 @@ impl WindowState {
                     redraw = true;
                 }
                 let _ = active_pane.pty_master.write(&bytes);
+                self.mark_interaction();
                 if redraw {
                     self.needs_redraw = true;
                 }
