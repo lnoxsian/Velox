@@ -138,19 +138,6 @@ make install DESTDIR=/tmp/pkg PREFIX=/usr
 sudo make uninstall
 ```
 
-### Using Just
-
-```bash
-# System-wide install
-sudo just install
-
-# User-local install
-just install prefix="$HOME/.local"
-
-# Uninstall
-sudo just uninstall
-```
-
 ---
 
 ## Configuration

@@ -13,7 +13,7 @@ else
 fi
 
 # Prompt the user for the new version
-# Use /dev/tty for input if stdin is not a tty (e.g. running from Justfile/non-interactive shell)
+# Use /dev/tty for input if stdin is not a tty (e.g. running from Makefile/non-interactive shell)
 if [ -t 0 ]; then
     read -p "update version [$CURRENT_VERSION] : " NEW_VERSION
 else
