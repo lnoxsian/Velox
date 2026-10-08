@@ -160,7 +160,6 @@ bold_is_bright = true
 scrollback_limit = 2000
 infinite_scrollback = true
 scroll_multiplier = 5.0
-fps_limit = 60
 padding_x = 8.0
 padding_y = 4.0
 cursor_shape = "beam"         # "block", "beam", "underline", "hollow_block"

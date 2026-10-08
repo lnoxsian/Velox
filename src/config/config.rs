@@ -41,7 +41,7 @@ pub struct WindowConfig {
 
     #[serde(default)]
     pub scroll_multiplier: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps_limit: Option<u32>,
     #[serde(default)]
     pub padding_x: Option<f32>,
@@ -931,5 +931,13 @@ mod tests {
         assert_eq!(cfg.padding_y(), Some(5.0));
         assert_eq!(cfg.cursor_shape(), Some("block"));
         assert_eq!(cfg.cursor_blink(), Some(false));
+    }
+
+    #[test]
+    fn test_default_config_omits_fps_limit() {
+        let default_cfg = crate::config::defaults::default_config();
+        assert_eq!(default_cfg.fps_limit(), None);
+        let serialized = toml::to_string_pretty(&default_cfg).unwrap();
+        assert!(!serialized.contains("fps_limit"));
     }
 }

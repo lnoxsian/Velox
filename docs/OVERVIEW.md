@@ -120,7 +120,7 @@ Velox reads configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HO
 | **`[window]`**| `scrollback_limit` | integer | `2000` | Finite scrollback line limit |
 | **`[window]`**| `infinite_scrollback`| bool | `true` | Enable chunked disk-backed infinite history |
 | **`[window]`**| `scroll_multiplier` | float | `5.0` | Mouse wheel scroll speed multiplier |
-| **`[window]`**| `fps_limit` | integer | `60` | Maximum render frames per second |
+| **`[window]`**| `fps_limit` | integer | `None` (60) | Optional frame rate cap (omitted from config, defaults to 60 fps) |
 | **`[window]`**| `padding_x` | float | `8.0` | Horizontal window padding in pixels |
 | **`[window]`**| `padding_y` | float | `4.0` | Vertical window padding in pixels |
 | **`[window]`**| `cursor_shape` | string | `"beam"` | Cursor shape: `block`, `beam`, `underline`, `hollow_block` |

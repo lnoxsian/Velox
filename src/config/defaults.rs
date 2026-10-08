@@ -14,7 +14,7 @@ pub fn default_config() -> Config {
             scrollback_limit: Some(2000),
             infinite_scrollback: Some(true),
             scroll_multiplier: Some(5.0),
-            fps_limit: Some(60),
+            fps_limit: None,
             padding_x: Some(8.0),
             padding_y: Some(4.0),
             cursor_shape: Some("beam".to_string()),
