@@ -92,15 +92,7 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 }
             }
-            ParserState::EscapeDesignateG2 => {
-                if byte == 0x1b {
-                    self.state = ParserState::Escape;
-                    self.is_private = false;
-                } else {
-                    self.state = ParserState::Ground;
-                }
-            }
-            ParserState::EscapeDesignateG3 => {
+            ParserState::EscapeDesignateG2 | ParserState::EscapeDesignateG3 => {
                 if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
@@ -511,10 +503,10 @@ impl AnsiParser {
                 b" q" => {
                     // DECSCUSR cursor shape query
                     let shape_code = match terminal.active_grid().cursor.shape {
-                        crate::screen::cursor::CursorShape::Block => 2,
                         crate::screen::cursor::CursorShape::Underline => 4,
                         crate::screen::cursor::CursorShape::Beam => 6,
-                        crate::screen::cursor::CursorShape::HollowBlock => 2,
+                        crate::screen::cursor::CursorShape::Block
+                        | crate::screen::cursor::CursorShape::HollowBlock => 2,
                     };
                     let mut buf = [0u8; 32];
                     use std::io::Write;

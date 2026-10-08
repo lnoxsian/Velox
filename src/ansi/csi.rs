@@ -33,11 +33,6 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                                         terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
                                         terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
                                     }
-                                    1 => {
-                                        terminal.current_flags.insert(CellFlags::UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
-                                    }
                                     2 => {
                                         terminal.current_flags.remove(CellFlags::UNDERLINE);
                                         terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE);

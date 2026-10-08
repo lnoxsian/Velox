@@ -81,13 +81,7 @@ impl CliOptions {
                         i += 1;
                     }
                 }
-                "-e" | "--command" => {
-                    if i + 1 < args.len() {
-                        options.command = Some(args[i + 1..].to_vec());
-                        break;
-                    }
-                }
-                "--" => {
+                "-e" | "--command" | "--" => {
                     if i + 1 < args.len() {
                         options.command = Some(args[i + 1..].to_vec());
                         break;

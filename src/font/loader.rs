@@ -16,10 +16,7 @@ pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<Fo
 
         let storage = match &face.source {
             fontdb::Source::File(path) => FontStorage::from_file(path).ok().map(Arc::new),
-            fontdb::Source::Binary(data) => {
-                Some(Arc::new(FontStorage::from_shared(Arc::clone(data))))
-            }
-            fontdb::Source::SharedFile(_, data) => {
+            fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => {
                 Some(Arc::new(FontStorage::from_shared(Arc::clone(data))))
             }
         };

@@ -24,8 +24,6 @@ ahash = "0.8"
 x11rb = { version = "0.14.0", default-features = false, features = ["shm", "randr"] }
 wayland-client = { version = "0.31.15", default-features = false }
 wayland-protocols = { version = "0.32.13", default-features = false, features = ["client", "staging"] }
-xkbcommon-rs = "0.1.2"
-calloop = { version = "0.14.5", default-features = false }
 
 [[bench]]
 name = "software_renderer"

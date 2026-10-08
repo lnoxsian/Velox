@@ -132,7 +132,7 @@ impl ResolvedFontSet {
                 }
             } else {
                 ResolvedFont {
-                    font: regular_font.clone(),
+                    font: regular_font,
                     synthetic_italic: true,
                     synthetic_bold: true,
                 }
@@ -145,7 +145,7 @@ impl ResolvedFontSet {
             }
         } else {
             ResolvedFont {
-                font: regular_font.clone(),
+                font: regular_font,
                 synthetic_italic: true,
                 synthetic_bold: true,
             }

@@ -88,16 +88,7 @@ fn spawn_pty_reader(
         let mut buf = crate::pty::acquire_pty_buffer();
         loop {
             match pty_reader.read(&mut buf) {
-                Ok(0) => {
-                    crate::pty::recycle_pty_buffer(buf);
-                    let _ = proxy.send(CustomEvent::PtyExit {
-                        window_id,
-                        tab_id,
-                        pane_id,
-                    });
-                    break;
-                }
-                Ok(n) => {
+                Ok(n) if n > 0 => {
                     let mut send_buf = crate::pty::acquire_pty_buffer();
                     send_buf[..n].copy_from_slice(&buf[..n]);
                     send_buf.truncate(n);
@@ -108,7 +99,7 @@ fn spawn_pty_reader(
                         data: send_buf,
                     });
                 }
-                Err(_) => {
+                _ => {
                     crate::pty::recycle_pty_buffer(buf);
                     let _ = proxy.send(CustomEvent::PtyExit {
                         window_id,

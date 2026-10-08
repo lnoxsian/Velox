@@ -44,13 +44,6 @@ pub fn detect_backend_from_env() -> LinuxWindowBackend {
         }
     }
 
-    if let Ok(b) = std::env::var("WINIT_UNIX_BACKEND") {
-        if b.eq_ignore_ascii_case("x11") {
-            return LinuxWindowBackend::X11;
-        } else if b.eq_ignore_ascii_case("wayland") {
-            return LinuxWindowBackend::Wayland;
-        }
-    }
 
     let session_type = std::env::var("XDG_SESSION_TYPE").ok();
     if let Some(ref st) = session_type {
