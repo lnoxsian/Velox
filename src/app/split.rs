@@ -250,6 +250,16 @@ impl SplitNode {
         }
     }
 
+    pub fn for_each_pane_mut<F: FnMut(&mut Pane)>(&mut self, f: &mut F) {
+        match self {
+            Self::Pane(p) => f(p),
+            Self::Split { first, second, .. } => {
+                first.for_each_pane_mut(f);
+                second.for_each_pane_mut(f);
+            }
+        }
+    }
+
     pub fn collect_pane_ids(&self, list: &mut Vec<PaneId>) {
         match self {
             Self::Pane(p) => list.push(p.id),
@@ -609,6 +619,10 @@ impl SplitTree {
         let mut list = Vec::new();
         self.root.collect_panes_mut(&mut list);
         list
+    }
+
+    pub fn for_each_pane_mut<F: FnMut(&mut Pane)>(&mut self, f: &mut F) {
+        self.root.for_each_pane_mut(f);
     }
 
     #[inline]

@@ -202,7 +202,18 @@ impl WindowState {
 
     pub fn release_memory(&mut self) {
         self.renderer.release_memory();
+        for tab in &mut self.tabs {
+            tab.for_each_pane_mut(|pane| {
+                pane.terminal.release_memory();
+            });
+        }
+        self.tab_bar_render_cache = None;
+        crate::screen::scrollback::clear_global_scrollback_cache();
         crate::memory::trim_allocator_memory();
+    }
+
+    pub fn prune_idle_fallbacks(&mut self, max_idle: std::time::Duration) -> usize {
+        self.renderer.prune_idle_fallbacks(max_idle)
     }
 
     #[inline(always)]
@@ -1250,6 +1261,8 @@ impl App {
             return;
         }
 
+        let mut last_idle_prune = std::time::Instant::now();
+
         while !self.windows.is_empty() || self.daemon_mode {
             let mut closed_windows = Vec::new();
 
@@ -1391,6 +1404,18 @@ impl App {
                         min_next_wake =
                             Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
                     }
+                }
+            }
+
+            // Periodic idle prune of fallback fonts unused for >= 10 seconds
+            if now.duration_since(last_idle_prune) >= std::time::Duration::from_secs(10) {
+                last_idle_prune = now;
+                let mut total_evicted = 0;
+                for ws in self.windows.values_mut() {
+                    total_evicted += ws.prune_idle_fallbacks(std::time::Duration::from_secs(10));
+                }
+                if total_evicted > 0 {
+                    crate::memory::trim_allocator_memory();
                 }
             }
 

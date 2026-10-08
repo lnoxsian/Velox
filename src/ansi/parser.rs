@@ -27,6 +27,22 @@ impl AnsiParser {
         }
     }
 
+    /// Shrinks heap-allocated SmallVec buffers back to stack capacity if spilled.
+    pub fn shrink_buffers(&mut self) {
+        if self.osc_buf.spilled() {
+            self.osc_buf.shrink_to_fit();
+        }
+        if self.dcs_buf.spilled() {
+            self.dcs_buf.shrink_to_fit();
+        }
+        if self.params.spilled() {
+            self.params.shrink_to_fit();
+        }
+        if self.param_buf.spilled() {
+            self.param_buf.shrink_to_fit();
+        }
+    }
+
     pub fn feed(&mut self, byte: u8, terminal: &mut crate::terminal::terminal::Terminal) {
         match self.state {
             ParserState::Ground => {

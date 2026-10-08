@@ -10,11 +10,11 @@ pub struct GlyphRef {
     pub width_mult: u8,
 }
 
-pub const DEFAULT_ALPHA_CAPACITY: usize = 64 * 1024; // 64 KB initial capacity
-pub const DEFAULT_COLOR_CAPACITY: usize = 16 * 1024; // 64 KB (16k u32) initial capacity
-pub const MAX_RETAINED_ALPHA_CAPACITY: usize = 256 * 1024; // 256 KB threshold
-pub const MAX_RETAINED_COLOR_CAPACITY: usize = 128 * 1024; // 512 KB (128k u32) threshold
-pub const MAX_ATLAS_BYTES: usize = 4 * 1024 * 1024; // 4 MB memory ceiling
+pub const DEFAULT_ALPHA_CAPACITY: usize = 32 * 1024; // 32 KB initial capacity
+pub const DEFAULT_COLOR_CAPACITY: usize = 0; // 0 KB initial capacity (allocated only on first emoji)
+pub const MAX_RETAINED_ALPHA_CAPACITY: usize = 64 * 1024; // 64 KB threshold
+pub const MAX_RETAINED_COLOR_CAPACITY: usize = 32 * 1024; // 128 KB (32k u32) threshold
+pub const MAX_ATLAS_BYTES: usize = 2 * 1024 * 1024; // 2 MB memory ceiling
 
 #[derive(Debug, Clone, Default)]
 pub struct GlyphAtlas {
@@ -45,18 +45,20 @@ impl GlyphAtlas {
         self.color_pixels.clear();
     }
 
-    /// Clear length and release excessive memory back to the allocator if above high-water mark.
+    /// Clear length and release excessive memory back to the allocator.
     pub fn clear_and_release(&mut self) {
         if self.alpha_pixels.capacity() > MAX_RETAINED_ALPHA_CAPACITY {
             self.alpha_pixels = Vec::with_capacity(DEFAULT_ALPHA_CAPACITY);
         } else {
             self.alpha_pixels.clear();
+            self.alpha_pixels.shrink_to_fit();
         }
 
         if self.color_pixels.capacity() > MAX_RETAINED_COLOR_CAPACITY {
             self.color_pixels = Vec::with_capacity(DEFAULT_COLOR_CAPACITY);
         } else {
             self.color_pixels.clear();
+            self.color_pixels.shrink_to_fit();
         }
     }
 

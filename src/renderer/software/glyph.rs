@@ -15,28 +15,35 @@ pub struct GlyphScratch {
 impl GlyphScratch {
     pub fn new() -> Self {
         Self {
-            png_buf: Vec::with_capacity(32 * 1024),
-            color_pixels: Vec::with_capacity(4096),
-            alpha_pixels: Vec::with_capacity(4096),
+            png_buf: Vec::new(),
+            color_pixels: Vec::new(),
+            alpha_pixels: Vec::new(),
         }
     }
 
     /// Clear scratch buffers and release excessive capacity if overgrown.
     pub fn clear_and_release(&mut self, max_capacity: usize) {
+        if max_capacity == 0 {
+            self.png_buf = Vec::new();
+            self.color_pixels = Vec::new();
+            self.alpha_pixels = Vec::new();
+            return;
+        }
+
         if self.png_buf.capacity() > max_capacity {
-            self.png_buf = Vec::with_capacity(32 * 1024);
+            self.png_buf = Vec::new();
         } else {
             self.png_buf.clear();
         }
 
         if self.color_pixels.capacity() > max_capacity / 4 {
-            self.color_pixels = Vec::with_capacity(4096);
+            self.color_pixels = Vec::new();
         } else {
             self.color_pixels.clear();
         }
 
         if self.alpha_pixels.capacity() > max_capacity {
-            self.alpha_pixels = Vec::with_capacity(4096);
+            self.alpha_pixels = Vec::new();
         } else {
             self.alpha_pixels.clear();
         }
@@ -124,8 +131,8 @@ impl GlyphCache {
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: AHashMap::with_capacity(1024),
-            max_unicode_entries: 4096,
+            unicode_table: AHashMap::new(),
+            max_unicode_entries: 1024,
         };
 
         cache.preload_common_glyphs();
@@ -178,8 +185,8 @@ impl GlyphCache {
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: AHashMap::with_capacity(1024),
-            max_unicode_entries: 4096,
+            unicode_table: AHashMap::new(),
+            max_unicode_entries: 1024,
         };
         cache.preload_common_glyphs();
         cache
@@ -216,8 +223,8 @@ impl GlyphCache {
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: AHashMap::with_capacity(1024),
-            max_unicode_entries: 4096,
+            unicode_table: AHashMap::new(),
+            max_unicode_entries: 1024,
         };
         cache.preload_common_glyphs();
         cache
@@ -251,10 +258,10 @@ impl GlyphCache {
             cell_height,
             font_size: tab_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
-            atlas: GlyphAtlas::with_capacity(16 * 1024, 0),
+            atlas: GlyphAtlas::with_capacity(8 * 1024, 0),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
-            unicode_table: AHashMap::with_capacity(16),
+            unicode_table: AHashMap::new(),
             max_unicode_entries: 32,
         };
         cache.preload_tab_glyphs();
@@ -291,12 +298,11 @@ impl GlyphCache {
     }
 
     pub fn preload_common_glyphs(&mut self) {
-        // Preload printable ASCII characters for regular, bold, and italic styles
+        // Preload printable ASCII characters for regular style (32..=126).
+        // Bold and italic glyphs are rasterized on demand when needed.
         for c in 32u8..=126u8 {
             let ch = c as char;
             self.get_or_rasterize(GlyphKey::new(ch, false, false, false));
-            self.get_or_rasterize(GlyphKey::new(ch, true, false, false));
-            self.get_or_rasterize(GlyphKey::new(ch, false, true, false));
         }
     }
 
@@ -307,14 +313,26 @@ impl GlyphCache {
         self.unicode_table.clear();
     }
 
-    /// Full memory cleanup: releases oversized atlas buffers, prunes fallback fonts, and shrinks scratch.
+    /// Full memory cleanup: releases oversized atlas buffers, unloads fallback fonts, shrinks tables, and clears scratch memory.
     pub fn release_memory(&mut self) {
         self.atlas.clear_and_release();
         self.ascii_table = [None; 512];
         self.unicode_table.clear();
-        self.fallback_manager.prune_unused(2);
-        self.scratch.clear_and_release(64 * 1024);
+        self.unicode_table.shrink_to_fit();
+        self.fallback_manager.unload_all();
+        self.scratch.clear_and_release(0);
         self.preload_common_glyphs();
+    }
+
+    /// Full memory cleanup for tab bar cache: unloads fallback fonts, shrinks tables, and preloads tab symbols.
+    pub fn release_tab_memory(&mut self) {
+        self.atlas.clear_and_release();
+        self.ascii_table = [None; 512];
+        self.unicode_table.clear();
+        self.unicode_table.shrink_to_fit();
+        self.fallback_manager.unload_all();
+        self.scratch.clear_and_release(0);
+        self.preload_tab_glyphs();
     }
 
     #[inline(always)]

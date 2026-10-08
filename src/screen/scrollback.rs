@@ -181,6 +181,11 @@ impl GlobalScrollbackCache {
     pub fn current_cached_chunks(&self) -> usize {
         self.chunks.len()
     }
+
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.chunks.shrink_to_fit();
+    }
 }
 
 static GLOBAL_SCROLLBACK_CACHE: OnceLock<Mutex<GlobalScrollbackCache>> = OnceLock::new();
@@ -191,6 +196,14 @@ pub fn get_global_scrollback_cache() -> &'static Mutex<GlobalScrollbackCache> {
             GLOBAL_SCROLLBACK_CACHE_MAX_CHUNKS,
         ))
     })
+}
+
+pub fn clear_global_scrollback_cache() {
+    if let Some(mutex) = GLOBAL_SCROLLBACK_CACHE.get()
+        && let Ok(mut cache) = mutex.lock()
+    {
+        cache.clear();
+    }
 }
 
 pub struct ScrollbackStorage {
@@ -227,6 +240,21 @@ impl ScrollbackStorage {
             read_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
             total_disk_lines: 0,
         })
+    }
+
+    pub fn trim_memory(&self) {
+        if let Ok(mut cache) = self.local_cache.try_borrow_mut() {
+            cache.clear();
+            cache.shrink_to_fit();
+        }
+        if let Ok(mut buf) = self.serialize_buf.try_borrow_mut() {
+            buf.clear();
+            buf.shrink_to_fit();
+        }
+        if let Ok(mut buf) = self.read_buf.try_borrow_mut() {
+            buf.clear();
+            buf.shrink_to_fit();
+        }
     }
 
     fn flush_pending_chunk(&mut self) {
@@ -391,6 +419,14 @@ impl Scrollback {
                 None
             },
         }
+    }
+
+    /// Releases local cache entries and shrinks memory capacity.
+    pub fn trim_memory(&mut self) {
+        if let Some(storage) = self.storage.as_mut() {
+            storage.trim_memory();
+        }
+        self.hot_rows.shrink_to_fit();
     }
 
     pub fn push_line(&mut self, cells: &[Cell], wrapped: bool) {

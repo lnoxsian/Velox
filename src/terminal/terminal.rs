@@ -160,6 +160,16 @@ impl Terminal {
         }
     }
 
+    /// Releases excessive heap capacities across outgoing buffers, ANSI parser, and scrollback.
+    pub fn release_memory(&mut self) {
+        if self.outgoing.capacity() > 1024 {
+            self.outgoing.shrink_to_fit();
+        }
+        self.parser.shrink_buffers();
+        self.grid.scrollback.trim_memory();
+        self.alt_grid.scrollback.trim_memory();
+    }
+
     pub fn set_synchronized_output(&mut self, enabled: bool) {
         self.synchronized_output = enabled;
         if enabled {

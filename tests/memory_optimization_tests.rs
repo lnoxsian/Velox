@@ -222,3 +222,44 @@ fn test_global_scrollback_cache_lru_eviction() {
     lock.invalidate_storage(storage_id);
     assert!(lock.get(storage_id, 0).is_none());
 }
+
+#[test]
+fn test_fallback_unload_all_and_prune_idle() {
+    let mut manager = FallbackManager::new();
+    let _ = manager.find_fallback_for_char('\u{1f600}'); // emoji
+    let _ = manager.find_fallback_for_char('中'); // CJK
+
+    // Verify fallbacks were found or queried
+    assert!(manager.fallbacks.len() <= MAX_FALLBACK_FONTS);
+
+    // prune_idle with 0 duration should evict everything
+    let _evicted = manager.prune_idle(std::time::Duration::from_secs(0));
+    assert!(manager.fallbacks.is_empty());
+    assert_eq!(manager.resident_bytes, 0);
+
+    // Now re-query a character to reload
+    let _ = manager.find_fallback_for_char('\u{1f600}');
+    manager.unload_all();
+    assert!(manager.fallbacks.is_empty());
+    assert_eq!(manager.resident_bytes, 0);
+}
+
+#[test]
+fn test_global_scrollback_cache_clear() {
+    let global_cache = velox::screen::scrollback::get_global_scrollback_cache();
+    {
+        let mut lock = global_cache.lock().unwrap();
+        let chunk = Chunk::new();
+        lock.insert(1001, 0, chunk.clone());
+        lock.insert(1002, 0, chunk);
+        assert!(lock.get(1001, 0).is_some());
+    }
+
+    velox::screen::scrollback::clear_global_scrollback_cache();
+
+    {
+        let mut lock = global_cache.lock().unwrap();
+        assert!(lock.get(1001, 0).is_none());
+        assert!(lock.get(1002, 0).is_none());
+    }
+}

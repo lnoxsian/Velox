@@ -205,6 +205,11 @@ impl Tab {
     }
 
     #[inline]
+    pub fn for_each_pane_mut<F: FnMut(&mut Pane)>(&mut self, mut f: F) {
+        self.tree.for_each_pane_mut(&mut f);
+    }
+
+    #[inline]
     pub fn clear_unfocused_selections(&mut self) {
         let active_id = self.active_pane_id;
         self.tree.clear_unfocused_selections(active_id);

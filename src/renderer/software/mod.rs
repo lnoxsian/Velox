@@ -183,17 +183,30 @@ impl CpuRenderer {
         self.tab_glyph_cache.update_font_size(font_size);
     }
 
-    /// Full memory cleanup: compacts glyph atlas, prunes fallback fonts, and shrinks scratch buffers.
+    /// Full memory cleanup: compacts glyph atlas, unloads fallback fonts, and shrinks scratch buffers.
     pub fn release_memory(&mut self) {
         self.glyph_cache.release_memory();
-        self.tab_glyph_cache.release_memory();
+        self.tab_glyph_cache.release_tab_memory();
         self.pane_glyph_caches.clear();
+        self.pane_glyph_caches.shrink_to_fit();
         self.pane_states.clear();
-        if self.framebuffer.pixels.capacity() > self.framebuffer.pixels.len() * 2 {
+        self.pane_states.shrink_to_fit();
+        if self.framebuffer.pixels.capacity() > self.framebuffer.pixels.len() {
             self.framebuffer.pixels.shrink_to_fit();
         }
         self.damage.mark_all();
         self.last_target_ptr = 0;
+    }
+
+    /// Prune fallback fonts that haven't been accessed for at least `max_idle`.
+    pub fn prune_idle_fallbacks(&mut self, max_idle: std::time::Duration) -> usize {
+        let mut evicted = 0;
+        evicted += self.glyph_cache.fallback_manager.prune_idle(max_idle);
+        evicted += self.tab_glyph_cache.fallback_manager.prune_idle(max_idle);
+        for cache in self.pane_glyph_caches.values_mut() {
+            evicted += cache.fallback_manager.prune_idle(max_idle);
+        }
+        evicted
     }
 
     /// Backwards-compatible render entry point (no tab bar). Delegates to `render_with_tab_bar`.

@@ -5,9 +5,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-pub const MAX_FALLBACK_FONTS: usize = 8;
-pub const MAX_FALLBACK_BYTES: usize = 32 * 1024 * 1024; // 32 MB resident fallback budget
-pub const MAX_MISSING_CHARS: usize = 1024;
+pub const MAX_FALLBACK_FONTS: usize = 4;
+pub const MAX_FALLBACK_BYTES: usize = 16 * 1024 * 1024; // 16 MB resident fallback budget
+pub const MAX_MISSING_CHARS: usize = 512;
 
 static SYSTEM_FONT_DB: OnceLock<Arc<Database>> = OnceLock::new();
 
@@ -30,6 +30,7 @@ pub struct FallbackFont {
     pub storage: Arc<FontStorage>,
     pub byte_size: usize,
     pub last_used: u64,
+    pub last_used_instant: std::time::Instant,
     pub path: PathBuf,
 }
 
@@ -115,6 +116,10 @@ impl FallbackManager {
             self.resident_bytes = self.resident_bytes.saturating_sub(evicted.byte_size);
             self.loaded_paths.remove(&evicted.path);
         }
+        if self.fallbacks.is_empty() {
+            self.fallbacks.shrink_to_fit();
+            self.loaded_paths.shrink_to_fit();
+        }
     }
 
     /// Explicitly prune inactive fallback fonts down to a small target count (e.g. on idle cleanup).
@@ -133,6 +138,43 @@ impl FallbackManager {
             self.resident_bytes = self.resident_bytes.saturating_sub(evicted.byte_size);
             self.loaded_paths.remove(&evicted.path);
         }
+        if self.fallbacks.is_empty() {
+            self.fallbacks.shrink_to_fit();
+            self.loaded_paths.shrink_to_fit();
+        }
+    }
+
+    /// Completely unload all resident fallback fonts, release memory mappings, and clear caches.
+    pub fn unload_all(&mut self) {
+        self.fallbacks.clear();
+        self.fallbacks.shrink_to_fit();
+        self.resident_bytes = 0;
+        self.loaded_paths.clear();
+        self.loaded_paths.shrink_to_fit();
+        self.missing_chars.clear();
+        self.missing_chars.shrink_to_fit();
+    }
+
+    /// Evict fallback fonts that have not been accessed within `max_idle`.
+    pub fn prune_idle(&mut self, max_idle: std::time::Duration) -> usize {
+        let now = std::time::Instant::now();
+        let mut idx = 0;
+        let mut evicted_count = 0;
+        while idx < self.fallbacks.len() {
+            if now.duration_since(self.fallbacks[idx].last_used_instant) >= max_idle {
+                let evicted = self.fallbacks.remove(idx);
+                self.resident_bytes = self.resident_bytes.saturating_sub(evicted.byte_size);
+                self.loaded_paths.remove(&evicted.path);
+                evicted_count += 1;
+            } else {
+                idx += 1;
+            }
+        }
+        if self.fallbacks.is_empty() {
+            self.fallbacks.shrink_to_fit();
+            self.loaded_paths.shrink_to_fit();
+        }
+        evicted_count
     }
 
     fn insert_fallback(
@@ -151,6 +193,7 @@ impl FallbackManager {
             storage,
             byte_size,
             last_used: self.usage_counter,
+            last_used_instant: std::time::Instant::now(),
             path,
         });
 
@@ -176,6 +219,7 @@ impl FallbackManager {
                 {
                     self.usage_counter = self.usage_counter.wrapping_add(1);
                     fallback.last_used = self.usage_counter;
+                    fallback.last_used_instant = std::time::Instant::now();
                     return Some(idx);
                 }
             }
@@ -185,6 +229,7 @@ impl FallbackManager {
             if fallback.font.glyph_id(c).0 != 0 {
                 self.usage_counter = self.usage_counter.wrapping_add(1);
                 fallback.last_used = self.usage_counter;
+                fallback.last_used_instant = std::time::Instant::now();
                 return Some(idx);
             }
         }
