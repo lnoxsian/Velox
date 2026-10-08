@@ -189,30 +189,6 @@ fn test_combining_registry_bounded_capacity() {
 }
 
 #[test]
-fn test_pane_render_state_damage_and_caching() {
-    let mut state = velox::renderer::state::PaneRenderState::new();
-    assert!(state.dirty);
-    assert!(state.full_redraw);
-
-    state.ensure_rows(24);
-    assert_eq!(state.row_cache.len(), 24);
-
-    state.clear_damage();
-    assert!(!state.dirty);
-    assert!(!state.full_redraw);
-    assert!(!state.dirty_rows.any_dirty());
-
-    state.mark_row_dirty(5);
-    assert!(state.dirty);
-    assert!(state.dirty_rows.is_dirty(5));
-    assert!(!state.dirty_rows.is_dirty(6));
-    assert!(!state.row_cache[5].valid);
-
-    state.release_memory();
-    assert!(state.full_redraw);
-}
-
-#[test]
 fn test_pty_buffer_pool_acquire_and_recycle() {
     let pool = velox::pty::get_pty_buffer_pool();
     let initial_len = pool.len();

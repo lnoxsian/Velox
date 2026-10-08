@@ -1,10 +1,10 @@
 # Velox Terminal Overview
 
-Velox is an ultra-fast, lightweight Linux terminal emulator written in Rust. It offers hardware-accelerated OpenGL rendering alongside a pure-Rust CPU software renderer fallback (`softbuffer`), multi-tab workflows with isolated font zooming, ANSI/VT protocol parsing, asynchronous PTY management, synthetic italic typography fallbacks, memory compaction, clipboard integration, and single-instance IPC.
+Velox is an ultra-fast, lightweight Linux terminal emulator written in Rust. It offers a pure-Rust CPU software renderer (`softbuffer`), multi-tab workflows with isolated font zooming, ANSI/VT protocol parsing, asynchronous PTY management, synthetic italic typography fallbacks, memory compaction, clipboard integration, and single-instance IPC.
 
 ## Implemented Features
 
-- **Dual Rendering Pipelines**: Hardware OpenGL 3.3+ texture atlas glyph renderer (120–240 FPS) and native CPU software renderer via `softbuffer` with fine-grained `DamageMap` row tracking.
+- **Pure CPU Software Renderer**: Native CPU software renderer via `softbuffer` with fine-grained `DamageMap` row tracking, SIMD-friendly alpha blitters, and linear framebuffer composition.
 - **Tab Management (`src/app/tab.rs`)**: Full multi-tab support with `Auto`, `Always`, and `Never` visibility, interactive tab creation/closing, middle-click close, per-tab font size isolation, and custom tab accent colors.
 - **Zero-Flicker Startup Sequence**: Window created initially hidden, first frame rendered synchronously before window reveal, transparency enabled conditionally based on opacity, eliminating cold-start transparent flickering.
 - **Synthetic Italic Typography (`src/font/resolved.rs`)**: Dynamic glyph outline shearing (`shear_outline`) and point transformation when native italic font variants are absent.
@@ -48,7 +48,7 @@ src/
 ├── font/                   # Typography, atlas rasterizer & fallbacks
 │   ├── mod.rs
 │   ├── fallback.rs         # System font fallback LRU with byte budgeting
-│   ├── loader.rs           # OpenGL atlas texture packing & glyph caching
+│   ├── loader.rs           # Font loaders & character classification
 │   ├── resolved.rs         # ResolvedFontSet & synthetic italic outline shearing
 │   └── storage.rs          # Shared Arc-backed font data storage
 ├── hyperlink/              # Hyperlink detection & activation
@@ -62,9 +62,9 @@ src/
 │   ├── mod.rs
 │   ├── master.rs           # PTY master read/write/resize helpers
 │   └── process.rs          # Shell process spawning & fork execution
-├── renderer/               # Dual rendering backends
-│   ├── mod.rs
-│   ├── renderer.rs         # Hardware OpenGL 3.3+ shader atlas renderer
+├── renderer/               # Pure CPU software rendering pipeline
+│   ├── mod.rs              # Re-exports & SeparatorRenderData
+│   ├── backend.rs          # Window & softbuffer Surface initialization
 │   └── software/           # Pure-Rust CPU software renderer
 │       ├── mod.rs          # CpuRenderer & blitting pipeline
 │       ├── atlas.rs        # Software glyph bitmap atlas
@@ -99,7 +99,7 @@ src/
 | :--- | :--- |
 | **Startup** | `< 15ms` (Zero-flicker cold start) |
 | **Idle Memory** | `< 30MB` (Standalone) / `~3–5MB` (IPC sub-window/tab) |
-| **Frame Rate** | `120–240 FPS` (GPU) / `60 FPS` (Software) |
+| **Frame Rate** | `60 FPS` (Software) |
 | **Rendering** | Dirty-region driven with frame throttler |
 | **Allocations** | Reused frame buffers, bounded fallback cache & allocator trimming |
 | **IPC Creation** | `< 3ms` |
@@ -119,9 +119,8 @@ Velox reads configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HO
 | **`[font]`** | `bold_is_bright` | bool | `true` | Map bold text to bright ANSI colors |
 | **`[window]`**| `scrollback_limit` | integer | `2000` | Finite scrollback line limit |
 | **`[window]`**| `infinite_scrollback`| bool | `true` | Enable chunked disk-backed infinite history |
-| **`[window]`**| `gpu_acceleration` | bool | `true` | Use OpenGL (true) or native CPU software (false) |
 | **`[window]`**| `scroll_multiplier` | float | `5.0` | Mouse wheel scroll speed multiplier |
-| **`[window]`**| `fps_limit` | integer | `120` (GPU) / `60` (CPU)| Maximum render frames per second |
+| **`[window]`**| `fps_limit` | integer | `60` | Maximum render frames per second |
 | **`[window]`**| `padding_x` | float | `8.0` | Horizontal window padding in pixels |
 | **`[window]`**| `padding_y` | float | `4.0` | Vertical window padding in pixels |
 | **`[window]`**| `cursor_shape` | string | `"beam"` | Cursor shape: `block`, `beam`, `underline`, `hollow_block` |

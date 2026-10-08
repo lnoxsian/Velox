@@ -6,7 +6,7 @@ use velox::app::split::{
 };
 use velox::app::tab::Tab;
 use velox::pty::process::spawn_process;
-use velox::renderer::renderer::SeparatorRenderData;
+use velox::renderer::SeparatorRenderData;
 use velox::renderer::software::{CpuPaneRenderData, CpuRenderer};
 use velox::screen::cell::Color;
 use velox::screen::cursor::CursorShape;
@@ -1250,51 +1250,6 @@ fn test_software_renderer_large_font_split_does_not_spill_pixels() {
 }
 
 #[test]
-fn test_font_loader_initial_atlas_dim_scales_for_large_fonts() {
-    use velox::font::loader::compute_initial_atlas_dim;
-
-    // Small/normal fonts: cell dims around 8x16 -> 512
-    assert_eq!(compute_initial_atlas_dim(8, 16), 512);
-    assert_eq!(compute_initial_atlas_dim(10, 20), 512);
-
-    // Medium-large fonts (e.g. 24px - 32px): cell dims around 18x36
-    let dim_medium = compute_initial_atlas_dim(18, 36);
-    assert!(
-        dim_medium >= 1024,
-        "Atlas dim should be >= 1024 for 18x36, got {}",
-        dim_medium
-    );
-
-    // Very large fonts (e.g. 48px - 72px): cell dims around 35x70 or 50x100
-    let dim_large = compute_initial_atlas_dim(35, 70);
-    assert!(
-        dim_large >= 2048,
-        "Atlas dim should be >= 2048 for 35x70, got {}",
-        dim_large
-    );
-}
-
-#[test]
-fn test_pane_render_state_atlas_tracking() {
-    use velox::renderer::state::PaneRenderState;
-
-    let mut state = PaneRenderState::default();
-    assert_eq!(state.last_atlas_texture, None);
-    assert_eq!(state.last_atlas_generation, 0);
-
-    // Simulate texture and generation updates
-    state.last_atlas_generation = 1;
-    state.ensure_rows(24);
-    assert_eq!(state.row_cache.len(), 24);
-
-    // Marking full redraw clears row cache validity
-    state.row_cache[0].valid = true;
-    state.mark_full_redraw();
-    assert!(!state.row_cache[0].valid);
-    assert!(state.full_redraw);
-}
-
-#[test]
 fn test_new_split_and_tab_font_size_defaults_to_config_not_zoomed() {
     let config_default_font_size = 14.0;
 
@@ -1388,9 +1343,8 @@ fn test_drag_selection_across_split_clamps_to_originating_pane() {
     let p2 = create_test_pane(2, 40, 24);
     tree.split_pane(1, p2, SplitDirection::Vertical, 0.5, 100);
 
-    let (pane_rects, _) = tree.calculate_layout(
-        0.0, 0.0, 800.0, 600.0, 4.0, 0.0, 0.0, 10, 20, 14.0, 10, 5,
-    );
+    let (pane_rects, _) =
+        tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 0.0, 0.0, 10, 20, 14.0, 10, 5);
     let r1 = pane_rects.iter().find(|r| r.pane_id == 1).unwrap();
     let r2 = pane_rects.iter().find(|r| r.pane_id == 2).unwrap();
 
@@ -1529,30 +1483,53 @@ fn test_software_renderer_multi_pane_focus_switching() {
         theme.resolve_cursor_color(theme.default_fg),
     )
     .to_u32();
-    let bg_color = velox::renderer::software::color::PackedColor::from_color(
-        theme.default_bg,
-    )
-    .to_u32();
+    let bg_color =
+        velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // Verify cursor on active pane
-    assert_eq!(target_buffer[cursor_pixel_idx], cursor_color, "Pane 1 cursor must be drawn in Frame 1");
+    assert_eq!(
+        target_buffer[cursor_pixel_idx], cursor_color,
+        "Pane 1 cursor must be drawn in Frame 1"
+    );
 
     // Verify per-pane bold_is_bright mapping on cell 1
     let cell1 = &p1.terminal.grid.cells[1];
-    let (fg1, _) = renderer.palette.resolve_cell_colors_pane(cell1, false, true, 0.0, &theme, 0);
+    let (fg1, _) = renderer
+        .palette
+        .resolve_cell_colors_pane(cell1, false, true, 0.0, &theme, 0);
     let cell2 = &p2.terminal.grid.cells[1];
-    let (fg2, _) = renderer.palette.resolve_cell_colors_pane(cell2, false, false, 0.0, &theme, 0);
-    let bright_red = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
-    let regular_red = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1]).to_u32();
-    assert_eq!(fg1, bright_red, "Pane 1 with bold_is_bright: true must use bright ANSI color 9");
-    assert_eq!(fg2, regular_red, "Pane 2 with bold_is_bright: false must use regular ANSI color 1");
+    let (fg2, _) = renderer
+        .palette
+        .resolve_cell_colors_pane(cell2, false, false, 0.0, &theme, 0);
+    let bright_red =
+        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+    let regular_red =
+        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1]).to_u32();
+    assert_eq!(
+        fg1, bright_red,
+        "Pane 1 with bold_is_bright: true must use bright ANSI color 9"
+    );
+    assert_eq!(
+        fg2, regular_red,
+        "Pane 2 with bold_is_bright: false must use regular ANSI color 1"
+    );
 
     // Verify focus dimming in Frame 1 (Pane 1 active dim 0.0, Pane 2 inactive dim 0.15)
-    let (p1_f1_fg, _) = renderer.palette.resolve_cell_colors_pane(cell1, false, true, 0.0, &theme, 0);
-    let (p2_f1_fg, _) = renderer.palette.resolve_cell_colors_pane(cell2, false, false, 0.15, &theme, 0);
-    let undimmed_fg = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
-    let dimmed_fg = velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15)).to_u32();
-    assert_eq!(p1_f1_fg, undimmed_fg, "Pane 1 should be undimmed in Frame 1");
+    let (p1_f1_fg, _) = renderer
+        .palette
+        .resolve_cell_colors_pane(cell1, false, true, 0.0, &theme, 0);
+    let (p2_f1_fg, _) = renderer
+        .palette
+        .resolve_cell_colors_pane(cell2, false, false, 0.15, &theme, 0);
+    let undimmed_fg =
+        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+    let dimmed_fg =
+        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15))
+            .to_u32();
+    assert_eq!(
+        p1_f1_fg, undimmed_fg,
+        "Pane 1 should be undimmed in Frame 1"
+    );
     assert_eq!(p2_f1_fg, dimmed_fg, "Pane 2 should be dimmed in Frame 1");
 
     // Frame 2: Focus moves to Pane 2! Grids have clear_damage() called between frames
@@ -1600,8 +1577,7 @@ fn test_software_renderer_multi_pane_focus_switching() {
 
     // Verify Pane 1 cursor was erased despite clean damage
     assert_eq!(
-        target_buffer[cursor_pixel_idx],
-        bg_color,
+        target_buffer[cursor_pixel_idx], bg_color,
         "Pane 1 cursor must be erased after losing focus even with clean grid damage"
     );
 
@@ -1612,7 +1588,7 @@ fn test_software_renderer_multi_pane_focus_switching() {
 
 #[test]
 fn test_zoom_limits_and_clamping_parity() {
-    use velox::app::split::{clamp_font_size, MAX_FONT_SIZE_SCALE, MIN_FONT_SIZE_SCALE};
+    use velox::app::split::{MAX_FONT_SIZE_SCALE, MIN_FONT_SIZE_SCALE, clamp_font_size};
 
     let base = 14.0;
     let min_expected = (base * MIN_FONT_SIZE_SCALE).max(1.0); // 2.8
@@ -1724,7 +1700,10 @@ fn test_zoom_limits_and_clamping_parity() {
 
     assert!(renderer.pane_glyph_caches.contains_key(&7000));
     assert!(!renderer.pane_glyph_caches.contains_key(&20000));
-    assert_eq!(renderer.pane_glyph_caches.get(&7000).unwrap().font_size, 70.0);
+    assert_eq!(
+        renderer.pane_glyph_caches.get(&7000).unwrap().font_size,
+        70.0
+    );
     assert!(renderer.pane_glyph_caches.contains_key(&280));
     assert!(!renderer.pane_glyph_caches.contains_key(&10));
     assert_eq!(renderer.pane_glyph_caches.get(&280).unwrap().font_size, 2.8);
@@ -1742,22 +1721,28 @@ fn test_zoom_limits_and_clamping_parity() {
         base,
     );
     tab.tree.find_pane_mut(1).unwrap().font_size = 70.0;
-    let (rects_70, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    let (rects_70, _) = tab
+        .tree
+        .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
     tab.tree.find_pane_mut(1).unwrap().font_size = 200.0;
-    let (rects_200, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    let (rects_200, _) = tab
+        .tree
+        .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
     assert_eq!(rects_70[0].cell_width, rects_200[0].cell_width);
     assert_eq!(rects_70[0].cell_height, rects_200[0].cell_height);
     assert_eq!(rects_70[0].cols, rects_200[0].cols);
     assert_eq!(rects_70[0].rows, rects_200[0].rows);
 
     tab.tree.find_pane_mut(1).unwrap().font_size = 2.8;
-    let (rects_2_8, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    let (rects_2_8, _) = tab
+        .tree
+        .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
     tab.tree.find_pane_mut(1).unwrap().font_size = 0.1;
-    let (rects_0_1, _) = tab.tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    let (rects_0_1, _) = tab
+        .tree
+        .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
     assert_eq!(rects_2_8[0].cell_width, rects_0_1[0].cell_width);
     assert_eq!(rects_2_8[0].cell_height, rects_0_1[0].cell_height);
     assert_eq!(rects_2_8[0].cols, rects_0_1[0].cols);
     assert_eq!(rects_2_8[0].rows, rects_0_1[0].rows);
 }
-
-

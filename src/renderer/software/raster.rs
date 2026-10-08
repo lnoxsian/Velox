@@ -56,8 +56,12 @@ pub fn blit_alpha_glyph_clipped(
         return;
     }
 
-    let max_y = (gh).min(fb_h.saturating_sub(py as usize)).min(clip_h as usize);
-    let max_x = (gw).min(fb_w.saturating_sub(px as usize)).min(clip_w as usize);
+    let max_y = (gh)
+        .min(fb_h.saturating_sub(py as usize))
+        .min(clip_h as usize);
+    let max_x = (gw)
+        .min(fb_w.saturating_sub(px as usize))
+        .min(clip_w as usize);
     if max_x == 0 || max_y == 0 {
         return;
     }
@@ -134,8 +138,12 @@ pub fn blit_color_glyph_clipped(
         return;
     }
 
-    let max_y = (gh).min(fb_h.saturating_sub(py as usize)).min(clip_h as usize);
-    let max_x = (gw).min(fb_w.saturating_sub(px as usize)).min(clip_w as usize);
+    let max_y = (gh)
+        .min(fb_h.saturating_sub(py as usize))
+        .min(clip_h as usize);
+    let max_x = (gw)
+        .min(fb_w.saturating_sub(px as usize))
+        .min(clip_w as usize);
     if max_x == 0 || max_y == 0 {
         return;
     }
@@ -173,7 +181,16 @@ pub fn blit_color_glyph(
     glyph_w: u16,
     glyph_h: u16,
 ) {
-    blit_color_glyph_clipped(fb, px, py, color_pixels, glyph_w, glyph_h, u32::MAX, u32::MAX);
+    blit_color_glyph_clipped(
+        fb,
+        px,
+        py,
+        color_pixels,
+        glyph_w,
+        glyph_h,
+        u32::MAX,
+        u32::MAX,
+    );
 }
 
 #[cfg(test)]

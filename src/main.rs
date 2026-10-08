@@ -50,12 +50,22 @@ fn main() {
 
     cli_opts.single_instance = single_instance;
 
-    if !config.gpu_acceleration().unwrap_or(true) {
-        log::info!("GPU acceleration disabled. Using native CPU software renderer via softbuffer.");
-    }
+    log::info!("Initialized Velox with native CPU software renderer via softbuffer.");
 
-    let event_loop = EventLoop::<CustomEvent>::with_user_event().build().unwrap();
+    let event_loop = match EventLoop::<CustomEvent>::with_user_event().build() {
+        Ok(el) => el,
+        Err(e) => {
+            eprintln!("Error: Failed to initialize display backend: {}", e);
+            eprintln!(
+                "Note: Velox requires a running graphical session (Wayland or X11).\nEnsure WAYLAND_DISPLAY or DISPLAY is set in your environment."
+            );
+            std::process::exit(1);
+        }
+    };
     let proxy = event_loop.create_proxy();
     let mut app = App::new(proxy, cli_opts);
-    event_loop.run_app(&mut app).unwrap();
+    if let Err(e) = event_loop.run_app(&mut app) {
+        eprintln!("Error running Velox application: {}", e);
+        std::process::exit(1);
+    }
 }

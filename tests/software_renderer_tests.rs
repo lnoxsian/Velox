@@ -1393,4 +1393,3 @@ fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
         "Translucent grid cell pixel must match translucent padding pixel exactly"
     );
 }
-

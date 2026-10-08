@@ -1,6 +1,14 @@
 use crate::app::pane::PaneId;
-use crate::app::split::{PaneRect, SplitDirection};
-use crate::renderer::renderer::SeparatorRenderData;
+use crate::app::split::{PaneRect, SeparatorRect, SplitDirection};
+
+#[derive(Debug, Clone, Copy)]
+pub struct SeparatorRenderData {
+    pub rect: SeparatorRect,
+    pub is_active: bool,
+    pub active_segment: Option<(f32, f32)>,
+    pub is_hovered: bool,
+    pub is_dragging: bool,
+}
 pub mod atlas;
 pub mod color;
 pub mod damage;
@@ -23,9 +31,7 @@ use decorations::{
     draw_curly_underline, draw_cursor, draw_double_underline, draw_strike, draw_underline,
 };
 use primitives::try_render_primitive;
-use raster::{
-    blit_alpha_glyph, blit_alpha_glyph_clipped, blit_color_glyph_clipped,
-};
+use raster::{blit_alpha_glyph, blit_alpha_glyph_clipped, blit_color_glyph_clipped};
 use std::time::Instant;
 
 use std::collections::HashMap;
@@ -291,67 +297,67 @@ impl CpuRenderer {
 
     #[inline(always)]
     fn get_row_cursor_and_selection(
-    pane: &CpuPaneRenderData,
-    y: usize,
-    is_focused: bool,
-    history_len: usize,
-    sel_bounds: ((usize, usize), (usize, usize)),
-) -> RowLayoutInfo {
-    let grid = pane.grid;
-    let abs_y = y + history_len;
-    let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
-        (true, abs_y - grid.scroll_offset)
-    } else {
-        (false, 0)
-    };
-    let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = sel_bounds;
-    let is_row_in_selection = pane.is_active
-        && grid.selection.active
-        && !grid.selection.is_empty()
-        && is_row_valid
-        && abs_row >= sel_min_abs_y
-        && abs_row <= sel_max_abs_y;
-    let is_active_grid_row = is_row_valid && abs_row >= history_len;
-    let grid_y = if is_active_grid_row {
-        abs_row - history_len
-    } else {
-        0
-    };
-
-    let current_cursor = if pane.is_active
-        && pane.cursor_visible
-        && is_active_grid_row
-        && grid_y == grid.cursor.y
-    {
-        Some((pane.display_cursor_x, pane.cursor_shape, is_focused))
-    } else {
-        None
-    };
-
-    let current_selection = if is_row_in_selection {
-        let sel_range = if sel_min_abs_y == sel_max_abs_y {
-            (sel_min_x, sel_max_x)
-        } else if abs_row == sel_min_abs_y {
-            (sel_min_x, grid.width)
-        } else if abs_row == sel_max_abs_y {
-            (0, sel_max_x)
+        pane: &CpuPaneRenderData,
+        y: usize,
+        is_focused: bool,
+        history_len: usize,
+        sel_bounds: ((usize, usize), (usize, usize)),
+    ) -> RowLayoutInfo {
+        let grid = pane.grid;
+        let abs_y = y + history_len;
+        let (is_row_valid, abs_row) = if abs_y >= grid.scroll_offset {
+            (true, abs_y - grid.scroll_offset)
         } else {
-            (0, grid.width)
+            (false, 0)
         };
-        Some(sel_range)
-    } else {
-        None
-    };
+        let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = sel_bounds;
+        let is_row_in_selection = pane.is_active
+            && grid.selection.active
+            && !grid.selection.is_empty()
+            && is_row_valid
+            && abs_row >= sel_min_abs_y
+            && abs_row <= sel_max_abs_y;
+        let is_active_grid_row = is_row_valid && abs_row >= history_len;
+        let grid_y = if is_active_grid_row {
+            abs_row - history_len
+        } else {
+            0
+        };
 
-    RowLayoutInfo {
-        is_row_in_selection,
-        abs_row,
-        is_active_grid_row,
-        grid_y,
-        current_cursor,
-        current_selection,
+        let current_cursor = if pane.is_active
+            && pane.cursor_visible
+            && is_active_grid_row
+            && grid_y == grid.cursor.y
+        {
+            Some((pane.display_cursor_x, pane.cursor_shape, is_focused))
+        } else {
+            None
+        };
+
+        let current_selection = if is_row_in_selection {
+            let sel_range = if sel_min_abs_y == sel_max_abs_y {
+                (sel_min_x, sel_max_x)
+            } else if abs_row == sel_min_abs_y {
+                (sel_min_x, grid.width)
+            } else if abs_row == sel_max_abs_y {
+                (0, sel_max_x)
+            } else {
+                (0, grid.width)
+            };
+            Some(sel_range)
+        } else {
+            None
+        };
+
+        RowLayoutInfo {
+            is_row_in_selection,
+            abs_row,
+            is_active_grid_row,
+            grid_y,
+            current_cursor,
+            current_selection,
+        }
     }
-}
 
     #[allow(clippy::too_many_arguments)]
     pub fn render_splits(
@@ -376,14 +382,12 @@ impl CpuRenderer {
         // Prune stale pane glyph caches from closed panes or obsolete font sizes
         if self.pane_glyph_caches.len() > panes.len() {
             self.pane_glyph_caches.retain(|&k, _| {
-                panes
-                    .iter()
-                    .any(|p| {
-                        (crate::app::split::clamp_font_size(p.font_size, self.default_font_size)
-                            * 100.0)
-                            .round() as u32
-                            == k
-                    })
+                panes.iter().any(|p| {
+                    (crate::app::split::clamp_font_size(p.font_size, self.default_font_size)
+                        * 100.0)
+                        .round() as u32
+                        == k
+                })
             });
         }
         if self.pane_states.len() > panes.len() {
@@ -460,14 +464,21 @@ impl CpuRenderer {
             }
 
             for y in 0..grid_h {
-                let row_info =
-                    Self::get_row_cursor_and_selection(pane, y, is_focused, history_len, selection_bounds);
+                let row_info = Self::get_row_cursor_and_selection(
+                    pane,
+                    y,
+                    is_focused,
+                    history_len,
+                    selection_bounds,
+                );
 
                 let row_state = state.row_states.get(y);
                 let last_cursor = row_state.and_then(|r| r.last_cursor);
                 let last_selection = row_state.and_then(|r| r.last_selection_range);
 
-                if last_cursor != row_info.current_cursor || last_selection != row_info.current_selection {
+                if last_cursor != row_info.current_cursor
+                    || last_selection != row_info.current_selection
+                {
                     any_pane_damage = true;
                     break;
                 }
@@ -573,7 +584,8 @@ impl CpuRenderer {
                 || (state.last_dim - pane_effective_dim).abs() > 0.001
                 || (state.last_font_size - font_size).abs() > 0.01;
 
-            let pane_full_redraw = self.damage.full_redraw || grid.damage.full_redraw || pane_layout_changed;
+            let pane_full_redraw =
+                self.damage.full_redraw || grid.damage.full_redraw || pane_layout_changed;
             if pane_full_redraw {
                 self.framebuffer
                     .fill_span(tile_x, tile_y, tile_w, tile_h, default_pane_bg);
@@ -815,14 +827,13 @@ impl CpuRenderer {
                                 let glyph_key =
                                     GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
 
-                                let glyph_cache = if (self.glyph_cache.font_size - font_size).abs()
-                                    < 0.01
-                                {
-                                    &mut self.glyph_cache
-                                } else {
-                                    let key = (font_size * 100.0).round() as u32;
-                                    self.pane_glyph_caches.get_mut(&key).unwrap()
-                                };
+                                let glyph_cache =
+                                    if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
+                                        &mut self.glyph_cache
+                                    } else {
+                                        let key = (font_size * 100.0).round() as u32;
+                                        self.pane_glyph_caches.get_mut(&key).unwrap()
+                                    };
 
                                 if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
                                     if glyph_ref.is_color {
@@ -865,7 +876,14 @@ impl CpuRenderer {
                         let deco_w = target_w.min(clip_w);
                         if deco_w > 0 {
                             if cell.flags.contains(CellFlags::UNDERLINE) {
-                                draw_underline(&mut self.framebuffer, px, py, deco_w, cell_h, ul_color);
+                                draw_underline(
+                                    &mut self.framebuffer,
+                                    px,
+                                    py,
+                                    deco_w,
+                                    cell_h,
+                                    ul_color,
+                                );
                             }
                             if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
                                 draw_double_underline(
@@ -888,7 +906,14 @@ impl CpuRenderer {
                                 );
                             }
                             if cell.flags.contains(CellFlags::STRIKE) {
-                                draw_strike(&mut self.framebuffer, px, py, deco_w, cell_h, ul_color);
+                                draw_strike(
+                                    &mut self.framebuffer,
+                                    px,
+                                    py,
+                                    deco_w,
+                                    cell_h,
+                                    ul_color,
+                                );
                             }
                         }
                     }

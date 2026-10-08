@@ -2,14 +2,14 @@
 
 ## Overview
 
-Velox is a modular, high-performance terminal emulator built around focused, decoupled Rust modules. The system architecture coordinates an event-driven multi-window/multi-tab application runtime, asynchronous pseudo-terminal (PTY) streams, VT/ANSI protocol engines, dual rendering pipelines (Hardware OpenGL and pure-Rust CPU Software), synthetic typography fallbacks, bounded memory paging, and single-instance IPC.
+Velox is a modular, high-performance terminal emulator built around focused, decoupled Rust modules. The system architecture coordinates an event-driven multi-window/multi-tab application runtime, asynchronous pseudo-terminal (PTY) streams, VT/ANSI protocol engines, a pure-Rust CPU software rendering pipeline via `softbuffer`, synthetic typography fallbacks, bounded memory paging, and single-instance IPC.
 
 ## Architectural Principles
 
 ```text
 1. Single Responsibility: Each module strictly owns one functional domain.
-2. Dual Rendering Parity: OpenGL and CPU software renderers produce identical visual output.
-3. Zero-Allocation Hot Paths: Reuse vertex buffers, cell buffers, and scratch pixel vectors.
+2. Software-Only Rendering: Pure CPU rasterization and composition without GPU dependencies.
+3. Zero-Allocation Hot Paths: Reuse cell buffers and scratch pixel vectors.
 4. Bounded Memory Budgets: Fallback fonts, scrollback history, and glyph caches enforce strict limits.
 5. Async/Non-Blocking I/O: PTY readers run on dedicated threads communicating via event loop proxies.
 6. Zero-Flicker Presentation: Windows render their initial frame synchronously before being mapped.
@@ -41,14 +41,14 @@ flowchart TD
         WS --> TabN
     end
 
-    subgraph DualBackends["Dual Rendering Backends (WindowRendererBackend)"]
-        GLBackend["WindowRendererBackend::OpenGL<br/>(glow + GLSL 330 Shaders)"]
-        SoftBackend["WindowRendererBackend::Software<br/>(softbuffer + CpuRenderer Damage)"]
+    subgraph SoftwareRendering["Software Rendering Pipeline (CpuRenderer)"]
+        SoftRenderer["renderer::software::CpuRenderer<br/>(DamageMap Dirty Tracking)"]
+        SoftSurface["softbuffer::Surface<br/>(Linux SHM Framebuffer Presentation)"]
+        SoftRenderer --> SoftSurface
     end
 
     App -->|Manages 1..N Windows| WS
-    WS -->|Hardware Path| GLBackend
-    WS -->|Software Fallback| SoftBackend
+    WS -->|CPU Blitting| SoftRenderer
 ```
 
 ---
@@ -66,62 +66,53 @@ flowchart TD
 
 ### 2. Application & Window Orchestration (`app::`)
 
-- **`App`**: The top-level `winit::application::ApplicationHandler` managing all active `WindowId -> WindowState` instances, GL display/context initialization, modifier states, single-instance daemon mode, and IPC listener handles.
-- **`WindowState`**: Represents an open native window. Owns the active `WindowRendererBackend`, mouse/keyboard interaction state, tab list (`Vec<Tab>`), active tab index, tab bar layout (`TabBar`), render buffers, frame limiter, and window opacity/dimming parameters.
+- **`App`**: The top-level `winit::application::ApplicationHandler` managing all active `WindowId -> WindowState` instances, modifier states, single-instance daemon mode, and IPC listener handles.
+- **`WindowState`**: Represents an open native window. Owns the `CpuRenderer`, `softbuffer::Surface`, mouse/keyboard interaction state, tab list (`Vec<Tab>`), active tab index, tab bar layout (`TabBar`), render buffers, frame limiter, and window opacity/dimming parameters.
 - **`Tab` (`app/tab.rs`)**: Owns an individual tab's execution context: dedicated PTY master, background reader thread, `Terminal` state machine, custom title, hold-on-exit flag, and isolated tab zoom font size.
 - **`TabBar` (`app/tab.rs`)**: Manages tab bar layout, visibility modes (`Auto`, `Always`, `Never`), close/new-tab button hit testing, hover states, and generates render metadata (`TabBarRenderInfo`).
 
-### 3. Display Connection & Rendering Engine Lifecycle (`renderer::backend`)
+### 3. Display Connection & Window Creation (`renderer::backend`)
 
-Velox abstracts window creation and rendering backend selection behind `create_window_and_renderer`, governed by `renderer_backend = "auto" | "opengl" | "software"`:
+Velox initializes native Linux windows and display surfaces via `create_window_and_renderer`:
 
-- **`GlDisplayManager`**: Bootstraps the EGL/GLX display connection using `glutin_winit::DisplayBuilder` with `ApiPreference::PreferEgl` **without** allocating dummy 1x1 windows.
-- **Window & Context Binding**: The real window is created via `glutin_winit::finalize_window`, guaranteeing that X11 visuals and Wayland EGL configs match exactly. Context attributes target OpenGL 3.3 Core Profile.
+- **Winit Windowing**: Creates windows with explicit Wayland/X11 attributes, initially hidden for zero cold-start flicker.
+- **`softbuffer` Surface**: Binds a CPU-accessible shared memory presentation surface (`wl_shm` on Wayland or X11 MIT-SHM on X11) directly to the window.
 - **Zero-Size Protection**: Both surface creation and resizing guard against zero width or height by clamping dimensions with `NonZeroU32`, preventing driver panics on Wayland compositors during minimize/unmap transitions.
-- **Automatic Fallback Hierarchy**: In `Auto` mode, if display connection, config finding, context creation, or surface binding fails at any step, Velox logs a warning and cleanly switches to the CPU software renderer (`softbuffer`) without terminating the user's session.
-- **Diagnostics (`src/diagnostics.rs`)**: Standalone probe function `probe_opengl()` creates a headless test context to inspect active driver vendor, renderer, GL version, and GLSL version without modifying application state.
+- **Diagnostics (`src/diagnostics.rs`)**: Standalone system checks inspecting Linux display server connection, font database status, and desktop integration without GPU dependencies.
 
-### 4. Dual Rendering Backends (`renderer::`)
+### 4. Pure CPU Software Renderer (`renderer::software::CpuRenderer`)
 
-Velox provides two full-featured renderers sharing identical layout and visual parity:
-
-#### A. Hardware OpenGL Renderer (`renderer::Renderer`)
-- Utilizes `glow` on an OpenGL 3.3+ core profile.
-- Single dynamic glyph texture atlas for ASCII, Nerd Fonts, and Unicode symbols.
-- Two-pass vertex batching: Pass 1 renders background colored quads; Pass 2 renders textured glyph quads, cursor shapes, and line decorations.
-- GPU clear with premultiplied alpha for seamless transparency support (`opacity`).
-
-#### B. CPU Software Renderer (`renderer::software::CpuRenderer`)
-- Pure-Rust CPU blitting directly to a 32-bit ARGB `Framebuffer` presented via `softbuffer`.
+- Pure-Rust CPU blitting directly to a 32-bit linear ARGB `Framebuffer` presented via `softbuffer`.
 - Fine-grained `DamageMap` row tracking: only dirty terminal rows and damaged glyph spans are redrawn, achieving near-zero CPU usage when idle.
 - Full line decoration suite (`decorations.rs`): single, double, curly, dotted, and dashed underlines, strikethrough, block/beam/hollow cursors, and unfocused dimming.
 - Fast-path box and block drawing primitives (`primitives.rs`).
+- High-efficiency alpha blitters (`raster.rs`) for glyph rasterization onto the CPU buffer.
 
-### 3. Typography & Synthetic Italic Engine (`font::`)
+### 5. Typography & Synthetic Italic Engine (`font::`)
 
 - **`ResolvedFontSet` (`font/resolved.rs`)**: Resolves regular, bold, italic, and bold-italic font faces.
 - **Synthetic Italic Shearing (`shear_outline`)**: When an italic font variant is missing on the system, Velox dynamically shears the vector outlines of regular glyphs using horizontal shearing matrices and adjusts bounding boxes to prevent clipping.
 - **`FallbackManager` (`font/fallback.rs`)**: Automatically discovers missing glyphs across system fonts (Nerd Fonts, Powerline, emoji fonts) with an LRU cache bounded by a strict memory budget (`MAX_FALLBACK_BYTES = 64MB`).
 - **`SYSTEM_FONT_DB`**: Process-wide shared `fontdb::Database` initialized once to eliminate redundant font directory parsing across windows and tabs.
 
-### 4. Terminal State & ANSI Parsing (`terminal::`, `ansi::`)
+### 6. Terminal State & ANSI Parsing (`terminal::`, `ansi::`)
 
 - **Byte Stream Parser (`ansi/`)**: Zero-allocation state machine decoding ANSI, CSI, OSC, and DCS byte sequences.
 - **`Terminal` (`terminal/terminal.rs`)**: Maintains active and alternate screen grids, cursor positions, graphic rendition attributes (SGR), bracketed paste, synchronized output, focus tracking, and semantic prompt markers (OSC-133).
 - **Hyperlink Engine (`hyperlink/`)**: Detects explicit OSC-8 hyperlinks and implicit HTTP(S) URLs with interactive mouse hover and click-to-open handlers.
 
-### 5. Screen Buffers & Infinite Scrollback (`screen::`)
+### 7. Screen Buffers & Infinite Scrollback (`screen::`)
 
 - **`Grid` (`screen/grid.rs`)**: Two-dimensional character cell array storing `Cell` entries (character, fg color, bg color, `CellFlags`). Supports wide characters (emojis, CJK), cursor placement, and full line reflow on resize.
 - **Chunked Infinite Scrollback (`screen/scrollback.rs`)**: Paged scrollback architecture that stores history in contiguous chunks with bounded RAM cache and disk backing, allowing millions of lines of history without unbounded memory growth.
 - **`Selection` (`screen/selection.rs`)**: Multi-mode text selection (character, word, line) supporting normal and alternate grids with clipboard copy integration.
 
-### 6. Memory Management & Allocator Trimming (`src/memory.rs`)
+### 8. Memory Management & Allocator Trimming (`src/memory.rs`)
 
 - **Allocator Trimming (`trim_allocator_memory`)**: Automatically calls OS-level memory trim functions (e.g. `malloc_trim` on Linux glibc) when tabs close or after 2.5 seconds of PTY inactivity.
-- **Buffer Retention Limits**: Vertex buffers and render cell buffers shrink when capacities exceed 2x normal viewport needs, preventing heap bloat after viewing dense burst outputs.
+- **Buffer Retention Limits**: Render cell buffers shrink when capacities exceed 2x normal viewport needs, preventing heap bloat after viewing dense burst outputs.
 
-### 7. Single-Process IPC Architecture (`src/ipc.rs`)
+### 9. Single-Process IPC Architecture (`src/ipc.rs`)
 
 - Display-isolated Unix domain socket server running on the main event loop.
 - Supports CLI commands `velox msg create-window` and `velox msg create-tab` to launch new windows or tabs in an existing running Velox process in under 3ms.
@@ -139,19 +130,19 @@ sequenceDiagram
     participant Winit as winit Event Loop
     participant App as app::App
     participant WS as app::WindowState
-    participant Backend as Renderer Backend
+    participant Backend as Renderer Backend (softbuffer)
     participant PTY as PTY Process
 
     Winit->>App: resumed()
-    App->>App: Load config & init GL context
+    App->>App: Load config
     App->>OS: create_window(visible: false, transparent: opacity < 1.0)
     OS-->>App: Window created (Hidden)
-    App->>Backend: Initialize OpenGL / Software surface
+    App->>Backend: Initialize softbuffer Surface & CpuRenderer
     App->>PTY: Spawn shell & start reader thread
     App->>WS: Construct WindowState
     App->>WS: draw() (Synchronous First Paint)
-    WS->>Backend: Clear background & render initial frame
-    Backend->>OS: Swap buffers / Present front buffer
+    WS->>Backend: Render background and cells into Framebuffer
+    Backend->>OS: softbuffer present() (wl_shm / X11 SHM)
     App->>OS: window.set_visible(true)
     Note over OS: Window revealed instantly with zero flicker
 ```
@@ -179,8 +170,8 @@ flowchart LR
 
     subgraph RenderSubsystem["Rendering & Presentation"]
         Damage["screen::DamageMap / Dirty Grid"]
-        Renderer["Renderer / CpuRenderer"]
-        Surface["Display Surface<br/>(OpenGL / softbuffer)"]
+        Renderer["renderer::software::CpuRenderer"]
+        Surface["Display Surface<br/>(softbuffer SHM)"]
         Term --> Damage
         Damage --> Renderer
         Renderer --> Surface

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>Ultra-fast, GPU-accelerated, lightweight terminal emulator built in Rust.</strong>
+  <strong>Ultra-fast, CPU-rendered, lightweight terminal emulator built in Rust.</strong>
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License"></a>
   <a href="https://platform.linux.org"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20Wayland%20%7C%20X11-informational.svg?style=for-the-badge&logo=linux" alt="Platform"></a>
   <img src="https://img.shields.io/badge/startup-%3C15ms-orange.svg?style=for-the-badge&logo=speedtest" alt="Startup <15ms">
-  <img src="https://img.shields.io/badge/fps-120--240-purple.svg?style=for-the-badge" alt="120-240 FPS">
+  <img src="https://img.shields.io/badge/rendering-CPU%20Software-brightgreen.svg?style=for-the-badge" alt="CPU Software Rendering">
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 ---
 
 > [!NOTE]
-> **Velox v0.2.1** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, OpenGL text rendering, native CPU software fallback via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
+> **Velox v0.2.1** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, native pure-Rust CPU software rendering via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
 
 ---
 
@@ -39,13 +39,13 @@
 
 | Feature | Description | Source Module |
 | :--- | :--- | :--- |
-| **Dual Rendering Engines** | Hardware OpenGL 3.3+ texture atlas glyph rendering (120–240 FPS) and native pure-Rust CPU software rendering via `softbuffer` with `DamageMap` dirty-row tracking. | [`src/renderer/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/renderer/renderer.rs) & [`src/renderer/software/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/renderer/software/mod.rs) |
+| **Pure CPU Software Renderer** | Pure-Rust CPU software rendering via `softbuffer` with `DamageMap` dirty-row tracking and linear framebuffer composition. | [`src/renderer/software/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/renderer/software/mod.rs) |
 | **Multi-Tab Workflows** | Built-in tab bar with `Auto`, `Always`, or `Never` visibility, interactive tab closing/creation, middle-click close, per-tab font size isolation, and customizable tab accent colors. | [`src/app/tab.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/app/tab.rs) |
 | **Single-Process IPC** | Run all terminal windows and tabs inside a single background process using display-isolated Unix domain sockets (`velox msg create-window`, `velox msg create-tab`). | [`src/ipc.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/ipc.rs) & [`src/cli.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/cli.rs) |
 | **Zero-Flicker Cold Startup** | Cold starts under **15ms** with initially hidden window creation, synchronous first frame presentation, and transparent window protection. | [`src/app/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/app/app.rs) |
 | **Infinite Scrollback & Memory Control** | Fast chunked scrollback history with disk paging, bounded RAM usage, and automatic idle memory trimming (PTY inactivity allocator cleanup). | [`src/screen/scrollback.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/screen/scrollback.rs) & [`src/memory.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/memory.rs) |
 | **Synthetic Italics & Typography** | Dynamic synthetic italic outline shearing fallback when native italic faces are missing, system font fallbacks via `fontdb`, Nerd Fonts, Powerline prompt glyphs, and PNG color emojis. | [`src/font/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/font/loader.rs) |
-| **Rich Text Styling & Underlines** | Single, double, curly, dotted, and dashed underlines with SGR underline color customization, strikethrough, dimming, and bold-as-bright remapping. | [`src/renderer/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/renderer/renderer.rs) & [`src/renderer/software/decorations.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/renderer/software/decorations.rs) |
+| **Rich Text Styling & Underlines** | Single, double, curly, dotted, and dashed underlines with SGR underline color customization, strikethrough, dimming, and bold-as-bright remapping. | [`src/renderer/software/decorations.rs`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/renderer/software/decorations.rs) |
 | **CSI / OSC VT Protocols** | 256-color & 24-bit TrueColor, OSC-7 working dir, OSC-8 explicit hyperlinks, OSC-52 clipboard, OSC-133 shell integration, DECSCUSR cursor shapes, and mouse tracking (X10, SGR 1006, button/drag). | [`src/ansi/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/ansi/) & [`src/terminal/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/terminal/terminal.rs) |
 | **Visual Customizations** | Window background opacity / transparency, unfocused window dimming (`window_dim`), customizable cursor colors / text colors, and theme presets. | [`src/config/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/config/config.rs) & [`assets/velox_terminal_themes/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/assets/velox_terminal_themes/) |
 | **Wayland & X11 Native** | Linux windowing via Winit with HiDPI support and bundled multi-resolution application icons. | [`src/app/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/src/app/app.rs) |
@@ -58,11 +58,11 @@ Velox guarantees strict performance metrics across runtime workloads:
 
 | Metric | Target / Benchmark |
 | :--- | :--- |
-| **Version** | `v0.2.0` |
+| **Version** | `v0.2.1` |
 | **Startup Time** | `< 15ms` |
 | **Idle Memory Footprint** | `< 30MB` (Standalone) / `~3–5MB` (IPC sub-window/tab) |
-| **Frame Rate** | `120 – 240 FPS` (GPU) / `60 FPS` (Software) |
-| **Heap Allocations** | Reused frame vertex buffers & cell buffers; bounded font fallback cache |
+| **Frame Rate** | `60 FPS` (Software) |
+| **Heap Allocations** | Reused linear pixel buffers & damage row tracking; bounded font fallback cache |
 | **IPC Creation Latency** | `< 3ms` |
 
 ---
@@ -73,7 +73,7 @@ Velox guarantees strict performance metrics across runtime workloads:
 
 - **Rust**: 1.75+ (Stable toolchain)
 - **Platform**: Linux (Wayland or X11)
-- **Graphics**: OpenGL 3.3+ drivers or CPU software renderer
+- **Graphics**: Linux display server with shared-memory support (no GPU required)
 
 ### 1. Build
 
@@ -114,13 +114,6 @@ Single-Instance Tab Creation:
 Start Background Daemon Mode:
 ```bash
 ./target/release/velox --daemon &
-```
-
-Renderer Backend Selection:
-Set `renderer_backend = "auto"` (default), `"opengl"`, or `"software"` in `config.toml`:
-```bash
-# Explicitly run with pure CPU software rendering (softbuffer):
-velox
 ```
 
 ---
@@ -179,10 +172,8 @@ bold_is_bright = true
 [window]
 scrollback_limit = 2000
 infinite_scrollback = true
-renderer_backend = "auto"     # "auto" (default OpenGL with safe software fallback), "opengl", or "software"
-gpu_acceleration = true       # Backward-compatible alias for renderer_backend
 scroll_multiplier = 5.0
-fps_limit = 120
+fps_limit = 60
 padding_x = 8.0
 padding_y = 4.0
 cursor_shape = "beam"         # "block", "beam", "underline", "hollow_block"
@@ -246,7 +237,7 @@ src/
 ├── lib.rs            # Core library root & crate exports
 ├── cli.rs            # Command line argument parser & action protocol
 ├── platform.rs       # Wayland / X11 window backend detection & canonical App ID
-├── diagnostics.rs    # System, display environment, OpenGL & desktop integration diagnostics
+├── diagnostics.rs    # System, display environment & desktop integration diagnostics
 ├── ipc.rs            # Unix domain socket single-instance IPC server & client
 ├── memory.rs         # Allocator memory trimming & heap compaction helpers
 ├── app/              # Multi-window orchestrator, tab manager & event loop
@@ -256,10 +247,9 @@ src/
 │   └── mouse.rs      # Mouse clicks, drags, selections & tab interactions
 ├── terminal/         # VT state machine, mode flags & CSI/OSC protocol engine
 ├── screen/           # Character grid, cursor, selection & chunked scrollback
-├── renderer/         # Dual rendering backends
-│   ├── backend.rs    # DisplayBuilder, EGL/GLX initialization, headless probe & fallback
-│   ├── renderer.rs   # Hardware OpenGL 3.3+ shader atlas renderer
-│   └── software/     # Pure-Rust CPU software renderer via softbuffer
+├── renderer/         # Pure CPU software rendering pipeline
+│   ├── backend.rs    # Winit window creation & softbuffer Surface initialization
+│   └── software/     # Pure-Rust CPU software renderer, rasterizer & damage tracker
 ├── pty/              # Asynchronous PTY process streams & fork execution
 ├── input/            # Keymaps, ANSI translations & keyboard helpers
 ├── ansi/             # High-speed CSI / OSC / DCS / ESC byte parsers

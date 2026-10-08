@@ -2,14 +2,14 @@
 
 ## Overview
 
-The `app` module is the runtime orchestrator for Velox. It implements the Winit `ApplicationHandler` lifecycle, manages multiple native windows and tabs, configures dual rendering backends (OpenGL and CPU Software), routes keyboard and mouse events, executes single-instance IPC requests, and schedules redraws and idle memory trimming.
+The `app` module is the runtime orchestrator for Velox. It implements the Winit `ApplicationHandler` lifecycle, manages multiple native windows and tabs, configures the pure CPU software rendering pipeline via `softbuffer`, routes keyboard and mouse events, executes single-instance IPC requests, and schedules redraws and idle memory trimming.
 
 ## Module Structure
 
 ```text
 src/app/
 ├── mod.rs        # App module root and re-exports
-├── app.rs        # App, WindowState, WindowRendererBackend & ApplicationHandler
+├── app.rs        # App, WindowState & ApplicationHandler
 ├── tab.rs        # Tab, TabBar, TabHeaderInfo, TabBarRenderInfo & hit-testing
 ├── keyboard.rs   # Winit keyboard event dispatch, shortcuts & tab navigation
 └── mouse.rs      # Mouse tracking, click count, drag selection & tab bar interactions
@@ -22,18 +22,15 @@ src/app/
 `App` manages top-level application state across all windows and IPC communication:
 
 - **`windows: HashMap<WindowId, WindowState>`**: Map of active application windows.
-- **`gl_display`, `gl_config`, `gl`**: Shared OpenGL display and context resources.
 - **`ipc_listener: Option<IpcListenerHandle>`**: Background thread listener for single-instance Unix domain socket requests.
 - **`modifiers: ModifiersState`**: Current keyboard modifier key states.
 - **`single_instance_mode`, `daemon_mode`**: Process lifecycle configuration.
 
-### 2. `WindowState` & `WindowRendererBackend`
+### 2. `WindowState`
 
 `WindowState` encapsulates all state for a single native window:
 
-- **`backend: WindowRendererBackend`**: Enum dispatching to either:
-  - `WindowRendererBackend::OpenGL`: Owns `Renderer`, `gl_surface`, and `gl_context`.
-  - `WindowRendererBackend::Software`: Owns `CpuRenderer` and `softbuffer::Surface`.
+- **`renderer: CpuRenderer` & `surface: softbuffer::Surface`**: Owns the software renderer and linear presentation surface.
 - **`tabs: Vec<Tab>` & `active_tab_index: usize`**: List of active terminal tabs.
 - **`tab_bar: TabBar`**: Visual configuration, dimensions, accent color, and hit-testing cache.
 - **`opacity: f32` & `window_dim: f32`**: Transparency and unfocused dimming factors.
@@ -91,14 +88,13 @@ pub enum CustomEvent {
 ### 1. Resumed (`ApplicationHandler::resumed`)
 
 1. Loads user configuration from `~/.config/velox/config.toml`.
-2. Initializes OpenGL display/context if `gpu_acceleration = true`.
-3. Starts IPC server if in single-instance or daemon mode.
-4. Invokes `create_window()` for initial command-line arguments.
+2. Starts IPC server if in single-instance or daemon mode.
+3. Invokes `create_window()` for initial command-line arguments.
 
 ### 2. Window Creation (`create_window`)
 
 1. Creates native window with `.with_visible(false)` and `.with_transparent(opacity < 1.0)`.
-2. Configures rendering backend (`OpenGL` with `glow` or `Software` with `softbuffer`).
+2. Initializes software rendering backend (`CpuRenderer` with `softbuffer::Surface`).
 3. Calculates cell dimensions and spawns initial shell process inside PTY.
 4. Spawns dedicated background reader thread (`spawn_pty_reader`).
 5. Constructs `WindowState` with `last_frame_instant` initialized in the past.

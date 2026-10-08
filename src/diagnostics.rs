@@ -3,7 +3,7 @@ use crate::platform::{self, CANONICAL_APP_ID};
 use std::path::PathBuf;
 
 /// Diagnostic information about the host environment, display, and rendering setup.
-pub fn run_diagnostics(config: &Config) {
+pub fn run_diagnostics(_config: &Config) {
     println!("================================================================================");
     println!("                           Velox System Diagnostics                             ");
     println!("================================================================================");
@@ -36,43 +36,11 @@ pub fn run_diagnostics(config: &Config) {
     let env_backend = platform::detect_backend_from_env();
     println!("  Environment Hint:   {}", env_backend);
 
-    println!("\n[Renderer Configuration]");
-    let requested_backend = config.renderer_backend();
-    let legacy_gpu = config.gpu_acceleration();
-    println!(
-        "  Requested Backend:  {:?} (gpu_acceleration = {:?})",
-        requested_backend, legacy_gpu
-    );
-    println!("  Target GL Profile:  OpenGL 3.3 Core (EGL preferred)");
-
-    // Test OpenGL availability via headless event loop / probe
-    print!("  OpenGL Probe:       ");
-    match crate::renderer::backend::probe_opengl() {
-        Ok(gl_info) => {
-            if gl_info.is_software_rasterizer() {
-                println!("Available (Software Rasterizer - CPU fallback)");
-            } else {
-                println!("Available (Hardware Accelerated)");
-            }
-            println!("  GL Vendor:          {}", gl_info.vendor);
-            println!("  GL Renderer:        {}", gl_info.renderer);
-            println!("  GL Version:         {}", gl_info.version);
-            println!("  GLSL Version:       {}", gl_info.glsl_version);
-            if requested_backend == crate::config::config::RendererBackendConfig::Auto
-                && gl_info.is_software_rasterizer()
-            {
-                println!(
-                    "  Effective Backend:  Software (auto-selected: native CPU softbuffer renderer avoids software rasterizer overhead)"
-                );
-            }
-        }
-        Err(err) => {
-            println!("Failed ({})", err);
-            println!(
-                "  Softbuffer Fallback:Ready (CPU Software renderer will be used in auto mode)"
-            );
-        }
-    }
+    println!("\n[Renderer Architecture]");
+    println!("  Rendering Pipeline: Pure CPU Software Renderer");
+    println!("  Framebuffer:        CPU-owned 32-bit linear memory buffer (0x00RRGGBB)");
+    println!("  Presentation:       Linux Native Shared Memory Display (softbuffer)");
+    println!("  Graphics APIs:      None (Zero GPU dependencies / Pure CPU execution)");
 
     println!("\n[Desktop & Icon Integration]");
     println!("  Canonical App ID:   {}", CANONICAL_APP_ID);

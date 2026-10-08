@@ -128,7 +128,7 @@ FLAGS:
     -s, --single-instance   Enable single-process mode (connects to running instance or starts server)
     -d, --daemon            Start in background daemon mode (keeps process alive for IPC requests)
         --hold              Keep window open after child command exits
-        --diagnostics       Print system, display backend, OpenGL, and desktop diagnostics
+        --diagnostics       Print system, display backend, and desktop diagnostics
     -h, --help              Print help information
     -v, --version           Print version information
 
@@ -138,7 +138,7 @@ OPTIONS:
     -e, --command <CMD...>          Execute specified command instead of shell
 
 SUBCOMMANDS:
-    doctor                          Run diagnostics check on display, GPU, and desktop environment
+    doctor                          Run diagnostics check on display and desktop environment
     msg create-window               Instruct running single-process instance to open a new window"
         );
     }

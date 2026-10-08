@@ -405,7 +405,8 @@ impl SplitNode {
         match self {
             Self::Pane(pane) => {
                 let scale = if base_font_size > 0.0 {
-                    (pane.font_size / base_font_size).clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
+                    (pane.font_size / base_font_size)
+                        .clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
                 } else {
                     1.0
                 };

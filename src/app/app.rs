@@ -5,11 +5,8 @@ use crate::cli::CliOptions;
 use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_process;
-use crate::renderer::renderer::{PaneRenderData, Renderer, SeparatorRenderData};
-use crate::renderer::software::CpuPaneRenderData;
-use crate::renderer::software::CpuRenderer;
+use crate::renderer::{CpuPaneRenderData, CpuRenderer, SeparatorRenderData};
 use crate::terminal::terminal::Terminal;
-use glutin::prelude::*;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -26,60 +23,6 @@ pub struct DraggingSeparator {
     pub bounds_y: f32,
     pub bounds_w: f32,
     pub bounds_h: f32,
-}
-
-#[allow(clippy::large_enum_variant)]
-pub enum WindowRendererBackend {
-    OpenGL {
-        renderer: Renderer,
-        gl_surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
-        gl_context: glutin::context::PossiblyCurrentContext,
-    },
-    Software {
-        renderer: CpuRenderer,
-        surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
-    },
-}
-
-impl WindowRendererBackend {
-    #[inline(always)]
-    pub fn cell_width(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_width,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_width,
-        }
-    }
-
-    #[inline(always)]
-    pub fn cell_height(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_height,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
-        }
-    }
-
-    #[inline(always)]
-    pub fn base_cell_width(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_width,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_width,
-        }
-    }
-
-    #[inline(always)]
-    pub fn base_cell_height(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_height,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
-        }
-    }
-
-    pub fn set_tab_font_size(&mut self, font_size: f32) {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.set_tab_font_size(font_size),
-            Self::Software { renderer, .. } => renderer.tab_glyph_cache.update_font_size(font_size),
-        }
-    }
 }
 
 pub enum CustomEvent {
@@ -154,7 +97,8 @@ fn spawn_pty_reader(
 }
 
 pub struct WindowState {
-    pub backend: WindowRendererBackend,
+    pub renderer: CpuRenderer,
+    pub surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
     pub window: Arc<Window>,
     pub mouse_x: f64,
     pub mouse_y: f64,
@@ -208,14 +152,6 @@ pub struct WindowState {
 
 impl Drop for WindowState {
     fn drop(&mut self) {
-        if let WindowRendererBackend::OpenGL {
-            gl_context,
-            gl_surface,
-            ..
-        } = &self.backend
-        {
-            let _ = gl_context.make_current(gl_surface);
-        }
         crate::memory::trim_allocator_memory();
     }
 }
@@ -248,30 +184,32 @@ impl WindowState {
     }
 
     pub fn release_memory(&mut self) {
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_context,
-                gl_surface,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                renderer.release_memory();
-            }
-            WindowRendererBackend::Software { renderer, .. } => {
-                renderer.release_memory();
-            }
-        }
+        self.renderer.release_memory();
         crate::memory::trim_allocator_memory();
     }
 
     #[inline(always)]
     pub fn cell_width(&self) -> u32 {
-        self.backend.cell_width()
+        self.renderer.glyph_cache.cell_width
     }
 
     #[inline(always)]
     pub fn cell_height(&self) -> u32 {
-        self.backend.cell_height()
+        self.renderer.glyph_cache.cell_height
+    }
+
+    #[inline(always)]
+    pub fn base_cell_width(&self) -> u32 {
+        self.renderer.glyph_cache.cell_width
+    }
+
+    #[inline(always)]
+    pub fn base_cell_height(&self) -> u32 {
+        self.renderer.glyph_cache.cell_height
+    }
+
+    pub fn set_tab_font_size(&mut self, font_size: f32) {
+        self.renderer.tab_glyph_cache.update_font_size(font_size);
     }
 
     #[inline(always)]
@@ -388,19 +326,7 @@ impl WindowState {
     }
 
     pub fn set_renderer_font_size(&mut self, size: f32) {
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                renderer.set_font_size(size);
-            }
-            WindowRendererBackend::Software { renderer, .. } => {
-                renderer.update_font_size(size);
-            }
-        }
+        self.renderer.update_font_size(size);
     }
 
     pub fn sync_active_pane_font_size(&mut self) {
@@ -447,25 +373,10 @@ impl WindowState {
         if width == 0 || height == 0 {
             return;
         }
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-                    gl_surface.resize(gl_context, w, h);
-                }
-                renderer.resize(width, height);
-            }
-            WindowRendererBackend::Software { renderer, surface } => {
-                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-                    let _ = surface.resize(w, h);
-                }
-                renderer.resize(width, height);
-            }
+        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            let _ = self.surface.resize(w, h);
         }
+        self.renderer.resize(width, height);
         self.resize_active_tab();
         self.needs_redraw = true;
         self.content_dirty = true;
@@ -918,149 +829,68 @@ impl WindowState {
             .and_then(|spec| active_theme.parse_color_spec(spec))
             .or_else(|| Some(active_theme.resolve_tab_accent_color()));
 
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let active_tab = &self.tabs[self.active_tab_index];
-                let mut pane_render_datas = Vec::with_capacity(pane_rects.len());
+        let active_tab = &self.tabs[self.active_tab_index];
+        let mut cpu_pane_render_datas = Vec::with_capacity(pane_rects.len());
 
-                for rect in &pane_rects {
-                    if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
-                        let active_grid = pane.terminal.active_grid();
-                        let width = active_grid.width;
-                        let height = active_grid.height;
-                        let offset = active_grid.scroll_offset;
-                        let history_len = active_grid.scrollback.len();
-                        let is_active = pane.id == active_pane_id;
+        for rect in &pane_rects {
+            if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
+                let active_grid = pane.terminal.active_grid();
+                let width = active_grid.width;
+                let offset = active_grid.scroll_offset;
+                let is_active = pane.id == active_pane_id;
 
-                        let cursor_visible = if !is_active || offset > 0 {
-                            false
-                        } else if self.cursor_blink_enabled {
-                            active_grid.cursor.visible && self.cursor_blink_on
-                        } else {
-                            active_grid.cursor.visible
-                        };
+                let cursor_visible = if !is_active || offset > 0 {
+                    false
+                } else if self.cursor_blink_enabled {
+                    active_grid.cursor.visible && self.cursor_blink_on
+                } else {
+                    active_grid.cursor.visible
+                };
 
-                        let cursor_shape = if !self.is_focused
-                            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-                        {
-                            crate::screen::cursor::CursorShape::HollowBlock
-                        } else {
-                            active_grid.cursor.shape
-                        };
+                let cursor_shape = if !self.is_focused
+                    && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                {
+                    crate::screen::cursor::CursorShape::HollowBlock
+                } else {
+                    active_grid.cursor.shape
+                };
 
-                        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+                let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
 
-                        pane_render_datas.push(PaneRenderData {
-                            pane_id: pane.id,
-                            rect: *rect,
-                            grid: Some(active_grid),
-                            cells: &active_grid.cells,
-                            row_offset: active_grid.row_offset,
-                            cols: width,
-                            rows: height,
-                            font_size: pane.font_size,
-                            cursor_x: display_cursor_x,
-                            cursor_y: active_grid.cursor.y,
-                            cursor_visible,
-                            cursor_shape,
-                            theme: &pane.terminal.theme,
-                            bold_is_bright: pane.terminal.bold_is_bright,
-                            selection: &active_grid.selection,
-                            scroll_offset: offset,
-                            history_len,
-                            is_active,
-                        });
-                    }
-                }
-
-                let _ = gl_context.make_current(gl_surface);
-                renderer.draw_splits(
-                    &pane_render_datas,
-                    &separator_render_datas,
-                    self.opacity,
-                    effective_dim,
-                    tab_bar_info,
-                    effective_separator_color,
-                    effective_active_separator_color,
-                );
-                let _ = gl_surface.swap_buffers(gl_context);
-                if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
-                    for pane in active_tab.tree.panes_mut() {
-                        pane.terminal.active_grid_mut().clear_damage();
-                        pane.render_state.clear_damage();
-                    }
-                }
+                cpu_pane_render_datas.push(CpuPaneRenderData {
+                    pane_id: pane.id,
+                    rect: *rect,
+                    cells: &active_grid.cells,
+                    grid: active_grid,
+                    font_size: pane.font_size,
+                    theme: &pane.terminal.theme,
+                    bold_is_bright: pane.terminal.bold_is_bright,
+                    cursor_visible,
+                    cursor_shape,
+                    display_cursor_x,
+                    is_active,
+                });
             }
-            WindowRendererBackend::Software { renderer, surface } => {
-                let active_tab = &self.tabs[self.active_tab_index];
-                let mut cpu_pane_render_datas = Vec::with_capacity(pane_rects.len());
+        }
 
-                for rect in &pane_rects {
-                    if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
-                        let active_grid = pane.terminal.active_grid();
-                        let width = active_grid.width;
-                        let offset = active_grid.scroll_offset;
-                        let is_active = pane.id == active_pane_id;
+        if let Ok(mut buffer) = self.surface.buffer_mut() {
+            self.renderer.render_splits(
+                &cpu_pane_render_datas,
+                &separator_render_datas,
+                self.opacity,
+                effective_dim,
+                self.is_focused,
+                &mut buffer,
+                tab_bar_info,
+                effective_separator_color,
+                effective_active_separator_color,
+            );
+            let _ = buffer.present();
+        }
 
-                        let cursor_visible = if !is_active || offset > 0 {
-                            false
-                        } else if self.cursor_blink_enabled {
-                            active_grid.cursor.visible && self.cursor_blink_on
-                        } else {
-                            active_grid.cursor.visible
-                        };
-
-                        let cursor_shape = if !self.is_focused
-                            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-                        {
-                            crate::screen::cursor::CursorShape::HollowBlock
-                        } else {
-                            active_grid.cursor.shape
-                        };
-
-                        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
-
-                        cpu_pane_render_datas.push(CpuPaneRenderData {
-                            pane_id: pane.id,
-                            rect: *rect,
-                            cells: &active_grid.cells,
-                            grid: active_grid,
-                            font_size: pane.font_size,
-                            theme: &pane.terminal.theme,
-                            bold_is_bright: pane.terminal.bold_is_bright,
-                            cursor_visible,
-                            cursor_shape,
-                            display_cursor_x,
-                            is_active,
-                        });
-                    }
-                }
-
-                if let Ok(mut buffer) = surface.buffer_mut() {
-                    renderer.render_splits(
-                        &cpu_pane_render_datas,
-                        &separator_render_datas,
-                        self.opacity,
-                        effective_dim,
-                        self.is_focused,
-                        &mut buffer,
-                        tab_bar_info,
-                        effective_separator_color,
-                        effective_active_separator_color,
-                    );
-                    let _ = buffer.present();
-                }
-
-                if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
-                    for pane in active_tab.tree.panes_mut() {
-                        pane.terminal.active_grid_mut().clear_damage();
-                        pane.render_state.clear_damage();
-                    }
-                }
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
+            for pane in active_tab.tree.panes_mut() {
+                pane.terminal.active_grid_mut().clear_damage();
             }
         }
     }
@@ -1069,8 +899,6 @@ impl WindowState {
 pub struct App {
     pub(crate) event_loop_proxy: EventLoopProxy<CustomEvent>,
     pub(crate) modifiers: winit::keyboard::ModifiersState,
-    pub(crate) gl_manager: Option<crate::renderer::GlDisplayManager>,
-    pub(crate) gl_info: Option<crate::renderer::GlInfo>,
     pub(crate) windows: HashMap<WindowId, WindowState>,
     pub(crate) daemon_mode: bool,
     pub(crate) single_instance_mode: bool,
@@ -1086,8 +914,6 @@ impl App {
         Self {
             event_loop_proxy,
             modifiers: winit::keyboard::ModifiersState::default(),
-            gl_manager: None,
-            gl_info: None,
             windows: HashMap::new(),
             daemon_mode,
             single_instance_mode,
@@ -1134,11 +960,10 @@ impl App {
         window_attributes =
             crate::platform::apply_platform_window_attributes(event_loop, window_attributes);
 
-        let (window, mut backend, gl_info) = match crate::renderer::create_window_and_renderer(
+        let (window, mut renderer, surface) = match crate::renderer::create_window_and_renderer(
             event_loop,
             window_attributes,
             &config,
-            &mut self.gl_manager,
         ) {
             Ok(res) => res,
             Err(e) => {
@@ -1150,10 +975,6 @@ impl App {
             }
         };
 
-        if self.gl_info.is_none() && gl_info.is_some() {
-            self.gl_info = gl_info;
-        }
-
         let size = window.inner_size();
         let win_width = size.width.max(1);
         let win_height = size.height.max(1);
@@ -1161,26 +982,16 @@ impl App {
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
         let hide_mouse_on_typing = config.hide_mouse_on_typing().unwrap_or(true);
-        let gpu = matches!(backend, WindowRendererBackend::OpenGL { .. });
-        let fps_limit = match config.fps_limit() {
-            Some(limit) => Some(limit),
-            None => {
-                if gpu {
-                    Some(120)
-                } else {
-                    Some(60)
-                }
-            }
-        };
+        let fps_limit = config.fps_limit().or(Some(60));
 
         let font_size = config.font_size();
         let padding_x = config.pane_padding_x().unwrap_or(8.0);
         let padding_y = config.pane_padding_y().unwrap_or(4.0);
 
         let tab_font_size = config.tab_font_size();
-        backend.set_tab_font_size(tab_font_size);
-        let base_cell_width = backend.base_cell_width();
-        let base_cell_height = backend.base_cell_height();
+        renderer.tab_glyph_cache.update_font_size(tab_font_size);
+        let base_cell_width = renderer.glyph_cache.cell_width;
+        let base_cell_height = renderer.glyph_cache.cell_height;
 
         let tab_bar = TabBar::from_config(&config);
         let tab_bar_h = if tab_bar.is_visible(1) {
@@ -1191,8 +1002,8 @@ impl App {
 
         let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
         let avail_h = (win_height as f32 - tab_bar_h - padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / backend.cell_width()).max(1);
-        let rows = ((avail_h as u32) / backend.cell_height()).max(1);
+        let cols = ((avail_w as u32) / base_cell_width).max(1);
+        let rows = ((avail_h as u32) / base_cell_height).max(1);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
 
@@ -1240,8 +1051,9 @@ impl App {
         let active_separator_color = config.pane_active_separator_color().map(String::from);
 
         let mut window_state = WindowState {
+            renderer,
+            surface,
             window,
-            backend,
             mouse_x: 0.0,
             mouse_y: 0.0,
             scroll_multiplier,

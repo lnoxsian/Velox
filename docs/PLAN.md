@@ -19,7 +19,7 @@ src/
 ├── hyperlink/        # OSC-8 & regex hyperlink detector and browser opener
 ├── input/            # Keyboard translations & modifier handling
 ├── pty/              # Asynchronous PTY process streams & fork execution
-├── renderer/         # Dual backends: OpenGL 3.3+ & pure-Rust CPU softbuffer
+├── renderer/         # Pure CPU software rendering via softbuffer
 ├── screen/           # Character grid, cursor, selection & chunked scrollback
 ├── terminal/         # VT state machine, alternate screen & protocol engine
 └── theme/            # Theme presets, palette resolver & hex parser
@@ -27,7 +27,7 @@ src/
 
 ### Implemented Features in v0.1.9:
 
-- **Dual Rendering Backends**: Hardware OpenGL 3.3+ texture atlas glyph rendering and pure CPU software rendering via `softbuffer` with `DamageMap` row tracking.
+- **Pure CPU Software Renderer**: Pure-Rust CPU software rendering via `softbuffer` with `DamageMap` dirty-row tracking and linear framebuffer composition.
 - **Multi-Tab Workflows**: Built-in tab bar (`Auto`, `Always`, `Never` visibility), per-tab isolated font zoom, close button, middle-click close, new tab button, tab navigation shortcuts, and custom tab accent colors.
 - **Zero-Flicker Cold Startup**: Window created hidden, first frame drawn synchronously before window reveal, conditional alpha visuals, and throttler past-timestamp initialization.
 - **Single-Process IPC**: Unix domain socket server with CLI commands `velox msg create-window` and `velox msg create-tab` for instant sub-3ms window/tab spawning.

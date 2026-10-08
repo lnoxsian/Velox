@@ -52,110 +52,110 @@ impl WindowState {
         // ── 2. Pane Mouse Dragging (Active Selection or App Mouse Drag) ──────
         if self.is_mouse_down
             && let Some(drag_pane_id) = self.mouse_down_pane_id
-            && let Some(pane_rect) = pane_rects.iter().find(|r| r.pane_id == drag_pane_id).copied()
+            && let Some(pane_rect) = pane_rects
+                .iter()
+                .find(|r| r.pane_id == drag_pane_id)
+                .copied()
         {
             let cw = pane_rect.cell_width as f64;
             let ch = pane_rect.cell_height as f64;
-                    let px = (pane_rect.x + pane_rect.padding_x) as f64;
-                    let py = (pane_rect.y + pane_rect.padding_y) as f64;
-                    let grid_width = pane_rect.cols;
-                    let grid_height = pane_rect.rows;
+            let px = (pane_rect.x + pane_rect.padding_x) as f64;
+            let py = (pane_rect.y + pane_rect.padding_y) as f64;
+            let grid_width = pane_rect.cols;
+            let grid_height = pane_rect.rows;
 
-                    let col_idx = if cw > 0.0 {
-                        let raw = ((self.mouse_x - px) / cw).floor() as i64;
-                        raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+            let col_idx = if cw > 0.0 {
+                let raw = ((self.mouse_x - px) / cw).floor() as i64;
+                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
+            let row_idx = if ch > 0.0 {
+                let raw = ((self.mouse_y - py) / ch).floor() as i64;
+                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+            } else {
+                0
+            };
+
+            if self.last_mouse_pane_id != Some(drag_pane_id)
+                || (col_idx, row_idx) != self.last_mouse_cell
+            {
+                self.last_mouse_pane_id = Some(drag_pane_id);
+                self.last_mouse_cell = (col_idx, row_idx);
+
+                let (mouse_mode, mouse_sgr, pty_master) = {
+                    let tab = self.active_tab();
+                    if let Some(pane) = tab.tree.find_pane(drag_pane_id) {
+                        (
+                            pane.terminal.mouse_mode,
+                            pane.terminal.mouse_sgr,
+                            Some(pane.pty_master.clone()),
+                        )
                     } else {
-                        0
-                    };
-                    let row_idx = if ch > 0.0 {
-                        let raw = ((self.mouse_y - py) / ch).floor() as i64;
-                        raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
-                    } else {
-                        0
-                    };
+                        (0, false, None)
+                    }
+                };
 
-                    if self.last_mouse_pane_id != Some(drag_pane_id) || (col_idx, row_idx) != self.last_mouse_cell {
-                        self.last_mouse_pane_id = Some(drag_pane_id);
-                        self.last_mouse_cell = (col_idx, row_idx);
+                let should_report_motion =
+                    (mouse_mode == 1003 || mouse_mode == 1002) && !modifiers.shift_key();
 
-                        let (mouse_mode, mouse_sgr, pty_master) = {
-                            let tab = self.active_tab();
-                            if let Some(pane) = tab.tree.find_pane(drag_pane_id) {
-                                (
-                                    pane.terminal.mouse_mode,
-                                    pane.terminal.mouse_sgr,
-                                    Some(pane.pty_master.clone()),
-                                )
+                if should_report_motion {
+                    self.set_cursor_cached(winit::window::CursorIcon::Default);
+                    if let Some(pty_master) = pty_master {
+                        let base_code = 32 + self.last_mouse_button;
+                        let mut btn_code = base_code;
+                        if modifiers.shift_key() {
+                            btn_code += 4;
+                        }
+                        if modifiers.alt_key() {
+                            btn_code += 8;
+                        }
+                        if modifiers.control_key() {
+                            btn_code += 16;
+                        }
+
+                        let mut buf = [0u8; 32];
+                        let written = if mouse_sgr {
+                            use std::io::Write;
+                            let mut cur = std::io::Cursor::new(&mut buf[..]);
+                            let _ =
+                                write!(cur, "\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1);
+                            cur.position() as usize
+                        } else {
+                            let cb = 32 + btn_code;
+                            let cx = 32 + col_idx + 1;
+                            let cy = 32 + row_idx + 1;
+                            if cx <= 255 && cy <= 255 {
+                                buf[0] = 0x1b;
+                                buf[1] = b'M';
+                                buf[2] = cb;
+                                buf[3] = cx as u8;
+                                buf[4] = cy as u8;
+                                5
                             } else {
-                                (0, false, None)
+                                0
                             }
                         };
-
-                        let should_report_motion =
-                            (mouse_mode == 1003 || mouse_mode == 1002) && !modifiers.shift_key();
-
-                        if should_report_motion {
-                            self.set_cursor_cached(winit::window::CursorIcon::Default);
-                            if let Some(pty_master) = pty_master {
-                                let base_code = 32 + self.last_mouse_button;
-                                let mut btn_code = base_code;
-                                if modifiers.shift_key() {
-                                    btn_code += 4;
-                                }
-                                if modifiers.alt_key() {
-                                    btn_code += 8;
-                                }
-                                if modifiers.control_key() {
-                                    btn_code += 16;
-                                }
-
-                                let mut buf = [0u8; 32];
-                                let written = if mouse_sgr {
-                                    use std::io::Write;
-                                    let mut cur = std::io::Cursor::new(&mut buf[..]);
-                                    let _ = write!(
-                                        cur,
-                                        "\x1b[<{};{};{}M",
-                                        btn_code,
-                                        col_idx + 1,
-                                        row_idx + 1
-                                    );
-                                    cur.position() as usize
-                                } else {
-                                    let cb = 32 + btn_code;
-                                    let cx = 32 + col_idx + 1;
-                                    let cy = 32 + row_idx + 1;
-                                    if cx <= 255 && cy <= 255 {
-                                        buf[0] = 0x1b;
-                                        buf[1] = b'M';
-                                        buf[2] = cb;
-                                        buf[3] = cx as u8;
-                                        buf[4] = cy as u8;
-                                        5
-                                    } else {
-                                        0
-                                    }
-                                };
-                                if written > 0 {
-                                    let _ = pty_master.write(&buf[..written]);
-                                }
-                            }
-                        } else {
-                            self.set_cursor_cached(winit::window::CursorIcon::Text);
-                            let tab = self.active_tab_mut();
-                            if let Some(pane) = tab.tree.find_pane_mut(drag_pane_id) {
-                                let active_grid = pane.terminal.active_grid_mut();
-                                if active_grid.selection.active {
-                                    let offset = active_grid.scroll_offset;
-                                    let history_len = active_grid.scrollback.len();
-                                    let abs_y = (history_len + row_idx).saturating_sub(offset);
-                                    active_grid.selection.update_selection(col_idx, abs_y);
-                                    self.needs_redraw = true;
-                                }
-                            }
+                        if written > 0 {
+                            let _ = pty_master.write(&buf[..written]);
                         }
                     }
-                    return;
+                } else {
+                    self.set_cursor_cached(winit::window::CursorIcon::Text);
+                    let tab = self.active_tab_mut();
+                    if let Some(pane) = tab.tree.find_pane_mut(drag_pane_id) {
+                        let active_grid = pane.terminal.active_grid_mut();
+                        if active_grid.selection.active {
+                            let offset = active_grid.scroll_offset;
+                            let history_len = active_grid.scrollback.len();
+                            let abs_y = (history_len + row_idx).saturating_sub(offset);
+                            active_grid.selection.update_selection(col_idx, abs_y);
+                            self.needs_redraw = true;
+                        }
+                    }
+                }
+            }
+            return;
         }
 
         let tab_bar_h = self.tab_bar_height() as f64;
@@ -277,7 +277,9 @@ impl WindowState {
                 0
             };
 
-            if self.last_mouse_pane_id != Some(pane_rect.pane_id) || (col_idx, row_idx) != self.last_mouse_cell {
+            if self.last_mouse_pane_id != Some(pane_rect.pane_id)
+                || (col_idx, row_idx) != self.last_mouse_cell
+            {
                 self.last_mouse_pane_id = Some(pane_rect.pane_id);
                 self.last_mouse_cell = (col_idx, row_idx);
 
@@ -899,7 +901,11 @@ impl WindowState {
                 None => return,
             };
 
-            let pane_rect = match pane_rects.iter().find(|r| r.pane_id == target_pane_id).copied() {
+            let pane_rect = match pane_rects
+                .iter()
+                .find(|r| r.pane_id == target_pane_id)
+                .copied()
+            {
                 Some(r) => r,
                 None => return,
             };

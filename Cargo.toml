@@ -5,9 +5,7 @@ edition = "2024"
 
 [dependencies]
 winit = "0.30"
-glow = "0.16"
 nix = { version = "0.30", features = ["fs", "process", "term"] }
-bytemuck = "1"
 unicode-width = "0.2"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -17,8 +15,6 @@ log = "0.4"
 env_logger = "0.11"
 smallvec = "1"
 bitflags = { version = "2", features = ["serde"] }
-glutin = "0.32"
-glutin-winit = "0.5"
 ab_glyph = "0.2"
 libc = "0.2"
 fontdb = "0.23"
