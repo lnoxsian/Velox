@@ -2,7 +2,7 @@ pub mod keyboard;
 pub mod shm;
 
 use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, PlatformEvent};
-use crate::platform::CANONICAL_APP_ID;
+use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
 use shm::WaylandShmBuffer;
 use std::collections::VecDeque;
 use wayland_client::protocol::{
@@ -11,6 +11,22 @@ use wayland_client::protocol::{
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+
+fn resolve_wayland_app_id() -> &'static str {
+    if std::path::Path::new("/usr/share/applications/io.github.lnoxsian.Velox.desktop").exists()
+        || std::path::Path::new("/usr/local/share/applications/io.github.lnoxsian.Velox.desktop").exists()
+    {
+        return CANONICAL_APP_ID;
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && std::path::PathBuf::from(home)
+            .join(".local/share/applications/io.github.lnoxsian.Velox.desktop")
+            .exists()
+    {
+        return CANONICAL_APP_ID;
+    }
+    CANONICAL_WM_CLASS_INSTANCE
+}
 
 pub struct WaylandState {
     pub running: bool,
@@ -89,7 +105,7 @@ impl WaylandWindow {
         let toplevel = xdg_surface.get_toplevel(&qh, ());
 
         toplevel.set_title(title.to_string());
-        toplevel.set_app_id(CANONICAL_APP_ID.to_string());
+        toplevel.set_app_id(resolve_wayland_app_id().to_string());
 
         surface.commit();
 

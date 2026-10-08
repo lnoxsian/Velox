@@ -55,14 +55,14 @@ flowchart TD
 
 ## Core Subsystems
 
-### 1. Platform Windowing & Desktop Identity (`src/platform.rs`)
+### 1. Platform Windowing & Desktop Identity (`src/platform.rs`, `src/window/`)
 
-- **Authoritative Backend Detection**: Uses Winit 0.30 extension traits (`ActiveEventLoopExtWayland::is_wayland`, `ActiveEventLoopExtX11::is_x11`) to determine the live windowing protocol at runtime, with environment fallback hints (`WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, `DISPLAY`).
+- **Native Zero-C Backend Detection**: Detects session type via `VELOX_BACKEND`, `XDG_SESSION_TYPE`, `WAYLAND_DISPLAY`, and `DISPLAY` to dynamically instantiate native pure-Rust X11 (`x11rb`) or Wayland (`wayland-client`) windowing without C library dependencies.
 - **Canonical Identity Compliance**:
-  - Wayland `app_id`: `io.github.lnoxsian.Velox` (configured via `WindowAttributesExtWayland::with_name`).
-  - X11 `WM_CLASS`: `("velox", "io.github.lnoxsian.Velox")` matching the freedesktop standard (`WindowAttributesExtX11::with_name`).
-  - Desktop Entry: `io.github.lnoxsian.Velox.desktop` with `StartupWMClass=io.github.lnoxsian.Velox`.
-  - Icon theme lookup: `io.github.lnoxsian.Velox` matching installed SVG and hicolor PNG icons.
+  - Wayland `app_id`: `io.github.lnoxsian.Velox` (with `"velox"` fallback when uninstalled).
+  - X11 `WM_CLASS`: `("velox", "Velox")` adhering to ICCCM standard.
+  - Desktop Entry: `io.github.lnoxsian.Velox.desktop` with `StartupWMClass=Velox`.
+  - Embedded X11 Icon: EWMH `_NET_WM_ICON` multi-resolution ARGB payload (16x16, 32x32, 48x48, 128x128).
 
 ### 2. Application & Window Orchestration (`app::`)
 

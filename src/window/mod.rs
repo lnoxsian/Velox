@@ -25,32 +25,73 @@ impl PlatformWindow {
         width: u32,
         height: u32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
-        let x11_display = std::env::var("DISPLAY").ok();
+        let preferred_backend = crate::platform::detect_backend_from_env();
 
-        if let Some(ref wd) = wayland_display
-            && !wd.trim().is_empty()
-        {
-            match WaylandWindow::new(title, width, height) {
-                Ok(w) => return Ok(PlatformWindow::Wayland(Box::new(w))),
-                Err(e) => {
-                    log::warn!("Wayland connection failed ({}), attempting X11 fallback...", e);
+        match preferred_backend {
+            crate::platform::LinuxWindowBackend::X11 => {
+                match X11Window::new(title, width, height) {
+                    Ok(w) => Ok(PlatformWindow::X11(w)),
+                    Err(e) => {
+                        log::warn!("X11 window creation failed ({}), attempting Wayland fallback...", e);
+                        if let Ok(wd) = std::env::var("WAYLAND_DISPLAY")
+                            && !wd.trim().is_empty()
+                        {
+                            match WaylandWindow::new(title, width, height) {
+                                Ok(w) => return Ok(PlatformWindow::Wayland(Box::new(w))),
+                                Err(w_err) => {
+                                    log::warn!("Wayland fallback also failed: {}", w_err);
+                                }
+                            }
+                        }
+                        Err(format!("Failed to connect to X11 display: {}", e).into())
+                    }
                 }
             }
-        }
-
-        if let Some(ref xd) = x11_display
-            && !xd.trim().is_empty()
-        {
-            match X11Window::new(title, width, height) {
-                Ok(w) => return Ok(PlatformWindow::X11(w)),
-                Err(e) => {
-                    return Err(format!("Failed to connect to X11 display: {}", e).into());
+            crate::platform::LinuxWindowBackend::Wayland => {
+                match WaylandWindow::new(title, width, height) {
+                    Ok(w) => Ok(PlatformWindow::Wayland(Box::new(w))),
+                    Err(e) => {
+                        log::warn!("Wayland connection failed ({}), attempting X11 fallback...", e);
+                        if let Ok(xd) = std::env::var("DISPLAY")
+                            && !xd.trim().is_empty()
+                        {
+                            match X11Window::new(title, width, height) {
+                                Ok(w) => return Ok(PlatformWindow::X11(w)),
+                                Err(x_err) => {
+                                    log::warn!("X11 fallback also failed: {}", x_err);
+                                }
+                            }
+                        }
+                        Err(format!("Failed to connect to Wayland display: {}", e).into())
+                    }
                 }
             }
-        }
+            crate::platform::LinuxWindowBackend::Unknown => {
+                if let Ok(wd) = std::env::var("WAYLAND_DISPLAY")
+                    && !wd.trim().is_empty()
+                {
+                    match WaylandWindow::new(title, width, height) {
+                        Ok(w) => return Ok(PlatformWindow::Wayland(Box::new(w))),
+                        Err(e) => {
+                            log::warn!("Wayland connection failed ({}), attempting X11 fallback...", e);
+                        }
+                    }
+                }
 
-        Err("No graphical display found. Ensure WAYLAND_DISPLAY or DISPLAY is set in your environment.".into())
+                if let Ok(xd) = std::env::var("DISPLAY")
+                    && !xd.trim().is_empty()
+                {
+                    match X11Window::new(title, width, height) {
+                        Ok(w) => return Ok(PlatformWindow::X11(w)),
+                        Err(e) => {
+                            return Err(format!("Failed to connect to X11 display: {}", e).into());
+                        }
+                    }
+                }
+
+                Err("No graphical display found. Ensure WAYLAND_DISPLAY or DISPLAY is set in your environment.".into())
+            }
+        }
     }
 
     #[inline]

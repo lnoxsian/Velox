@@ -8,6 +8,13 @@ fn main() {
 
     let mut cli_opts = CliOptions::parse();
 
+    if let Some(ref b) = cli_opts.backend {
+        // SAFETY: Single-threaded process start before any threads or event loops are spawned.
+        unsafe {
+            std::env::set_var("VELOX_BACKEND", b);
+        }
+    }
+
     if cli_opts.help {
         CliOptions::print_help();
         return;

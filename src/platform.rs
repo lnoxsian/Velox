@@ -7,6 +7,9 @@ pub const CANONICAL_APP_ID: &str = "io.github.lnoxsian.Velox";
 /// Canonical instance name for X11 WM_CLASS (WM_CLASS = instance, general).
 pub const CANONICAL_WM_CLASS_INSTANCE: &str = "velox";
 
+/// Canonical general class name for X11 WM_CLASS.
+pub const CANONICAL_WM_CLASS_GENERAL: &str = "Velox";
+
 /// Underlying windowing backend detected at runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LinuxWindowBackend {
@@ -33,27 +36,38 @@ impl fmt::Display for LinuxWindowBackend {
 
 /// Diagnostic helper that inspects environment variables.
 pub fn detect_backend_from_env() -> LinuxWindowBackend {
+    if let Ok(b) = std::env::var("VELOX_BACKEND") {
+        if b.eq_ignore_ascii_case("x11") {
+            return LinuxWindowBackend::X11;
+        } else if b.eq_ignore_ascii_case("wayland") {
+            return LinuxWindowBackend::Wayland;
+        }
+    }
+
+    if let Ok(b) = std::env::var("WINIT_UNIX_BACKEND") {
+        if b.eq_ignore_ascii_case("x11") {
+            return LinuxWindowBackend::X11;
+        } else if b.eq_ignore_ascii_case("wayland") {
+            return LinuxWindowBackend::Wayland;
+        }
+    }
+
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    if let Some(ref st) = session_type {
+        if st.eq_ignore_ascii_case("x11") {
+            return LinuxWindowBackend::X11;
+        } else if st.eq_ignore_ascii_case("wayland") {
+            return LinuxWindowBackend::Wayland;
+        }
+    }
+
     let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     let x11_display = std::env::var("DISPLAY").ok();
-    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
 
-    // If WAYLAND_DISPLAY is non-empty, Wayland compositor is available
-    if wayland_display
-        .as_ref()
-        .is_some_and(|wd| !wd.trim().is_empty())
-    {
+    if wayland_display.as_ref().is_some_and(|wd| !wd.trim().is_empty()) {
         return LinuxWindowBackend::Wayland;
     }
 
-    // Check XDG_SESSION_TYPE hint if WAYLAND_DISPLAY wasn't set
-    if session_type
-        .as_ref()
-        .is_some_and(|st| st.eq_ignore_ascii_case("wayland"))
-    {
-        return LinuxWindowBackend::Wayland;
-    }
-
-    // Fall back to X11 DISPLAY
     if x11_display.as_ref().is_some_and(|d| !d.trim().is_empty()) {
         return LinuxWindowBackend::X11;
     }

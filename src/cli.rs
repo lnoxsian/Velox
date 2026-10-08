@@ -8,6 +8,7 @@ pub struct CliOptions {
     pub working_directory: Option<String>,
     pub command: Option<Vec<String>>,
     pub title: Option<String>,
+    pub backend: Option<String>,
     pub hold: bool,
     pub is_msg_create_window: bool,
     pub help: bool,
@@ -65,6 +66,12 @@ impl CliOptions {
                 "-t" | "--title" => {
                     if i + 1 < args.len() {
                         options.title = Some(args[i + 1].clone());
+                        i += 1;
+                    }
+                }
+                "-b" | "--backend" => {
+                    if i + 1 < args.len() {
+                        options.backend = Some(args[i + 1].clone());
                         i += 1;
                     }
                 }
@@ -133,6 +140,7 @@ FLAGS:
     -v, --version           Print version information
 
 OPTIONS:
+    -b, --backend <BACKEND>         Select windowing backend (x11 or wayland)
     -t, --title <TITLE>             Set custom window title
     -w, --working-directory <DIR>   Set initial working directory
     -e, --command <CMD...>          Execute specified command instead of shell
@@ -205,5 +213,16 @@ mod tests {
         let args2 = vec!["velox".to_string(), "doctor".to_string()];
         let opts2 = CliOptions::parse_args(&args2);
         assert!(opts2.diagnostics);
+    }
+
+    #[test]
+    fn test_cli_backend_flag() {
+        let args1 = vec!["velox".to_string(), "-b".to_string(), "x11".to_string()];
+        let opts1 = CliOptions::parse_args(&args1);
+        assert_eq!(opts1.backend, Some("x11".to_string()));
+
+        let args2 = vec!["velox".to_string(), "--backend".to_string(), "wayland".to_string()];
+        let opts2 = CliOptions::parse_args(&args2);
+        assert_eq!(opts2.backend, Some("wayland".to_string()));
     }
 }

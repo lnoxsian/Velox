@@ -1,8 +1,10 @@
+pub mod icon;
 pub mod keysym;
 pub mod shm;
 
 use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, PlatformEvent};
-use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
+use crate::platform::{CANONICAL_WM_CLASS_GENERAL, CANONICAL_WM_CLASS_INSTANCE};
+use icon::get_net_wm_icon_data;
 use shm::X11Framebuffer;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
@@ -22,6 +24,9 @@ pub struct X11Window {
     pub gc: xproto::Gcontext,
     pub visual: xproto::Visualid,
     pub wm_delete_window: xproto::Atom,
+    pub net_wm_name: xproto::Atom,
+    pub net_wm_icon_name: xproto::Atom,
+    pub utf8_string: xproto::Atom,
     pub modifiers: ModifiersState,
 }
 
@@ -67,22 +72,50 @@ impl X11Window {
 
         conn.create_gc(gc, window_id, &xproto::CreateGCAux::new())?;
 
-        // Set WM_NAME / Title
-        let wm_name = conn.intern_atom(false, b"_NET_WM_NAME")?.reply()?.atom;
+        // Intern atoms for window properties
+        let net_wm_name = conn.intern_atom(false, b"_NET_WM_NAME")?.reply()?.atom;
+        let net_wm_icon_name = conn.intern_atom(false, b"_NET_WM_ICON_NAME")?.reply()?.atom;
+        let net_wm_icon = conn.intern_atom(false, b"_NET_WM_ICON")?.reply()?.atom;
+        let net_wm_pid = conn.intern_atom(false, b"_NET_WM_PID")?.reply()?.atom;
         let utf8_string = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+
+        // Set EWMH & ICCCM Title
         conn.change_property8(
             xproto::PropMode::REPLACE,
             window_id,
-            wm_name,
+            net_wm_name,
             utf8_string,
             title.as_bytes(),
         )?;
+        conn.change_property8(
+            xproto::PropMode::REPLACE,
+            window_id,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            title.as_bytes(),
+        )?;
 
-        // Set WM_CLASS
+        // Set EWMH & ICCCM Icon Name
+        conn.change_property8(
+            xproto::PropMode::REPLACE,
+            window_id,
+            net_wm_icon_name,
+            utf8_string,
+            title.as_bytes(),
+        )?;
+        conn.change_property8(
+            xproto::PropMode::REPLACE,
+            window_id,
+            AtomEnum::WM_ICON_NAME,
+            AtomEnum::STRING,
+            title.as_bytes(),
+        )?;
+
+        // Set WM_CLASS: instance_name \0 class_name \0 ("velox\0Velox\0")
         let mut class_bytes = Vec::new();
         class_bytes.extend_from_slice(CANONICAL_WM_CLASS_INSTANCE.as_bytes());
         class_bytes.push(0);
-        class_bytes.extend_from_slice(CANONICAL_APP_ID.as_bytes());
+        class_bytes.extend_from_slice(CANONICAL_WM_CLASS_GENERAL.as_bytes());
         class_bytes.push(0);
         conn.change_property8(
             xproto::PropMode::REPLACE,
@@ -90,6 +123,37 @@ impl X11Window {
             AtomEnum::WM_CLASS,
             AtomEnum::STRING,
             &class_bytes,
+        )?;
+
+        // Set _NET_WM_PID
+        let pid = std::process::id();
+        conn.change_property32(
+            xproto::PropMode::REPLACE,
+            window_id,
+            net_wm_pid,
+            AtomEnum::CARDINAL,
+            &[pid],
+        )?;
+
+        // Set _NET_WM_ICON (embedded multi-resolution ARGB icons)
+        let icon_data = get_net_wm_icon_data();
+        if !icon_data.is_empty() {
+            conn.change_property32(
+                xproto::PropMode::REPLACE,
+                window_id,
+                net_wm_icon,
+                AtomEnum::CARDINAL,
+                icon_data,
+            )?;
+        }
+
+        // Set WM_HINTS (input = true, normal state)
+        conn.change_property32(
+            xproto::PropMode::REPLACE,
+            window_id,
+            AtomEnum::WM_HINTS,
+            AtomEnum::WM_HINTS,
+            &[3, 1, 1, 0, 0, 0, 0, 0, window_id],
         )?;
 
         // Handle WM_DELETE_WINDOW
@@ -117,6 +181,9 @@ impl X11Window {
             gc,
             visual: root_visual,
             wm_delete_window,
+            net_wm_name,
+            net_wm_icon_name,
+            utf8_string,
             modifiers: ModifiersState::empty(),
         })
     }
@@ -126,18 +193,35 @@ impl X11Window {
     }
 
     pub fn set_title(&self, title: &str) {
-        if let Ok(wm_name) = self.conn.intern_atom(false, b"_NET_WM_NAME")
-            && let Ok(reply) = wm_name.reply()
-        {
-            let _ = self.conn.change_property8(
-                xproto::PropMode::REPLACE,
-                self.window_id,
-                reply.atom,
-                AtomEnum::STRING,
-                title.as_bytes(),
-            );
-            let _ = self.conn.flush();
-        }
+        let _ = self.conn.change_property8(
+            xproto::PropMode::REPLACE,
+            self.window_id,
+            self.net_wm_name,
+            self.utf8_string,
+            title.as_bytes(),
+        );
+        let _ = self.conn.change_property8(
+            xproto::PropMode::REPLACE,
+            self.window_id,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            title.as_bytes(),
+        );
+        let _ = self.conn.change_property8(
+            xproto::PropMode::REPLACE,
+            self.window_id,
+            self.net_wm_icon_name,
+            self.utf8_string,
+            title.as_bytes(),
+        );
+        let _ = self.conn.change_property8(
+            xproto::PropMode::REPLACE,
+            self.window_id,
+            AtomEnum::WM_ICON_NAME,
+            AtomEnum::STRING,
+            title.as_bytes(),
+        );
+        let _ = self.conn.flush();
     }
 
     pub fn set_cursor(&self, _icon: CursorIcon) {
