@@ -406,28 +406,18 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                 Some(b'>') => {
                     // Kitty Keyboard Protocol: Push flags (`CSI > <flags> u`)
                     let flags = params.first().copied().unwrap_or(0);
-                    terminal.kitty_keyboard_stack.push(flags);
-                    terminal.kitty_keyboard_flags = flags;
+                    terminal.push_kitty_keyboard_flags(flags);
                 }
                 Some(b'<') => {
                     // Kitty Keyboard Protocol: Pop flags (`CSI < <count> u`)
                     let count = params.first().copied().unwrap_or(1) as usize;
-                    for _ in 0..count {
-                        terminal.kitty_keyboard_stack.pop();
-                    }
-                    terminal.kitty_keyboard_flags =
-                        terminal.kitty_keyboard_stack.last().copied().unwrap_or(0);
+                    terminal.pop_kitty_keyboard_flags(count);
                 }
                 Some(b'=') => {
                     // Kitty Keyboard Protocol: Set / modify flags (`CSI = <flags> [; <mode>] u`)
                     let flags = params.first().copied().unwrap_or(0);
                     let mode = params.get(1).copied().unwrap_or(1);
-                    match mode {
-                        1 => terminal.kitty_keyboard_flags |= flags,
-                        2 => terminal.kitty_keyboard_flags = flags,
-                        3 => terminal.kitty_keyboard_flags &= !flags,
-                        _ => {}
-                    }
+                    terminal.set_kitty_keyboard_flags(flags, mode);
                 }
                 _ => {
                     // Restore Cursor (ANSI / VT)
@@ -526,13 +516,17 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                 }
             }
         }
-        b'p'
-            // DECRPM - DEC Private Mode Report
-            if prefix == Some(b'?') && params.first() == Some(&2026) => {
+        b'p' => {
+            if prefix == Some(b'!') {
+                // DECSTR - Soft Terminal Reset
+                terminal.reset_kitty_keyboard();
+            } else if prefix == Some(b'?') && params.first() == Some(&2026) {
+                // DECRPM - DEC Private Mode Report
                 let status = if terminal.synchronized_output { 1 } else { 2 };
                 let response = format!("\x1b[?2026;{}$y", status);
                 terminal.send_to_shell(response.as_bytes());
             }
+        }
         _ => {}
     }
 }

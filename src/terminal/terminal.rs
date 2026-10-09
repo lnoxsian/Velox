@@ -54,6 +54,9 @@ pub struct Terminal {
     pub cell_width_px: u32,
     pub cell_height_px: u32,
     pub title_stack: Vec<String>,
+    pub main_kitty_keyboard_flags: u16,
+    pub alt_kitty_keyboard_flags: u16,
+    pub alt_kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
     pub kitty_keyboard_flags: u16,
     pub kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
 }
@@ -139,6 +142,9 @@ impl Terminal {
             cell_width_px: 10,
             cell_height_px: 20,
             title_stack: Vec::new(),
+            main_kitty_keyboard_flags: 0,
+            alt_kitty_keyboard_flags: 0,
+            alt_kitty_keyboard_stack: smallvec::SmallVec::new(),
             kitty_keyboard_flags: 0,
             kitty_keyboard_stack: smallvec::SmallVec::new(),
         }
@@ -360,8 +366,79 @@ impl Terminal {
         self.active_charset = active_grid.saved_active_charset;
     }
 
+    pub fn push_kitty_keyboard_flags(&mut self, flags: u16) {
+        let stack = if self.is_alt_screen {
+            &mut self.alt_kitty_keyboard_stack
+        } else {
+            &mut self.kitty_keyboard_stack
+        };
+        if stack.len() >= 16 {
+            stack.remove(0);
+        }
+        stack.push(flags);
+        self.kitty_keyboard_flags = flags;
+        if self.is_alt_screen {
+            self.alt_kitty_keyboard_flags = flags;
+        } else {
+            self.main_kitty_keyboard_flags = flags;
+        }
+    }
+
+    pub fn pop_kitty_keyboard_flags(&mut self, count: usize) {
+        let count = count.max(1);
+        let stack = if self.is_alt_screen {
+            &mut self.alt_kitty_keyboard_stack
+        } else {
+            &mut self.kitty_keyboard_stack
+        };
+        for _ in 0..count {
+            stack.pop();
+        }
+        let flags = stack.last().copied().unwrap_or(0);
+        self.kitty_keyboard_flags = flags;
+        if self.is_alt_screen {
+            self.alt_kitty_keyboard_flags = flags;
+        } else {
+            self.main_kitty_keyboard_flags = flags;
+        }
+    }
+
+    pub fn set_kitty_keyboard_flags(&mut self, flags: u16, mode: u16) {
+        let current = self.kitty_keyboard_flags;
+        let new_flags = match mode {
+            1 => flags,
+            2 => current | flags,
+            3 => current & !flags,
+            _ => current,
+        };
+        self.kitty_keyboard_flags = new_flags;
+        if self.is_alt_screen {
+            self.alt_kitty_keyboard_flags = new_flags;
+        } else {
+            self.main_kitty_keyboard_flags = new_flags;
+        }
+    }
+
+    pub fn reset_kitty_keyboard(&mut self) {
+        self.kitty_keyboard_flags = 0;
+        self.kitty_keyboard_stack.clear();
+        self.main_kitty_keyboard_flags = 0;
+        self.alt_kitty_keyboard_flags = 0;
+        self.alt_kitty_keyboard_stack.clear();
+    }
+
     pub fn set_alt_screen(&mut self, active: bool) {
         if self.is_alt_screen != active {
+            if active {
+                self.main_kitty_keyboard_flags = self.kitty_keyboard_flags;
+                self.alt_kitty_keyboard_flags = 0;
+                self.alt_kitty_keyboard_stack.clear();
+                self.kitty_keyboard_flags = 0;
+            } else {
+                self.alt_kitty_keyboard_flags = 0;
+                self.alt_kitty_keyboard_stack.clear();
+                self.kitty_keyboard_flags = self.main_kitty_keyboard_flags;
+            }
             self.is_alt_screen = active;
             self.active_grid_mut().mark_all_dirty();
         }
@@ -1165,14 +1242,61 @@ mod tests {
         assert_eq!(term.kitty_keyboard_flags, 3);
         assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3]);
 
-        // CSI = 1 ; 1 u -> Set flag bit 1
+        // CSI = 1 ; 1 u -> Replace flags with 1 (mode 1 = replace)
         term.feed(b"\x1b[=1;1u");
+        assert_eq!(term.kitty_keyboard_flags, 1);
+
+        // CSI = 2 ; 2 u -> Union with flag bit 2 (mode 2 = union)
+        term.feed(b"\x1b[=2;2u");
         assert_eq!(term.kitty_keyboard_flags, 3);
+
+        // CSI = 0 u -> Disable protocol (mode 1 default with 0 = reset flags to 0)
+        term.feed(b"\x1b[=0u");
+        assert_eq!(term.kitty_keyboard_flags, 0);
+
+        // Re-push 3
+        term.feed(b"\x1b[>3u");
+        assert_eq!(term.kitty_keyboard_flags, 3);
+        assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3, 3]);
 
         // CSI < 1 u -> Pop 1 level
         term.feed(b"\x1b[<1u");
+        assert_eq!(term.kitty_keyboard_flags, 3);
+        assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3]);
+
+        // Pop last level -> empty stack resets flags to 0
+        term.feed(b"\x1b[<1u");
         assert_eq!(term.kitty_keyboard_flags, 0);
         assert!(term.kitty_keyboard_stack.is_empty());
+    }
+
+    #[test]
+    fn test_kitty_keyboard_alternate_screen_isolation() {
+        let mut term = Terminal::new(80, 24);
+
+        // Shell enables kitty keyboard flags on main screen
+        term.feed(b"\x1b[=5u");
+        assert_eq!(term.kitty_keyboard_flags, 5);
+
+        // Program like nano launches and enters alternate screen (CSI ? 1049 h)
+        term.feed(b"\x1b[?1049h");
+        // Alternate screen must start in legacy mode (flags = 0)
+        assert_eq!(term.kitty_keyboard_flags, 0);
+
+        // Typing in alt screen uses flags = 0 (legacy control codes, e.g. Ctrl+X = 0x18)
+        let ctrl_x = crate::input::keyboard::translate_key(
+            &crate::window::event::Key::Character("x".to_string()),
+            Some("x"),
+            crate::window::event::ModifiersState::CONTROL,
+            false,
+            term.kitty_keyboard_flags,
+        );
+        assert_eq!(ctrl_x.unwrap().as_slice(), &[24]); // ASCII 24 = ^X
+
+        // Program exits alternate screen (CSI ? 1049 l)
+        term.feed(b"\x1b[?1049l");
+        // Main screen restored
+        assert_eq!(term.kitty_keyboard_flags, 5);
     }
 
     #[test]

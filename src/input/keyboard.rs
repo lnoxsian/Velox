@@ -89,7 +89,7 @@ pub fn translate_key(
                     '\\' | '4' => return Some(smallvec![28]),
                     ']' | '5' => return Some(smallvec![29]),
                     '^' | '6' => return Some(smallvec![30]),
-                    '_' | '7' => return Some(smallvec![31]),
+                    '_' | '7' | '/' => return Some(smallvec![31]),
                     '8' | '?' => return Some(smallvec![127]),
                     _ => {}
                 }
@@ -100,7 +100,7 @@ pub fn translate_key(
     }
 
     // ── 4. Standard XTerm Modified & Unmodified Keys ─────────────────────────
-    // If winit resolved printable text (including dead keys, AltGr, IME, shifted symbols) and no Ctrl/Super modifier
+    // If platform resolved printable text (including dead keys, AltGr, IME, shifted symbols) and no Ctrl/Super modifier
     if !has_ctrl
         && !has_super
         && let Some(t) = text
