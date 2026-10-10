@@ -3,14 +3,19 @@ pub mod shm;
 
 use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, PlatformEvent};
 use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
+use keyboard::{ActiveKeyRepeat, KeyRepeatConfig, XkbHandler};
 use shm::WaylandShmBuffer;
 use std::collections::VecDeque;
 use std::os::fd::{AsFd, AsRawFd};
+use std::time::{Duration, Instant};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
+};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 fn resolve_wayland_app_id() -> &'static str {
@@ -38,8 +43,13 @@ pub struct WaylandState {
     pub surface: Option<wl_surface::WlSurface>,
     pub xdg_surface: Option<xdg_surface::XdgSurface>,
     pub xdg_toplevel: Option<xdg_toplevel::XdgToplevel>,
+    pub decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+    pub toplevel_decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub xkb_handler: XkbHandler,
+    pub repeat_config: Option<KeyRepeatConfig>,
+    pub active_repeat: Option<ActiveKeyRepeat>,
     pub buffer: Option<WaylandShmBuffer>,
     pub width: u32,
     pub height: u32,
@@ -61,8 +71,13 @@ impl WaylandState {
             surface: None,
             xdg_surface: None,
             xdg_toplevel: None,
+            decoration_manager: None,
+            toplevel_decoration: None,
             pointer: None,
             keyboard: None,
+            xkb_handler: XkbHandler::new(),
+            repeat_config: None,
+            active_repeat: None,
             buffer: None,
             width: width.max(1),
             height: height.max(1),
@@ -107,6 +122,13 @@ impl WaylandWindow {
 
         toplevel.set_title(title.to_string());
         toplevel.set_app_id(resolve_wayland_app_id().to_string());
+
+        // Request server-side window decorations if supported by compositor (e.g. KDE KWin)
+        if let Some(dec_mgr) = &state.decoration_manager {
+            let decoration = dec_mgr.get_toplevel_decoration(&toplevel, &qh, ());
+            decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            state.toplevel_decoration = Some(decoration);
+        }
 
         surface.commit();
 
@@ -165,13 +187,39 @@ impl WaylandWindow {
         let _ = self.conn.flush();
     }
 
+    #[inline]
+    pub fn next_wake_time(&self) -> Option<Instant> {
+        self.state.active_repeat.as_ref().map(|r| r.next_deadline)
+    }
+
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
         let _ = self.conn.flush();
         if let Some(guard) = self.conn.prepare_read() {
             let _ = guard.read();
         }
         let _ = self.event_queue.dispatch_pending(&mut self.state);
-        self.state.events.pop_front()
+
+        if let Some(event) = self.state.events.pop_front() {
+            return Some(event);
+        }
+
+        // Handle active key repeat when no events arrived from compositor
+        if let Some(repeat) = &mut self.state.active_repeat {
+            let now = Instant::now();
+            if now >= repeat.next_deadline {
+                repeat.next_deadline += repeat.interval;
+                if repeat.next_deadline <= now {
+                    repeat.next_deadline = now + repeat.interval;
+                }
+                return Some(PlatformEvent::KeyPressed {
+                    key: repeat.key.clone(),
+                    text: repeat.text.clone(),
+                    modifiers: repeat.modifiers,
+                });
+            }
+        }
+
+        None
     }
 }
 
@@ -203,6 +251,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandState {
                 }
                 "wl_seat" => {
                     state.seat = Some(registry.bind(name, version.min(7), qh, ()));
+                }
+                "zxdg_decoration_manager_v1" => {
+                    state.decoration_manager = Some(registry.bind(name, version.min(1), qh, ()));
                 }
                 _ => {}
             }
@@ -428,6 +479,16 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
         _: &QueueHandle<Self>,
     ) {
         match event {
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                state.xkb_handler.update_keymap(&fd, size);
+            }
+            wl_keyboard::Event::Enter { .. } => {
+                state.events.push_back(PlatformEvent::Focused(true));
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                state.active_repeat = None;
+                state.events.push_back(PlatformEvent::Focused(false));
+            }
             wl_keyboard::Event::Key {
                 key,
                 state: key_state,
@@ -437,17 +498,40 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                     key_state,
                     wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
                 );
-                // Wayland keycodes are Linux evdev scancodes; key + 8 aligns with standard keysyms
-                let keysym = key + 8;
-                let (k, text) = keyboard::xkb_keysym_to_key(keysym);
+                let (k, text, repeats) = state.xkb_handler.translate_key(key, state.modifiers);
                 if let Some(k) = k {
                     if is_pressed {
                         state.events.push_back(PlatformEvent::KeyPressed {
-                            key: k,
-                            text,
+                            key: k.clone(),
+                            text: text.clone(),
                             modifiers: state.modifiers,
                         });
+
+                        if repeats {
+                            if let Some(cfg) = state.repeat_config {
+                                let delay = Duration::from_millis(cfg.delay.max(1) as u64);
+                                let interval = Duration::from_micros(
+                                    (1_000_000.0 / (cfg.rate.max(1) as f64)) as u64,
+                                );
+                                let now = Instant::now();
+                                state.active_repeat = Some(ActiveKeyRepeat {
+                                    scancode: key,
+                                    key: k,
+                                    text,
+                                    modifiers: state.modifiers,
+                                    next_deadline: now + delay,
+                                    interval,
+                                });
+                            }
+                        } else {
+                            state.active_repeat = None;
+                        }
                     } else {
+                        if let Some(active) = &state.active_repeat
+                            && active.scancode == key
+                        {
+                            state.active_repeat = None;
+                        }
                         state.events.push_back(PlatformEvent::KeyReleased {
                             key: k,
                             modifiers: state.modifiers,
@@ -459,25 +543,55 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                 mods_depressed,
                 mods_latched,
                 mods_locked,
+                group,
                 ..
             } => {
-                let mask = mods_depressed | mods_latched | mods_locked;
-                let mut m = ModifiersState::empty();
-                if mask & 1 != 0 {
-                    m |= ModifiersState::SHIFT;
+                state.modifiers = state.xkb_handler.update_modifiers(
+                    mods_depressed,
+                    mods_latched,
+                    mods_locked,
+                    group,
+                );
+                if let Some(repeat) = &mut state.active_repeat {
+                    repeat.modifiers = state.modifiers;
                 }
-                if mask & 4 != 0 {
-                    m |= ModifiersState::CONTROL;
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                if rate > 0 && delay > 0 {
+                    state.repeat_config = Some(KeyRepeatConfig { rate, delay });
+                } else {
+                    state.repeat_config = None;
+                    state.active_repeat = None;
                 }
-                if mask & 8 != 0 {
-                    m |= ModifiersState::ALT;
-                }
-                if mask & 64 != 0 {
-                    m |= ModifiersState::SUPER;
-                }
-                state.modifiers = m;
             }
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+        _: zxdg_decoration_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            log::debug!("Wayland window decoration mode: {:?}", mode);
         }
     }
 }

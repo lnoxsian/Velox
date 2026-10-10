@@ -16,16 +16,19 @@ impl DamageTracker {
         self.full_redraw = true;
     }
 
+    #[inline(always)]
     pub fn mark_dirty(&mut self, row: usize) {
-        if row < self.dirty_rows.len() {
+        if !self.full_redraw && row < self.dirty_rows.len() {
             self.dirty_rows[row] = true;
         }
     }
 
     #[inline(always)]
     pub fn mark_all(&mut self) {
-        self.full_redraw = true;
-        self.dirty_rows.fill(true);
+        if !self.full_redraw {
+            self.full_redraw = true;
+            self.dirty_rows.fill(true);
+        }
     }
 
     #[inline(always)]

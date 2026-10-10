@@ -64,6 +64,13 @@ impl Framebuffer {
         let y_end = (y + h).min(self.height) as usize;
         let x_start = x as usize;
 
+        if x_start == 0 && x_end == self.stride {
+            let start = (y as usize) * self.stride;
+            let end = y_end * self.stride;
+            self.pixels[start..end].fill(color);
+            return;
+        }
+
         for row in (y as usize)..y_end {
             let row_offset = row * self.stride;
             self.pixels[row_offset + x_start..row_offset + x_end].fill(color);

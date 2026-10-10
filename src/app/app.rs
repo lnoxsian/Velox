@@ -1398,6 +1398,11 @@ impl App {
                         Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
                 }
 
+                if let Some(repeat_wake) = ws.window.next_wake_time() {
+                    min_next_wake =
+                        Some(min_next_wake.map_or(repeat_wake, |t| t.min(repeat_wake)));
+                }
+
                 if ws.needs_redraw {
                     if let Some(active_tab) = ws.tabs.get_mut(ws.active_tab_index)
                         && active_tab

@@ -159,6 +159,14 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn next_wake_time(&self) -> Option<std::time::Instant> {
+        match self {
+            Self::X11(_) => None,
+            Self::Wayland(w) => w.next_wake_time(),
+        }
+    }
+
+    #[inline]
     pub fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
         match self {
             Self::X11(w) => w.as_raw_fd(),

@@ -695,101 +695,122 @@ impl CpuRenderer {
                 };
 
                 grid.with_display_row_slice(y, |row_cells| {
-                    // Pass A: Coalesced Background Spans
-                    let mut span_start_col = 0usize;
-                    let mut span_bg = 0u32;
-                    let mut in_span = false;
-
-                    for col in 0..grid_w {
-                        let cell = if col < row_cells.len() {
-                            &row_cells[col]
-                        } else {
-                            &default_cell
-                        };
-
-                        let is_selected = if is_row_in_selection {
-                            if sel_min_abs_y == sel_max_abs_y {
-                                col >= sel_min_x && col <= sel_max_x
-                            } else if abs_row == sel_min_abs_y {
-                                col >= sel_min_x
-                            } else if abs_row == sel_max_abs_y {
-                                col <= sel_max_x
-                            } else {
-                                true
-                            }
-                        } else {
-                            false
-                        };
-                        let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                        let is_inverted = is_selected ^ is_reverse;
-
-                        let (_, mut bg) = self.palette.resolve_cell_colors_pane(
-                            cell,
-                            is_inverted,
-                            pane.bold_is_bright,
-                            pane_effective_dim,
-                            pane.theme,
-                            default_pane_bg,
-                        );
-
-                        let is_cursor = pane.is_active
+                    let has_custom_bg = is_row_in_selection
+                        || (pane.is_active
                             && pane.cursor_visible
                             && is_active_grid_row
-                            && col == pane.display_cursor_x
-                            && grid_y == grid.cursor.y;
-                        let is_block_cursor = is_cursor
                             && pane.cursor_shape == CursorShape::Block
-                            && pane.is_active
-                            && is_focused;
-                        if is_block_cursor {
-                            let mut cell_fg = cell.foreground;
-                            if pane.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
-                                for i in 0..8 {
-                                    if cell_fg == pane.theme.ansi_colors[i] {
-                                        cell_fg = pane.theme.ansi_colors[i + 8];
-                                        break;
+                            && is_focused)
+                        || row_cells.iter().any(|c| {
+                            c.flags.contains(CellFlags::REVERSE)
+                                || c.background != pane.theme.default_bg
+                        });
+
+                    if has_custom_bg {
+                        // Pass A: Coalesced Background Spans
+                        let mut span_start_col = 0usize;
+                        let mut span_bg = 0u32;
+                        let mut in_span = false;
+
+                        for col in 0..grid_w {
+                            let cell = if col < row_cells.len() {
+                                &row_cells[col]
+                            } else {
+                                &default_cell
+                            };
+
+                            let is_selected = if is_row_in_selection {
+                                if sel_min_abs_y == sel_max_abs_y {
+                                    col >= sel_min_x && col <= sel_max_x
+                                } else if abs_row == sel_min_abs_y {
+                                    col >= sel_min_x
+                                } else if abs_row == sel_max_abs_y {
+                                    col <= sel_max_x
+                                } else {
+                                    true
+                                }
+                            } else {
+                                false
+                            };
+                            let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                            let is_inverted = is_selected ^ is_reverse;
+
+                            let (_, mut bg) = self.palette.resolve_cell_colors_pane(
+                                cell,
+                                is_inverted,
+                                pane.bold_is_bright,
+                                pane_effective_dim,
+                                pane.theme,
+                                default_pane_bg,
+                            );
+
+                            let is_cursor = pane.is_active
+                                && pane.cursor_visible
+                                && is_active_grid_row
+                                && col == pane.display_cursor_x
+                                && grid_y == grid.cursor.y;
+                            let is_block_cursor = is_cursor
+                                && pane.cursor_shape == CursorShape::Block
+                                && pane.is_active
+                                && is_focused;
+                            if is_block_cursor {
+                                let mut cell_fg = cell.foreground;
+                                if pane.bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+                                    for i in 0..8 {
+                                        if cell_fg == pane.theme.ansi_colors[i] {
+                                            cell_fg = pane.theme.ansi_colors[i + 8];
+                                            break;
+                                        }
                                     }
                                 }
+                                let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
+                                bg = PackedColor::from_color(
+                                    pane.theme
+                                        .resolve_cursor_color(cell_fg_dimmed)
+                                        .dim(pane_effective_dim),
+                                )
+                                .to_u32();
                             }
-                            let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
-                            bg = PackedColor::from_color(
-                                pane.theme
-                                    .resolve_cursor_color(cell_fg_dimmed)
-                                    .dim(pane_effective_dim),
-                            )
-                            .to_u32();
+
+                            if !in_span {
+                                span_start_col = col;
+                                span_bg = bg;
+                                in_span = true;
+                            } else if bg != span_bg {
+                                if span_bg != default_pane_bg {
+                                    let span_px = px_offset + (span_start_col as u32) * cell_w;
+                                    let span_w = (((col - span_start_col) as u32) * cell_w)
+                                        .min(max_x.saturating_sub(span_px));
+                                    if span_w > 0 && span_px < max_x {
+                                        self.framebuffer
+                                            .fill_span(span_px, py, span_w, cell_h, span_bg);
+                                    }
+                                }
+                                span_start_col = col;
+                                span_bg = bg;
+                            }
                         }
 
-                        if !in_span {
-                            span_start_col = col;
-                            span_bg = bg;
-                            in_span = true;
-                        } else if bg != span_bg {
+                        if in_span && span_bg != default_pane_bg {
                             let span_px = px_offset + (span_start_col as u32) * cell_w;
-                            let span_w = (((col - span_start_col) as u32) * cell_w)
+                            let span_w = (((grid_w - span_start_col) as u32) * cell_w)
                                 .min(max_x.saturating_sub(span_px));
                             if span_w > 0 && span_px < max_x {
                                 self.framebuffer
                                     .fill_span(span_px, py, span_w, cell_h, span_bg);
                             }
-                            span_start_col = col;
-                            span_bg = bg;
-                        }
-                    }
-
-                    if in_span {
-                        let span_px = px_offset + (span_start_col as u32) * cell_w;
-                        let span_w = (((grid_w - span_start_col) as u32) * cell_w)
-                            .min(max_x.saturating_sub(span_px));
-                        if span_w > 0 && span_px < max_x {
-                            self.framebuffer
-                                .fill_span(span_px, py, span_w, cell_h, span_bg);
                         }
                     }
 
                     // Pass B: Glyphs, Primitives, Decorations
                     for (col, cell) in row_cells.iter().enumerate() {
                         if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                            continue;
+                        }
+                        if cell.character == ' '
+                            && cell.flags.is_empty()
+                            && cell.underline_color.is_none()
+                        {
                             continue;
                         }
 

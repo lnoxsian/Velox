@@ -314,21 +314,17 @@ impl Grid {
         let has_hyperlinks = !self.hyperlinks.rows.is_empty();
         let has_current_link = self.current_hyperlink.is_some();
 
+        let template_cell = Cell {
+            character: ' ',
+            foreground: fg,
+            background: bg,
+            underline_color,
+            flags,
+        };
+
         while !text.is_empty() {
             if self.cursor.x >= self.width {
                 let physical_y = self.physical_row(self.cursor.y);
-                let row_start = physical_y * self.width;
-                let start = (row_start + self.cursor.x).min(self.cells.len());
-                let end = (row_start + self.width).min(self.cells.len());
-                if start < end {
-                    self.cells[start..end].fill(Cell {
-                        character: ' ',
-                        foreground: fg,
-                        background: bg,
-                        underline_color: None,
-                        flags: CellFlags::empty(),
-                    });
-                }
                 if physical_y < self.row_wrapped.len() {
                     self.row_wrapped[physical_y] = true;
                 }
@@ -351,16 +347,11 @@ impl Grid {
             if dest_start < dest_end {
                 let actual_len = dest_end - dest_start;
                 let dest_slice = &mut self.cells[dest_start..dest_end];
-                let template = Cell {
-                    character: ' ',
-                    foreground: fg,
-                    background: bg,
-                    underline_color,
-                    flags,
-                };
                 for (cell, &b) in dest_slice.iter_mut().zip(&chunk[..actual_len]) {
-                    *cell = template;
-                    cell.character = b as char;
+                    *cell = Cell {
+                        character: b as char,
+                        ..template_cell
+                    };
                 }
             }
 

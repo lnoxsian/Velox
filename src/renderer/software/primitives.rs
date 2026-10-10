@@ -2,6 +2,7 @@ use super::framebuffer::Framebuffer;
 
 /// Direct CPU rasterization for Box Drawing and Block Element characters.
 /// Returns `true` if the character was handled as a geometric primitive.
+#[inline(always)]
 pub fn try_render_primitive(
     c: char,
     px: u32,
@@ -11,6 +12,10 @@ pub fn try_render_primitive(
     fg: u32,
     fb: &mut Framebuffer,
 ) -> bool {
+    let cp = c as u32;
+    if cp != 0x7c && !(0x2500..=0x259f).contains(&cp) {
+        return false;
+    }
     match c {
         // Full block
         '█' => {

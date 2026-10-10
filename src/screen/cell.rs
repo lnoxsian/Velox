@@ -64,6 +64,14 @@ impl Cell {
             flags,
         }
     }
+
+    #[inline(always)]
+    pub fn is_blank_with_bg(&self, bg: Color) -> bool {
+        self.character == ' '
+            && self.flags.is_empty()
+            && self.underline_color.is_none()
+            && self.background == bg
+    }
 }
 
 impl Default for Cell {

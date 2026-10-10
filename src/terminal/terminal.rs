@@ -232,6 +232,16 @@ impl Terminal {
                     if charset == 0 {
                         let start = i;
                         i += 1;
+                        while i + 8 <= len {
+                            let chunk: [u8; 8] = data[i..i + 8].try_into().unwrap();
+                            let w = u64::from_ne_bytes(chunk);
+                            let has_less_than_20 = (w.wrapping_sub(0x2020_2020_2020_2020)) & !w;
+                            let has_high = w.wrapping_add(0x0101_0101_0101_0101) | w;
+                            if (has_less_than_20 | has_high) & 0x8080_8080_8080_8080 != 0 {
+                                break;
+                            }
+                            i += 8;
+                        }
                         while i < len && (0x20..=0x7e).contains(&data[i]) {
                             i += 1;
                         }

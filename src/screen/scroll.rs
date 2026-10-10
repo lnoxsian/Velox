@@ -2,17 +2,15 @@ use crate::screen::cell::{Cell, CellFlags, Color};
 use crate::screen::grid::Grid;
 
 impl Grid {
+    #[inline(always)]
     pub fn scroll_or_move_down(&mut self, bg: Color) {
-        self.clamp_cursor();
         let bottom = self.scroll_region_bottom.min(self.height.saturating_sub(1));
         if self.cursor.y < bottom {
             self.cursor.y += 1;
         } else if self.cursor.y == bottom {
             self.scroll(1, bg);
-        } else {
-            if self.cursor.y + 1 < self.height {
-                self.cursor.y += 1;
-            }
+        } else if self.cursor.y + 1 < self.height {
+            self.cursor.y += 1;
         }
     }
 
@@ -45,8 +43,8 @@ impl Grid {
 
         // Fast path: Full-screen scroll via circular row offset rotation O(1) with ZERO memory copying
         if top == 0 && bottom == self.height - 1 {
-            for y in 0..u_delta.min(self.height) {
-                let physical_y = (self.row_offset + y) % self.height;
+            if u_delta == 1 {
+                let physical_y = self.row_offset;
                 let start = physical_y * self.width;
                 let end = start + self.width;
                 let wrapped = self.row_wrapped.get(physical_y).copied().unwrap_or(false);
@@ -67,14 +65,45 @@ impl Grid {
                 } else {
                     self.scrollback.push_line(&self.cells[start..end], wrapped);
                 }
-                // Clear the scrolled-off physical row so it becomes the fresh bottom row
                 self.cells[start..end].fill(default_cell);
                 if physical_y < self.row_wrapped.len() {
                     self.row_wrapped[physical_y] = false;
                 }
+                let mut next = self.row_offset + 1;
+                if next >= self.height {
+                    next = 0;
+                }
+                self.row_offset = next;
+            } else {
+                for y in 0..u_delta.min(self.height) {
+                    let physical_y = (self.row_offset + y) % self.height;
+                    let start = physical_y * self.width;
+                    let end = start + self.width;
+                    let wrapped = self.row_wrapped.get(physical_y).copied().unwrap_or(false);
+                    if self.selection.active {
+                        let prev_len = self.scrollback.len();
+                        self.scrollback.push_line(&self.cells[start..end], wrapped);
+                        let new_len = self.scrollback.len();
+                        let evicted = (prev_len + 1).saturating_sub(new_len);
+                        if evicted > 0 {
+                            let max_y = self.selection.start_y.max(self.selection.end_y);
+                            if max_y < evicted {
+                                self.selection.clear();
+                            } else {
+                                self.selection.start_y = self.selection.start_y.saturating_sub(evicted);
+                                self.selection.end_y = self.selection.end_y.saturating_sub(evicted);
+                            }
+                        }
+                    } else {
+                        self.scrollback.push_line(&self.cells[start..end], wrapped);
+                    }
+                    self.cells[start..end].fill(default_cell);
+                    if physical_y < self.row_wrapped.len() {
+                        self.row_wrapped[physical_y] = false;
+                    }
+                }
+                self.row_offset = (self.row_offset + u_delta) % self.height;
             }
-
-            self.row_offset = (self.row_offset + u_delta) % self.height;
 
             if self.scroll_offset > 0 {
                 self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());
