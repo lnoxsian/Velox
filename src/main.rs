@@ -26,7 +26,14 @@ fn main() {
     }
 
     // Load user configuration
-    let config = config::loader::load().unwrap_or_else(|_| config::defaults::default_config());
+    let config = match config::loader::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Warning: Failed to load configuration file: {}", e);
+            eprintln!("Falling back to default configuration.\n");
+            config::defaults::default_config()
+        }
+    };
 
     if cli_opts.diagnostics {
         velox::diagnostics::run_diagnostics(&config);
@@ -68,5 +75,8 @@ fn main() {
             std::process::exit(1);
         }
     };
-    app.run();
+    if let Err(e) = app.run() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
 }

@@ -1261,11 +1261,8 @@ impl App {
         }
     }
 
-    pub fn run(&mut self) {
-        if let Err(e) = self.init() {
-            log::error!("Initialization failed: {}", e);
-            return;
-        }
+    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.init()?;
 
         let mut last_idle_prune = std::time::Instant::now();
 
@@ -1495,5 +1492,6 @@ impl App {
                 }
             }
         }
+        Ok(())
     }
 }

@@ -77,6 +77,21 @@ pub fn run_diagnostics(_config: &Config) {
     let ipc_socket = crate::ipc::socket_path();
     println!("  IPC Socket Path:    {}", ipc_socket.display());
 
+    println!("\n[Font System]");
+    println!("  Configured Family:  {}", _config.font_family());
+    println!("  Configured Size:    {} pt", _config.font_size());
+    let db = crate::font::fallback::get_system_font_db();
+    let total_faces = db.faces().count();
+    println!("  System Font Faces:  {}", total_faces);
+    match crate::font::resolved::resolve_regular_font(db, _config.font_family()) {
+        Ok((_, _, resolved_family)) => {
+            println!("  Resolved Face:      {}", resolved_family);
+        }
+        Err(e) => {
+            println!("  Resolved Face:      Failed ({})", e);
+        }
+    }
+
     println!("================================================================================");
 }
 

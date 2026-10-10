@@ -1,10 +1,28 @@
 pub use crate::font::resolved::{
-    ResolvedFont, ResolvedFontSet, SYNTHETIC_ITALIC_SHEAR, get_or_create_outlined_glyph,
-    shear_outline,
+    FontError, ResolvedFont, ResolvedFontSet, STANDARD_MONOSPACE_FAMILIES, SYNTHETIC_ITALIC_SHEAR,
+    get_or_create_outlined_glyph, shear_outline,
 };
 use crate::font::storage::{FontStorage, create_font_arc};
 use ab_glyph::FontArc;
 use std::sync::Arc;
+
+pub fn load_font_face_by_id(db: &fontdb::Database, id: fontdb::ID) -> Option<FontArc> {
+    let face = db.face(id)?;
+    let storage = match &face.source {
+        fontdb::Source::File(path) => FontStorage::from_file(path).ok().map(Arc::new),
+        fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => {
+            Some(Arc::new(FontStorage::from_shared(Arc::clone(data))))
+        }
+    };
+
+    if let Some(st) = storage
+        && let Ok(font) = create_font_arc(st, face.index)
+    {
+        Some(font)
+    } else {
+        None
+    }
+}
 
 pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<FontArc> {
     if let Some(id) = db.query(query)
@@ -14,16 +32,7 @@ pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<Fo
             return None;
         }
 
-        let storage = match &face.source {
-            fontdb::Source::File(path) => FontStorage::from_file(path).ok().map(Arc::new),
-            fontdb::Source::Binary(data) | fontdb::Source::SharedFile(_, data) => {
-                Some(Arc::new(FontStorage::from_shared(Arc::clone(data))))
-            }
-        };
-
-        if let Some(st) = storage
-            && let Ok(font) = create_font_arc(st, face.index)
-        {
+        if let Some(font) = load_font_face_by_id(db, id) {
             return Some(font);
         }
     }

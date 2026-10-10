@@ -116,7 +116,32 @@ impl GlyphCache {
         font_scale_multiplier: f32,
     ) -> Self {
         let db = crate::font::fallback::get_system_font_db();
-        let font_set = crate::font::resolved::ResolvedFontSet::resolve(db, "Monospace");
+        let font_set = crate::font::resolved::ResolvedFontSet::try_resolve(db, "Monospace")
+            .unwrap_or_else(|_| crate::font::resolved::ResolvedFontSet {
+                regular: crate::font::resolved::ResolvedFont {
+                    font: font.clone(),
+                    synthetic_italic: false,
+                    synthetic_bold: false,
+                },
+                bold: crate::font::resolved::ResolvedFont {
+                    font: font_bold.clone().unwrap_or_else(|| font.clone()),
+                    synthetic_italic: false,
+                    synthetic_bold: font_bold.is_none(),
+                },
+                italic: crate::font::resolved::ResolvedFont {
+                    font: font_italic.clone().unwrap_or_else(|| font.clone()),
+                    synthetic_italic: font_italic.is_none(),
+                    synthetic_bold: false,
+                },
+                bold_italic: crate::font::resolved::ResolvedFont {
+                    font: font_bold_italic
+                        .clone()
+                        .or_else(|| font_bold.clone())
+                        .unwrap_or_else(|| font.clone()),
+                    synthetic_italic: font_bold_italic.is_none(),
+                    synthetic_bold: font_bold_italic.is_none() && font_bold.is_none(),
+                },
+            });
         let mut cache = Self {
             font_set,
             font,
@@ -139,9 +164,13 @@ impl GlyphCache {
         cache
     }
 
-    pub fn from_font_family(font_family: &str, font_size: f32, font_scale_multiplier: f32) -> Self {
+    pub fn try_from_font_family(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+    ) -> Result<Self, crate::font::resolved::FontError> {
         let db = crate::font::fallback::get_system_font_db();
-        let font_set = crate::font::resolved::ResolvedFontSet::resolve(db, font_family);
+        let font_set = crate::font::resolved::ResolvedFontSet::try_resolve(db, font_family)?;
         let font = font_set.regular.font.clone();
         let font_bold = if !font_set.bold.synthetic_bold {
             Some(font_set.bold.font.clone())
@@ -189,7 +218,12 @@ impl GlyphCache {
             max_unicode_entries: 1024,
         };
         cache.preload_common_glyphs();
-        cache
+        Ok(cache)
+    }
+
+    pub fn from_font_family(font_family: &str, font_size: f32, font_scale_multiplier: f32) -> Self {
+        Self::try_from_font_family(font_family, font_size, font_scale_multiplier)
+            .expect("Failed to create GlyphCache from font family")
     }
 
     /// Create a full-featured GlyphCache for a split pane with independent font size.
@@ -636,5 +670,19 @@ impl GlyphCache {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_glyph_cache_fallback_on_missing_font() {
+        let res = GlyphCache::try_from_font_family("NonExistentFont_12345", 14.0, 1.5);
+        assert!(res.is_ok(), "GlyphCache must successfully fall back to system font");
+        let mut cache = res.unwrap();
+        let glyph_ref = cache.get_or_rasterize(GlyphKey::new('A', false, false, false));
+        assert!(glyph_ref.is_some(), "Must rasterize glyph using fallback font");
     }
 }

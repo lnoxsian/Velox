@@ -8,6 +8,7 @@ use crate::window::PlatformWindow;
 pub enum RendererInitError {
     WindowCreation(String),
     SoftwareInit(String),
+    Font(crate::font::resolved::FontError),
 }
 
 impl std::fmt::Display for RendererInitError {
@@ -21,6 +22,7 @@ impl std::fmt::Display for RendererInitError {
                     e
                 )
             }
+            Self::Font(e) => write!(f, "{}", e),
         }
     }
 }
@@ -48,7 +50,7 @@ pub fn create_window_and_renderer(
     let bold_is_bright = config.bold_is_bright().unwrap_or(true);
     let opacity = config.opacity();
 
-    let renderer = CpuRenderer::new(
+    let renderer = CpuRenderer::try_new(
         config.font_family(),
         font_size,
         font_scale_multiplier,
@@ -57,7 +59,8 @@ pub fn create_window_and_renderer(
         win_height,
         bold_is_bright,
         opacity,
-    );
+    )
+    .map_err(RendererInitError::Font)?;
 
     log::info!("Zero-C pure-Rust CPU software renderer initialized successfully ({}x{}).", win_width, win_height);
 

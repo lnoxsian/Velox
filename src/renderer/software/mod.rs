@@ -107,7 +107,8 @@ struct RowLayoutInfo {
 
 impl CpuRenderer {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
         font_family: &str,
         font_size: f32,
         font_scale_multiplier: f32,
@@ -116,17 +117,17 @@ impl CpuRenderer {
         height: u32,
         bold_is_bright: bool,
         opacity: f32,
-    ) -> Self {
+    ) -> Result<Self, crate::font::resolved::FontError> {
         let font_size = font_size.max(1.0);
         let glyph_cache =
-            GlyphCache::from_font_family(font_family, font_size, font_scale_multiplier);
+            GlyphCache::try_from_font_family(font_family, font_size, font_scale_multiplier)?;
         let tab_glyph_cache = glyph_cache.create_tab_cache(font_size);
         let framebuffer = Framebuffer::new(width, height);
         let opacity = opacity.clamp(0.0, 1.0);
         let palette = PrecomputedPalette::new(theme, opacity);
         let rows = (height / glyph_cache.cell_height.max(1)).max(1) as usize;
 
-        Self {
+        Ok(Self {
             framebuffer,
             glyph_cache,
             tab_glyph_cache,
@@ -151,7 +152,31 @@ impl CpuRenderer {
             prev_dim: 0.0,
             prev_tab_bar_hash: 0,
             last_target_ptr: 0,
-        }
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        theme: &Theme,
+        width: u32,
+        height: u32,
+        bold_is_bright: bool,
+        opacity: f32,
+    ) -> Self {
+        Self::try_new(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            theme,
+            width,
+            height,
+            bold_is_bright,
+            opacity,
+        )
+        .expect("Failed to initialize CpuRenderer")
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
