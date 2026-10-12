@@ -1,5 +1,5 @@
 use std::time::Instant;
-use velox::renderer::software::CpuRenderer;
+use velox::renderer::CpuRenderer;
 use velox::screen::cell::{Cell, CellFlags, Color};
 use velox::screen::grid::Grid;
 use velox::theme::theme::Theme;
@@ -362,7 +362,7 @@ fn main() {
     // Initial frame
     {
         let split_panes = [
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 1,
                 rect: rect1,
                 cells: &p_grid1.cells,
@@ -375,7 +375,7 @@ fn main() {
                 display_cursor_x: 0,
                 is_active: true,
             },
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 2,
                 rect: rect2,
                 cells: &p_grid2.cells,
@@ -388,7 +388,7 @@ fn main() {
                 display_cursor_x: 0,
                 is_active: false,
             },
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 3,
                 rect: rect3,
                 cells: &p_grid3.cells,
@@ -401,7 +401,7 @@ fn main() {
                 display_cursor_x: 0,
                 is_active: false,
             },
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 4,
                 rect: rect4,
                 cells: &p_grid4.cells,
@@ -434,7 +434,7 @@ fn main() {
         p_grid1.damage.dirty_rows.fill(false);
         p_grid1.damage.dirty_rows[5] = true;
         let split_panes = [
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 1,
                 rect: rect1,
                 cells: &p_grid1.cells,
@@ -447,7 +447,7 @@ fn main() {
                 display_cursor_x: 0,
                 is_active: true,
             },
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 2,
                 rect: rect2,
                 cells: &p_grid2.cells,
@@ -460,7 +460,7 @@ fn main() {
                 display_cursor_x: 0,
                 is_active: false,
             },
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 3,
                 rect: rect3,
                 cells: &p_grid3.cells,
@@ -473,7 +473,7 @@ fn main() {
                 display_cursor_x: 0,
                 is_active: false,
             },
-            velox::renderer::software::CpuPaneRenderData {
+            velox::renderer::CpuPaneRenderData {
                 pane_id: 4,
                 rect: rect4,
                 cells: &p_grid4.cells,

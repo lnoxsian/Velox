@@ -1,4 +1,4 @@
-use velox::renderer::software::CpuRenderer;
+use velox::renderer::CpuRenderer;
 use velox::screen::cell::{Cell, CellFlags, Color};
 use velox::screen::cursor::CursorShape;
 use velox::screen::grid::Grid;
@@ -174,10 +174,10 @@ fn test_software_renderer_selection_and_cursor() {
     let cursor_pixel_idx = ((4 + 2 * cell_h + 2) as usize) * 800 + ((8 + 5 * cell_w + 2) as usize);
 
     let default_bg =
-        velox::renderer::software::color::PackedColor::from_color(grid.default_bg).to_u32();
+        velox::renderer::color::PackedColor::from_color(grid.default_bg).to_u32();
     let inverted_bg =
-        velox::renderer::software::color::PackedColor::from_color(grid.default_fg).to_u32();
-    let cursor_color = velox::renderer::software::color::PackedColor::from_color(
+        velox::renderer::color::PackedColor::from_color(grid.default_fg).to_u32();
+    let cursor_color = velox::renderer::color::PackedColor::from_color(
         theme.resolve_cursor_color(grid.default_fg),
     )
     .to_u32();
@@ -1157,7 +1157,7 @@ fn test_software_renderer_dynamic_selection_drag_and_scrollback() {
     let sample_x = 2 * cell_w + 2;
     let sample_y = 2 * cell_h + 2;
     let expected_inverted_bg =
-        velox::renderer::software::color::PackedColor::from_color(grid.default_fg).to_u32();
+        velox::renderer::color::PackedColor::from_color(grid.default_fg).to_u32();
     assert_eq!(
         target[(sample_y as usize) * 800 + (sample_x as usize)],
         expected_inverted_bg,
@@ -1202,7 +1202,7 @@ fn test_software_renderer_dynamic_selection_drag_and_scrollback() {
         &mut target,
     );
     let default_bg_packed =
-        velox::renderer::software::color::PackedColor::from_color(grid.default_bg).to_u32();
+        velox::renderer::color::PackedColor::from_color(grid.default_bg).to_u32();
     assert_eq!(
         target[(sample_y as usize) * 800 + (sample_x as usize)],
         default_bg_packed,
@@ -1269,7 +1269,7 @@ fn test_scrollback_background_preserves_theme_background_color() {
     let cell_w = renderer.glyph_cache.cell_width as usize;
     let _cell_h = renderer.glyph_cache.cell_height as usize;
     let expected_bg_packed =
-        velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // Check row 0 (which is in scrollback) at column 40 (beyond text "line-1")
     let test_x = 40 * cell_w + 2;
@@ -1323,7 +1323,7 @@ fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
     );
 
     let expected_bg =
-        velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // 1. Verify padding pixel (e.g. top-left margin (2, 2))
     let padding_pixel = target[2 * 800 + 2];
@@ -1360,7 +1360,7 @@ fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
     // 5. Test with transparency (opacity = 0.8)
     let mut trans_target = vec![0u32; 800 * 600];
     let mut trans_renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 0.8);
-    let expected_trans_bg = velox::renderer::software::color::PackedColor::from_premultiplied(
+    let expected_trans_bg = velox::renderer::color::PackedColor::from_premultiplied(
         theme.default_bg,
         (0.8f32 * 255.0).round() as u8,
     )

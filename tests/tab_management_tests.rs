@@ -3,7 +3,7 @@ use std::time::Instant;
 use velox::app::tab::{Tab, TabBar, TabBarHitResult, TabBarRenderInfo, TabHeaderInfo};
 use velox::config::config::{Config, TabBarVisibility, TabsConfig};
 use velox::pty::process::spawn_process;
-use velox::renderer::software::CpuRenderer;
+use velox::renderer::CpuRenderer;
 use velox::screen::cell::Color;
 use velox::screen::cursor::CursorShape;
 use velox::screen::grid::Grid;

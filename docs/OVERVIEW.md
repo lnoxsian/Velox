@@ -63,18 +63,16 @@ src/
 │   ├── master.rs           # PTY master read/write/resize helpers
 │   └── process.rs          # Shell process spawning & fork execution
 ├── renderer/               # Pure CPU software rendering pipeline
-│   ├── mod.rs              # Re-exports & SeparatorRenderData
-│   ├── backend.rs          # Window & softbuffer Surface initialization
-│   └── software/           # Pure-Rust CPU software renderer
-│       ├── mod.rs          # CpuRenderer & blitting pipeline
-│       ├── atlas.rs        # Software glyph bitmap atlas
-│       ├── color.rs        # Packed ARGB colors & precomputed palettes
-│       ├── damage.rs       # DamageMap dirty-row tracking
-│       ├── decorations.rs  # Underlines, curly lines, cursor & strikethrough
-│       ├── framebuffer.rs  # CPU pixel framebuffer
-│       ├── glyph.rs        # Glyph raster cache & font wrappers
-│       ├── primitives.rs   # Box & block drawing fast paths
-│       └── raster.rs       # Alpha & color glyph blitters
+│   ├── mod.rs              # CpuRenderer, SeparatorRenderData & pipeline exports
+│   ├── backend.rs          # PlatformWindow & renderer initialization
+│   ├── atlas.rs            # Software glyph bitmap atlas
+│   ├── color.rs            # Packed ARGB colors & precomputed palettes
+│   ├── damage.rs           # DamageMap dirty-row tracking
+│   ├── decorations.rs      # Underlines, curly lines, cursor & strikethrough
+│   ├── framebuffer.rs      # CPU pixel framebuffer
+│   ├── glyph.rs            # Glyph raster cache & font wrappers
+│   ├── primitives.rs       # Box & block drawing fast paths
+│   └── raster.rs           # Alpha & color glyph blitters
 ├── screen/                 # Terminal screen grid & text storage
 │   ├── mod.rs
 │   ├── cell.rs             # Cell attributes, colors & style bitflags

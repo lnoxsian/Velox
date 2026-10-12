@@ -7,7 +7,7 @@ use velox::app::split::{
 use velox::app::tab::Tab;
 use velox::pty::process::spawn_process;
 use velox::renderer::SeparatorRenderData;
-use velox::renderer::software::{CpuPaneRenderData, CpuRenderer};
+use velox::renderer::{CpuPaneRenderData, CpuRenderer};
 use velox::screen::cell::Color;
 use velox::screen::cursor::CursorShape;
 use velox::terminal::terminal::Terminal;
@@ -1479,12 +1479,12 @@ fn test_software_renderer_multi_pane_focus_switching() {
     );
 
     let cursor_pixel_idx = (4 + 2) * 1000 + (8 + 2);
-    let cursor_color = velox::renderer::software::color::PackedColor::from_color(
+    let cursor_color = velox::renderer::color::PackedColor::from_color(
         theme.resolve_cursor_color(theme.default_fg),
     )
     .to_u32();
     let bg_color =
-        velox::renderer::software::color::PackedColor::from_color(theme.default_bg).to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // Verify cursor on active pane
     assert_eq!(
@@ -1502,9 +1502,9 @@ fn test_software_renderer_multi_pane_focus_switching() {
         .palette
         .resolve_cell_colors_pane(cell2, false, false, 0.0, &theme, 0);
     let bright_red =
-        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
     let regular_red =
-        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1]).to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[1]).to_u32();
     assert_eq!(
         fg1, bright_red,
         "Pane 1 with bold_is_bright: true must use bright ANSI color 9"
@@ -1522,9 +1522,9 @@ fn test_software_renderer_multi_pane_focus_switching() {
         .palette
         .resolve_cell_colors_pane(cell2, false, false, 0.15, &theme, 0);
     let undimmed_fg =
-        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
     let dimmed_fg =
-        velox::renderer::software::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15))
+        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15))
             .to_u32();
     assert_eq!(
         p1_f1_fg, undimmed_fg,

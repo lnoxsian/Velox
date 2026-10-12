@@ -1,6 +1,6 @@
 use velox::font::fallback::{FallbackManager, MAX_FALLBACK_BYTES, MAX_FALLBACK_FONTS};
-use velox::renderer::software::atlas::DEFAULT_ALPHA_CAPACITY;
-use velox::renderer::software::glyph::{GlyphCache, GlyphKey, GlyphScratch};
+use velox::renderer::atlas::DEFAULT_ALPHA_CAPACITY;
+use velox::renderer::glyph::{GlyphCache, GlyphKey, GlyphScratch};
 use velox::screen::cell::{Cell, CellFlags, Color};
 use velox::screen::scrollback::Chunk;
 
@@ -169,7 +169,7 @@ fn test_multicycle_unicode_memory_stability() {
     assert!(
         cycle_atlas_capacities[2]
             <= DEFAULT_ALPHA_CAPACITY
-                + (velox::renderer::software::atlas::DEFAULT_COLOR_CAPACITY * 4)
+                + (velox::renderer::atlas::DEFAULT_COLOR_CAPACITY * 4)
     );
 }
 

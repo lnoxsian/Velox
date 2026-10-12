@@ -42,7 +42,7 @@ flowchart TD
     end
 
     subgraph SoftwareRendering["Software Rendering Pipeline (CpuRenderer)"]
-        SoftRenderer["renderer::software::CpuRenderer<br/>(DamageMap Dirty Tracking)"]
+        SoftRenderer["renderer::CpuRenderer<br/>(DamageMap Dirty Tracking)"]
         SoftSurface["softbuffer::Surface<br/>(Linux SHM Framebuffer Presentation)"]
         SoftRenderer --> SoftSurface
     end
@@ -80,7 +80,7 @@ Velox initializes native Linux windows and display surfaces via `create_window_a
 - **Zero-Size Protection**: Both surface creation and resizing guard against zero width or height by clamping dimensions with `NonZeroU32`, preventing driver panics on Wayland compositors during minimize/unmap transitions.
 - **Diagnostics (`src/diagnostics.rs`)**: Standalone system checks inspecting Linux display server connection, font database status, and desktop integration.
 
-### 4. Pure CPU Software Renderer (`renderer::software::CpuRenderer`)
+### 4. Pure CPU Software Renderer (`renderer::CpuRenderer`)
 
 - Pure-Rust CPU blitting directly to a 32-bit linear ARGB `Framebuffer` presented via `softbuffer`.
 - Fine-grained `DamageMap` row tracking: only dirty terminal rows and damaged glyph spans are redrawn, achieving near-zero CPU usage when idle.
@@ -170,7 +170,7 @@ flowchart LR
 
     subgraph RenderSubsystem["Rendering & Presentation"]
         Damage["screen::DamageMap / Dirty Grid"]
-        Renderer["renderer::software::CpuRenderer"]
+        Renderer["renderer::CpuRenderer"]
         Surface["Display Surface<br/>(softbuffer SHM)"]
         Term --> Damage
         Damage --> Renderer
