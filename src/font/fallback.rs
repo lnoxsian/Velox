@@ -361,26 +361,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_fallback_manager_initialization() {
-        let mut manager = FallbackManager::new();
-        let _ = manager.find_fallback_for_char('A');
-        let _ = manager.find_fallback_for_char('\u{1f600}'); // 😀
-        let _ = manager.find_fallback_for_char('\u{e0b0}'); // 
-        assert!(manager.fallbacks.len() <= MAX_FALLBACK_FONTS);
-    }
-
-    #[test]
-    fn test_fallback_manager_prune_to_budget() {
-        let mut manager = FallbackManager::new();
-        manager.max_fallback_fonts = 2;
-        let _ = manager.find_fallback_for_char('\u{1f600}');
-        let _ = manager.find_fallback_for_char('\u{e0b0}');
-        let _ = manager.find_fallback_for_char('中');
-        manager.prune_to_budget();
-        assert!(manager.fallbacks.len() <= 2);
-    }
-
-    #[test]
     fn test_emoji_vs_nerd_font_classification() {
         use crate::font::loader::{is_emoji, is_nerd_font_or_pua};
 

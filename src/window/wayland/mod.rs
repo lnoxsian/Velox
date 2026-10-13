@@ -172,6 +172,9 @@ impl WaylandWindow {
 
     pub fn set_cursor(&self, _icon: CursorIcon) {}
 
+    #[inline]
+    pub fn set_visible(&mut self, _visible: bool) {}
+
     pub fn present_frame(&mut self, src_pixels: &[u32]) {
         if let Some(buf) = &mut self.state.buffer {
             let dest = buf.pixels_mut();

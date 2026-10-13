@@ -24,12 +24,13 @@ impl PlatformWindow {
         title: &str,
         width: u32,
         height: u32,
+        bg_pixel: Option<u32>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let preferred_backend = crate::platform::detect_backend_from_env();
 
         match preferred_backend {
             crate::platform::LinuxWindowBackend::X11 => {
-                match X11Window::new(title, width, height) {
+                match X11Window::new(title, width, height, bg_pixel) {
                     Ok(w) => Ok(PlatformWindow::X11(w)),
                     Err(e) => {
                         log::warn!("X11 window creation failed ({}), attempting Wayland fallback...", e);
@@ -55,7 +56,7 @@ impl PlatformWindow {
                         if let Ok(xd) = std::env::var("DISPLAY")
                             && !xd.trim().is_empty()
                         {
-                            match X11Window::new(title, width, height) {
+                            match X11Window::new(title, width, height, bg_pixel) {
                                 Ok(w) => return Ok(PlatformWindow::X11(w)),
                                 Err(x_err) => {
                                     log::warn!("X11 fallback also failed: {}", x_err);
@@ -81,7 +82,7 @@ impl PlatformWindow {
                 if let Ok(xd) = std::env::var("DISPLAY")
                     && !xd.trim().is_empty()
                 {
-                    match X11Window::new(title, width, height) {
+                    match X11Window::new(title, width, height, bg_pixel) {
                         Ok(w) => return Ok(PlatformWindow::X11(w)),
                         Err(e) => {
                             return Err(format!("Failed to connect to X11 display: {}", e).into());
@@ -143,6 +144,14 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn set_background_pixel(&self, bg_pixel: u32) {
+        match self {
+            Self::X11(w) => w.set_background_pixel(bg_pixel),
+            Self::Wayland(_) => {}
+        }
+    }
+
+    #[inline]
     pub fn present_frame(&mut self, src_pixels: &[u32]) {
         match self {
             Self::X11(w) => w.present_frame(src_pixels),
@@ -186,7 +195,12 @@ impl PlatformWindow {
     }
 
     #[inline]
-    pub fn set_visible(&self, _visible: bool) {}
+    pub fn set_visible(&mut self, visible: bool) {
+        match self {
+            Self::X11(w) => w.set_visible(visible),
+            Self::Wayland(w) => w.set_visible(visible),
+        }
+    }
 
     #[inline]
     pub fn request_redraw(&self) {}

@@ -3,6 +3,85 @@ use crate::app::split::SplitDirection;
 use crate::app::tab::TabBarHitResult;
 use crate::window::event::{ElementState, MouseButton, ModifiersState};
 
+#[inline(always)]
+fn pane_cell_coords(
+    pane_rect: &crate::app::split::PaneRect,
+    mouse_x: f64,
+    mouse_y: f64,
+) -> (usize, usize) {
+    let cw = pane_rect.cell_width as f64;
+    let ch = pane_rect.cell_height as f64;
+    let px = (pane_rect.x + pane_rect.padding_x) as f64;
+    let py = (pane_rect.y + pane_rect.padding_y) as f64;
+    let grid_width = pane_rect.cols;
+    let grid_height = pane_rect.rows;
+
+    let col_idx = if cw > 0.0 {
+        let raw = ((mouse_x - px) / cw).floor() as i64;
+        raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
+    } else {
+        0
+    };
+    let row_idx = if ch > 0.0 {
+        let raw = ((mouse_y - py) / ch).floor() as i64;
+        raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
+    } else {
+        0
+    };
+    (col_idx, row_idx)
+}
+
+#[inline(always)]
+fn apply_mouse_modifiers(btn: u8, modifiers: ModifiersState) -> usize {
+    let mut btn_code = btn as usize;
+    if modifiers.shift_key() {
+        btn_code += 4;
+    }
+    if modifiers.alt_key() {
+        btn_code += 8;
+    }
+    if modifiers.control_key() {
+        btn_code += 16;
+    }
+    btn_code
+}
+
+fn send_mouse_report(
+    pty: &crate::pty::master::PtyMaster,
+    mouse_sgr: bool,
+    btn_code: usize,
+    col_idx: usize,
+    row_idx: usize,
+    is_release: bool,
+) {
+    let mut buf = [0u8; 32];
+    let written = if mouse_sgr {
+        use std::io::Write;
+        let mut cur = std::io::Cursor::new(&mut buf[..]);
+        let suffix = if is_release { 'm' } else { 'M' };
+        let _ = write!(cur, "\x1b[<{};{};{}{}", btn_code, col_idx + 1, row_idx + 1, suffix);
+        cur.position() as usize
+    } else {
+        let cb = if is_release { 32 + 3 } else { 32 + btn_code };
+        let cx = 32 + col_idx + 1;
+        let cy = 32 + row_idx + 1;
+        if cb <= 255 && cx <= 255 && cy <= 255 {
+            buf[0] = 0x1b;
+            buf[1] = b'[';
+            buf[2] = b'M';
+            buf[3] = cb as u8;
+            buf[4] = cx as u8;
+            buf[5] = cy as u8;
+            6
+        } else {
+            0
+        }
+    };
+    if written > 0 {
+        let _ = pty.write(&buf[..written]);
+    }
+}
+
 impl WindowState {
     pub fn handle_cursor_moved(
         &mut self,
@@ -52,25 +131,7 @@ impl WindowState {
                 .find(|r| r.pane_id == drag_pane_id)
                 .copied()
         {
-            let cw = pane_rect.cell_width as f64;
-            let ch = pane_rect.cell_height as f64;
-            let px = (pane_rect.x + pane_rect.padding_x) as f64;
-            let py = (pane_rect.y + pane_rect.padding_y) as f64;
-            let grid_width = pane_rect.cols;
-            let grid_height = pane_rect.rows;
-
-            let col_idx = if cw > 0.0 {
-                let raw = ((self.mouse_x - px) / cw).floor() as i64;
-                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
-            let row_idx = if ch > 0.0 {
-                let raw = ((self.mouse_y - py) / ch).floor() as i64;
-                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
+            let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
 
             if self.last_mouse_pane_id != Some(drag_pane_id)
                 || (col_idx, row_idx) != self.last_mouse_cell
@@ -97,43 +158,8 @@ impl WindowState {
                 if should_report_motion {
                     self.set_cursor_cached(crate::window::event::CursorIcon::Default);
                     if let Some(pty_master) = pty_master {
-                        let base_code = 32 + self.last_mouse_button;
-                        let mut btn_code = base_code;
-                        if modifiers.shift_key() {
-                            btn_code += 4;
-                        }
-                        if modifiers.alt_key() {
-                            btn_code += 8;
-                        }
-                        if modifiers.control_key() {
-                            btn_code += 16;
-                        }
-
-                        let mut buf = [0u8; 32];
-                        let written = if mouse_sgr {
-                            use std::io::Write;
-                            let mut cur = std::io::Cursor::new(&mut buf[..]);
-                            let _ =
-                                write!(cur, "\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1);
-                            cur.position() as usize
-                        } else {
-                            let cb = 32 + btn_code;
-                            let cx = 32 + col_idx + 1;
-                            let cy = 32 + row_idx + 1;
-                            if cx <= 255 && cy <= 255 {
-                                buf[0] = 0x1b;
-                                buf[1] = b'M';
-                                buf[2] = cb;
-                                buf[3] = cx as u8;
-                                buf[4] = cy as u8;
-                                5
-                            } else {
-                                0
-                            }
-                        };
-                        if written > 0 {
-                            let _ = pty_master.write(&buf[..written]);
-                        }
+                        let btn_code = apply_mouse_modifiers(32 + self.last_mouse_button, modifiers);
+                        send_mouse_report(&pty_master, mouse_sgr, btn_code, col_idx, row_idx, false);
                     }
                 } else {
                     self.set_cursor_cached(crate::window::event::CursorIcon::Text);
@@ -252,25 +278,7 @@ impl WindowState {
             .or_else(|| pane_rects.first().copied());
 
         if let Some(pane_rect) = hit_pane_rect {
-            let cw = pane_rect.cell_width as f64;
-            let ch = pane_rect.cell_height as f64;
-            let px = (pane_rect.x + pane_rect.padding_x) as f64;
-            let py = (pane_rect.y + pane_rect.padding_y) as f64;
-            let grid_width = pane_rect.cols;
-            let grid_height = pane_rect.rows;
-
-            let col_idx = if cw > 0.0 {
-                let raw = ((self.mouse_x - px) / cw).floor() as i64;
-                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
-            let row_idx = if ch > 0.0 {
-                let raw = ((self.mouse_y - py) / ch).floor() as i64;
-                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
+            let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
 
             if self.last_mouse_pane_id != Some(pane_rect.pane_id)
                 || (col_idx, row_idx) != self.last_mouse_cell
@@ -358,32 +366,7 @@ impl WindowState {
                     let should_report_motion = mouse_mode == 1003 && !modifiers.shift_key();
 
                     if should_report_motion {
-                        let btn_code = 35;
-                        let mut buf = [0u8; 32];
-                        let written = if mouse_sgr {
-                            use std::io::Write;
-                            let mut cur = std::io::Cursor::new(&mut buf[..]);
-                            let _ =
-                                write!(cur, "\x1b[<{};{};{}M", btn_code, col_idx + 1, row_idx + 1);
-                            cur.position() as usize
-                        } else {
-                            let cb = 32 + btn_code;
-                            let cx = 32 + col_idx + 1;
-                            let cy = 32 + row_idx + 1;
-                            if cx <= 255 && cy <= 255 {
-                                buf[0] = 0x1b;
-                                buf[1] = b'M';
-                                buf[2] = cb;
-                                buf[3] = cx as u8;
-                                buf[4] = cy as u8;
-                                5
-                            } else {
-                                0
-                            }
-                        };
-                        if written > 0 {
-                            let _ = pty_master.write(&buf[..written]);
-                        }
+                        send_mouse_report(&pty_master, mouse_sgr, 35, col_idx, row_idx, false);
                     }
                 }
             }
@@ -427,43 +410,21 @@ impl WindowState {
                 .or_else(|| pane_rects.first().copied());
 
             if let Some(pane_rect) = hit_pane_rect {
-                let px = (pane_rect.x + pane_rect.padding_x) as f64;
-                let py = (pane_rect.y + pane_rect.padding_y) as f64;
-                let cw = pane_rect.cell_width as f64;
-                let ch = pane_rect.cell_height as f64;
-                let col = (((self.mouse_x - px).max(0.0) / cw).floor() as i32 + 1).max(1);
-                let row = (((self.mouse_y - py).max(0.0) / ch).floor() as i32 + 1).max(1);
+                let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
 
                 let tab = self.active_tab();
                 if let Some(pane) = tab.tree.find_pane(pane_rect.pane_id) {
                     if pane.terminal.mouse_mode > 0 {
                         let btn = if lines > 0 { 64 } else { 65 };
-                        let mut buf = [0u8; 32];
-                        let written = if pane.terminal.mouse_sgr {
-                            use std::io::Write;
-                            let mut cur = std::io::Cursor::new(&mut buf[..]);
-                            let _ = write!(cur, "\x1b[<{};{};{}M", btn, col, row);
-                            cur.position() as usize
-                        } else {
-                            let cb = 32 + btn;
-                            let cx = 32 + col;
-                            let cy = 32 + row;
-                            if cb <= 255 && cx <= 255 && cy <= 255 {
-                                buf[0] = 0x1b;
-                                buf[1] = b'[';
-                                buf[2] = b'M';
-                                buf[3] = cb as u8;
-                                buf[4] = cx as u8;
-                                buf[5] = cy as u8;
-                                6
-                            } else {
-                                0
-                            }
-                        };
-                        if written > 0 {
-                            for _ in 0..lines.abs() {
-                                let _ = pane.pty_master.write(&buf[..written]);
-                            }
+                        for _ in 0..lines.abs() {
+                            send_mouse_report(
+                                &pane.pty_master,
+                                pane.terminal.mouse_sgr,
+                                btn,
+                                col_idx,
+                                row_idx,
+                                false,
+                            );
                         }
                     } else if pane.terminal.is_alt_screen {
                         let key_seq: &[u8] = if lines > 0 {
@@ -619,25 +580,9 @@ impl WindowState {
             }
             self.active_tab_mut().clear_unfocused_selections();
 
-            let px = (pane_rect.x + pane_rect.padding_x) as f64;
-            let py = (pane_rect.y + pane_rect.padding_y) as f64;
-            let cw = pane_rect.cell_width as f64;
-            let ch = pane_rect.cell_height as f64;
+            let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
             let grid_width = pane_rect.cols;
             let grid_height = pane_rect.rows;
-
-            let col_idx = if cw > 0.0 {
-                let raw = ((self.mouse_x - px) / cw).floor() as i64;
-                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
-            let row_idx = if ch > 0.0 {
-                let raw = ((self.mouse_y - py) / ch).floor() as i64;
-                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
 
             let (mouse_mode, mouse_sgr) = {
                 let pane = match self.active_tab().tree.find_pane(clicked_pane_id) {
@@ -660,53 +605,14 @@ impl WindowState {
                     self.is_mouse_down = true;
                     self.last_mouse_button = btn;
 
-                    let mut report_btn = btn;
-                    if modifiers.shift_key() {
-                        report_btn += 4;
-                    }
-                    if modifiers.alt_key() {
-                        report_btn += 8;
-                    }
-                    if modifiers.control_key() {
-                        report_btn += 16;
-                    }
-
+                    let report_btn = apply_mouse_modifiers(btn, modifiers);
                     let pty_master = self
                         .active_tab()
                         .tree
                         .find_pane(clicked_pane_id)
                         .map(|p| p.pty_master.clone());
                     if let Some(pty) = pty_master {
-                        let mut buf = [0u8; 32];
-                        let written = if mouse_sgr {
-                            use std::io::Write;
-                            let mut cur = std::io::Cursor::new(&mut buf[..]);
-                            let _ = write!(
-                                cur,
-                                "\x1b[<{};{};{}M",
-                                report_btn,
-                                col_idx + 1,
-                                row_idx + 1
-                            );
-                            cur.position() as usize
-                        } else {
-                            let cb = 32 + report_btn;
-                            let cx = 32 + col_idx + 1;
-                            let cy = 32 + row_idx + 1;
-                            if cx <= 255 && cy <= 255 {
-                                buf[0] = 0x1b;
-                                buf[1] = b'M';
-                                buf[2] = cb;
-                                buf[3] = cx as u8;
-                                buf[4] = cy as u8;
-                                5
-                            } else {
-                                0
-                            }
-                        };
-                        if written > 0 {
-                            let _ = pty.write(&buf[..written]);
-                        }
+                        send_mouse_report(&pty, mouse_sgr, report_btn, col_idx, row_idx, false);
                     }
                 }
                 return;
@@ -899,25 +805,7 @@ impl WindowState {
                 None => return,
             };
 
-            let px = (pane_rect.x + pane_rect.padding_x) as f64;
-            let py = (pane_rect.y + pane_rect.padding_y) as f64;
-            let cw = pane_rect.cell_width as f64;
-            let ch = pane_rect.cell_height as f64;
-            let grid_width = pane_rect.cols;
-            let grid_height = pane_rect.rows;
-
-            let col_idx = if cw > 0.0 {
-                let raw = ((self.mouse_x - px) / cw).floor() as i64;
-                raw.clamp(0, grid_width.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
-            let row_idx = if ch > 0.0 {
-                let raw = ((self.mouse_y - py) / ch).floor() as i64;
-                raw.clamp(0, grid_height.saturating_sub(1) as i64) as usize
-            } else {
-                0
-            };
+            let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
 
             let (mouse_mode, mouse_sgr) = {
                 let pane = match self.active_tab().tree.find_pane(target_pane_id) {
@@ -937,53 +825,14 @@ impl WindowState {
             // Application Mouse Reporting on Release
             if mouse_mode > 0 && !modifiers.shift_key() {
                 if let Some(btn) = btn_code {
-                    let mut report_btn = btn;
-                    if modifiers.shift_key() {
-                        report_btn += 4;
-                    }
-                    if modifiers.alt_key() {
-                        report_btn += 8;
-                    }
-                    if modifiers.control_key() {
-                        report_btn += 16;
-                    }
-
+                    let report_btn = apply_mouse_modifiers(btn, modifiers);
                     let pty_master = self
                         .active_tab()
                         .tree
                         .find_pane(target_pane_id)
                         .map(|p| p.pty_master.clone());
                     if let Some(pty) = pty_master {
-                        let mut buf = [0u8; 32];
-                        let written = if mouse_sgr {
-                            use std::io::Write;
-                            let mut cur = std::io::Cursor::new(&mut buf[..]);
-                            let _ = write!(
-                                cur,
-                                "\x1b[<{};{};{}m",
-                                report_btn,
-                                col_idx + 1,
-                                row_idx + 1
-                            );
-                            cur.position() as usize
-                        } else {
-                            let cb = 32 + 3;
-                            let cx = 32 + col_idx + 1;
-                            let cy = 32 + row_idx + 1;
-                            if cx <= 255 && cy <= 255 {
-                                buf[0] = 0x1b;
-                                buf[1] = b'M';
-                                buf[2] = cb;
-                                buf[3] = cx as u8;
-                                buf[4] = cy as u8;
-                                5
-                            } else {
-                                0
-                            }
-                        };
-                        if written > 0 {
-                            let _ = pty.write(&buf[..written]);
-                        }
+                        send_mouse_report(&pty, mouse_sgr, report_btn, col_idx, row_idx, true);
                     }
                 }
                 return;

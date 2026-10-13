@@ -190,7 +190,18 @@ impl Theme {
             initial_tab_accent_color_mode: TabAccentColorConfig::Default,
         }
     }
+}
 
+fn parse_cursor_color_setting(raw: &str) -> Option<(CursorColorConfig, Option<Color>)> {
+    match raw.trim().to_lowercase().as_str() {
+        "default" => Some((CursorColorConfig::Default, None)),
+        "inverted" | "invert" => Some((CursorColorConfig::Inverted, None)),
+        _ => crate::config::config::parse_hex_color(raw)
+            .map(|c| (CursorColorConfig::Custom(c), Some(c))),
+    }
+}
+
+impl Theme {
     pub fn from_config(config: &crate::config::config::Config) -> Self {
         let mut theme = Self::new();
         if let Some(fg) = config.default_fg()
@@ -230,79 +241,24 @@ impl Theme {
                 }
             }
         }
-        if let Some(cc) = config.cursor_color() {
-            match cc.trim().to_lowercase().as_str() {
-                "default" => {
-                    theme.cursor_color_mode = CursorColorConfig::Default;
-                    theme.cursor_color = None;
-                }
-                "inverted" | "invert" => {
-                    theme.cursor_color_mode = CursorColorConfig::Inverted;
-                    theme.cursor_color = None;
-                }
-                _ => {
-                    if let Some(c) = crate::config::config::parse_hex_color(cc) {
-                        theme.cursor_color_mode = CursorColorConfig::Custom(c);
-                        theme.cursor_color = Some(c);
-                    }
-                }
-            }
+        if let Some(cc) = config.cursor_color()
+            && let Some((mode, col)) = parse_cursor_color_setting(cc)
+        {
+            theme.cursor_color_mode = mode;
+            theme.cursor_color = col;
         }
-        if let Some(ctc) = config.cursor_text_color() {
-            match ctc.trim().to_lowercase().as_str() {
-                "default" => {
-                    theme.cursor_text_color_mode = CursorColorConfig::Default;
-                    theme.cursor_text_color = None;
-                }
-                "inverted" | "invert" => {
-                    theme.cursor_text_color_mode = CursorColorConfig::Inverted;
-                    theme.cursor_text_color = None;
-                }
-                _ => {
-                    if let Some(c) = crate::config::config::parse_hex_color(ctc) {
-                        theme.cursor_text_color_mode = CursorColorConfig::Custom(c);
-                        theme.cursor_text_color = Some(c);
-                    }
-                }
-            }
+        if let Some(ctc) = config.cursor_text_color()
+            && let Some((mode, col)) = parse_cursor_color_setting(ctc)
+        {
+            theme.cursor_text_color_mode = mode;
+            theme.cursor_text_color = col;
         }
         if let Some(tac) = config.tab_accent_color() {
-            match tac.trim().to_lowercase().as_str() {
+            let trimmed = tac.trim().to_lowercase();
+            match trimmed.as_str() {
                 "default" | "none" => {
                     theme.tab_accent_color_mode = TabAccentColorConfig::Default;
                     theme.tab_accent_color = None;
-                }
-                "black" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(0);
-                    theme.tab_accent_color = Some(theme.ansi_colors[0]);
-                }
-                "red" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(1);
-                    theme.tab_accent_color = Some(theme.ansi_colors[1]);
-                }
-                "green" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(2);
-                    theme.tab_accent_color = Some(theme.ansi_colors[2]);
-                }
-                "yellow" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(3);
-                    theme.tab_accent_color = Some(theme.ansi_colors[3]);
-                }
-                "blue" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(4);
-                    theme.tab_accent_color = Some(theme.ansi_colors[4]);
-                }
-                "magenta" | "purple" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(5);
-                    theme.tab_accent_color = Some(theme.ansi_colors[5]);
-                }
-                "cyan" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(6);
-                    theme.tab_accent_color = Some(theme.ansi_colors[6]);
-                }
-                "white" => {
-                    theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(7);
-                    theme.tab_accent_color = Some(theme.ansi_colors[7]);
                 }
                 "default_fg" | "fg" | "foreground" => {
                     theme.tab_accent_color_mode = TabAccentColorConfig::DefaultFg;
@@ -317,7 +273,21 @@ impl Theme {
                     theme.tab_accent_color = theme.cursor_color;
                 }
                 _ => {
-                    if let Some(c) = crate::config::config::parse_hex_color(tac) {
+                    let ansi_idx = match trimmed.as_str() {
+                        "black" => Some(0),
+                        "red" => Some(1),
+                        "green" => Some(2),
+                        "yellow" => Some(3),
+                        "blue" => Some(4),
+                        "magenta" | "purple" => Some(5),
+                        "cyan" => Some(6),
+                        "white" => Some(7),
+                        _ => None,
+                    };
+                    if let Some(idx) = ansi_idx {
+                        theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(idx);
+                        theme.tab_accent_color = Some(theme.ansi_colors[idx]);
+                    } else if let Some(c) = crate::config::config::parse_hex_color(tac) {
                         theme.tab_accent_color_mode = TabAccentColorConfig::Custom(c);
                         theme.tab_accent_color = Some(c);
                     }

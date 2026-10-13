@@ -38,17 +38,20 @@ pub fn create_window_and_renderer(
     height: u32,
     config: &Config,
 ) -> Result<WindowAndRenderer, RendererInitError> {
-    let window = PlatformWindow::new(title, width, height)
-        .map_err(|e| RendererInitError::WindowCreation(e.to_string()))?;
-
-    let win_width = window.width();
-    let win_height = window.height();
-
     let theme = Theme::from_config(config);
     let font_size = config.font_size();
     let font_scale_multiplier = config.font_scale_multiplier().unwrap_or(1.5);
     let bold_is_bright = config.bold_is_bright().unwrap_or(true);
     let opacity = config.opacity();
+    let alpha = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bg_pixel =
+        crate::renderer::color::PackedColor::from_premultiplied(theme.default_bg, alpha).to_u32();
+
+    let window = PlatformWindow::new(title, width, height, Some(bg_pixel))
+        .map_err(|e| RendererInitError::WindowCreation(e.to_string()))?;
+
+    let win_width = window.width();
+    let win_height = window.height();
 
     let renderer = CpuRenderer::try_new(
         config.font_family(),

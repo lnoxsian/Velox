@@ -745,24 +745,7 @@ impl WindowState {
         }
     }
 
-    pub fn draw(&mut self) {
-        let size = self.window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-
-        self.last_frame_instant = std::time::Instant::now();
-
-        // 1. Ensure renderer font size matches the active pane's isolated font size
-        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
-            let active_pane_font_size = active_tab.active_pane().font_size;
-            if (self.current_font_size - active_pane_font_size).abs() > 0.01 {
-                self.current_font_size = active_pane_font_size;
-                self.set_renderer_font_size(active_pane_font_size);
-            }
-        }
-
-        // 2. Update title for active tab (and window title)
+    fn update_active_tab_title(&mut self) {
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index)
             && (active_tab.update_title() || self.current_title != active_tab.current_title)
         {
@@ -770,8 +753,9 @@ impl WindowState {
             self.current_title = active_tab.current_title.clone();
             self.tab_bar_dirty = true;
         }
+    }
 
-        // 3. Prepare tab bar render info
+    fn update_tab_bar_cache_if_dirty(&mut self) {
         let is_tab_bar_visible = self.tab_bar.is_visible(self.tabs.len());
         if is_tab_bar_visible && (self.tab_bar_dirty || self.tab_bar_render_cache.is_none()) {
             for tab in &mut self.tabs {
@@ -799,27 +783,18 @@ impl WindowState {
         } else if !is_tab_bar_visible {
             self.tab_bar_render_cache = None;
         }
-        let tab_bar_info: Option<&TabBarRenderInfo> = if is_tab_bar_visible {
-            self.tab_bar_render_cache.as_ref()
-        } else {
-            None
-        };
+    }
 
-        if self.tabs.is_empty() {
-            return;
-        }
+    fn prepare_separator_render_data(
+        sep_rects: Vec<crate::app::split::SeparatorRect>,
+        active_pane_rect: Option<crate::app::split::PaneRect>,
+        dragging_separator: Option<DraggingSeparator>,
+        hovered_separator: Option<SplitId>,
+    ) -> Vec<SeparatorRenderData> {
+        let dragging_split_id = dragging_separator.map(|d| d.split_id);
+        let hovered_split_id = hovered_separator;
 
-        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
-        let active_pane_id = self.active_tab().active_pane_id;
-        let active_pane_rect = pane_rects
-            .iter()
-            .find(|r| r.pane_id == active_pane_id)
-            .copied();
-
-        let dragging_split_id = self.dragging_separator.map(|d| d.split_id);
-        let hovered_split_id = self.hovered_separator;
-
-        let separator_render_datas: Vec<SeparatorRenderData> = sep_rects
+        sep_rects
             .into_iter()
             .map(|r| {
                 let active_segment = active_pane_rect.and_then(|ap| r.active_segment_for_pane(&ap));
@@ -832,13 +807,95 @@ impl WindowState {
                     is_dragging: dragging_split_id == Some(r.split_id),
                 }
             })
-            .collect();
+            .collect()
+    }
 
-        let effective_dim = if !self.is_focused {
-            self.window_dim
-        } else {
-            0.0
-        };
+    fn prepare_pane_render_data<'a>(
+        pane_rects: &[crate::app::split::PaneRect],
+        active_tab: &'a Tab,
+        active_pane_id: PaneId,
+        cursor_blink_enabled: bool,
+        cursor_blink_on: bool,
+        is_focused: bool,
+    ) -> Vec<CpuPaneRenderData<'a>> {
+        let mut pane_render_datas = Vec::with_capacity(pane_rects.len());
+
+        for rect in pane_rects {
+            if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
+                let active_grid = pane.terminal.active_grid();
+                let width = active_grid.width;
+                let offset = active_grid.scroll_offset;
+                let is_active = pane.id == active_pane_id;
+
+                let cursor_visible = if !is_active || offset > 0 {
+                    false
+                } else if cursor_blink_enabled {
+                    active_grid.cursor.visible && cursor_blink_on
+                } else {
+                    active_grid.cursor.visible
+                };
+
+                let cursor_shape = if !is_focused
+                    && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                {
+                    crate::screen::cursor::CursorShape::HollowBlock
+                } else {
+                    active_grid.cursor.shape
+                };
+
+                let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+
+                pane_render_datas.push(CpuPaneRenderData {
+                    pane_id: pane.id,
+                    rect: *rect,
+                    cells: &active_grid.cells,
+                    grid: active_grid,
+                    font_size: pane.font_size,
+                    theme: &pane.terminal.theme,
+                    bold_is_bright: pane.terminal.bold_is_bright,
+                    cursor_visible,
+                    cursor_shape,
+                    display_cursor_x,
+                    is_active,
+                });
+            }
+        }
+
+        pane_render_datas
+    }
+
+    pub fn draw(&mut self) {
+        let size = self.window.inner_size();
+        if size.width == 0 || size.height == 0 || self.tabs.is_empty() {
+            return;
+        }
+
+        self.last_frame_instant = std::time::Instant::now();
+
+        // 1. Ensure renderer font size matches the active pane's isolated font size
+        self.sync_active_pane_font_size();
+
+        // 2. Update title for active tab (and window title)
+        self.update_active_tab_title();
+
+        // 3. Update tab bar render cache if dirty
+        self.update_tab_bar_cache_if_dirty();
+
+        // 4. Compute layouts & active pane
+        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+        let active_pane_id = self.active_tab().active_pane_id;
+        let active_pane_rect = pane_rects
+            .iter()
+            .find(|r| r.pane_id == active_pane_id)
+            .copied();
+
+        // 5. Prepare separator & pane render data
+        let separator_render_datas = Self::prepare_separator_render_data(
+            sep_rects,
+            active_pane_rect,
+            self.dragging_separator,
+            self.hovered_separator,
+        );
 
         let active_tab = &self.tabs[self.active_tab_index];
         let active_theme = if let Some(active_pane) = active_tab.tree.find_pane(active_pane_id) {
@@ -857,50 +914,29 @@ impl WindowState {
             .and_then(|spec| active_theme.parse_color_spec(spec))
             .or_else(|| Some(active_theme.resolve_tab_accent_color()));
 
-        let active_tab = &self.tabs[self.active_tab_index];
-        let mut cpu_pane_render_datas = Vec::with_capacity(pane_rects.len());
+        let cpu_pane_render_datas = Self::prepare_pane_render_data(
+            &pane_rects,
+            active_tab,
+            active_pane_id,
+            self.cursor_blink_enabled,
+            self.cursor_blink_on,
+            self.is_focused,
+        );
 
-        for rect in &pane_rects {
-            if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
-                let active_grid = pane.terminal.active_grid();
-                let width = active_grid.width;
-                let offset = active_grid.scroll_offset;
-                let is_active = pane.id == active_pane_id;
+        let effective_dim = if !self.is_focused {
+            self.window_dim
+        } else {
+            0.0
+        };
 
-                let cursor_visible = if !is_active || offset > 0 {
-                    false
-                } else if self.cursor_blink_enabled {
-                    active_grid.cursor.visible && self.cursor_blink_on
-                } else {
-                    active_grid.cursor.visible
-                };
+        let is_tab_bar_visible = self.tab_bar.is_visible(self.tabs.len());
+        let tab_bar_info = if is_tab_bar_visible {
+            self.tab_bar_render_cache.as_ref()
+        } else {
+            None
+        };
 
-                let cursor_shape = if !self.is_focused
-                    && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-                {
-                    crate::screen::cursor::CursorShape::HollowBlock
-                } else {
-                    active_grid.cursor.shape
-                };
-
-                let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
-
-                cpu_pane_render_datas.push(CpuPaneRenderData {
-                    pane_id: pane.id,
-                    rect: *rect,
-                    cells: &active_grid.cells,
-                    grid: active_grid,
-                    font_size: pane.font_size,
-                    theme: &pane.terminal.theme,
-                    bold_is_bright: pane.terminal.bold_is_bright,
-                    cursor_visible,
-                    cursor_shape,
-                    display_cursor_x,
-                    is_active,
-                });
-            }
-        }
-
+        // 6. Render & Present
         self.renderer.render_splits(
             &cpu_pane_render_datas,
             &separator_render_datas,
@@ -1329,6 +1365,7 @@ impl App {
                             had_input = true;
                         }
                         PlatformEvent::RedrawRequested => {
+                            ws.renderer.damage.mark_all();
                             ws.draw();
                         }
                     }

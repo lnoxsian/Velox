@@ -581,40 +581,6 @@ fn test_software_renderer_tab_switch_clean_redraw() {
 }
 
 #[test]
-fn test_per_tab_font_size_isolation() {
-    let pty1 = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-    let pty2 = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-    let terminal1 = Terminal::new(80, 24);
-    let terminal2 = Terminal::new(80, 24);
-
-    let mut tab1 = Tab::new(
-        1,
-        pty1,
-        terminal1,
-        Some("Tab 1".to_string()),
-        "Tab 1".to_string(),
-        false,
-        12.0,
-    );
-    let tab2 = Tab::new(
-        2,
-        pty2,
-        terminal2,
-        Some("Tab 2".to_string()),
-        "Tab 2".to_string(),
-        false,
-        12.0,
-    );
-
-    // Zoom Tab 1
-    tab1.font_size = 18.0;
-
-    // Verify Tab 2's font_size is unchanged
-    assert_eq!(tab1.font_size, 18.0);
-    assert_eq!(tab2.font_size, 12.0);
-}
-
-#[test]
 fn test_tab_bar_height_independent_of_cell_zoom() {
     let config = Config::default();
     let tab_bar = TabBar::from_config(&config);

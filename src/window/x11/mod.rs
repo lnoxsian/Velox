@@ -10,8 +10,8 @@ use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    self, AtomEnum, ColormapAlloc, ConnectionExt as _, CreateWindowAux, EventMask, KeyPressEvent,
-    VisualClass, WindowClass,
+    self, AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConnectionExt as _, CreateWindowAux,
+    EventMask, KeyPressEvent, VisualClass, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -31,6 +31,7 @@ pub struct X11Window {
     pub net_wm_icon_name: xproto::Atom,
     pub utf8_string: xproto::Atom,
     pub modifiers: ModifiersState,
+    pub is_visible: bool,
 }
 
 /// Find a 32-bit TrueColor visual supporting ARGB compositing with per-pixel alpha.
@@ -52,7 +53,12 @@ pub fn find_32bit_visual(
 }
 
 impl X11Window {
-    pub fn new(title: &str, width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        title: &str,
+        width: u32,
+        height: u32,
+        bg_pixel: Option<u32>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (conn, screen_num) = RustConnection::connect(None)?;
         let conn = Arc::new(conn);
         let root = conn.setup().roots[screen_num].root;
@@ -87,12 +93,14 @@ impl X11Window {
         if let Some(cmap) = colormap {
             // When creating a window with depth different from root (e.g. 32 on 24-bit root),
             // X11 protocol mandates colormap and border_pixel to avoid BadMatch.
+            let initial_bg = bg_pixel.unwrap_or(0xFF000000);
             win_aux = win_aux
                 .colormap(cmap)
                 .border_pixel(0)
-                .background_pixel(0);
+                .background_pixel(initial_bg);
         } else {
-            win_aux = win_aux.background_pixel(black_pixel);
+            let initial_bg = bg_pixel.map(|p| p & 0x00FFFFFF).unwrap_or(black_pixel);
+            win_aux = win_aux.background_pixel(initial_bg);
         }
 
         conn.create_window(
@@ -206,9 +214,8 @@ impl X11Window {
             &[wm_delete_window],
         )?;
 
-        conn.map_window(window_id)?;
-        conn.flush()?;
-
+        // Defer mapping the window until set_visible(true) after initial frame draw
+        // to achieve zero-flicker launch without transparent artifacts.
         let fb = X11Framebuffer::new(&conn, win_width, win_height, depth);
 
         Ok(Self {
@@ -226,7 +233,30 @@ impl X11Window {
             net_wm_icon_name,
             utf8_string,
             modifiers: ModifiersState::empty(),
+            is_visible: false,
         })
+    }
+
+    pub fn set_visible(&mut self, visible: bool) {
+        if self.is_visible == visible {
+            return;
+        }
+        self.is_visible = visible;
+        if visible {
+            let _ = self.conn.map_window(self.window_id);
+            self.fb
+                .present(&self.conn, self.window_id, self.gc, self.visual);
+            let _ = self.conn.flush();
+        } else {
+            let _ = self.conn.unmap_window(self.window_id);
+            let _ = self.conn.flush();
+        }
+    }
+
+    pub fn set_background_pixel(&self, bg_pixel: u32) {
+        let aux = ChangeWindowAttributesAux::new().background_pixel(bg_pixel);
+        let _ = self.conn.change_window_attributes(self.window_id, &aux);
+        let _ = self.conn.flush();
     }
 
     pub fn as_raw_fd(&self) -> std::os::unix::io::RawFd {
@@ -487,7 +517,7 @@ mod tests {
                 assert_eq!(depth, 32);
                 assert_ne!(visual_id, 0);
 
-                let win = X11Window::new("Velox ARGB32 Test", 300, 200);
+                let win = X11Window::new("Velox ARGB32 Test", 300, 200, None);
                 assert!(
                     win.is_ok(),
                     "X11 window creation with 32-bit visual failed: {:?}",
@@ -497,10 +527,28 @@ mod tests {
                 assert_eq!(win.depth, 32);
                 assert!(win.colormap.is_some());
                 assert_eq!(win.fb.depth, 32);
+                assert!(!win.is_visible);
 
                 // Present a frame with semi-transparent ARGB pixels
                 let frame = vec![0x80123456u32; (win.width * win.height) as usize];
                 win.present_frame(&frame);
+                win.set_visible(true);
+                assert!(win.is_visible);
+            }
+        }
+    }
+
+    #[test]
+    fn test_x11_initial_background_pixel_and_deferred_map() {
+        if let Ok((conn, screen_num)) = RustConnection::connect(None) {
+            let expected_bg = 0xFF282828u32;
+            let win = X11Window::new("Velox Zero Flicker Test", 300, 200, Some(expected_bg));
+            if let Ok(mut win) = win {
+                assert!(!win.is_visible);
+                win.set_visible(true);
+                assert!(win.is_visible);
+                win.set_visible(false);
+                assert!(!win.is_visible);
             }
         }
     }

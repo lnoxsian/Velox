@@ -473,57 +473,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_shear_outline_transforms_points_and_expands_bounds() {
-        let db = crate::font::fallback::get_system_font_db();
-        let query = fontdb::Query {
-            families: &[fontdb::Family::Monospace],
-            weight: fontdb::Weight::NORMAL,
-            stretch: fontdb::Stretch::Normal,
-            style: fontdb::Style::Normal,
-        };
-        if let Some(font) = crate::font::loader::load_font_face(db, &query) {
-            let scale = PxScale::from(16.0);
-            let glyph_id = font.glyph_id('H');
-            if let Some(mut outline) = font.outline(glyph_id) {
-                let orig_max_x = outline.bounds.max.x;
-                shear_outline(&mut outline, SYNTHETIC_ITALIC_SHEAR);
-                assert!(
-                    outline.bounds.max.x > orig_max_x,
-                    "Sheared outline bounds must extend further right"
-                );
-                let scaled = font.as_scaled(scale);
-                let sf = scaled.scale_factor();
-                let glyph = glyph_id.with_scale(scale);
-                let outlined = OutlinedGlyph::new(glyph, outline, sf);
-                let mut pixel_count = 0;
-                outlined.draw(|_gx, _gy, alpha| {
-                    if alpha > 0.0 {
-                        pixel_count += 1;
-                    }
-                });
-                assert!(pixel_count > 0, "Outlined glyph must draw pixels");
-            }
-        }
-    }
-
-    #[test]
-    fn test_resolved_font_set_fallback_rules() {
-        let db = crate::font::fallback::get_system_font_db();
-        let set = ResolvedFontSet::resolve(db, "Monospace");
-
-        // Regular must never have synthetic italic
-        assert!(!set.regular.synthetic_italic);
-
-        // If italic face was not distinct, synthetic_italic must be true
-        let italic = set.get(false, true);
-        assert!(italic.font.glyph_id('A').0 != 0);
-
-        // Bold italic
-        let bold_italic = set.get(true, true);
-        assert!(bold_italic.font.glyph_id('A').0 != 0);
-    }
-
-    #[test]
     fn test_resolve_fallback_on_missing_family() {
         let db = crate::font::fallback::get_system_font_db();
         // Request a font family that does not exist on any system

@@ -535,107 +535,133 @@ impl GlyphCache {
         };
 
         if let Some((w, h)) = color_extract {
-            // Scale and convert RGBA to u32 ARGB (0x00RRGGBB) using scratch buffers
-            let tw = target_width;
-            let th = self.cell_height;
-            let needed_u32 = (tw * th) as usize;
-            self.scratch.color_pixels.clear();
-            self.scratch.color_pixels.resize(needed_u32, 0);
+            Some(self.blit_color_glyph(w, h, target_width, width_mult))
+        } else {
+            let (x_offset, y_offset) = if !has_outline {
+                (0.0, 0.0)
+            } else if is_nerd_or_pua && !is_pw_sep {
+                let xo = (target_width as f32 - glyph_w) / 2.0;
+                let yo = (self.cell_height as f32 - glyph_h) / 2.0;
+                (xo, yo)
+            } else if is_pw_sep {
+                let xo = (base_target_width as f32 - glyph_w) / 2.0;
+                let yo = (self.cell_height as f32 - glyph_h) / 2.0;
+                (xo, yo)
+            } else if is_box {
+                (bounds_min_x, ascent + bounds_min_y)
+            } else {
+                let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+                let xo = pad_x + bounds_min_x;
+                let yo = ascent + bounds_min_y;
+                (xo, yo)
+            };
 
-            let scale_x = tw as f32 / w as f32;
-            let scale_y = th as f32 / h as f32;
-            let scale = scale_x.min(scale_y);
+            Some(self.blit_alpha_glyph(
+                the_outlined,
+                target_width,
+                x_offset,
+                y_offset,
+                width_mult,
+            ))
+        }
+    }
 
-            let new_w = (w as f32 * scale).round() as u32;
-            let new_h = (h as f32 * scale).round() as u32;
-            let x_offset = (tw as i32 - new_w as i32) / 2;
-            let y_offset = (th as i32 - new_h as i32) / 2;
+    fn blit_color_glyph(
+        &mut self,
+        w: u32,
+        h: u32,
+        target_width: u32,
+        width_mult: u8,
+    ) -> GlyphRef {
+        let tw = target_width;
+        let th = self.cell_height;
+        let needed_u32 = (tw * th) as usize;
+        self.scratch.color_pixels.clear();
+        self.scratch.color_pixels.resize(needed_u32, 0);
 
-            let rgba = &self.scratch.png_buf;
-            for dy in 0..th {
-                for dx in 0..tw {
-                    let rx = dx as i32 - x_offset;
-                    let ry = dy as i32 - y_offset;
-                    if rx >= 0 && rx < new_w as i32 && ry >= 0 && ry < new_h as i32 {
-                        let sx = ((rx as f32 / scale).floor() as u32).min(w - 1);
-                        let sy = ((ry as f32 / scale).floor() as u32).min(h - 1);
+        let scale_x = tw as f32 / w as f32;
+        let scale_y = th as f32 / h as f32;
+        let scale = scale_x.min(scale_y);
 
-                        let src_idx = (sy * w + sx) as usize * 4;
-                        let dst_idx = (dy * tw + dx) as usize;
+        let new_w = (w as f32 * scale).round() as u32;
+        let new_h = (h as f32 * scale).round() as u32;
+        let x_offset = (tw as i32 - new_w as i32) / 2;
+        let y_offset = (th as i32 - new_h as i32) / 2;
 
-                        if src_idx + 3 < rgba.len() {
-                            let r = rgba[src_idx] as u32;
-                            let g = rgba[src_idx + 1] as u32;
-                            let b = rgba[src_idx + 2] as u32;
-                            let a = rgba[src_idx + 3] as u32;
+        let rgba = &self.scratch.png_buf;
+        for dy in 0..th {
+            for dx in 0..tw {
+                let rx = dx as i32 - x_offset;
+                let ry = dy as i32 - y_offset;
+                if rx >= 0 && rx < new_w as i32 && ry >= 0 && ry < new_h as i32 {
+                    let sx = ((rx as f32 / scale).floor() as u32).min(w - 1);
+                    let sy = ((ry as f32 / scale).floor() as u32).min(h - 1);
 
-                            if a > 0 {
-                                self.scratch.color_pixels[dst_idx] =
-                                    (a << 24) | (r << 16) | (g << 8) | b;
-                            }
+                    let src_idx = (sy * w + sx) as usize * 4;
+                    let dst_idx = (dy * tw + dx) as usize;
+
+                    if src_idx + 3 < rgba.len() {
+                        let r = rgba[src_idx] as u32;
+                        let g = rgba[src_idx + 1] as u32;
+                        let b = rgba[src_idx + 2] as u32;
+                        let a = rgba[src_idx + 3] as u32;
+
+                        if a > 0 {
+                            self.scratch.color_pixels[dst_idx] =
+                                (a << 24) | (r << 16) | (g << 8) | b;
                         }
                     }
                 }
             }
-
-            Some(self.atlas.insert_color(
-                target_width as u16,
-                self.cell_height as u16,
-                0,
-                0,
-                width_mult,
-                &self.scratch.color_pixels,
-            ))
-        } else {
-            let needed_alpha = (target_width * self.cell_height) as usize;
-            self.scratch.alpha_pixels.clear();
-            self.scratch.alpha_pixels.resize(needed_alpha, 0);
-
-            if has_outline && let Some(outlined) = the_outlined {
-                let (x_offset, y_offset) = if is_nerd_or_pua && !is_pw_sep {
-                    let xo = (target_width as f32 - glyph_w) / 2.0;
-                    let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-                    (xo, yo)
-                } else if is_pw_sep {
-                    let xo = (base_target_width as f32 - glyph_w) / 2.0;
-                    let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-                    (xo, yo)
-                } else if is_box {
-                    (bounds_min_x, ascent + bounds_min_y)
-                } else {
-                    let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
-                    let xo = pad_x + bounds_min_x;
-                    let yo = ascent + bounds_min_y;
-                    (xo, yo)
-                };
-
-                let alpha_slice = &mut self.scratch.alpha_pixels;
-                outlined.draw(|gx, gy, alpha| {
-                    let px = (x_offset + gx as f32).round() as i32;
-                    let py = (y_offset + gy as f32).round() as i32;
-
-                    if px >= 0
-                        && px < target_width as i32
-                        && py >= 0
-                        && py < self.cell_height as i32
-                    {
-                        let idx = py as usize * target_width as usize + px as usize;
-                        let old_alpha = alpha_slice[idx] as f32 / 255.0;
-                        let new_alpha = old_alpha.max(alpha);
-                        alpha_slice[idx] = (new_alpha * 255.0) as u8;
-                    }
-                });
-            }
-
-            Some(self.atlas.insert_alpha(
-                target_width as u16,
-                self.cell_height as u16,
-                0,
-                0,
-                width_mult,
-                &self.scratch.alpha_pixels,
-            ))
         }
+
+        self.atlas.insert_color(
+            target_width as u16,
+            self.cell_height as u16,
+            0,
+            0,
+            width_mult,
+            &self.scratch.color_pixels,
+        )
+    }
+
+    fn blit_alpha_glyph(
+        &mut self,
+        outlined: Option<ab_glyph::OutlinedGlyph>,
+        target_width: u32,
+        x_offset: f32,
+        y_offset: f32,
+        width_mult: u8,
+    ) -> GlyphRef {
+        let needed_alpha = (target_width * self.cell_height) as usize;
+        self.scratch.alpha_pixels.clear();
+        self.scratch.alpha_pixels.resize(needed_alpha, 0);
+
+        if let Some(outlined) = outlined {
+            let alpha_slice = &mut self.scratch.alpha_pixels;
+            let cell_h = self.cell_height as i32;
+            let tw = target_width as i32;
+            outlined.draw(|gx, gy, alpha| {
+                let px = (x_offset + gx as f32).round() as i32;
+                let py = (y_offset + gy as f32).round() as i32;
+
+                if px >= 0 && px < tw && py >= 0 && py < cell_h {
+                    let idx = py as usize * target_width as usize + px as usize;
+                    let old_alpha = alpha_slice[idx] as f32 / 255.0;
+                    let new_alpha = old_alpha.max(alpha);
+                    alpha_slice[idx] = (new_alpha * 255.0) as u8;
+                }
+            });
+        }
+
+        self.atlas.insert_alpha(
+            target_width as u16,
+            self.cell_height as u16,
+            0,
+            0,
+            width_mult,
+            &self.scratch.alpha_pixels,
+        )
     }
 
     fn extract_color_png(&mut self, c: char) -> Option<(u32, u32)> {

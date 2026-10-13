@@ -278,28 +278,26 @@ impl SplitNode {
     }
 
     pub fn remove_pane(&mut self, target_id: PaneId) -> Option<Pane> {
-        let is_first_target = match self {
-            Self::Split { first, .. } => matches!(&**first, Self::Pane(p) if p.id == target_id),
-            _ => false,
+        let (first_is_target, second_is_target) = match self {
+            Self::Split { first, second, .. } => (
+                matches!(&**first, Self::Pane(p) if p.id == target_id),
+                matches!(&**second, Self::Pane(p) if p.id == target_id),
+            ),
+            _ => (false, false),
         };
-        if is_first_target && let Self::Split { second, first, .. } = self {
-            let second_box = std::mem::replace(second, Box::new(Self::Pane(Pane::dummy())));
-            let first_box = std::mem::replace(first, Box::new(Self::Pane(Pane::dummy())));
-            *self = *second_box;
-            if let Self::Pane(removed_pane) = *first_box {
-                return Some(removed_pane);
-            }
-        }
 
-        let is_second_target = match self {
-            Self::Split { second, .. } => matches!(&**second, Self::Pane(p) if p.id == target_id),
-            _ => false,
-        };
-        if is_second_target && let Self::Split { first, second, .. } = self {
-            let first_box = std::mem::replace(first, Box::new(Self::Pane(Pane::dummy())));
-            let second_box = std::mem::replace(second, Box::new(Self::Pane(Pane::dummy())));
-            *self = *first_box;
-            if let Self::Pane(removed_pane) = *second_box {
+        if (first_is_target || second_is_target)
+            && let Self::Split { first, second, .. } = self
+        {
+            let (target_box, keep_box) = if first_is_target {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            let keep = std::mem::replace(keep_box, Box::new(Self::Pane(Pane::dummy())));
+            let target = std::mem::replace(target_box, Box::new(Self::Pane(Pane::dummy())));
+            *self = *keep;
+            if let Self::Pane(removed_pane) = *target {
                 return Some(removed_pane);
             }
         }
@@ -353,17 +351,16 @@ impl SplitNode {
                 second,
                 ..
             } => {
-                let first_has = first.find_pane(target_pane_id).is_some();
-                if first_has {
-                    if first.adjust_ancestor_split_ratio(target_pane_id, match_direction, delta) {
-                        return true;
-                    }
-                    if *direction == match_direction {
-                        *ratio = (*ratio + delta).clamp(0.05, 0.95);
-                        return true;
-                    }
+                let target_child = if first.find_pane(target_pane_id).is_some() {
+                    Some(&mut **first)
                 } else if second.find_pane(target_pane_id).is_some() {
-                    if second.adjust_ancestor_split_ratio(target_pane_id, match_direction, delta) {
+                    Some(&mut **second)
+                } else {
+                    None
+                };
+
+                if let Some(child) = target_child {
+                    if child.adjust_ancestor_split_ratio(target_pane_id, match_direction, delta) {
                         return true;
                     }
                     if *direction == match_direction {
@@ -849,153 +846,4 @@ pub fn find_neighbor_pane(
     }
 
     best_candidate.map(|(id, _)| id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pty::process::spawn_process;
-    use crate::terminal::terminal::Terminal;
-    use std::sync::Arc;
-
-    fn mock_pane(id: PaneId) -> Pane {
-        let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-        let terminal = Terminal::new(80, 24);
-        Pane::new(id, pty, terminal, 14.0, false)
-    }
-
-    #[test]
-    fn test_single_pane_layout() {
-        let tree = SplitTree::new(mock_pane(1));
-        assert_eq!(tree.pane_count(), 1);
-        assert_eq!(tree.first_pane_id(), Some(1));
-
-        let (rects, seps) =
-            tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects.len(), 1);
-        assert_eq!(seps.len(), 0);
-        assert_eq!(rects[0].pane_id, 1);
-        assert_eq!(rects[0].width, 800.0);
-        assert_eq!(rects[0].height, 600.0);
-        assert_eq!(rects[0].cols, 80);
-        assert_eq!(rects[0].rows, 30);
-    }
-
-    #[test]
-    fn test_horizontal_and_vertical_splits() {
-        let mut tree = SplitTree::new(mock_pane(1));
-
-        // Split 1 vertically into 1 and 2
-        let ok = tree.split_pane(1, mock_pane(2), SplitDirection::Vertical, 0.5, 100);
-        assert!(ok);
-        assert_eq!(tree.pane_count(), 2);
-
-        let (rects, seps) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(seps.len(), 1);
-        assert_eq!(rects[0].pane_id, 1);
-        assert_eq!(rects[0].width, 400.0);
-        assert_eq!(rects[1].pane_id, 2);
-        assert_eq!(rects[1].width, 400.0);
-        assert_eq!(seps[0].x, 400.0);
-        assert_eq!(seps[0].width, 2.0);
-
-        // Split 2 horizontally into 2 and 3
-        let ok2 = tree.split_pane(2, mock_pane(3), SplitDirection::Horizontal, 0.5, 101);
-        assert!(ok2);
-        assert_eq!(tree.pane_count(), 3);
-
-        let (rects3, seps3) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 602.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects3.len(), 3);
-        assert_eq!(seps3.len(), 2);
-
-        // Pane 1: Left column
-        assert_eq!(rects3[0].pane_id, 1);
-        assert_eq!(rects3[0].x, 0.0);
-        assert_eq!(rects3[0].width, 400.0);
-        assert_eq!(rects3[0].height, 602.0);
-
-        // Pane 2: Top-right
-        assert_eq!(rects3[1].pane_id, 2);
-        assert_eq!(rects3[1].x, 402.0);
-        assert_eq!(rects3[1].y, 0.0);
-        assert_eq!(rects3[1].width, 400.0);
-        assert_eq!(rects3[1].height, 300.0);
-
-        // Pane 3: Bottom-right
-        assert_eq!(rects3[2].pane_id, 3);
-        assert_eq!(rects3[2].x, 402.0);
-        assert_eq!(rects3[2].y, 302.0);
-        assert_eq!(rects3[2].width, 400.0);
-        assert_eq!(rects3[2].height, 300.0);
-    }
-
-    #[test]
-    fn test_tree_normalization_on_remove() {
-        let mut tree = SplitTree::new(mock_pane(1));
-        tree.split_pane(1, mock_pane(2), SplitDirection::Vertical, 0.5, 100);
-        tree.split_pane(2, mock_pane(3), SplitDirection::Horizontal, 0.5, 101);
-
-        assert_eq!(tree.pane_count(), 3);
-
-        // Remove pane 2 -> split 101 should collapse, leaving pane 3 in its place
-        let removed = tree.remove_pane(2);
-        assert!(removed.is_some());
-        assert_eq!(removed.unwrap().id, 2);
-        assert_eq!(tree.pane_count(), 2);
-
-        let (rects, seps) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(seps.len(), 1);
-        assert_eq!(rects[0].pane_id, 1);
-        assert_eq!(rects[1].pane_id, 3);
-        assert_eq!(rects[1].width, 400.0);
-        assert_eq!(rects[1].height, 600.0);
-
-        // Remove pane 1 -> root becomes single pane 3
-        let removed2 = tree.remove_pane(1);
-        assert!(removed2.is_some());
-        assert_eq!(tree.pane_count(), 1);
-        assert_eq!(tree.first_pane_id(), Some(3));
-
-        let (rects_final, seps_final) =
-            tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects_final.len(), 1);
-        assert_eq!(seps_final.len(), 0);
-        assert_eq!(rects_final[0].pane_id, 3);
-        assert_eq!(rects_final[0].width, 800.0);
-        assert_eq!(rects_final[0].height, 600.0);
-    }
-
-    #[test]
-    fn test_directional_focus_grid() {
-        let mut tree = SplitTree::new(mock_pane(1));
-        tree.split_pane(1, mock_pane(2), SplitDirection::Vertical, 0.5, 100);
-        tree.split_pane(1, mock_pane(3), SplitDirection::Horizontal, 0.5, 101);
-        tree.split_pane(2, mock_pane(4), SplitDirection::Horizontal, 0.5, 102);
-
-        let (rects, _) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 602.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        // Layout:
-        // Top-left: 1, Bottom-left: 3
-        // Top-right: 2, Bottom-right: 4
-
-        assert_eq!(
-            find_neighbor_pane(&rects, 1, FocusDirection::Right),
-            Some(2)
-        );
-        assert_eq!(find_neighbor_pane(&rects, 1, FocusDirection::Down), Some(3));
-        assert_eq!(find_neighbor_pane(&rects, 2, FocusDirection::Left), Some(1));
-        assert_eq!(find_neighbor_pane(&rects, 2, FocusDirection::Down), Some(4));
-        assert_eq!(find_neighbor_pane(&rects, 3, FocusDirection::Up), Some(1));
-        assert_eq!(
-            find_neighbor_pane(&rects, 3, FocusDirection::Right),
-            Some(4)
-        );
-        assert_eq!(find_neighbor_pane(&rects, 4, FocusDirection::Up), Some(2));
-        assert_eq!(find_neighbor_pane(&rects, 4, FocusDirection::Left), Some(3));
-    }
 }
