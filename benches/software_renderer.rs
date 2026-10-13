@@ -506,5 +506,63 @@ fn main() {
         (multi_iters as f64) / elapsed.as_secs_f64()
     );
 
+    // 7. Scrolling Through Colorblocks in Scrollback
+    let mut cb_grid = Grid::new(
+        cols as usize,
+        rows as usize,
+        Color { r: 255, g: 255, b: 255 },
+        Color { r: 0, g: 0, b: 0 },
+        1000,
+        false,
+    );
+    for _row_idx in 0..500 {
+        let mut row_cells = Vec::with_capacity(cols as usize);
+        for col_idx in 0..cols as usize {
+            let color = match (col_idx / 4) % 8 {
+                0 => Color { r: 0, g: 0, b: 0 },
+                1 => Color { r: 205, g: 0, b: 0 },
+                2 => Color { r: 0, g: 205, b: 0 },
+                3 => Color { r: 205, g: 205, b: 0 },
+                4 => Color { r: 0, g: 0, b: 238 },
+                5 => Color { r: 205, g: 0, b: 205 },
+                6 => Color { r: 0, g: 205, b: 205 },
+                _ => Color { r: 229, g: 229, b: 229 },
+            };
+            row_cells.push(Cell::new(
+                '█',
+                color,
+                Color { r: 0, g: 0, b: 0 },
+                CellFlags::empty(),
+            ));
+        }
+        cb_grid.scrollback.push_line(&row_cells, false);
+    }
+
+    let scroll_iters = 100u32;
+    let start = Instant::now();
+    for i in 0..scroll_iters {
+        cb_grid.scroll_offset = (i as usize * 2) % 400;
+        cb_grid.damage.mark_all();
+        renderer.render(
+            &cb_grid.cells,
+            &cb_grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            cb_grid.cursor.x,
+            true,
+            1.0,
+            &mut target,
+        );
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "7. Scrolling Through Colorblocks (Scrollback): {:?} per frame ({:.2} fps)",
+        elapsed / scroll_iters,
+        (scroll_iters as f64) / elapsed.as_secs_f64()
+    );
+
     println!("=== Benchmark Complete ===");
 }

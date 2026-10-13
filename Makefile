@@ -122,13 +122,13 @@ uninstall:
 
 # Run the benchmark test script
 bench:
-	bash benchmarks/text_render_test/testren.bash
+	bash scripts/text_render_test/testren.bash
 
 bench-grid:
-	bash benchmarks/text_render_test/testren.bash --grid
+	bash scripts/text_render_test/testren.bash --grid
 
 bench-scrollback:
-	bash benchmarks/text_render_test/testren.bash --scroll-back
+	bash scripts/text_render_test/testren.bash --scroll-back
 
 # Measure RAM usage with selectable profile (default: release, or PROFILE=optimized-release / PROFILE=debug)
 ram-usage:

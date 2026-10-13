@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_x11_initial_background_pixel_and_deferred_map() {
-        if let Ok((conn, screen_num)) = RustConnection::connect(None) {
+        if let Ok((_conn, _screen_num)) = RustConnection::connect(None) {
             let expected_bg = 0xFF282828u32;
             let win = X11Window::new("Velox Zero Flicker Test", 300, 200, Some(expected_bg));
             if let Ok(mut win) = win {

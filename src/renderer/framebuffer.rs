@@ -63,17 +63,48 @@ impl Framebuffer {
         let x_end = (x + w).min(self.width) as usize;
         let y_end = (y + h).min(self.height) as usize;
         let x_start = x as usize;
+        let stride = self.stride;
 
-        if x_start == 0 && x_end == self.stride {
-            let start = (y as usize) * self.stride;
-            let end = y_end * self.stride;
-            self.pixels[start..end].fill(color);
+        if x_start == 0 && x_end == stride {
+            let start = (y as usize) * stride;
+            let end = y_end * stride;
+            if end <= self.pixels.len() {
+                self.pixels[start..end].fill(color);
+            }
             return;
         }
 
-        for row in (y as usize)..y_end {
-            let row_offset = row * self.stride;
-            self.pixels[row_offset + x_start..row_offset + x_end].fill(color);
+        let total_needed = (y_end - 1) * stride + x_end;
+        if total_needed > self.pixels.len() {
+            return;
+        }
+
+        let span_w = x_end - x_start;
+        let pixels = &mut self.pixels;
+
+        match span_w {
+            1 => {
+                let mut offset = (y as usize) * stride + x_start;
+                for _ in (y as usize)..y_end {
+                    pixels[offset] = color;
+                    offset += stride;
+                }
+            }
+            2 => {
+                let mut offset = (y as usize) * stride + x_start;
+                for _ in (y as usize)..y_end {
+                    pixels[offset] = color;
+                    pixels[offset + 1] = color;
+                    offset += stride;
+                }
+            }
+            _ => {
+                let mut offset = (y as usize) * stride + x_start;
+                for _ in (y as usize)..y_end {
+                    pixels[offset..offset + span_w].fill(color);
+                    offset += stride;
+                }
+            }
         }
     }
 

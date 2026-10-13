@@ -154,17 +154,28 @@ pub fn try_render_primitive(
 
         // Shades: ░ (25%), ▒ (50%), ▓ (75%)
         '░' | '▒' | '▓' => {
-            for y in 0..cell_h {
-                for x in 0..cell_w {
+            if px >= fb.width || py >= fb.height || cell_w == 0 || cell_h == 0 {
+                return true;
+            }
+            let max_w = cell_w.min(fb.width.saturating_sub(px));
+            let max_h = cell_h.min(fb.height.saturating_sub(py));
+            let stride = fb.stride;
+            let pixels = fb.as_mut_slice();
+
+            for dy in 0..max_h {
+                let y = py + dy;
+                let row_offset = (y as usize) * stride;
+                for dx in 0..max_w {
+                    let x = px + dx;
                     let set = if c == '▒' {
-                        ((px + x) + (py + y)).is_multiple_of(2)
+                        (x + y).is_multiple_of(2)
                     } else if c == '░' {
-                        (px + x).is_multiple_of(2) && (py + y).is_multiple_of(2)
+                        x.is_multiple_of(2) && y.is_multiple_of(2)
                     } else {
-                        !((px + x).is_multiple_of(2) && (py + y).is_multiple_of(2))
+                        !(x.is_multiple_of(2) && y.is_multiple_of(2))
                     };
                     if set {
-                        fb.fill_span(px + x, py + y, 1, 1, fg);
+                        pixels[row_offset + x as usize] = fg;
                     }
                 }
             }
@@ -631,11 +642,67 @@ fn draw_box_arms(
                 );
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::Double, LineStyle::Double) => {
-                // ╬
-                fb.fill_span(px, y_d_top, cell_w, t_light, fg);
-                fb.fill_span(px, y_d_bot, cell_w, t_light, fg);
-                fb.fill_span(x_d_left, py, t_light, cell_h, fg);
-                fb.fill_span(x_d_right, py, t_light, cell_h, fg);
+                // ╬ - Open double cross junction (corridors pass through without blocking '#')
+                // Top-left
+                fb.fill_span(
+                    px,
+                    y_d_top,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
+                // Top-right
+                fb.fill_span(
+                    x_d_right,
+                    y_d_top,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    py,
+                    t_light,
+                    (y_d_top + t_light).saturating_sub(py),
+                    fg,
+                );
+                // Bottom-left
+                fb.fill_span(
+                    px,
+                    y_d_bot,
+                    (x_d_left + t_light).saturating_sub(px),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_left,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
+                // Bottom-right
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    cell_right.saturating_sub(x_d_right),
+                    t_light,
+                    fg,
+                );
+                fb.fill_span(
+                    x_d_right,
+                    y_d_bot,
+                    t_light,
+                    cell_bottom.saturating_sub(y_d_bot),
+                    fg,
+                );
             }
 
             // Mixed single and double
@@ -1370,6 +1437,25 @@ mod tests {
                 c
             );
         }
+    }
+
+    #[test]
+    fn test_render_double_cross_open_junction() {
+        let cell_w = 20;
+        let cell_h = 30;
+        let mut fb = Framebuffer::new(cell_w, cell_h);
+        fb.clear(0);
+        let handled = try_render_primitive('╬', 0, 0, cell_w, cell_h, 0xFFFFFFFF, &mut fb);
+        assert!(handled);
+
+        // Center junction between double arms must not be filled (corridor open)
+        let mid_x = cell_w / 2;
+        let mid_y = cell_h / 2;
+        let center_pixel = fb.pixels[(mid_y * cell_w + mid_x) as usize];
+        assert_eq!(
+            center_pixel, 0,
+            "Center crossroad of ╬ must be open and not blocked by hashtag grid"
+        );
     }
 
     #[test]

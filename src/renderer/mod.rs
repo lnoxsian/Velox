@@ -902,6 +902,15 @@ impl CpuRenderer {
                 flags: CellFlags::empty(),
             };
 
+            let mut stack_row_fg = [0u32; 512];
+            let mut heap_row_fg: Vec<u32>;
+            let row_fg: &mut [u32] = if grid_w <= 512 {
+                &mut stack_row_fg[..grid_w]
+            } else {
+                heap_row_fg = vec![0u32; grid_w];
+                &mut heap_row_fg[..]
+            };
+
             grid.with_display_row_slice(y, |row_cells| {
                 let has_custom_bg = row_info.is_row_in_selection
                     || (pane.is_active
@@ -934,7 +943,7 @@ impl CpuRenderer {
                         let is_reverse = cell.flags.contains(CellFlags::REVERSE);
                         let is_inverted = is_selected ^ is_reverse;
 
-                        let (_, mut bg) = self.palette.resolve_cell_colors_pane(
+                        let (mut fg, mut bg) = self.palette.resolve_cell_colors_pane(
                             cell,
                             is_inverted,
                             pane.bold_is_bright,
@@ -966,9 +975,40 @@ impl CpuRenderer {
                                     .dim(pane_effective_dim),
                             )
                             .to_u32();
+                            fg = PackedColor::from_color(
+                                pane.theme
+                                    .resolve_cursor_text_color(cell.background)
+                                    .dim(pane_effective_dim),
+                            )
+                            .to_u32();
                         }
 
-                        if !in_span {
+                        row_fg[col] = fg;
+
+                        // Solid block characters (█) completely cover their cell in Pass B with `fg`.
+                        // Skipping their background write here saves 50% memory bandwidth on colorblocks.
+                        let is_solid_block = cell.character == '█'
+                            && !is_block_cursor
+                            && cell.underline_color.is_none()
+                            && !cell.flags.intersects(
+                                CellFlags::UNDERLINE
+                                    | CellFlags::DOUBLE_UNDERLINE
+                                    | CellFlags::CURLY_UNDERLINE
+                                    | CellFlags::STRIKE,
+                            );
+
+                        if is_solid_block {
+                            if in_span && span_bg != default_pane_bg {
+                                let span_px = px_offset + (span_start_col as u32) * cell_w;
+                                let span_w = (((col - span_start_col) as u32) * cell_w)
+                                    .min(max_x.saturating_sub(span_px));
+                                if span_w > 0 && span_px < max_x {
+                                    self.framebuffer
+                                        .fill_span(span_px, py, span_w, cell_h, span_bg);
+                                }
+                            }
+                            in_span = false;
+                        } else if !in_span {
                             span_start_col = col;
                             span_bg = bg;
                             in_span = true;
@@ -999,14 +1039,18 @@ impl CpuRenderer {
                 }
 
                 // Pass B: Glyphs, Primitives, Decorations
-                for (col, cell) in row_cells.iter().enumerate() {
+                let mut col = 0usize;
+                while col < row_cells.len() {
+                    let cell = &row_cells[col];
                     if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                        col += 1;
                         continue;
                     }
                     if cell.character == ' '
                         && cell.flags.is_empty()
                         && cell.underline_color.is_none()
                     {
+                        col += 1;
                         continue;
                     }
 
@@ -1014,27 +1058,6 @@ impl CpuRenderer {
                     if px + cell_w > max_x {
                         break;
                     }
-
-                    let is_selected = is_column_selected(
-                        row_info.is_row_in_selection,
-                        col,
-                        row_info.abs_row,
-                        sel_min_x,
-                        sel_min_abs_y,
-                        sel_max_x,
-                        sel_max_abs_y,
-                    );
-                    let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                    let is_inverted = is_selected ^ is_reverse;
-
-                    let (mut fg, _) = self.palette.resolve_cell_colors_pane(
-                        cell,
-                        is_inverted,
-                        pane.bold_is_bright,
-                        pane_effective_dim,
-                        pane.theme,
-                        default_pane_bg,
-                    );
 
                     let is_cursor = pane.is_active
                         && pane.cursor_visible
@@ -1045,14 +1068,41 @@ impl CpuRenderer {
                         && pane.cursor_shape == CursorShape::Block
                         && pane.is_active
                         && is_focused;
-                    if is_block_cursor {
-                        fg = PackedColor::from_color(
-                            pane.theme
-                                .resolve_cursor_text_color(cell.background)
-                                .dim(pane_effective_dim),
-                        )
-                        .to_u32();
-                    }
+
+                    let fg = if has_custom_bg && col < row_fg.len() {
+                        row_fg[col]
+                    } else {
+                        let is_selected = is_column_selected(
+                            row_info.is_row_in_selection,
+                            col,
+                            row_info.abs_row,
+                            sel_min_x,
+                            sel_min_abs_y,
+                            sel_max_x,
+                            sel_max_abs_y,
+                        );
+                        let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                        let is_inverted = is_selected ^ is_reverse;
+
+                        let (mut f, _) = self.palette.resolve_cell_colors_pane(
+                            cell,
+                            is_inverted,
+                            pane.bold_is_bright,
+                            pane_effective_dim,
+                            pane.theme,
+                            default_pane_bg,
+                        );
+
+                        if is_block_cursor {
+                            f = PackedColor::from_color(
+                                pane.theme
+                                    .resolve_cursor_text_color(cell.background)
+                                    .dim(pane_effective_dim),
+                            )
+                            .to_u32();
+                        }
+                        f
+                    };
 
                     let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
                         || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
@@ -1063,6 +1113,114 @@ impl CpuRenderer {
                     let clip_h = max_y.saturating_sub(py);
 
                     if !skip_fg && cell.character != ' ' && clip_w > 0 && clip_h > 0 {
+                        let has_deco = cell.underline_color.is_some()
+                            || cell.flags.intersects(
+                                CellFlags::UNDERLINE
+                                    | CellFlags::DOUBLE_UNDERLINE
+                                    | CellFlags::CURLY_UNDERLINE
+                                    | CellFlags::STRIKE,
+                            );
+
+                        let is_coalescible_block = !is_wide
+                            && !is_cursor
+                            && !has_deco
+                            && (cell.character == '█'
+                                || cell.character == '▀'
+                                || ('\u{2581}'..='\u{2587}').contains(&cell.character)
+                                || cell.character == '▔');
+
+                        if is_coalescible_block {
+                            let mut span_count = 1usize;
+                            while col + span_count < row_cells.len() {
+                                let next_col = col + span_count;
+                                let next_px = px_offset + (next_col as u32) * cell_w;
+                                if next_px + cell_w > max_x {
+                                    break;
+                                }
+                                let next_cell = &row_cells[next_col];
+                                if next_cell.character != cell.character
+                                    || next_cell.flags.contains(CellFlags::WIDE)
+                                    || next_cell.flags.contains(CellFlags::WIDE_CONTINUATION)
+                                    || next_cell.underline_color.is_some()
+                                    || next_cell.flags.intersects(
+                                        CellFlags::UNDERLINE
+                                            | CellFlags::DOUBLE_UNDERLINE
+                                            | CellFlags::CURLY_UNDERLINE
+                                            | CellFlags::STRIKE,
+                                    )
+                                {
+                                    break;
+                                }
+
+                                let next_is_cursor = pane.is_active
+                                    && pane.cursor_visible
+                                    && row_info.is_active_grid_row
+                                    && next_col == pane.display_cursor_x
+                                    && row_info.grid_y == grid.cursor.y;
+                                if next_is_cursor {
+                                    break;
+                                }
+
+                                let next_fg = if has_custom_bg && next_col < row_fg.len() {
+                                    row_fg[next_col]
+                                } else {
+                                    let next_is_sel = is_column_selected(
+                                        row_info.is_row_in_selection,
+                                        next_col,
+                                        row_info.abs_row,
+                                        sel_min_x,
+                                        sel_min_abs_y,
+                                        sel_max_x,
+                                        sel_max_abs_y,
+                                    );
+                                    let next_inv = next_is_sel
+                                        ^ next_cell.flags.contains(CellFlags::REVERSE);
+                                    let (f, _) = self.palette.resolve_cell_colors_pane(
+                                        next_cell,
+                                        next_inv,
+                                        pane.bold_is_bright,
+                                        pane_effective_dim,
+                                        pane.theme,
+                                        default_pane_bg,
+                                    );
+                                    f
+                                };
+
+                                if next_fg != fg {
+                                    break;
+                                }
+                                span_count += 1;
+                            }
+
+                            let span_w = ((span_count as u32) * cell_w).min(clip_w);
+                            match cell.character {
+                                '█' => {
+                                    self.framebuffer
+                                        .fill_span(px, py, span_w, cell_h.min(clip_h), fg);
+                                }
+                                '▀' => {
+                                    let h = (cell_h / 2).min(clip_h);
+                                    self.framebuffer.fill_span(px, py, span_w, h, fg);
+                                }
+                                '\u{2581}'..='\u{2587}' => {
+                                    let frac = (cell.character as u32 - 0x2580) as f32 / 8.0;
+                                    let h = ((cell_h as f32 * frac).round() as u32).max(1);
+                                    let y = py + cell_h.saturating_sub(h);
+                                    let h_clip = max_y.saturating_sub(y);
+                                    self.framebuffer
+                                        .fill_span(px, y, span_w, h.min(h_clip), fg);
+                                }
+                                '▔' => {
+                                    let h = (cell_h / 8).max(1).min(clip_h);
+                                    self.framebuffer.fill_span(px, py, span_w, h, fg);
+                                }
+                                _ => unreachable!(),
+                            }
+
+                            col += span_count;
+                            continue;
+                        }
+
                         let prim_w = target_w.min(clip_w);
                         if !try_render_primitive(
                             cell.character,
@@ -1167,6 +1325,8 @@ impl CpuRenderer {
                             );
                         }
                     }
+
+                    col += 1;
                 }
             });
 

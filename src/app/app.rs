@@ -1357,8 +1357,9 @@ impl App {
                             ws.handle_cursor_moved((x, y), self.modifiers);
                         }
                         PlatformEvent::MouseWheel { delta_y } => {
-                            ws.handle_mouse_wheel(delta_y, self.modifiers);
-                            had_input = true;
+                            if ws.handle_mouse_wheel(delta_y, self.modifiers) {
+                                had_input = true;
+                            }
                         }
                         PlatformEvent::MouseInput { state, button } => {
                             ws.handle_mouse_input(state, button, self.modifiers);
@@ -1456,11 +1457,21 @@ impl App {
                         .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
                         .unwrap_or(std::time::Duration::from_millis(8));
 
-                    let next_frame = ws.last_frame_instant + frame_duration;
                     let is_interactive = now.duration_since(ws.last_input_instant)
                         < std::time::Duration::from_millis(200);
 
-                    if is_interactive || now >= next_frame {
+                    // During active user interaction (e.g. rapid mouse scrolling or burst input),
+                    // pace redraws to a snappy frame rate (up to 120 FPS / 8ms) to prevent event-loop
+                    // backlog and socket congestion, while still redrawing immediately on initial input.
+                    let effective_duration = if is_interactive {
+                        frame_duration.min(std::time::Duration::from_millis(8))
+                    } else {
+                        frame_duration
+                    };
+
+                    let next_frame = ws.last_frame_instant + effective_duration;
+
+                    if now >= next_frame {
                         ws.draw();
                         ws.needs_redraw = false;
                         ws.last_frame_instant = now;

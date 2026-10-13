@@ -373,7 +373,7 @@ impl WindowState {
         }
     }
 
-    pub fn handle_mouse_wheel(&mut self, delta_y: f32, modifiers: ModifiersState) {
+    pub fn handle_mouse_wheel(&mut self, delta_y: f32, modifiers: ModifiersState) -> bool {
         self.mark_interaction();
         let lines_f = delta_y as f64;
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
@@ -383,7 +383,7 @@ impl WindowState {
                 let step = if lines > 0 { 1.0 } else { -1.0 };
                 let new_size = current_size + step;
                 self.set_font_size(new_size);
-                return;
+                return false;
             }
 
             let tab_bar_h = self.tab_bar_height() as f64;
@@ -395,11 +395,11 @@ impl WindowState {
                 } else {
                     self.next_tab();
                 }
-                return;
+                return false;
             }
 
             if self.tabs.is_empty() {
-                return;
+                return false;
             }
 
             let (pane_rects, _) = self.recalculate_panes_layout(self.active_tab_index);
@@ -426,6 +426,7 @@ impl WindowState {
                                 false,
                             );
                         }
+                        return true;
                     } else if pane.terminal.is_alt_screen {
                         let key_seq: &[u8] = if lines > 0 {
                             if pane.terminal.cursor_keys_mode {
@@ -441,6 +442,7 @@ impl WindowState {
                         for _ in 0..lines.abs() {
                             let _ = pane.pty_master.write(key_seq);
                         }
+                        return true;
                     } else {
                         let tab_mut = self.active_tab_mut();
                         if let Some(pane_mut) = tab_mut.tree.find_pane_mut(pane_rect.pane_id) {
@@ -462,10 +464,12 @@ impl WindowState {
                             }
                             self.needs_redraw = true;
                         }
+                        return false;
                     }
                 }
             }
         }
+        false
     }
 
     pub fn handle_mouse_input(

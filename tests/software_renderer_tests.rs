@@ -1393,3 +1393,113 @@ fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
         "Translucent grid cell pixel must match translucent padding pixel exactly"
     );
 }
+
+#[test]
+fn test_software_renderer_colorblocks_and_block_coalescing() {
+    let mut renderer = setup_renderer(800, 600);
+    let mut grid = Grid::new(
+        80,
+        24,
+        Color { r: 255, g: 255, b: 255 },
+        Color { r: 0, g: 0, b: 0 },
+        100,
+        false,
+    );
+    let theme = Theme::new();
+    let mut target = vec![0u32; 800 * 600];
+
+    let cw = renderer.glyph_cache.cell_width;
+    let ch = renderer.glyph_cache.cell_height;
+
+    // Fill row 0 with coalesced full blocks '█' of pure red (col 0..4) and pure blue (col 4..8)
+    let red_fg = Color { r: 255, g: 0, b: 0 };
+    let blue_fg = Color { r: 0, g: 0, b: 255 };
+    let default_bg = Color { r: 0, g: 0, b: 0 };
+
+    for col in 0..4 {
+        grid.cells[col] = Cell::new('█', red_fg, default_bg, CellFlags::empty());
+    }
+    for col in 4..8 {
+        grid.cells[col] = Cell::new('█', blue_fg, default_bg, CellFlags::empty());
+    }
+
+    // Fill row 1 with coalesced upper half blocks '▀'
+    let green_fg = Color { r: 0, g: 255, b: 0 };
+    let yellow_bg = Color { r: 255, g: 255, b: 0 };
+    for col in 0..4 {
+        grid.cells[80 + col] = Cell::new('▀', green_fg, yellow_bg, CellFlags::empty());
+    }
+
+    // Fill row 2 with shade characters
+    for col in 0..4 {
+        grid.cells[160 + col] = Cell::new('▒', red_fg, default_bg, CellFlags::empty());
+    }
+
+    grid.damage.mark_all();
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+
+    // Verify row 0 full blocks: col 0..4 must be 0xFFFF0000 (red)
+    let expected_red = 0xFFFF0000u32;
+    let expected_blue = 0xFF0000FFu32;
+    let expected_green = 0xFF00FF00u32;
+    let expected_yellow = 0xFFFFFF00u32;
+
+    for col in 0..4 {
+        let center_x = (col as u32 * cw + cw / 2) as usize;
+        let center_y = (ch / 2) as usize;
+        let pixel = target[center_y * 800 + center_x];
+        assert_eq!(pixel, expected_red, "Col {} must be red full block", col);
+    }
+    for col in 4..8 {
+        let center_x = (col as u32 * cw + cw / 2) as usize;
+        let center_y = (ch / 2) as usize;
+        let pixel = target[center_y * 800 + center_x];
+        assert_eq!(pixel, expected_blue, "Col {} must be blue full block", col);
+    }
+
+    // Verify row 1 upper half block: top half is green, bottom half is yellow
+    for col in 0..4 {
+        let center_x = (col as u32 * cw + cw / 2) as usize;
+        let top_y = (ch + ch / 4) as usize;
+        let bottom_y = (ch + (ch * 3) / 4) as usize;
+        let top_pixel = target[top_y * 800 + center_x];
+        let bottom_pixel = target[bottom_y * 800 + center_x];
+        assert_eq!(top_pixel, expected_green, "Col {} top half must be green", col);
+        assert_eq!(bottom_pixel, expected_yellow, "Col {} bottom half must be yellow", col);
+    }
+
+    // Verify scrollback scroll of colorblocks
+    grid.scrollback.push_line(&grid.cells[0..80], false);
+    grid.scroll_offset = 1;
+    grid.damage.mark_all();
+    renderer.render(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        false,
+        CursorShape::Block,
+        0,
+        true,
+        1.0,
+        &mut target,
+    );
+
+    // After scroll_offset = 1, row 0 in scrollback is displayed at y = 0
+    let pixel = target[(ch / 2) as usize * 800 + (cw / 2) as usize];
+    assert_eq!(pixel, expected_red, "Scrollback row 0 must be red full block");
+}
+
