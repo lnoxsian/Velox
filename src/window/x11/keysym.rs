@@ -19,6 +19,18 @@ pub fn keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
         0xff63 => (Some(Key::Named(NamedKey::Insert)), None),
         0xffff => (Some(Key::Named(NamedKey::Delete)), None),
 
+        // Keypad keys
+        0xff8d => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),
+        0xffab => (Some(Key::Character("+".to_string())), Some("+".to_string())),
+        0xffad => (Some(Key::Character("-".to_string())), Some("-".to_string())),
+        0xffaa => (Some(Key::Character("*".to_string())), Some("*".to_string())),
+        0xffaf => (Some(Key::Character("/".to_string())), Some("/".to_string())),
+        0xffb0..=0xffb9 => {
+            let digit = (b'0' + (keysym - 0xffb0) as u8) as char;
+            let s = digit.to_string();
+            (Some(Key::Character(s.clone())), Some(s))
+        }
+
         // Function keys F1-F12
         0xffbe => (Some(Key::Named(NamedKey::F1)), None),
         0xffbf => (Some(Key::Named(NamedKey::F2)), None),
@@ -55,5 +67,38 @@ pub fn keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
         }
 
         _ => (None, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_keypad_keysyms() {
+        assert_eq!(
+            keysym_to_key(0xffab),
+            (Some(Key::Character("+".to_string())), Some("+".to_string()))
+        );
+        assert_eq!(
+            keysym_to_key(0xffad),
+            (Some(Key::Character("-".to_string())), Some("-".to_string()))
+        );
+        assert_eq!(
+            keysym_to_key(0xffaa),
+            (Some(Key::Character("*".to_string())), Some("*".to_string()))
+        );
+        assert_eq!(
+            keysym_to_key(0xffaf),
+            (Some(Key::Character("/".to_string())), Some("/".to_string()))
+        );
+        assert_eq!(
+            keysym_to_key(0xff8d),
+            (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string()))
+        );
+        assert_eq!(
+            keysym_to_key(0xffb5),
+            (Some(Key::Character("5".to_string())), Some("5".to_string()))
+        );
     }
 }

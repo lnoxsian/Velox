@@ -6,12 +6,13 @@ use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, Platfo
 use crate::platform::{CANONICAL_WM_CLASS_GENERAL, CANONICAL_WM_CLASS_INSTANCE};
 use icon::get_net_wm_icon_data;
 use shm::X11Framebuffer;
+use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     self, AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConnectionExt as _, CreateWindowAux,
-    EventMask, KeyPressEvent, VisualClass, WindowClass,
+    EventMask, VisualClass, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -32,6 +33,11 @@ pub struct X11Window {
     pub utf8_string: xproto::Atom,
     pub modifiers: ModifiersState,
     pub is_visible: bool,
+    events: VecDeque<PlatformEvent>,
+    keymap: Option<Vec<u32>>,
+    keysyms_per_keycode: usize,
+    min_keycode: u8,
+    max_keycode: u8,
 }
 
 /// Find a 32-bit TrueColor visual supporting ARGB compositing with per-pixel alpha.
@@ -218,6 +224,9 @@ impl X11Window {
         // to achieve zero-flicker launch without transparent artifacts.
         let fb = X11Framebuffer::new(&conn, win_width, win_height, depth);
 
+        let (min_keycode, max_keycode, keysyms_per_keycode, keymap) =
+            Self::load_keyboard_mapping(&conn);
+
         Ok(Self {
             conn,
             window_id,
@@ -234,6 +243,11 @@ impl X11Window {
             utf8_string,
             modifiers: ModifiersState::empty(),
             is_visible: false,
+            events: VecDeque::new(),
+            keymap,
+            keysyms_per_keycode,
+            min_keycode,
+            max_keycode,
         })
     }
 
@@ -328,8 +342,27 @@ impl X11Window {
             .present(&self.conn, self.window_id, self.gc, self.visual);
     }
 
+    #[inline]
+    pub fn flush(&self) {
+        let _ = self.conn.flush();
+    }
+
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
-        let raw_event = self.conn.poll_for_event().ok()??;
+        if let Some(event) = self.events.pop_front() {
+            return Some(event);
+        }
+
+        while let Ok(Some(raw_event)) = self.conn.poll_for_event() {
+            self.handle_raw_event(raw_event);
+            if let Some(event) = self.events.pop_front() {
+                return Some(event);
+            }
+        }
+
+        None
+    }
+
+    fn handle_raw_event(&mut self, raw_event: x11rb::protocol::Event) {
         match raw_event {
             x11rb::protocol::Event::ConfigureNotify(ev) => {
                 let w = ev.width as u32;
@@ -338,114 +371,144 @@ impl X11Window {
                     self.width = w;
                     self.height = h;
                     self.fb.resize(&self.conn, w, h);
-                    return Some(PlatformEvent::Resized {
+                    self.events.push_back(PlatformEvent::Resized {
                         width: w,
                         height: h,
                     });
                 }
-                None
             }
             x11rb::protocol::Event::Expose(ev) => {
                 if ev.count == 0 {
-                    return Some(PlatformEvent::RedrawRequested);
+                    self.events.push_back(PlatformEvent::RedrawRequested);
                 }
-                None
             }
             x11rb::protocol::Event::ClientMessage(ev) => {
                 if ev.data.as_data32()[0] == self.wm_delete_window {
-                    return Some(PlatformEvent::CloseRequested);
+                    self.events.push_back(PlatformEvent::CloseRequested);
                 }
-                None
             }
             x11rb::protocol::Event::KeyPress(ev) => {
-                self.update_modifiers(ev.state);
-                let (key, text) = self.lookup_key(&ev);
+                let old_mods = self.modifiers;
+                let mut mods = Self::parse_modifiers(ev.state);
+                if let Some(m) = self.modifier_for_keycode(ev.detail) {
+                    mods.insert(m);
+                }
+                self.modifiers = mods;
+                if self.modifiers != old_mods {
+                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                let (key, text) = self.lookup_key(ev.detail, ev.state);
                 if let Some(key) = key {
-                    Some(PlatformEvent::KeyPressed {
+                    self.events.push_back(PlatformEvent::KeyPressed {
                         key,
                         text,
                         modifiers: self.modifiers,
-                    })
-                } else {
-                    None
+                    });
                 }
             }
             x11rb::protocol::Event::KeyRelease(ev) => {
-                self.update_modifiers(ev.state);
-                let (key, _) = self.lookup_key(&KeyPressEvent {
-                    detail: ev.detail,
-                    state: ev.state,
-                    time: ev.time,
-                    root: ev.root,
-                    event: ev.event,
-                    child: ev.child,
-                    root_x: ev.root_x,
-                    root_y: ev.root_y,
-                    event_x: ev.event_x,
-                    event_y: ev.event_y,
-                    same_screen: ev.same_screen,
-                    response_type: ev.response_type,
-                    sequence: ev.sequence,
-                });
+                let old_mods = self.modifiers;
+                let mut mods = Self::parse_modifiers(ev.state);
+                if let Some(m) = self.modifier_for_keycode(ev.detail) {
+                    mods.remove(m);
+                }
+                self.modifiers = mods;
+                if self.modifiers != old_mods {
+                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                let (key, _) = self.lookup_key(ev.detail, ev.state);
                 if let Some(key) = key {
-                    Some(PlatformEvent::KeyReleased {
+                    self.events.push_back(PlatformEvent::KeyReleased {
                         key,
                         modifiers: self.modifiers,
-                    })
-                } else {
-                    None
+                    });
                 }
             }
-            x11rb::protocol::Event::MotionNotify(ev) => Some(PlatformEvent::CursorMoved {
-                x: ev.event_x as f64,
-                y: ev.event_y as f64,
-            }),
-            x11rb::protocol::Event::ButtonPress(ev) => match ev.detail {
-                4 => Some(PlatformEvent::MouseWheel { delta_y: 1.0 }),
-                5 => Some(PlatformEvent::MouseWheel { delta_y: -1.0 }),
-                1 => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                }),
-                2 => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Middle,
-                }),
-                3 => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Right,
-                }),
-                other => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Other(other as u16),
-                }),
-            },
-            x11rb::protocol::Event::ButtonRelease(ev) => match ev.detail {
-                1 => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                }),
-                2 => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Middle,
-                }),
-                3 => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Right,
-                }),
-                4 | 5 => None,
-                other => Some(PlatformEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Other(other as u16),
-                }),
-            },
-            x11rb::protocol::Event::FocusIn(_) => Some(PlatformEvent::Focused(true)),
-            x11rb::protocol::Event::FocusOut(_) => Some(PlatformEvent::Focused(false)),
-            _ => None,
+            x11rb::protocol::Event::MotionNotify(ev) => {
+                let old_mods = self.modifiers;
+                self.modifiers = Self::parse_modifiers(ev.state);
+                if self.modifiers != old_mods {
+                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                self.events.push_back(PlatformEvent::CursorMoved {
+                    x: ev.event_x as f64,
+                    y: ev.event_y as f64,
+                });
+            }
+            x11rb::protocol::Event::ButtonPress(ev) => {
+                let old_mods = self.modifiers;
+                self.modifiers = Self::parse_modifiers(ev.state);
+                if self.modifiers != old_mods {
+                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                match ev.detail {
+                    4 => self.events.push_back(PlatformEvent::MouseWheel { delta_y: 1.0 }),
+                    5 => self.events.push_back(PlatformEvent::MouseWheel { delta_y: -1.0 }),
+                    1 => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    }),
+                    2 => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Middle,
+                    }),
+                    3 => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Right,
+                    }),
+                    other => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Other(other as u16),
+                    }),
+                }
+            }
+            x11rb::protocol::Event::ButtonRelease(ev) => {
+                let old_mods = self.modifiers;
+                self.modifiers = Self::parse_modifiers(ev.state);
+                if self.modifiers != old_mods {
+                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                match ev.detail {
+                    1 => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Left,
+                    }),
+                    2 => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Middle,
+                    }),
+                    3 => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Right,
+                    }),
+                    4 | 5 => {}
+                    other => self.events.push_back(PlatformEvent::MouseInput {
+                        state: ElementState::Released,
+                        button: MouseButton::Other(other as u16),
+                    }),
+                }
+            }
+            x11rb::protocol::Event::FocusIn(_) => {
+                self.events.push_back(PlatformEvent::Focused(true));
+            }
+            x11rb::protocol::Event::FocusOut(_) => {
+                let old_mods = self.modifiers;
+                self.modifiers = ModifiersState::empty();
+                if self.modifiers != old_mods {
+                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                self.events.push_back(PlatformEvent::Focused(false));
+            }
+            x11rb::protocol::Event::MappingNotify(ev) => {
+                if ev.request == xproto::Mapping::KEYBOARD || ev.request == xproto::Mapping::MODIFIER {
+                    self.refresh_keyboard_mapping();
+                }
+            }
+            _ => {}
         }
     }
 
-    fn update_modifiers(&mut self, state: xproto::KeyButMask) {
+    fn parse_modifiers(state: xproto::KeyButMask) -> ModifiersState {
         let mut m = ModifiersState::empty();
         let val: u16 = state.into();
         if val & xproto::ModMask::SHIFT.bits() != 0 {
@@ -460,38 +523,88 @@ impl X11Window {
         if val & xproto::ModMask::M4.bits() != 0 {
             m |= ModifiersState::SUPER;
         }
-        self.modifiers = m;
+        m
     }
 
-    fn lookup_key(&self, ev: &KeyPressEvent) -> (Option<super::event::Key>, Option<String>) {
-        let min_keycode = self.conn.setup().min_keycode;
-        let max_keycode = self.conn.setup().max_keycode;
-        if ev.detail < min_keycode || ev.detail > max_keycode {
-            return (None, None);
-        }
-
-        // Fetch keyboard mapping row for keycode
-        let count = max_keycode - min_keycode + 1;
-        if let Ok(cookie) = self.conn.get_keyboard_mapping(min_keycode, count)
+    fn load_keyboard_mapping(conn: &RustConnection) -> (u8, u8, usize, Option<Vec<u32>>) {
+        let min_keycode = conn.setup().min_keycode;
+        let max_keycode = conn.setup().max_keycode;
+        let count = max_keycode.saturating_sub(min_keycode) + 1;
+        if let Ok(cookie) = conn.get_keyboard_mapping(min_keycode, count)
             && let Ok(reply) = cookie.reply()
         {
-            let keysyms_per_code = reply.keysyms_per_keycode as usize;
-            let index = (ev.detail - min_keycode) as usize * keysyms_per_code;
-            if index < reply.keysyms.len() {
-                let is_shift = self.modifiers.contains(ModifiersState::SHIFT);
-                let col = if is_shift && keysyms_per_code > 1 {
-                    1
-                } else {
-                    0
-                };
-                let mut keysym = reply.keysyms[index + col];
-                if keysym == 0 && col == 1 {
-                    keysym = reply.keysyms[index];
-                }
-                return keysym::keysym_to_key(keysym);
+            (
+                min_keycode,
+                max_keycode,
+                reply.keysyms_per_keycode as usize,
+                Some(reply.keysyms),
+            )
+        } else {
+            (min_keycode, max_keycode, 0, None)
+        }
+    }
+
+    fn refresh_keyboard_mapping(&mut self) {
+        let (min, max, per_code, keysyms) = Self::load_keyboard_mapping(&self.conn);
+        self.min_keycode = min;
+        self.max_keycode = max;
+        self.keysyms_per_keycode = per_code;
+        self.keymap = keysyms;
+    }
+
+    fn keysym_for_keycode(&self, keycode: u8, col: usize) -> u32 {
+        if keycode < self.min_keycode || keycode > self.max_keycode {
+            return 0;
+        }
+        if let Some(keymap) = &self.keymap {
+            let index = (keycode - self.min_keycode) as usize * self.keysyms_per_keycode;
+            if index + col < keymap.len() {
+                return keymap[index + col];
             }
         }
-        (None, None)
+        0
+    }
+
+    fn modifier_for_keycode(&self, keycode: u8) -> Option<ModifiersState> {
+        let keysym = self.keysym_for_keycode(keycode, 0);
+        match keysym {
+            0xffe1 | 0xffe2 => Some(ModifiersState::SHIFT),
+            0xffe3 | 0xffe4 => Some(ModifiersState::CONTROL),
+            0xffe7 | 0xffe8 | 0xffe9 | 0xffea => Some(ModifiersState::ALT),
+            0xffeb | 0xffec | 0xffed | 0xffee => Some(ModifiersState::SUPER),
+            _ => None,
+        }
+    }
+
+    fn lookup_key(
+        &self,
+        keycode: u8,
+        state: xproto::KeyButMask,
+    ) -> (Option<super::event::Key>, Option<String>) {
+        if keycode < self.min_keycode || keycode > self.max_keycode {
+            return (None, None);
+        }
+        let val: u16 = state.into();
+        let is_shift = val & xproto::ModMask::SHIFT.bits() != 0;
+        let is_lock = val & xproto::ModMask::LOCK.bits() != 0;
+        let keysym_col0 = self.keysym_for_keycode(keycode, 0);
+        let is_letter = (b'a'..=b'z').contains(&(keysym_col0 as u8))
+            || (b'A'..=b'Z').contains(&(keysym_col0 as u8));
+        let col = if (if is_letter { is_shift ^ is_lock } else { is_shift })
+            && self.keysyms_per_keycode > 1
+        {
+            1
+        } else {
+            0
+        };
+        let mut keysym = self.keysym_for_keycode(keycode, col);
+        if keysym == 0 && col == 1 {
+            keysym = keysym_col0;
+        }
+        if keysym == 0 {
+            return (None, None);
+        }
+        keysym::keysym_to_key(keysym)
     }
 }
 
@@ -552,5 +665,78 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_x11_parse_modifiers() {
+        use x11rb::protocol::xproto::ModMask;
+
+        let empty = X11Window::parse_modifiers(0u16.into());
+        assert_eq!(empty, ModifiersState::empty());
+
+        let shift = X11Window::parse_modifiers(ModMask::SHIFT.bits().into());
+        assert_eq!(shift, ModifiersState::SHIFT);
+
+        let ctrl = X11Window::parse_modifiers(ModMask::CONTROL.bits().into());
+        assert_eq!(ctrl, ModifiersState::CONTROL);
+
+        let alt = X11Window::parse_modifiers(ModMask::M1.bits().into());
+        assert_eq!(alt, ModifiersState::ALT);
+
+        let super_mod = X11Window::parse_modifiers(ModMask::M4.bits().into());
+        assert_eq!(super_mod, ModifiersState::SUPER);
+
+        let combined = X11Window::parse_modifiers(
+            (ModMask::SHIFT.bits() | ModMask::CONTROL.bits() | ModMask::M1.bits()).into(),
+        );
+        assert!(combined.contains(ModifiersState::SHIFT));
+        assert!(combined.contains(ModifiersState::CONTROL));
+        assert!(combined.contains(ModifiersState::ALT));
+    }
+
+    #[test]
+    fn test_x11_lookup_key_shift_and_lock() {
+        use crate::window::Key;
+        use x11rb::protocol::xproto::ModMask;
+
+        if let Ok((_conn, _screen_num)) = RustConnection::connect(None) {
+            let win = X11Window::new("Lookup Key Test", 200, 200, None);
+            if let Ok(win) = win {
+                // Find keycode for 'a' (0x61)
+                if let Some(keymap) = &win.keymap {
+                    for keycode in win.min_keycode..=win.max_keycode {
+                        let idx = (keycode - win.min_keycode) as usize * win.keysyms_per_keycode;
+                        if idx < keymap.len() && keymap[idx] == 0x61 {
+                            // Test unshifted 'a'
+                            let (key, text) = win.lookup_key(keycode, 0u16.into());
+                            assert_eq!(key, Some(Key::Character("a".to_string())));
+                            assert_eq!(text, Some("a".to_string()));
+
+                            // Test shifted 'A'
+                            let (key_shift, text_shift) =
+                                win.lookup_key(keycode, ModMask::SHIFT.bits().into());
+                            assert_eq!(key_shift, Some(Key::Character("A".to_string())));
+                            assert_eq!(text_shift, Some("A".to_string()));
+
+                            // Test CapsLock 'A'
+                            let (key_lock, text_lock) =
+                                win.lookup_key(keycode, ModMask::LOCK.bits().into());
+                            assert_eq!(key_lock, Some(Key::Character("A".to_string())));
+                            assert_eq!(text_lock, Some("A".to_string()));
+
+                            // Test Shift + CapsLock (cancels out to lowercase 'a')
+                            let (key_both, text_both) = win.lookup_key(
+                                keycode,
+                                (ModMask::SHIFT.bits() | ModMask::LOCK.bits()).into(),
+                            );
+                            assert_eq!(key_both, Some(Key::Character("a".to_string())));
+                            assert_eq!(text_both, Some("a".to_string()));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
+
 

@@ -373,18 +373,11 @@ impl WindowState {
         }
     }
 
-    pub fn handle_mouse_wheel(&mut self, delta_y: f32, modifiers: ModifiersState) -> bool {
+    pub fn handle_mouse_wheel(&mut self, delta_y: f32, _modifiers: ModifiersState) -> bool {
         self.mark_interaction();
         let lines_f = delta_y as f64;
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
-            if modifiers.control_key() {
-                let current_size = self.active_pane().font_size;
-                let step = if lines > 0 { 1.0 } else { -1.0 };
-                let new_size = current_size + step;
-                self.set_font_size(new_size);
-                return false;
-            }
 
             let tab_bar_h = self.tab_bar_height() as f64;
 

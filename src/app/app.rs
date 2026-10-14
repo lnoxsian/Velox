@@ -85,13 +85,18 @@ fn spawn_pty_reader(
     pane_id: u64,
 ) {
     std::thread::spawn(move || {
-        let mut buf = crate::pty::acquire_pty_buffer();
+        let mut buf = vec![0u8; crate::pty::PTY_BUFFER_SIZE];
         loop {
             match pty_reader.read(&mut buf) {
                 Ok(n) if n > 0 => {
-                    let mut send_buf = crate::pty::acquire_pty_buffer();
-                    send_buf[..n].copy_from_slice(&buf[..n]);
-                    send_buf.truncate(n);
+                    let send_buf = if n <= 4096 {
+                        buf[..n].to_vec()
+                    } else {
+                        let mut pooled = crate::pty::acquire_pty_buffer();
+                        pooled[..n].copy_from_slice(&buf[..n]);
+                        pooled.truncate(n);
+                        pooled
+                    };
                     let _ = proxy.send(CustomEvent::PtyData {
                         window_id,
                         tab_id,
@@ -100,7 +105,6 @@ fn spawn_pty_reader(
                     });
                 }
                 _ => {
-                    crate::pty::recycle_pty_buffer(buf);
                     let _ = proxy.send(CustomEvent::PtyExit {
                         window_id,
                         tab_id,
@@ -123,6 +127,7 @@ pub struct WindowState {
     pub fps_limit: Option<u32>,
     pub last_frame_instant: std::time::Instant,
     pub last_input_instant: std::time::Instant,
+    pub last_key_instant: std::time::Instant,
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
@@ -1124,6 +1129,9 @@ impl App {
             last_input_instant: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or_else(std::time::Instant::now),
+            last_key_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now),
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
@@ -1304,7 +1312,7 @@ impl App {
 
         while !self.windows.is_empty() || self.daemon_mode {
             let mut closed_windows = Vec::new();
-            let mut had_input = false;
+            let mut had_keyboard_input = false;
 
             for (&window_id, ws) in &mut self.windows {
                 while let Some(event) = ws.window.poll_event() {
@@ -1347,8 +1355,9 @@ impl App {
                             modifiers,
                         } => {
                             self.modifiers = modifiers;
-                            ws.handle_keyboard_input(&key, text.as_deref(), modifiers);
-                            had_input = true;
+                            if ws.handle_keyboard_input(&key, text.as_deref(), modifiers) {
+                                had_keyboard_input = true;
+                            }
                         }
                         PlatformEvent::KeyReleased { modifiers, .. } => {
                             self.modifiers = modifiers;
@@ -1357,13 +1366,10 @@ impl App {
                             ws.handle_cursor_moved((x, y), self.modifiers);
                         }
                         PlatformEvent::MouseWheel { delta_y } => {
-                            if ws.handle_mouse_wheel(delta_y, self.modifiers) {
-                                had_input = true;
-                            }
+                            ws.handle_mouse_wheel(delta_y, self.modifiers);
                         }
                         PlatformEvent::MouseInput { state, button } => {
                             ws.handle_mouse_input(state, button, self.modifiers);
-                            had_input = true;
                         }
                         PlatformEvent::RedrawRequested => {
                             ws.renderer.damage.mark_all();
@@ -1386,10 +1392,11 @@ impl App {
                 self.handle_custom_event(event);
             }
 
-            if had_input {
-                // If keyboard or mouse input was just dispatched to PTY, give the shell up to 500µs to return its echo.
-                // This catches instant shell typing echoes in the exact same frame without sleeping in libc::poll.
-                if let Ok(event) = self.event_receiver.recv_timeout(std::time::Duration::from_micros(500)) {
+            if had_keyboard_input {
+                // If keyboard input was just dispatched to PTY, give the shell up to 1.5ms to return its echo.
+                // Typical shell latency is 100-300µs; as soon as the echo arrives, recv_timeout returns
+                // immediately and renders in the exact same frame with zero delay!
+                if let Ok(event) = self.event_receiver.recv_timeout(std::time::Duration::from_micros(1500)) {
                     self.handle_custom_event(event);
                     while let Ok(event) = self.event_receiver.try_recv() {
                         self.handle_custom_event(event);
@@ -1457,21 +1464,14 @@ impl App {
                         .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
                         .unwrap_or(std::time::Duration::from_millis(8));
 
-                    let is_interactive = now.duration_since(ws.last_input_instant)
-                        < std::time::Duration::from_millis(200);
+                    // Zero-latency rendering for keyboard typing: if the user typed recently
+                    // (within last 150ms), bypass frame-rate throttling and redraw immediately!
+                    let is_typing = now.duration_since(ws.last_key_instant)
+                        < std::time::Duration::from_millis(150);
 
-                    // During active user interaction (e.g. rapid mouse scrolling or burst input),
-                    // pace redraws to a snappy frame rate (up to 120 FPS / 8ms) to prevent event-loop
-                    // backlog and socket congestion, while still redrawing immediately on initial input.
-                    let effective_duration = if is_interactive {
-                        frame_duration.min(std::time::Duration::from_millis(8))
-                    } else {
-                        frame_duration
-                    };
+                    let next_frame = ws.last_frame_instant + frame_duration;
 
-                    let next_frame = ws.last_frame_instant + effective_duration;
-
-                    if now >= next_frame {
+                    if is_typing || now >= next_frame {
                         ws.draw();
                         ws.needs_redraw = false;
                         ws.last_frame_instant = now;
@@ -1514,6 +1514,18 @@ impl App {
             };
 
             if timeout_ms != 0 {
+                // Flush all window connections (X11 / Wayland) before polling so that no rendering
+                // commands or property updates remain in userspace client buffers.
+                for ws in self.windows.values() {
+                    ws.window.flush();
+                }
+
+                // Drain any pending wake_fd signal before sleeping to prevent immediate spurious wakeup
+                let mut wake_buf = [0u8; 8];
+                unsafe {
+                    libc::read(self.wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8);
+                }
+
                 let mut poll_fds: Vec<libc::pollfd> =
                     Vec::with_capacity(self.windows.len() + 1);
                 poll_fds.push(libc::pollfd {

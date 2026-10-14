@@ -8,7 +8,7 @@ impl WindowState {
         logical_key: &Key,
         text: Option<&str>,
         modifiers: ModifiersState,
-    ) {
+    ) -> bool {
         self.mark_interaction();
 
             // ── Split Pane Divider Resizing (Ctrl+Alt+Arrows) ────────────────
@@ -16,13 +16,13 @@ impl WindowState {
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
                         if self.adjust_active_split_ratio(-0.05) {
-                            return;
+                            return false;
                         }
                     }
                     Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown)
                         if self.adjust_active_split_ratio(0.05) =>
                     {
-                        return;
+                        return false;
                     }
                     _ => {}
                 }
@@ -33,23 +33,23 @@ impl WindowState {
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
                         if self.focus_direction(FocusDirection::Left) {
-                            return;
+                            return false;
                         }
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         if self.focus_direction(FocusDirection::Right) {
-                            return;
+                            return false;
                         }
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         if self.focus_direction(FocusDirection::Up) {
-                            return;
+                            return false;
                         }
                     }
                     Key::Named(NamedKey::ArrowDown)
                         if self.focus_direction(FocusDirection::Down) =>
                     {
-                        return;
+                        return false;
                     }
                     _ => {}
                 }
@@ -62,27 +62,27 @@ impl WindowState {
                     match ch.as_str() {
                         "t" => {
                             self.create_tab(None, None, None, None);
-                            return;
+                            return false;
                         }
                         "w" => {
                             self.close_pane();
-                            return;
+                            return false;
                         }
                         "o" | "h" => {
                             self.split_horizontal();
-                            return;
+                            return false;
                         }
                         "e" | "d" => {
                             self.split_vertical();
-                            return;
+                            return false;
                         }
                         "n" => {
                             self.focus_next_pane();
-                            return;
+                            return false;
                         }
                         "p" => {
                             self.focus_previous_pane();
-                            return;
+                            return false;
                         }
                         "c" => {
                             let active_pane = self.active_pane();
@@ -107,7 +107,7 @@ impl WindowState {
                             if !text.is_empty() {
                                 crate::clipboard::clipboard::copy(text);
                             }
-                            return;
+                            return false;
                         }
                         "v" => {
                             let text = crate::clipboard::clipboard::paste();
@@ -121,14 +121,17 @@ impl WindowState {
                                     self.needs_redraw = true;
                                 }
                                 let _ = self.active_pane().pty_master.write(formatted.as_bytes());
+                                self.last_key_instant = std::time::Instant::now();
+                                self.mark_interaction();
+                                return true;
                             }
-                            return;
+                            return false;
                         }
                         "+" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size + 1.0;
                             self.set_font_size(new_size);
-                            return;
+                            return false;
                         }
                         _ => {}
                     }
@@ -137,14 +140,14 @@ impl WindowState {
                 match logical_key {
                     Key::Named(NamedKey::Tab) => {
                         self.prev_tab();
-                        return;
+                        return false;
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
                         if !self.focus_direction(FocusDirection::Left) && self.active_tab_index > 0
                         {
                             self.move_tab(self.active_tab_index, self.active_tab_index - 1);
                         }
-                        return;
+                        return false;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         if !self.focus_direction(FocusDirection::Right)
@@ -152,17 +155,17 @@ impl WindowState {
                         {
                             self.move_tab(self.active_tab_index, self.active_tab_index + 1);
                         }
-                        return;
+                        return false;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         if self.focus_direction(FocusDirection::Up) {
-                            return;
+                            return false;
                         }
                     }
                     Key::Named(NamedKey::ArrowDown)
                         if self.focus_direction(FocusDirection::Down) =>
                     {
-                        return;
+                        return false;
                     }
                     _ => {}
                 }
@@ -171,71 +174,71 @@ impl WindowState {
             if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
                 if let Key::Named(NamedKey::Tab) = logical_key {
                     self.next_tab();
-                    return;
+                    return false;
                 } else if let Key::Named(NamedKey::PageDown) = logical_key {
                     self.next_tab();
-                    return;
+                    return false;
                 } else if let Key::Named(NamedKey::PageUp) = logical_key {
                     self.prev_tab();
-                    return;
+                    return false;
                 }
 
                 if let Key::Character(s) = logical_key {
                     match s.as_str() {
                         "1" => {
                             self.switch_tab(0);
-                            return;
+                            return false;
                         }
                         "2" => {
                             self.switch_tab(1);
-                            return;
+                            return false;
                         }
                         "3" => {
                             self.switch_tab(2);
-                            return;
+                            return false;
                         }
                         "4" => {
                             self.switch_tab(3);
-                            return;
+                            return false;
                         }
                         "5" => {
                             self.switch_tab(4);
-                            return;
+                            return false;
                         }
                         "6" => {
                             self.switch_tab(5);
-                            return;
+                            return false;
                         }
                         "7" => {
                             self.switch_tab(6);
-                            return;
+                            return false;
                         }
                         "8" => {
                             self.switch_tab(7);
-                            return;
+                            return false;
                         }
                         "9" => {
                             if !self.tabs.is_empty() {
                                 self.switch_tab(self.tabs.len() - 1);
                             }
-                            return;
+                            return false;
                         }
-                        "+" => {
+                        "+" | "=" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size + 1.0;
                             self.set_font_size(new_size);
-                            return;
+                            return false;
                         }
                         "-" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size - 1.0;
                             self.set_font_size(new_size);
-                            return;
+                            return false;
                         }
                         "0" => {
                             let new_size = self.default_font_size;
                             self.set_font_size(new_size);
-                            return;
+                            return false;
                         }
                         _ => {}
                     }
@@ -255,7 +258,7 @@ impl WindowState {
                         (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
                     active_grid.damage.mark_all();
                     self.needs_redraw = true;
-                    return;
+                    return false;
                 } else if let Key::Named(NamedKey::PageDown) = logical_key {
                     let active_pane = self.active_pane_mut();
                     let active_grid = if active_pane.terminal.is_alt_screen {
@@ -268,7 +271,7 @@ impl WindowState {
                         .saturating_sub(active_grid.height / 2);
                     active_grid.damage.mark_all();
                     self.needs_redraw = true;
-                    return;
+                    return false;
                 }
             }
 
@@ -296,11 +299,14 @@ impl WindowState {
                     redraw = true;
                 }
                 let _ = active_pane.pty_master.write(&bytes);
+                self.last_key_instant = std::time::Instant::now();
                 self.mark_interaction();
                 if redraw {
                     self.needs_redraw = true;
                 }
+                return true;
             }
+            false
     }
 }
 

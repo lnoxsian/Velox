@@ -203,6 +203,16 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn flush(&self) {
+        match self {
+            Self::X11(w) => w.flush(),
+            Self::Wayland(w) => {
+                let _ = w.conn.flush();
+            }
+        }
+    }
+
+    #[inline]
     pub fn request_redraw(&self) {}
 }
 

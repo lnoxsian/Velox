@@ -490,6 +490,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
             }
             wl_keyboard::Event::Leave { .. } => {
                 state.active_repeat = None;
+                let prev_mods = state.modifiers;
+                state.modifiers = ModifiersState::empty();
+                if state.modifiers != prev_mods {
+                    state.events.push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                }
                 state.events.push_back(PlatformEvent::Focused(false));
             }
             wl_keyboard::Event::Key {
@@ -549,6 +554,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                 group,
                 ..
             } => {
+                let prev_mods = state.modifiers;
                 state.modifiers = state.xkb_handler.update_modifiers(
                     mods_depressed,
                     mods_latched,
@@ -557,6 +563,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                 );
                 if let Some(repeat) = &mut state.active_repeat {
                     repeat.modifiers = state.modifiers;
+                }
+                if state.modifiers != prev_mods {
+                    state.events.push_back(PlatformEvent::ModifiersChanged(state.modifiers));
                 }
             }
             wl_keyboard::Event::RepeatInfo { rate, delay } => {
