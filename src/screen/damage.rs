@@ -36,6 +36,16 @@ impl DamageTracker {
         self.full_redraw = false;
         self.dirty_rows.fill(false);
     }
+
+    #[inline(always)]
+    pub fn has_damage(&self) -> bool {
+        if self.full_redraw {
+            return true;
+        }
+        let slice = self.dirty_rows.as_slice();
+        let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
+        prefix.iter().any(|&d| d) || words.iter().any(|&w| w != 0) || suffix.iter().any(|&d| d)
+    }
 }
 
 impl Default for DamageTracker {

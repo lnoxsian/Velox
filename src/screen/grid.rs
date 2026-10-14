@@ -3,7 +3,7 @@ use crate::screen::cursor::Cursor;
 use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
 use crate::screen::selection::Selection;
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::{Mutex, OnceLock};
 use unicode_width::UnicodeWidthChar;
 
@@ -11,14 +11,14 @@ pub const MAX_COMBINING_SEQUENCES: usize = 4096;
 
 pub struct CombiningRegistry {
     list: Vec<String>,
-    map: HashMap<String, u32>,
+    map: AHashMap<String, u32>,
 }
 
 impl CombiningRegistry {
     pub fn new() -> Self {
         Self {
             list: Vec::with_capacity(64),
-            map: HashMap::with_capacity(64),
+            map: AHashMap::with_capacity(64),
         }
     }
 
@@ -29,8 +29,8 @@ impl CombiningRegistry {
         } else if self.list.len() < MAX_COMBINING_SEQUENCES {
             let id = self.list.len() as u32;
             let s = seq.to_string();
-            self.list.push(s.clone());
-            self.map.insert(s, id);
+            self.map.insert(s.clone(), id);
+            self.list.push(s);
             Some(id)
         } else {
             None
@@ -40,8 +40,8 @@ impl CombiningRegistry {
     #[inline]
     pub fn append_to_entry(&mut self, reg_idx: usize, c: char) {
         if reg_idx < self.list.len() {
-            let old_str = self.list[reg_idx].clone();
-            self.map.remove(&old_str);
+            let old_str = &self.list[reg_idx];
+            self.map.remove(old_str.as_str());
             self.list[reg_idx].push(c);
             self.map.insert(self.list[reg_idx].clone(), reg_idx as u32);
         }
@@ -731,7 +731,8 @@ impl Grid {
                     }
                 }
             }
-            lines.push(line.trim_end().to_string());
+            line.truncate(line.trim_end().len());
+            lines.push(line);
         }
 
         lines.join("\n")
@@ -748,55 +749,53 @@ impl Grid {
             c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/' || c == '~'
         };
 
-        let mut row_cells = Vec::new();
-        if abs_y < history_len {
-            self.scrollback.with_row_slice(abs_y, |cells, _| {
-                row_cells = cells.to_vec();
-            });
+        let find_bounds = |row_slice: &[Cell]| -> Option<(usize, usize)> {
+            if col >= row_slice.len() {
+                return None;
+            }
+            let target_c = row_slice[col].character;
+            if !is_word_char(target_c) {
+                return None;
+            }
+            let mut start_col = col;
+            while start_col > 0 && is_word_char(row_slice[start_col - 1].character) {
+                start_col -= 1;
+            }
+            let mut end_col = col;
+            while end_col + 1 < row_slice.len()
+                && end_col + 1 < self.width
+                && is_word_char(row_slice[end_col + 1].character)
+            {
+                end_col += 1;
+            }
+            Some((start_col, end_col))
+        };
+
+        let bounds = if abs_y < history_len {
+            self.scrollback
+                .with_row_slice(abs_y, |cells, _| find_bounds(cells))
+                .flatten()
         } else {
             let grid_y = abs_y - history_len;
             if grid_y < self.height {
                 let physical_y = self.physical_row(grid_y);
                 let row_start = physical_y * self.width;
                 let row_end = (row_start + self.width).min(self.cells.len());
-                row_cells = self.cells[row_start..row_end].to_vec();
-            }
-        }
-
-        if col >= row_cells.len() {
-            self.selection.start_selection(col, abs_y);
-            return;
-        }
-
-        let target_c = row_cells[col].character;
-        if !is_word_char(target_c) {
-            self.selection.start_selection(col, abs_y);
-            return;
-        }
-
-        let mut start_col = col;
-        while start_col > 0 {
-            if is_word_char(row_cells[start_col - 1].character) {
-                start_col -= 1;
+                find_bounds(&self.cells[row_start..row_end])
             } else {
-                break;
+                None
             }
-        }
+        };
 
-        let mut end_col = col;
-        while end_col + 1 < row_cells.len() && end_col + 1 < self.width {
-            if is_word_char(row_cells[end_col + 1].character) {
-                end_col += 1;
-            } else {
-                break;
-            }
+        if let Some((start_col, end_col)) = bounds {
+            self.selection.start_x = start_col;
+            self.selection.start_y = abs_y;
+            self.selection.end_x = end_col;
+            self.selection.end_y = abs_y;
+            self.selection.active = true;
+        } else {
+            self.selection.start_selection(col, abs_y);
         }
-
-        self.selection.start_x = start_col;
-        self.selection.start_y = abs_y;
-        self.selection.end_x = end_col;
-        self.selection.end_y = abs_y;
-        self.selection.active = true;
     }
 
     pub fn select_line_at(&mut self, abs_y: usize) {

@@ -111,15 +111,16 @@ impl PrecomputedPalette {
         }
     }
 
-    /// Resolve the effective foreground and background `u32` pixel colors for a cell using the pane's theme and default background.
+    /// Internal implementation of cell color resolution.
     #[inline(always)]
-    pub fn resolve_cell_colors_pane(
-        &self,
+    fn resolve_cell_colors_internal(
         cell: &Cell,
         is_inverted: bool,
         bold_is_bright: bool,
         dim: f32,
-        pane_theme: &Theme,
+        ansi_colors: &[Color; 16],
+        theme_default_fg: Color,
+        theme_default_bg: Color,
         default_pane_bg: u32,
     ) -> (u32, u32) {
         let cell_fg_color = cell.foreground;
@@ -128,8 +129,8 @@ impl PrecomputedPalette {
         // Bold-bright: remap base 8 ANSI colors to bright variants (8..15)
         if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
             for i in 0..8 {
-                if cell_fg_color == pane_theme.ansi_colors[i] {
-                    cell_fg_raw = pane_theme.ansi_colors[i + 8];
+                if cell_fg_color == ansi_colors[i] {
+                    cell_fg_raw = ansi_colors[i + 8];
                     break;
                 }
             }
@@ -148,9 +149,9 @@ impl PrecomputedPalette {
                 + 0.587 * inv_bg_raw.g as f32
                 + 0.114 * inv_bg_raw.b as f32;
 
-            let lum_theme_bg = 0.299 * pane_theme.default_bg.r as f32
-                + 0.587 * pane_theme.default_bg.g as f32
-                + 0.114 * pane_theme.default_bg.b as f32;
+            let lum_theme_bg = 0.299 * theme_default_bg.r as f32
+                + 0.587 * theme_default_bg.g as f32
+                + 0.114 * theme_default_bg.b as f32;
 
             // When both colors are dark, both are light, or contrast is too low
             if (lum_fg < 128.0 && lum_bg < 128.0)
@@ -159,25 +160,25 @@ impl PrecomputedPalette {
             {
                 if lum_theme_bg < 128.0 {
                     // Dark theme: invert to light background
-                    inv_bg_raw = pane_theme.default_fg;
+                    inv_bg_raw = theme_default_fg;
                     let lum_orig_fg = 0.299 * cell_fg_raw.r as f32
                         + 0.587 * cell_fg_raw.g as f32
                         + 0.114 * cell_fg_raw.b as f32;
                     inv_fg_raw = if lum_orig_fg < 120.0 {
                         cell_fg_raw
                     } else {
-                        pane_theme.default_bg
+                        theme_default_bg
                     };
                 } else {
                     // Light theme: invert to dark background
-                    inv_bg_raw = pane_theme.default_fg;
+                    inv_bg_raw = theme_default_fg;
                     let lum_orig_fg = 0.299 * cell_fg_raw.r as f32
                         + 0.587 * cell_fg_raw.g as f32
                         + 0.114 * cell_fg_raw.b as f32;
                     inv_fg_raw = if lum_orig_fg >= 135.0 {
                         cell_fg_raw
                     } else {
-                        pane_theme.default_bg
+                        theme_default_bg
                     };
                 }
             }
@@ -188,7 +189,7 @@ impl PrecomputedPalette {
             (fg_packed, bg_packed)
         } else {
             let fg_packed = PackedColor::from_color(cell_fg_raw.dim(dim)).to_u32();
-            let bg_packed = if cell_bg_raw == pane_theme.default_bg {
+            let bg_packed = if cell_bg_raw == theme_default_bg {
                 default_pane_bg
             } else {
                 PackedColor::from_color(cell_bg_raw).to_u32()
@@ -203,6 +204,29 @@ impl PrecomputedPalette {
         (fg, bg)
     }
 
+    /// Resolve the effective foreground and background `u32` pixel colors for a cell using the pane's theme and default background.
+    #[inline(always)]
+    pub fn resolve_cell_colors_pane(
+        &self,
+        cell: &Cell,
+        is_inverted: bool,
+        bold_is_bright: bool,
+        dim: f32,
+        pane_theme: &Theme,
+        default_pane_bg: u32,
+    ) -> (u32, u32) {
+        Self::resolve_cell_colors_internal(
+            cell,
+            is_inverted,
+            bold_is_bright,
+            dim,
+            &pane_theme.ansi_colors,
+            pane_theme.default_fg,
+            pane_theme.default_bg,
+            default_pane_bg,
+        )
+    }
+
     /// Resolve the effective foreground and background `u32` pixel colors for a cell.
     #[inline(always)]
     pub fn resolve_cell_colors(
@@ -212,18 +236,14 @@ impl PrecomputedPalette {
         bold_is_bright: bool,
         dim: f32,
     ) -> (u32, u32) {
-        let theme = Theme {
-            default_fg: self.raw_default_fg,
-            default_bg: self.raw_default_bg,
-            ansi_colors: self.ansi_colors_raw,
-            ..Theme::new()
-        };
-        self.resolve_cell_colors_pane(
+        Self::resolve_cell_colors_internal(
             cell,
             is_inverted,
             bold_is_bright,
             dim,
-            &theme,
+            &self.ansi_colors_raw,
+            self.raw_default_fg,
+            self.raw_default_bg,
             self.default_bg,
         )
     }

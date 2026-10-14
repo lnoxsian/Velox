@@ -164,7 +164,7 @@ impl GlobalScrollbackCache {
                 .enumerate()
                 .min_by_key(|(_, c)| c.access_tick)
         {
-            self.chunks.remove(oldest_idx);
+            self.chunks.swap_remove(oldest_idx);
         }
         self.chunks.push(GlobalCachedChunk {
             storage_id,
@@ -324,7 +324,7 @@ impl ScrollbackStorage {
                 && let Some((oldest_idx, _)) =
                     cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
             {
-                cache.remove(oldest_idx);
+                cache.swap_remove(oldest_idx);
             }
             cache.push(CachedChunk {
                 chunk_id: chunk_idx,
@@ -361,7 +361,7 @@ impl ScrollbackStorage {
             && let Some((oldest_idx, _)) =
                 cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
         {
-            cache.remove(oldest_idx);
+            cache.swap_remove(oldest_idx);
         }
         cache.push(CachedChunk {
             chunk_id: chunk_idx,

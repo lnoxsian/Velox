@@ -355,6 +355,7 @@ impl AnsiParser {
         }
     }
 
+    #[inline(always)]
     fn parse_params(&mut self) {
         self.params.clear();
         if self.param_buf.is_empty() {
@@ -414,8 +415,10 @@ impl AnsiParser {
         if self.osc_buf.is_empty() {
             return;
         }
-        let params: Vec<&[u8]> = self.osc_buf.split(|&b| b == b';').collect();
-        crate::ansi::osc::handle_osc(&params, terminal);
+        {
+            let params: SmallVec<[&[u8]; 8]> = self.osc_buf.split(|&b| b == b';').collect();
+            crate::ansi::osc::handle_osc(&params, terminal);
+        }
         self.osc_buf.clear();
         if self.osc_buf.capacity() > 1024 {
             self.osc_buf.shrink_to_fit();
@@ -540,67 +543,58 @@ impl AnsiParser {
             // XTGETTCAP - Terminfo Capabilities Query: DCS + q <hex1> [; <hex2>...] ST
             let req = &self.dcs_buf[2..];
             let mut matched = false;
-            let mut resp_buf = Vec::with_capacity(128);
+            let mut resp_buf = SmallVec::<[u8; 256]>::new();
             resp_buf.extend_from_slice(b"\x1bP1+q");
 
             for cap_hex in req.split(|&b| b == b';') {
-                let cap_str = std::str::from_utf8(cap_hex).unwrap_or("").to_lowercase();
-                match cap_str.as_str() {
-                    "524742" | "5463" => {
-                        // RGB / Tc: 24-bit TrueColor support
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=31"); // hex for "1"
-                        matched = true;
+                if cap_hex.eq_ignore_ascii_case(b"524742") || cap_hex.eq_ignore_ascii_case(b"5463") {
+                    // RGB / Tc: 24-bit TrueColor support
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "536d756c78" => {
-                        // Smulx: styled underlines (\E[4:%p1%dm)
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5b343a25703125646d");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=31"); // hex for "1"
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"536d756c78") {
+                    // Smulx: styled underlines (\E[4:%p1%dm)
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "536574756c63" => {
-                        // Setulc: colored underline
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5b35383a323a3a257031257b36353533367d252f25643a257031257b3235367d252f257b3235357d252625643a257031257b3235357d25262564253b6d");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5b343a25703125646d");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"536574756c63") {
+                    // Setulc: colored underline
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "4d73" => {
-                        // Ms: OSC 52 clipboard
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5d35323b25703125733b257032257307");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5b35383a323a3a257031257b36353533367d252f25643a257031257b3235367d252f257b3235357d252625643a257031257b3235357d25262564253b6d");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"4d73") {
+                    // Ms: OSC 52 clipboard
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "53796e63" => {
-                        // Sync: Synchronized updates mode 2026
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5b3f3230323668");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5d35323b25703125733b257032257307");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"53796e63") {
+                    // Sync: Synchronized updates mode 2026
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "544e" => {
-                        // TN: "xterm-256color"
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=787465726d2d323536636f6c6f72");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5b3f3230323668");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"544e") {
+                    // TN: "xterm-256color"
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    _ => {}
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=787465726d2d323536636f6c6f72");
+                    matched = true;
                 }
             }
 

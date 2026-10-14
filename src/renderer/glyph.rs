@@ -389,13 +389,15 @@ impl GlyphCache {
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx] = Some(g_ref);
         } else {
-            if self.unicode_table.len() >= self.max_unicode_entries || self.atlas.is_full() {
+            if self.atlas.is_full() {
                 self.unicode_table.clear();
                 self.atlas.clear();
                 self.ascii_table = [None; 512];
                 self.preload_common_glyphs();
                 // Re-rasterize the requested key if it was flushed
                 return self.get_or_rasterize(key);
+            } else if self.unicode_table.len() >= self.max_unicode_entries {
+                self.unicode_table.clear();
             }
             self.unicode_table.insert(key, g_ref);
         }
@@ -588,28 +590,80 @@ impl GlyphCache {
         let x_offset = (tw as i32 - new_w as i32) / 2;
         let y_offset = (th as i32 - new_h as i32) / 2;
 
-        let rgba = &self.scratch.png_buf;
-        for dy in 0..th {
+        let inv_scale = 1.0 / scale;
+        let mut x_map = [0u32; 128];
+        let mut y_map = [0u32; 128];
+        let use_heap = tw > 128 || th > 128;
+        let heap_x_map: Vec<u32>;
+        let heap_y_map: Vec<u32>;
+
+        let (x_lut, y_lut): (&[u32], &[u32]) = if !use_heap {
             for dx in 0..tw {
                 let rx = dx as i32 - x_offset;
+                x_map[dx as usize] = if rx >= 0 && rx < new_w as i32 {
+                    ((rx as f32 * inv_scale) as u32).min(w - 1)
+                } else {
+                    u32::MAX
+                };
+            }
+            for dy in 0..th {
                 let ry = dy as i32 - y_offset;
-                if rx >= 0 && rx < new_w as i32 && ry >= 0 && ry < new_h as i32 {
-                    let sx = ((rx as f32 / scale).floor() as u32).min(w - 1);
-                    let sy = ((ry as f32 / scale).floor() as u32).min(h - 1);
+                y_map[dy as usize] = if ry >= 0 && ry < new_h as i32 {
+                    ((ry as f32 * inv_scale) as u32).min(h - 1)
+                } else {
+                    u32::MAX
+                };
+            }
+            (&x_map[..tw as usize], &y_map[..th as usize])
+        } else {
+            heap_x_map = (0..tw)
+                .map(|dx| {
+                    let rx = dx as i32 - x_offset;
+                    if rx >= 0 && rx < new_w as i32 {
+                        ((rx as f32 * inv_scale) as u32).min(w - 1)
+                    } else {
+                        u32::MAX
+                    }
+                })
+                .collect();
+            heap_y_map = (0..th)
+                .map(|dy| {
+                    let ry = dy as i32 - y_offset;
+                    if ry >= 0 && ry < new_h as i32 {
+                        ((ry as f32 * inv_scale) as u32).min(h - 1)
+                    } else {
+                        u32::MAX
+                    }
+                })
+                .collect();
+            (&heap_x_map[..], &heap_y_map[..])
+        };
 
-                    let src_idx = (sy * w + sx) as usize * 4;
-                    let dst_idx = (dy * tw + dx) as usize;
+        let rgba = &self.scratch.png_buf;
+        for dy in 0..th {
+            let sy = y_lut[dy as usize];
+            if sy == u32::MAX {
+                continue;
+            }
+            let sy_w = sy * w;
+            let dst_row = (dy * tw) as usize;
+            for dx in 0..tw {
+                let sx = x_lut[dx as usize];
+                if sx == u32::MAX {
+                    continue;
+                }
+                let src_idx = (sy_w + sx) as usize * 4;
+                let dst_idx = dst_row + dx as usize;
 
-                    if src_idx + 3 < rgba.len() {
-                        let r = rgba[src_idx] as u32;
-                        let g = rgba[src_idx + 1] as u32;
-                        let b = rgba[src_idx + 2] as u32;
-                        let a = rgba[src_idx + 3] as u32;
+                if src_idx + 3 < rgba.len() {
+                    let r = rgba[src_idx] as u32;
+                    let g = rgba[src_idx + 1] as u32;
+                    let b = rgba[src_idx + 2] as u32;
+                    let a = rgba[src_idx + 3] as u32;
 
-                        if a > 0 {
-                            self.scratch.color_pixels[dst_idx] =
-                                (a << 24) | (r << 16) | (g << 8) | b;
-                        }
+                    if a > 0 {
+                        self.scratch.color_pixels[dst_idx] =
+                            (a << 24) | (r << 16) | (g << 8) | b;
                     }
                 }
             }
@@ -647,9 +701,10 @@ impl GlyphCache {
 
                 if px >= 0 && px < tw && py >= 0 && py < cell_h {
                     let idx = py as usize * target_width as usize + px as usize;
-                    let old_alpha = alpha_slice[idx] as f32 / 255.0;
-                    let new_alpha = old_alpha.max(alpha);
-                    alpha_slice[idx] = (new_alpha * 255.0) as u8;
+                    let a_u8 = (alpha * 255.0).round() as u8;
+                    if a_u8 > alpha_slice[idx] {
+                        alpha_slice[idx] = a_u8;
+                    }
                 }
             });
         }

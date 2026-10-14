@@ -40,7 +40,7 @@ use primitives::try_render_primitive;
 use raster::{blit_alpha_glyph, blit_alpha_glyph_clipped, blit_color_glyph_clipped};
 use std::time::Instant;
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 pub struct CpuPaneRenderData<'a> {
     pub pane_id: PaneId,
@@ -78,8 +78,8 @@ pub struct CpuRenderer {
     pub framebuffer: Framebuffer,
     pub glyph_cache: GlyphCache,
     pub tab_glyph_cache: GlyphCache,
-    pub pane_glyph_caches: HashMap<u32, GlyphCache>,
-    pub pane_states: HashMap<PaneId, CpuPaneState>,
+    pub pane_glyph_caches: AHashMap<u32, GlyphCache>,
+    pub pane_states: AHashMap<PaneId, CpuPaneState>,
     pub damage: DamageMap,
     pub palette: PrecomputedPalette,
     pub viewport_width: u32,
@@ -177,8 +177,8 @@ impl CpuRenderer {
             framebuffer,
             glyph_cache,
             tab_glyph_cache,
-            pane_glyph_caches: HashMap::new(),
-            pane_states: HashMap::new(),
+            pane_glyph_caches: AHashMap::new(),
+            pane_states: AHashMap::new(),
             damage: DamageMap::new(rows),
             palette,
             viewport_width: width,
@@ -515,10 +515,7 @@ impl CpuRenderer {
                 || (state.last_dim - pane_effective_dim).abs() > 0.001
                 || (state.last_font_size - clamped_font_size).abs() > 0.01;
 
-            if pane_layout_changed
-                || grid.damage.full_redraw
-                || grid.damage.dirty_rows.iter().any(|&d| d)
-            {
+            if pane_layout_changed || grid.damage.has_damage() {
                 return true;
             }
 
@@ -851,6 +848,12 @@ impl CpuRenderer {
         let px_offset = (pane.rect.x + pane.rect.padding_x).round() as u32;
         let py_offset = (pane.rect.y + pane.rect.padding_y).round() as u32;
 
+        let mut heap_row_fg: Vec<u32> = if grid_w > 512 {
+            vec![0u32; grid_w]
+        } else {
+            Vec::new()
+        };
+
         for y in 0..grid_h {
             let row_info = Self::get_row_cursor_and_selection(
                 pane,
@@ -903,12 +906,10 @@ impl CpuRenderer {
             };
 
             let mut stack_row_fg = [0u32; 512];
-            let mut heap_row_fg: Vec<u32>;
             let row_fg: &mut [u32] = if grid_w <= 512 {
                 &mut stack_row_fg[..grid_w]
             } else {
-                heap_row_fg = vec![0u32; grid_w];
-                &mut heap_row_fg[..]
+                &mut heap_row_fg[..grid_w]
             };
 
             grid.with_display_row_slice(y, |row_cells| {

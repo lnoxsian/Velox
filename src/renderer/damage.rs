@@ -49,10 +49,16 @@ impl DamageMap {
 
     #[inline(always)]
     pub fn has_damage(&self) -> bool {
-        self.full_redraw || self.dirty_rows.iter().any(|&d| d)
+        if self.full_redraw {
+            return true;
+        }
+        let slice = self.dirty_rows.as_slice();
+        let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
+        prefix.iter().any(|&d| d) || words.iter().any(|&w| w != 0) || suffix.iter().any(|&d| d)
     }
 
     /// Ingest damage flags from the active terminal grid.
+    #[inline(always)]
     pub fn sync_from_grid(&mut self, grid_dirty: &[bool], grid_full_redraw: bool) {
         if grid_full_redraw {
             self.full_redraw = true;

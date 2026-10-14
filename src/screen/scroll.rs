@@ -14,6 +14,7 @@ impl Grid {
         }
     }
 
+    #[inline(always)]
     pub fn scroll_or_move_up(&mut self, bg: Color) {
         self.clamp_cursor();
         let top = self.scroll_region_top.min(self.height.saturating_sub(1));
@@ -28,6 +29,7 @@ impl Grid {
         }
     }
 
+    #[inline]
     pub fn scroll(&mut self, delta: i32, bg: Color) {
         if delta <= 0 {
             return;
