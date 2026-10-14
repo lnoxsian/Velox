@@ -1,0 +1,66 @@
+# Maintainer: lnoxsian <https://github.com/lnoxsian/Velox>
+pkgname=velox
+pkgver=0.2.4
+pkgrel=1
+pkgdesc="Fast, modern, lightweight terminal emulator for Linux"
+arch=('x86_64' 'aarch64')
+url="https://github.com/lnoxsian/Velox"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo' 'rust' 'python')
+optdepends=(
+    'fontconfig: system font discovery'
+    'hicolor-icon-theme: proper desktop icon integration'
+)
+provides=('velox')
+conflicts=('velox-git' 'velox-bin')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/lnoxsian/Velox/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir"
+    if [ ! -f "Cargo.toml" ] && [ -d "Velox-$pkgver" ]; then
+        cd "Velox-$pkgver"
+    fi
+    cargo build --profile optimized-release --locked
+}
+
+check() {
+    cd "$srcdir"
+    if [ ! -f "Cargo.toml" ] && [ -d "Velox-$pkgver" ]; then
+        cd "Velox-$pkgver"
+    fi
+    cargo test --release --locked
+}
+
+package() {
+    cd "$srcdir"
+    if [ ! -f "Cargo.toml" ] && [ -d "Velox-$pkgver" ]; then
+        cd "Velox-$pkgver"
+    fi
+
+    # Install binary
+    install -Dm755 "target/optimized-release/velox" "$pkgdir/usr/bin/velox"
+
+    # Install desktop entry
+    install -Dm644 "assets/io.github.lnoxsian.Velox.desktop" "$pkgdir/usr/share/applications/io.github.lnoxsian.Velox.desktop"
+
+    # Install hicolor icons
+    local _sizes=("16x16" "32x32" "48x48" "64x64" "128x128" "256x256" "512x512" "1024x1024")
+    for _size in "${_sizes[@]}"; do
+        if [ -f "assets/generated_icons/icon_${_size}.png" ]; then
+            install -Dm644 "assets/generated_icons/icon_${_size}.png" \
+                "$pkgdir/usr/share/icons/hicolor/${_size}/apps/io.github.lnoxsian.Velox.png"
+        fi
+    done
+
+    # Scalable vector icon
+    if [ -f "assets/icons/velox_terminal_icon_final.svg" ]; then
+        install -Dm644 "assets/icons/velox_terminal_icon_final.svg" \
+            "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.lnoxsian.Velox.svg"
+    fi
+
+    # Install license and documentation
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
