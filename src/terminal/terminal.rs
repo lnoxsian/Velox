@@ -471,8 +471,29 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, cols: u32, rows: u32) {
+        let history_len = self.grid.scrollback.len();
+        let old_cursor_y = self.grid.cursor.y;
+        let mut old_start_r = history_len + old_cursor_y;
+        while old_start_r > history_len && self.grid.is_row_wrapped(old_start_r - 1) {
+            old_start_r -= 1;
+        }
+        let pre_v_offset = (history_len + old_cursor_y).saturating_sub(old_start_r);
+
         self.grid.resize(cols, rows);
         self.alt_grid.resize(cols, rows);
+
+        let new_history_len = self.grid.scrollback.len();
+        let new_cursor_y = self.grid.cursor.y;
+        let mut new_start_r = new_history_len + new_cursor_y;
+        while new_start_r > new_history_len && self.grid.is_row_wrapped(new_start_r - 1) {
+            new_start_r -= 1;
+        }
+        let prompt_start_y = new_start_r.saturating_sub(new_history_len);
+        let expected_cursor_y = prompt_start_y + pre_v_offset;
+        if new_cursor_y > expected_cursor_y && expected_cursor_y < self.grid.height {
+            self.grid.cursor.y = expected_cursor_y;
+            self.grid.cursor.x = self.grid.cursor.x.min(cols.saturating_sub(1) as usize);
+        }
     }
 }
 

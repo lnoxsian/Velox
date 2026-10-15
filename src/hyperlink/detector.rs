@@ -1,6 +1,6 @@
 /// Opens a URL using the system's default handler (xdg-open on Linux).
 pub fn open(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(test)))]
     {
         let formatted_url = if url.starts_with("www.") {
             format!("https://{}", url)
@@ -16,7 +16,7 @@ pub fn open(url: &str) -> std::io::Result<()> {
             let _ = child.wait();
         });
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(not(target_os = "linux"), test))]
     {
         let _ = url;
     }

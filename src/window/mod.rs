@@ -214,6 +214,30 @@ impl PlatformWindow {
 
     #[inline]
     pub fn request_redraw(&self) {}
+
+    #[inline]
+    pub fn uses_csd(&self) -> bool {
+        match self {
+            Self::X11(_) => false,
+            Self::Wayland(w) => w.uses_csd(),
+        }
+    }
+
+    #[inline]
+    pub fn csd_title_bar_height(&self) -> u32 {
+        match self {
+            Self::X11(_) => 0,
+            Self::Wayland(w) => w.csd_title_bar_height(),
+        }
+    }
+
+    #[inline]
+    pub fn start_interactive_move(&self) {
+        match self {
+            Self::X11(_) => {}
+            Self::Wayland(w) => w.start_interactive_move(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

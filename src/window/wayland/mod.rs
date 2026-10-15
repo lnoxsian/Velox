@@ -45,6 +45,8 @@ pub struct WaylandState {
     pub xdg_toplevel: Option<xdg_toplevel::XdgToplevel>,
     pub decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
     pub toplevel_decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+    pub use_csd: bool,
+    pub pointer_serial: u32,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub xkb_handler: XkbHandler,
@@ -60,6 +62,8 @@ pub struct WaylandState {
     pub mouse_y: f64,
 }
 
+pub const CSD_TITLE_BAR_HEIGHT: u32 = 32;
+
 impl WaylandState {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -73,6 +77,8 @@ impl WaylandState {
             xdg_toplevel: None,
             decoration_manager: None,
             toplevel_decoration: None,
+            use_csd: true,
+            pointer_serial: 0,
             pointer: None,
             keyboard: None,
             xkb_handler: XkbHandler::new(),
@@ -128,6 +134,11 @@ impl WaylandWindow {
             let decoration = dec_mgr.get_toplevel_decoration(&toplevel, &qh, ());
             decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
             state.toplevel_decoration = Some(decoration);
+            // Default to CSD until compositor confirms Mode::ServerSide in configure event
+            state.use_csd = true;
+        } else {
+            // Compositor lacks zxdg_decoration_manager_v1 (e.g. GNOME, Cinnamon) -> must use CSD
+            state.use_csd = true;
         }
 
         surface.commit();
@@ -183,6 +194,27 @@ impl WaylandWindow {
 
     #[inline]
     pub fn set_visible(&mut self, _visible: bool) {}
+
+    #[inline]
+    pub fn uses_csd(&self) -> bool {
+        self.state.use_csd
+    }
+
+    #[inline]
+    pub fn csd_title_bar_height(&self) -> u32 {
+        if self.state.use_csd {
+            CSD_TITLE_BAR_HEIGHT
+        } else {
+            0
+        }
+    }
+
+    pub fn start_interactive_move(&self) {
+        if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
+            toplevel._move(seat, self.state.pointer_serial);
+            let _ = self.conn.flush();
+        }
+    }
 
     pub fn present_frame(&mut self, src_pixels: &[u32]) {
         if let Some(buf) = &mut self.state.buffer {
@@ -449,10 +481,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 });
             }
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: btn_state,
                 ..
             } => {
+                state.pointer_serial = serial;
                 let s = match btn_state {
                     wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => {
                         ElementState::Pressed
@@ -604,7 +638,7 @@ impl Dispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for Wayla
 
 impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for WaylandState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
         event: zxdg_toplevel_decoration_v1::Event,
         _: &(),
@@ -613,6 +647,16 @@ impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Way
     ) {
         if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
             log::debug!("Wayland window decoration mode: {:?}", mode);
+            match mode {
+                wayland_client::WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ServerSide) => {
+                    state.use_csd = false;
+                    log::info!("Wayland compositor provides server-side decorations");
+                }
+                _ => {
+                    state.use_csd = true;
+                    log::info!("Wayland compositor requires client-side decorations (CSD)");
+                }
+            }
         }
     }
 }

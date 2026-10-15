@@ -171,6 +171,7 @@ pub struct WindowState {
     pub min_rows: usize,
     pub separator_color: Option<String>,
     pub active_separator_color: Option<String>,
+    pub last_separator_drag_sync: Option<std::time::Instant>,
 }
 
 impl Drop for WindowState {
@@ -292,11 +293,12 @@ impl WindowState {
         let size = self.window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
+        let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let total_x = 0.0;
-        let total_y = tab_bar_h;
+        let total_y = csd_h + tab_bar_h;
         let total_w = (width as f32).max(10.0);
-        let total_h = (height as f32 - tab_bar_h).max(10.0);
+        let total_h = (height as f32 - csd_h - tab_bar_h).max(10.0);
 
         if let Some(tab) = self.tabs.get(tab_index) {
             tab.tree.calculate_layout(
@@ -347,9 +349,10 @@ impl WindowState {
         let size = self.window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
+        let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let avail_w = (width as f32 - self.padding_x * 2.0).max(10.0);
-        let avail_h = (height as f32 - tab_bar_h - self.padding_y * 2.0).max(10.0);
+        let avail_h = (height as f32 - csd_h - tab_bar_h - self.padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / self.cell_width()).max(1);
         let rows = ((avail_h as u32) / self.cell_height()).max(1);
         (cols, rows)
@@ -436,9 +439,11 @@ impl WindowState {
         let split_id = self.next_split_id;
         self.next_split_id += 1;
 
+        let csd_h = self.window.csd_title_bar_height() as f32;
         let avail_w =
             (self.window.inner_size().width.max(1) as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h = (self.window.inner_size().height.max(1) as f32
+            - csd_h
             - self.tab_bar_height()
             - self.padding_y * 2.0)
             .max(10.0);
@@ -766,6 +771,7 @@ impl WindowState {
             self.window.set_title(&active_tab.current_title);
             self.current_title = active_tab.current_title.clone();
             self.tab_bar_dirty = true;
+            self.renderer.damage.mark_all();
         }
     }
 
@@ -950,6 +956,9 @@ impl WindowState {
             None
         };
 
+        let csd_height = self.window.csd_title_bar_height();
+        self.renderer.csd_height = csd_height;
+
         // 6. Render & Present
         self.renderer.render_splits(
             &cpu_pane_render_datas,
@@ -962,6 +971,15 @@ impl WindowState {
             effective_separator_color,
             effective_active_separator_color,
         );
+
+        if csd_height > 0 {
+            self.renderer.render_csd_title_bar(
+                &self.current_title,
+                csd_height,
+                self.is_focused,
+            );
+        }
+
         self.window.present_frame(self.renderer.framebuffer.as_slice());
 
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
@@ -1064,6 +1082,7 @@ impl App {
         let base_cell_width = renderer.glyph_cache.cell_width;
         let base_cell_height = renderer.glyph_cache.cell_height;
 
+        let csd_h = window.csd_title_bar_height() as f32;
         let tab_bar = TabBar::from_config(&config);
         let tab_bar_h = if tab_bar.is_visible(1) {
             tab_bar.height(base_cell_height)
@@ -1072,7 +1091,7 @@ impl App {
         };
 
         let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
-        let avail_h = (win_height as f32 - tab_bar_h - padding_y * 2.0).max(10.0);
+        let avail_h = (win_height as f32 - csd_h - tab_bar_h - padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / base_cell_width).max(1);
         let rows = ((avail_h as u32) / base_cell_height).max(1);
 
@@ -1184,6 +1203,7 @@ impl App {
             min_rows,
             separator_color,
             active_separator_color,
+            last_separator_drag_sync: None,
         };
 
         window_state.window.set_opacity(window_state.opacity);

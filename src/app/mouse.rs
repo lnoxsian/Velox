@@ -138,13 +138,22 @@ impl WindowState {
                 };
                 let tab = self.active_tab_mut();
                 if tab.tree.set_split_ratio(dragging.split_id, ratio) {
-                    self.sync_active_tab_layout();
+                    let now = std::time::Instant::now();
+                    let should_sync = match self.last_separator_drag_sync {
+                        Some(last) => now.duration_since(last) >= std::time::Duration::from_millis(60),
+                        None => true,
+                    };
+                    if should_sync {
+                        self.sync_active_tab_layout();
+                        self.last_separator_drag_sync = Some(now);
+                    }
                     self.needs_redraw = true;
                     self.content_dirty = true;
                 }
                 return;
             } else {
                 self.dragging_separator = None;
+                self.last_separator_drag_sync = None;
             }
         }
 
@@ -210,14 +219,30 @@ impl WindowState {
             return;
         }
 
+        let csd_h = self.window.csd_title_bar_height() as f64;
+        if csd_h > 0.0 && self.mouse_y < csd_h {
+            let old_hovered_tab = self.tab_bar.hovered_tab;
+            let old_hovered_close = self.tab_bar.hovered_close;
+            let old_hovered_new = self.tab_bar.hovered_new_tab;
+            self.tab_bar.hovered_tab = None;
+            self.tab_bar.hovered_close = None;
+            self.tab_bar.hovered_new_tab = false;
+            self.set_cursor_cached(crate::window::event::CursorIcon::Default);
+            if old_hovered_tab.is_some() || old_hovered_close.is_some() || old_hovered_new {
+                self.tab_bar_dirty = true;
+                self.needs_redraw = true;
+            }
+            return;
+        }
+
         let tab_bar_h = self.tab_bar_height() as f64;
 
         // ── 3. Tab Bar Hover & Hit-Testing (When not dragging) ───────────────
-        if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
+        if tab_bar_h > 0.0 && self.mouse_y >= csd_h && self.mouse_y < csd_h + tab_bar_h {
             let win_w = self.window.width() as f32;
             let hit = self.tab_bar.hit_test(
                 self.mouse_x as f32,
-                self.mouse_y as f32,
+                (self.mouse_y - csd_h) as f32,
                 win_w,
                 self.base_cell_height,
                 self.tabs.len(),
@@ -327,7 +352,10 @@ impl WindowState {
                         let mouse_mode = pane.terminal.mouse_mode;
                         let mouse_sgr = pane.terminal.mouse_sgr;
 
-                        let is_link = if mouse_mode == 0 || modifiers.shift_key() {
+                        let is_link = if mouse_mode == 0
+                            || modifiers.shift_key()
+                            || modifiers.control_key()
+                        {
                             let active_grid = if pane.terminal.is_alt_screen {
                                 &pane.terminal.alt_grid
                             } else {
@@ -354,7 +382,7 @@ impl WindowState {
                 if let (Some(mouse_mode), Some(mouse_sgr), Some(pty_master)) =
                     (mouse_mode, mouse_sgr, pty_master)
                 {
-                    if mouse_mode == 0 || modifiers.shift_key() {
+                    if mouse_mode == 0 || modifiers.shift_key() || modifiers.control_key() {
                         if is_link {
                             self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
                         } else {
@@ -382,10 +410,15 @@ impl WindowState {
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
 
+            let csd_h = self.window.csd_title_bar_height() as f64;
+            if csd_h > 0.0 && self.mouse_y < csd_h {
+                return false;
+            }
+
             let tab_bar_h = self.tab_bar_height() as f64;
 
             // Scroll over tab bar switches tabs
-            if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
+            if tab_bar_h > 0.0 && self.mouse_y >= csd_h && self.mouse_y < csd_h + tab_bar_h {
                 if lines > 0 {
                     self.prev_tab();
                 } else {
@@ -477,14 +510,22 @@ impl WindowState {
         self.mark_interaction();
 
         if state == ElementState::Pressed {
+            let csd_h = self.window.csd_title_bar_height() as f64;
+            if csd_h > 0.0 && self.mouse_y < csd_h {
+                if button == MouseButton::Left {
+                    self.window.start_interactive_move();
+                }
+                return;
+            }
+
             let tab_bar_h = self.tab_bar_height() as f64;
 
             // ── 1. Tab Bar Mouse Clicks ──────────────────────────────────────
-            if tab_bar_h > 0.0 && self.mouse_y < tab_bar_h {
+            if tab_bar_h > 0.0 && self.mouse_y >= csd_h && self.mouse_y < csd_h + tab_bar_h {
                 let win_w = self.window.width() as f32;
                 let hit = self.tab_bar.hit_test(
                     self.mouse_x as f32,
-                    self.mouse_y as f32,
+                    (self.mouse_y - csd_h) as f32,
                     win_w,
                     self.base_cell_height,
                     self.tabs.len(),
@@ -584,6 +625,26 @@ impl WindowState {
             let grid_width = pane_rect.cols;
             let grid_height = pane_rect.rows;
 
+            // Ctrl + Click opens link immediately without needing Shift or app mouse reporting
+            if modifiers.control_key()
+                && button == MouseButton::Left
+                && col_idx < grid_width
+                && row_idx < grid_height
+            {
+                let tab = self.active_tab_mut();
+                if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
+                    let active_grid = pane.terminal.active_grid_mut();
+                    let offset = active_grid.scroll_offset;
+                    let history_len = active_grid.scrollback.len();
+                    let y_offset = (row_idx + history_len).saturating_sub(offset);
+
+                    if let Some(url) = active_grid.hyperlink_url_at(col_idx, y_offset) {
+                        let _ = crate::hyperlink::detector::open(&url);
+                        return;
+                    }
+                }
+            }
+
             let (mouse_mode, mouse_sgr) = {
                 let pane = match self.active_tab().tree.find_pane(clicked_pane_id) {
                     Some(p) => p,
@@ -642,7 +703,6 @@ impl WindowState {
                         self.last_click_pane_id = Some(clicked_pane_id);
                         let click_count = self.click_count;
 
-                        let mut url_opened = false;
                         let tab = self.active_tab_mut();
                         if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
                             let active_grid = pane.terminal.active_grid_mut();
@@ -650,15 +710,7 @@ impl WindowState {
                             let history_len = active_grid.scrollback.len();
                             let y_offset = (row_idx + history_len).saturating_sub(offset);
 
-                            if modifiers.control_key() {
-                                if let Some(url) = active_grid.hyperlink_url_at(col_idx, y_offset) {
-                                    let _ = crate::hyperlink::detector::open(&url);
-                                    url_opened = true;
-                                }
-                            }
-
-                            if !url_opened {
-                                match click_count {
+                            match click_count {
                                     1 => {
                                         if modifiers.shift_key() && active_grid.selection.active {
                                             active_grid
@@ -700,12 +752,11 @@ impl WindowState {
                                         let _ = pty_master.write(&seq);
                                     }
                                 }
-                            }
 
-                            self.needs_redraw = true;
+                                self.needs_redraw = true;
+                            }
                         }
                     }
-                }
                 MouseButton::Middle => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 1;
@@ -745,6 +796,10 @@ impl WindowState {
             self.is_mouse_down = false;
 
             if self.dragging_separator.take().is_some() {
+                self.last_separator_drag_sync = None;
+                self.sync_active_tab_layout();
+                self.needs_redraw = true;
+                self.content_dirty = true;
                 return;
             }
 
@@ -910,6 +965,53 @@ mod tests {
                 let part2_x = px + cw * 5.0 + cw * 0.5;
                 ws.handle_cursor_moved((part2_x, wrap_row_2_y), ModifiersState::empty());
                 assert_eq!(ws.current_cursor_icon, CursorIcon::Pointer);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ctrl_click_opens_url_without_shift() {
+        if let Ok(mut app) = App::new(CliOptions::default()) {
+            if let Ok(wid) = app.create_window(None, None, None, None) {
+                let ws = app.windows.get_mut(&wid).unwrap();
+                let pane = ws.active_pane_mut();
+                pane.terminal
+                    .feed(b"Check https://example.com/velox here\r\n");
+
+                let (pane_rects, _) = ws.recalculate_panes_layout(ws.active_tab_index);
+                let pane_rect = &pane_rects[0];
+                let px = (pane_rect.x + pane_rect.padding_x) as f64;
+                let py = (pane_rect.y + pane_rect.padding_y) as f64;
+                let cw = pane_rect.cell_width as f64;
+                let ch = pane_rect.cell_height as f64;
+
+                // Position over URL: "Check " is 6 chars, URL starts at col 6
+                let url_x = px + cw * 10.0 + cw * 0.5;
+                let url_y = py + ch * 0.0 + ch * 0.5;
+
+                // 1. Plain left click should NOT open URL; selection becomes active
+                ws.handle_cursor_moved((url_x, url_y), ModifiersState::empty());
+                ws.handle_mouse_input(ElementState::Pressed, MouseButton::Left, ModifiersState::empty());
+                let pane = ws.active_pane();
+                assert!(pane.terminal.grid.selection.active, "Plain click should start text selection, not open link");
+
+                // Clear selection
+                let pane_mut = ws.active_pane_mut();
+                pane_mut.terminal.grid.selection.clear();
+
+                // 2. Ctrl + click (with NO Shift) should trigger URL open and NOT start text selection
+                let ctrl_only = ModifiersState::CONTROL;
+                ws.handle_mouse_input(ElementState::Pressed, MouseButton::Left, ctrl_only);
+                let pane = ws.active_pane();
+                assert!(!pane.terminal.grid.selection.active, "Ctrl+Click should open URL and not start text selection");
+
+                // 3. Test when terminal is in application mouse mode (e.g. mouse_mode = 1000)
+                let pane_mut = ws.active_pane_mut();
+                pane_mut.terminal.mouse_mode = 1000;
+                // With Ctrl only (no Shift), Ctrl+Click should still open URL without needing Shift
+                ws.handle_mouse_input(ElementState::Pressed, MouseButton::Left, ctrl_only);
+                let pane = ws.active_pane();
+                assert!(!pane.terminal.grid.selection.active);
             }
         }
     }

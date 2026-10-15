@@ -82,7 +82,6 @@ impl Grid {
         let mut active_screen_start_log_idx: Option<usize> = None;
 
         let mut current_cells: Vec<Cell> = Vec::new();
-
         let mut consecutive_empty_count = 0;
 
         for (row_idx, row) in combined_rows.iter().enumerate() {
@@ -346,3 +345,51 @@ impl Grid {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::terminal::terminal::Terminal;
+
+    #[test]
+    fn test_reflow_narrow_inspection() {
+        let mut term = Terminal::new(80, 24);
+        for i in 0..30 {
+            term.feed(format!("line {:02} some text here that is quite long and definitely exceeds 40 characters\r\n", i).as_bytes());
+        }
+        term.feed(b"user@host:~$ ");
+
+        // Step by step narrowing from 80 down to 40, then back up to 80, then down to 40
+        for _ in 0..3 {
+            for w in (40..80).rev() {
+                term.resize(w, 24);
+            }
+            for w in 41..=80 {
+                term.resize(w, 24);
+            }
+        }
+        for w in (40..80).rev() {
+            term.resize(w, 24);
+        }
+
+        assert!(term.grid.scrollback.len() > 0);
+
+        // Verify that in the visible grid, every line is distinct and non-duplicated
+        let mut non_empty_rows: Vec<String> = Vec::new();
+        for y in 0..24 {
+            let row: String = (0..40).map(|x| term.grid.cells[y * 40 + x].character).collect();
+            let trimmed = row.trim_end().to_string();
+            if !trimmed.is_empty() {
+                non_empty_rows.push(trimmed);
+            }
+        }
+        for i in 1..non_empty_rows.len() {
+            assert_ne!(
+                non_empty_rows[i - 1],
+                non_empty_rows[i],
+                "Consecutive duplicated row detected: {:?}",
+                non_empty_rows[i]
+            );
+        }
+    }
+}
+

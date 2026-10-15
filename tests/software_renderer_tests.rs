@@ -1503,3 +1503,147 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
     assert_eq!(pixel, expected_red, "Scrollback row 0 must be red full block");
 }
 
+#[test]
+fn test_software_renderer_csd_title_bar() {
+    let mut renderer = setup_renderer(400, 200);
+    let csd_h = 32u32;
+
+    // 1. Render focused title bar
+    renderer.render_csd_title_bar("Velox - Shell", csd_h, true);
+
+    // Framebuffer should have title bar drawn in rows 0..32
+    let bg_focused = renderer.palette.tab_bar_bg;
+    let border_color = renderer.palette.ansi_colors[8];
+
+    // Check bottom border at y = 31
+    assert_eq!(
+        renderer.framebuffer.pixels[31 * 400 + 10],
+        border_color,
+        "Row 31 must be the CSD bottom separator line"
+    );
+
+    // Check background at top-left corner
+    assert_eq!(
+        renderer.framebuffer.pixels[0],
+        bg_focused,
+        "Row 0 col 0 should have focused title bar background"
+    );
+
+    // Row 32 (outside CSD title bar) must remain untouched (0)
+    assert_eq!(
+        renderer.framebuffer.pixels[32 * 400 + 10],
+        0,
+        "Row 32 must be untouched by CSD title bar"
+    );
+
+    // 2. Render unfocused title bar
+    renderer.render_csd_title_bar("Velox - Shell", csd_h, false);
+    let bg_unfocused = renderer.palette.tab_inactive_bg;
+    assert_eq!(
+        renderer.framebuffer.pixels[0],
+        bg_unfocused,
+        "Row 0 col 0 should have unfocused title bar background"
+    );
+    assert_eq!(
+        renderer.framebuffer.pixels[31 * 400 + 10],
+        border_color,
+        "Row 31 must still have border line when unfocused"
+    );
+}
+
+#[test]
+fn test_software_renderer_tab_bar_with_csd_offset() {
+    let mut renderer = setup_renderer(400, 200);
+    let csd_h = 32u32;
+    renderer.csd_height = csd_h;
+
+    let tab_info = velox::app::tab::TabBarRenderInfo {
+        height: 28.0,
+        tabs: vec![
+            velox::app::tab::TabHeaderInfo {
+                title: "Tab 1".to_string(),
+                is_active: true,
+                is_hovered: false,
+                is_close_hovered: false,
+            },
+            velox::app::tab::TabHeaderInfo {
+                title: "Tab 2".to_string(),
+                is_active: false,
+                is_hovered: false,
+                is_close_hovered: false,
+            },
+        ],
+        show_new_tab: true,
+        is_new_tab_hovered: false,
+        show_close_button: true,
+    };
+
+    let grid = Grid::new(
+        40,
+        10,
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        Color { r: 0, g: 0, b: 0 },
+        10,
+        false,
+    );
+    let theme = Theme::new();
+    let pane_rect = velox::app::split::PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: csd_h as f32 + 28.0,
+        width: 400.0,
+        height: 140.0,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cols: 40,
+        rows: 10,
+        cell_width: renderer.glyph_cache.cell_width as f32,
+        cell_height: renderer.glyph_cache.cell_height as f32,
+    };
+
+    let pane_data = velox::renderer::CpuPaneRenderData {
+        pane_id: 1,
+        rect: pane_rect,
+        cells: &grid.cells,
+        grid: &grid,
+        font_size: renderer.glyph_cache.font_size,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    // Render splits with tab bar and CSD offset
+    renderer.render_splits(
+        &[pane_data],
+        &[],
+        1.0,
+        0.0,
+        true,
+        None,
+        Some(&tab_info),
+        None,
+        None,
+    );
+
+    // Active tab top 2px has tab accent line at y = 32..34
+    assert_eq!(
+        renderer.framebuffer.pixels[32 * 400 + 10],
+        renderer.palette.tab_accent,
+        "Active tab accent line should start at y = csd_h (32)"
+    );
+    // Active tab body below accent line at y = 35 has active tab background
+    assert_eq!(
+        renderer.framebuffer.pixels[35 * 400 + 10],
+        renderer.palette.default_bg,
+        "Active tab body at y = 35 should have default_bg"
+    );
+}
+
+

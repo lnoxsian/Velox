@@ -99,6 +99,7 @@ pub struct CpuRenderer {
     prev_dim: f32,
     prev_tab_bar_hash: u64,
     last_target_ptr: usize,
+    pub csd_height: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -198,6 +199,7 @@ impl CpuRenderer {
             prev_dim: 0.0,
             prev_tab_bar_hash: 0,
             last_target_ptr: 0,
+            csd_height: 0,
         })
     }
 
@@ -591,7 +593,58 @@ impl CpuRenderer {
         }
     }
 
-    fn render_tab_bar(&mut self, tab_bar: &crate::app::tab::TabBarRenderInfo) {
+    pub fn render_csd_title_bar(&mut self, title: &str, csd_height: u32, is_focused: bool) {
+        if csd_height == 0 {
+            return;
+        }
+
+        let bar_bg = if is_focused {
+            self.palette.tab_bar_bg
+        } else {
+            self.palette.tab_inactive_bg
+        };
+
+        // Fill title bar background
+        self.framebuffer
+            .fill_span(0, 0, self.viewport_width, csd_height, bar_bg);
+
+        // Draw a 1px bottom border line separating title bar from tab bar or panes
+        let border_color = self.palette.ansi_colors[8];
+        self.framebuffer
+            .fill_span(0, csd_height.saturating_sub(1), self.viewport_width, 1, border_color);
+
+        // Render title text centered horizontally and vertically
+        let tab_cw = self.tab_glyph_cache.cell_width;
+        let tab_ch = self.tab_glyph_cache.cell_height;
+        let max_chars = ((self.viewport_width as f32 - 16.0) / tab_cw as f32).floor() as usize;
+
+        if max_chars > 0 && !title.is_empty() {
+            let display_title: String = if title.chars().count() > max_chars {
+                let mut t: String = title.chars().take(max_chars.saturating_sub(1)).collect();
+                t.push('…');
+                t
+            } else {
+                title.to_string()
+            };
+
+            let title_pixel_width = display_title.chars().count() as u32 * tab_cw;
+            let text_x = (self.viewport_width.saturating_sub(title_pixel_width)) / 2;
+            let text_y = (csd_height.saturating_sub(tab_ch)) / 2;
+
+            let text_fg = if is_focused {
+                self.palette.default_fg
+            } else {
+                self.palette.tab_inactive_fg
+            };
+
+            for (i, ch) in display_title.chars().enumerate() {
+                let x = text_x + (i as u32) * tab_cw;
+                self.blit_tab_char(ch, x, text_y, text_fg);
+            }
+        }
+    }
+
+    fn render_tab_bar(&mut self, tab_bar: &crate::app::tab::TabBarRenderInfo, csd_y_offset: u32) {
         let bar_h = tab_bar.height as u32;
         let tab_count = tab_bar.tabs.len();
         if tab_count == 0 || bar_h == 0 {
@@ -603,7 +656,7 @@ impl CpuRenderer {
         let tab_ch = self.tab_glyph_cache.cell_height;
 
         self.framebuffer
-            .fill_span(0, 0, self.viewport_width, bar_h, self.palette.tab_bar_bg);
+            .fill_span(0, csd_y_offset, self.viewport_width, bar_h, self.palette.tab_bar_bg);
 
         for (i, tab) in tab_bar.tabs.iter().enumerate() {
             let tab_x = (i as f32 * tab_w) as u32;
@@ -617,11 +670,11 @@ impl CpuRenderer {
                 self.palette.tab_inactive_bg
             };
             self.framebuffer
-                .fill_span(tab_x, 0, actual_w, bar_h, tab_bg);
+                .fill_span(tab_x, csd_y_offset, actual_w, bar_h, tab_bg);
 
             if tab.is_active {
                 self.framebuffer
-                    .fill_span(tab_x, 0, actual_w, 2, self.palette.tab_accent);
+                    .fill_span(tab_x, csd_y_offset, actual_w, 2, self.palette.tab_accent);
             }
 
             // Text title
@@ -636,7 +689,7 @@ impl CpuRenderer {
             let max_chars = (max_text_w / (tab_cw as f32)).floor() as usize;
 
             let text_start_x = tab_x + 8;
-            let text_start_y = bar_h.saturating_sub(tab_ch) / 2;
+            let text_start_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
 
             let char_count = tab.title.chars().count();
             if char_count <= max_chars {
@@ -660,7 +713,7 @@ impl CpuRenderer {
             // Close button
             if tab_bar.show_close_button {
                 let close_x = tab_x + actual_w.saturating_sub(20);
-                let close_y = bar_h.saturating_sub(tab_ch) / 2;
+                let close_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
                 let close_fg = if tab.is_close_hovered {
                     self.palette.ansi_colors[1]
                 } else {
@@ -675,7 +728,7 @@ impl CpuRenderer {
             let btn_x = (tab_count as f32 * tab_w + 4.0) as u32;
             let btn_w = 24u32;
             let btn_h = bar_h.saturating_sub(4);
-            let btn_y = 2u32;
+            let btn_y = csd_y_offset + 2u32;
 
             if tab_bar.is_new_tab_hovered {
                 self.framebuffer.fill_span(
@@ -688,7 +741,7 @@ impl CpuRenderer {
             }
 
             let plus_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;
-            let plus_y = bar_h.saturating_sub(tab_ch) / 2;
+            let plus_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
             let plus_fg = if tab_bar.is_new_tab_hovered {
                 self.palette.default_fg
             } else {
@@ -1463,7 +1516,7 @@ impl CpuRenderer {
 
         // 8. Render Tab Bar
         if let Some(tab_bar) = tab_bar_info {
-            self.render_tab_bar(tab_bar);
+            self.render_tab_bar(tab_bar, self.csd_height);
         }
         self.prev_tab_bar_hash = new_tab_bar_hash;
 

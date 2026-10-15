@@ -700,3 +700,34 @@ fn test_pane_current_working_directory_detection() {
         "CWD must resolve to /tmp"
     );
 }
+
+#[test]
+fn test_csd_title_bar_tab_hit_test_separation() {
+    let tab_bar = TabBar {
+        show_tab_bar: TabBarVisibility::Always,
+        configured_height: Some(28.0),
+        show_close_button: true,
+        show_new_tab_button: false,
+        hovered_tab: None,
+        hovered_close: None,
+        hovered_new_tab: false,
+    };
+
+    let csd_h = 32.0f32;
+    let win_w = 800.0f32;
+    let tab_count = 2;
+
+    // 1. Mouse at y = 15.0 is inside CSD title bar (y < csd_h)
+    let mouse_y_in_csd = 15.0f32;
+    assert!(mouse_y_in_csd < csd_h);
+
+    // 2. Mouse at y = 45.0 is inside tab bar (csd_h <= y < csd_h + tab_bar_h)
+    let mouse_y_in_tabs = 45.0f32;
+    assert!(mouse_y_in_tabs >= csd_h && mouse_y_in_tabs < csd_h + 28.0);
+
+    // Hit test with offset y: (mouse_y_in_tabs - csd_h) = 13.0
+    let relative_tab_y = mouse_y_in_tabs - csd_h;
+    let hit = tab_bar.hit_test(100.0, relative_tab_y, win_w, 20, tab_count);
+    assert_eq!(hit, TabBarHitResult::Tab(0));
+}
+

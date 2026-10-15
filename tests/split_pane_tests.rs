@@ -1746,3 +1746,94 @@ fn test_zoom_limits_and_clamping_parity() {
     assert_eq!(rects_2_8[0].cols, rects_0_1[0].cols);
     assert_eq!(rects_2_8[0].rows, rects_0_1[0].rows);
 }
+
+#[test]
+fn test_narrow_pane_text_duplication() {
+    let pty = spawn_process("/bin/bash", None, None).unwrap();
+    let mut term = Terminal::new(80, 24);
+    pty.resize(80, 24).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let mut buf = [0u8; 4096];
+    if let Ok(n) = pty.read(&mut buf) {
+        term.feed(&buf[..n]);
+    }
+
+    // Set a prompt and type a command
+    pty.write(b"PS1='user@host:~/some/long/directory/path$ '\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    if let Ok(n) = pty.read(&mut buf) {
+        term.feed(&buf[..n]);
+    }
+
+    // Type a command without pressing Enter
+    pty.write(b"echo 'this is a long command'").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    if let Ok(n) = pty.read(&mut buf) {
+        term.feed(&buf[..n]);
+    }
+
+    println!("--- BEFORE NARROW ---");
+    for y in 0..term.grid.height {
+        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        if !row.trim().is_empty() {
+            println!("row {}: {:?}", y, row.trim_end());
+        }
+    }
+
+    println!("cursor before narrow: {:?}", (term.grid.cursor.x, term.grid.cursor.y));
+
+    // Now narrow to 35 columns
+    term.resize(35, 24);
+    println!("cursor after term.resize(35, 24): {:?}", (term.grid.cursor.x, term.grid.cursor.y));
+    pty.resize(35, 24).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    if let Ok(n) = pty.read(&mut buf) {
+        println!("BASH BYTES ON RESIZE: {:?}", String::from_utf8_lossy(&buf[..n]));
+        term.feed(&buf[..n]);
+    }
+
+    println!("--- AFTER NARROW TO 35 ---");
+    for y in 0..term.grid.height {
+        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        if !row.trim().is_empty() {
+            println!("row {}: {:?}", y, row.trim_end());
+        }
+    }
+
+    let r3: String = (0..term.grid.width).map(|x| term.grid.cells[3 * term.grid.width + x].character).collect();
+    let r4: String = (0..term.grid.width).map(|x| term.grid.cells[4 * term.grid.width + x].character).collect();
+    assert_ne!(r3.trim(), r4.trim(), "Rows 3 and 4 must not duplicate");
+    assert!(r3.contains("user@host:~/some/long/directory/pat"));
+    assert!(r4.contains("h$ echo 'this is a long command'"));
+
+    // Narrow further to 25 columns
+    term.resize(25, 24);
+    pty.resize(25, 24).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    if let Ok(n) = pty.read(&mut buf) {
+        term.feed(&buf[..n]);
+    }
+
+    println!("--- AFTER NARROW TO 25 ---");
+    for y in 0..term.grid.height {
+        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        if !row.trim().is_empty() {
+            println!("row {}: {:?}", y, row.trim_end());
+        }
+    }
+
+    // Verify no consecutive duplicated lines in the active grid
+    let mut non_empty_rows: Vec<String> = Vec::new();
+    for y in 0..term.grid.height {
+        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        let trimmed = row.trim().to_string();
+        if !trimmed.is_empty() {
+            non_empty_rows.push(trimmed);
+        }
+    }
+    for i in 1..non_empty_rows.len() {
+        assert_ne!(non_empty_rows[i - 1], non_empty_rows[i], "Consecutive duplicate row detected at index {}", i);
+    }
+}
