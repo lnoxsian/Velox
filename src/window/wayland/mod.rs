@@ -1,8 +1,10 @@
+pub mod cursor;
 pub mod keyboard;
 pub mod shm;
 
 use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, PlatformEvent};
 use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
+use crate::window::WindowResizeEdge;
 use keyboard::{ActiveKeyRepeat, KeyRepeatConfig, XkbHandler};
 use shm::WaylandShmBuffer;
 use std::collections::VecDeque;
@@ -60,9 +62,13 @@ pub struct WaylandState {
     pub modifiers: ModifiersState,
     pub mouse_x: f64,
     pub mouse_y: f64,
+    pub is_maximized: bool,
+    pub cursor_manager: Option<cursor::WaylandCursorManager>,
+    pub current_cursor: CursorIcon,
+    pub pointer_inside: bool,
 }
 
-pub const CSD_TITLE_BAR_HEIGHT: u32 = 32;
+pub const CSD_TITLE_BAR_HEIGHT: u32 = 38;
 
 impl WaylandState {
     pub fn new(width: u32, height: u32) -> Self {
@@ -92,6 +98,10 @@ impl WaylandState {
             modifiers: ModifiersState::empty(),
             mouse_x: 0.0,
             mouse_y: 0.0,
+            is_maximized: false,
+            cursor_manager: None,
+            current_cursor: CursorIcon::Default,
+            pointer_inside: false,
         }
     }
 }
@@ -119,9 +129,9 @@ impl WaylandWindow {
 
         let compositor = state
             .compositor
-            .as_ref()
+            .clone()
             .ok_or("Wayland compositor not found")?;
-        let wm_base = state.wm_base.as_ref().ok_or("XDG WM Base not found")?;
+        let wm_base = state.wm_base.clone().ok_or("XDG WM Base not found")?;
         let surface = compositor.create_surface(&qh, ());
         let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg_surface.get_toplevel(&qh, ());
@@ -152,9 +162,14 @@ impl WaylandWindow {
             event_queue.blocking_dispatch(&mut state)?;
         }
 
-        let shm = state.shm.as_ref().ok_or("Wayland SHM not found")?;
-        let buffer = WaylandShmBuffer::new(shm, &qh, state.width, state.height)?;
+        let shm = state.shm.clone().ok_or("Wayland SHM not found")?;
+        let buffer = WaylandShmBuffer::new(&shm, &qh, state.width, state.height)?;
         state.buffer = Some(buffer);
+
+        match cursor::WaylandCursorManager::new(&compositor, &shm, &qh) {
+            Ok(cm) => state.cursor_manager = Some(cm),
+            Err(e) => log::warn!("Failed to initialize Wayland cursor manager: {}", e),
+        }
 
         let raw_fd = conn.as_fd().as_raw_fd();
         unsafe {
@@ -190,7 +205,39 @@ impl WaylandWindow {
         }
     }
 
-    pub fn set_cursor(&self, _icon: CursorIcon) {}
+    pub fn set_cursor(&mut self, icon: CursorIcon) {
+        self.state.current_cursor = icon;
+        if self.state.pointer_inside {
+            if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer) {
+                cm.apply_cursor(self.state.pointer_serial, icon, pointer);
+                let _ = self.conn.flush();
+            }
+        }
+    }
+
+    pub fn show_window_menu(&self, x: i32, y: i32) {
+        if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
+            toplevel.show_window_menu(seat, self.state.pointer_serial, x, y);
+            let _ = self.conn.flush();
+        }
+    }
+
+    pub fn start_interactive_resize(&self, edge: WindowResizeEdge) {
+        if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
+            let wayland_edge = match edge {
+                WindowResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+                WindowResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+                WindowResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+                WindowResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+                WindowResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+                WindowResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+                WindowResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+                WindowResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+            };
+            toplevel.resize(seat, self.state.pointer_serial, wayland_edge);
+            let _ = self.conn.flush();
+        }
+    }
 
     #[inline]
     pub fn set_visible(&mut self, _visible: bool) {}
@@ -216,6 +263,34 @@ impl WaylandWindow {
         }
     }
 
+    pub fn minimize(&self) {
+        if let Some(toplevel) = &self.state.xdg_toplevel {
+            toplevel.set_minimized();
+            let _ = self.conn.flush();
+        }
+    }
+
+    pub fn toggle_maximize(&mut self) {
+        if let Some(toplevel) = &self.state.xdg_toplevel {
+            if self.state.is_maximized {
+                toplevel.unset_maximized();
+            } else {
+                toplevel.set_maximized();
+            }
+            let _ = self.conn.flush();
+        }
+    }
+
+    #[inline]
+    pub fn is_maximized(&self) -> bool {
+        self.state.is_maximized
+    }
+
+    #[inline]
+    pub fn post_close_requested(&mut self) {
+        self.state.events.push_back(PlatformEvent::CloseRequested);
+    }
+
     pub fn present_frame(&mut self, src_pixels: &[u32]) {
         if let Some(buf) = &mut self.state.buffer {
             let dest = buf.pixels_mut();
@@ -239,9 +314,21 @@ impl WaylandWindow {
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
         let _ = self.conn.flush();
         if let Some(guard) = self.conn.prepare_read() {
-            let _ = guard.read();
+            if let Err(e) = guard.read() {
+                match e {
+                    wayland_client::backend::WaylandError::Io(ref io_err)
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock => {}
+                    _ => {
+                        log::warn!("Wayland socket error: {}", e);
+                        self.state.events.push_back(PlatformEvent::CloseRequested);
+                    }
+                }
+            }
         }
-        let _ = self.event_queue.dispatch_pending(&mut self.state);
+        if let Err(e) = self.event_queue.dispatch_pending(&mut self.state) {
+            log::warn!("Wayland dispatch error: {}", e);
+            self.state.events.push_back(PlatformEvent::CloseRequested);
+        }
 
         if let Some(event) = self.state.events.pop_front() {
             return Some(event);
@@ -406,13 +493,16 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
         qh: &QueueHandle<Self>,
     ) {
         match event {
-            xdg_toplevel::Event::Configure { width, height, .. } => {
+            xdg_toplevel::Event::Configure { width, height, states } => {
                 let w = if width > 0 { width as u32 } else { state.width };
                 let h = if height > 0 {
                     height as u32
                 } else {
                     state.height
                 };
+                state.is_maximized = states.chunks_exact(4).any(|c| {
+                    u32::from_ne_bytes(c.try_into().unwrap_or([0; 4])) == xdg_toplevel::State::Maximized as u32
+                });
                 if w != state.width || h != state.height {
                     state.width = w;
                     state.height = h;
@@ -461,13 +551,34 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
 impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
     fn event(
         state: &mut Self,
-        _: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         event: wl_pointer::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
+            wl_pointer::Event::Enter {
+                serial,
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_serial = serial;
+                state.pointer_inside = true;
+                state.mouse_x = surface_x;
+                state.mouse_y = surface_y;
+                if let Some(cm) = &mut state.cursor_manager {
+                    cm.apply_cursor(serial, state.current_cursor, pointer);
+                }
+                state.events.push_back(PlatformEvent::CursorMoved {
+                    x: surface_x,
+                    y: surface_y,
+                });
+            }
+            wl_pointer::Event::Leave { .. } => {
+                state.pointer_inside = false;
+            }
             wl_pointer::Event::Motion {
                 surface_x,
                 surface_y,

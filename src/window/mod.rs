@@ -1,3 +1,4 @@
+pub mod csd;
 pub mod event;
 pub mod wayland;
 pub mod x11;
@@ -128,7 +129,7 @@ impl PlatformWindow {
     }
 
     #[inline]
-    pub fn set_cursor(&self, icon: CursorIcon) {
+    pub fn set_cursor(&mut self, icon: CursorIcon) {
         match self {
             Self::X11(w) => w.set_cursor(icon),
             Self::Wayland(w) => w.set_cursor(icon),
@@ -238,6 +239,72 @@ impl PlatformWindow {
             Self::Wayland(w) => w.start_interactive_move(),
         }
     }
+
+    #[inline]
+    pub fn minimize(&self) {
+        match self {
+            Self::X11(_) => {}
+            Self::Wayland(w) => w.minimize(),
+        }
+    }
+
+    #[inline]
+    pub fn toggle_maximize(&mut self) {
+        match self {
+            Self::X11(_) => {}
+            Self::Wayland(w) => w.toggle_maximize(),
+        }
+    }
+
+    #[inline]
+    pub fn is_maximized(&self) -> bool {
+        match self {
+            Self::X11(_) => false,
+            Self::Wayland(w) => w.is_maximized(),
+        }
+    }
+
+    #[inline]
+    pub fn show_window_menu(&self, x: i32, y: i32) {
+        match self {
+            Self::X11(_) => {}
+            Self::Wayland(w) => w.show_window_menu(x, y),
+        }
+    }
+
+    #[inline]
+    pub fn start_interactive_resize(&self, edge: WindowResizeEdge) {
+        match self {
+            Self::X11(_) => {}
+            Self::Wayland(w) => w.start_interactive_resize(edge),
+        }
+    }
+
+    #[inline]
+    pub fn post_close_requested(&mut self) {
+        match self {
+            Self::X11(w) => {
+                // Post CloseRequested event to X11 event queue
+                // (X11 event processing handles this)
+                let _ = w;
+            }
+            Self::Wayland(w) => {
+                w.post_close_requested();
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowResizeEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

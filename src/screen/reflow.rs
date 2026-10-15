@@ -23,11 +23,11 @@ impl Grid {
             wrapped: bool,
         }
 
-        let mut combined_rows: Vec<CombinedRow> = Vec::new();
-
         let len = self.scrollback.len();
         let reflow_window = self.scrollback.max_lines.max(1000);
         let start_idx = len.saturating_sub(reflow_window);
+        let expected_rows = (len - start_idx) + self.height;
+        let mut combined_rows: Vec<CombinedRow> = Vec::with_capacity(expected_rows);
 
         for i in start_idx..len {
             self.scrollback.with_row_slice(i, |cells, wrapped| {
@@ -75,7 +75,7 @@ impl Grid {
             hard_break: bool,
         }
 
-        let mut logical_lines: Vec<LogicalLine> = Vec::new();
+        let mut logical_lines: Vec<LogicalLine> = Vec::with_capacity(combined_rows.len());
         let mut cursor_logical_line_idx: usize = 0;
         let mut cursor_logical_cell_idx: usize = 0;
         let mut cursor_found = false;
@@ -155,14 +155,15 @@ impl Grid {
             wrapped: bool,
         }
 
+        #[inline(always)]
         fn pad_row(mut chunk: Vec<Cell>, new_w: usize, default_cell: Cell) -> Vec<Cell> {
-            while chunk.len() < new_w {
-                chunk.push(default_cell);
+            if chunk.len() < new_w {
+                chunk.resize(new_w, default_cell);
             }
             chunk
         }
 
-        let mut reflowed_rows: Vec<ReflowedRow> = Vec::new();
+        let mut reflowed_rows: Vec<ReflowedRow> = Vec::with_capacity(logical_lines.len() * 2);
         let mut new_cursor_row_idx: usize = 0;
         let mut new_cursor_col: usize = 0;
         let mut new_cursor_found = false;

@@ -1506,48 +1506,93 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
 #[test]
 fn test_software_renderer_csd_title_bar() {
     let mut renderer = setup_renderer(400, 200);
-    let csd_h = 32u32;
+    let csd_h = 38u32;
 
-    // 1. Render focused title bar
-    renderer.render_csd_title_bar("Velox - Shell", csd_h, true);
+    let layout = velox::window::csd::CsdButtonLayout::default();
 
-    // Framebuffer should have title bar drawn in rows 0..32
-    let bg_focused = renderer.palette.tab_bar_bg;
+    // 1. Render focused title bar with Close hovered (not maximized -> rounded corners)
+    renderer.render_csd_title_bar(
+        "Velox - Shell",
+        csd_h,
+        true,
+        false,
+        Some(velox::window::csd::CsdButtonType::Close),
+        None,
+        &layout,
+    );
+
     let border_color = renderer.palette.ansi_colors[8];
 
-    // Check bottom border at y = 31
+    // Check bottom border at y = 37
     assert_eq!(
-        renderer.framebuffer.pixels[31 * 400 + 10],
+        renderer.framebuffer.pixels[37 * 400 + 50],
         border_color,
-        "Row 31 must be the CSD bottom separator line"
+        "Row 37 must be the CSD bottom separator line"
     );
 
-    // Check background at top-left corner
+    // Top-left outer corner at (0, 0) is outside the 10px radius, so it must be transparent (0)
     assert_eq!(
         renderer.framebuffer.pixels[0],
+        0x00000000,
+        "Row 0 col 0 should be transparent (rounded corner)"
+    );
+
+    // Inside the titlebar (e.g. x = 50, y = 19), background should be drawn
+    let bg_focused = renderer.palette.tab_bar_bg;
+    assert_eq!(
+        renderer.framebuffer.pixels[19 * 400 + 50],
         bg_focused,
-        "Row 0 col 0 should have focused title bar background"
+        "Inside titlebar must have focused title bar background"
     );
 
-    // Row 32 (outside CSD title bar) must remain untouched (0)
+    // Close button center is at x = 400 - 22 = 378, y = 19.
+    // It is hovered, so it must render the GTK close red background (0x00E01B24)
+    // and white icon pixels (0x00FFFFFF).
+    let close_cx = 400 - 22;
+    let close_cy = 19;
+    let close_center_pixel = renderer.framebuffer.pixels[close_cy * 400 + close_cx];
+    assert!(
+        close_center_pixel == 0x00E01B24 || close_center_pixel == 0x00FFFFFF,
+        "Hovered close button must show GTK red pill or white cross glyph"
+    );
+
+    // Row 38 (outside CSD title bar) must remain untouched (0)
     assert_eq!(
-        renderer.framebuffer.pixels[32 * 400 + 10],
+        renderer.framebuffer.pixels[38 * 400 + 10],
         0,
-        "Row 32 must be untouched by CSD title bar"
+        "Row 38 must be untouched by CSD title bar"
     );
 
-    // 2. Render unfocused title bar
-    renderer.render_csd_title_bar("Velox - Shell", csd_h, false);
-    let bg_unfocused = renderer.palette.tab_inactive_bg;
+    // 2. Render unfocused title bar when maximized (square corners)
+    renderer.render_csd_title_bar(
+        "Velox - Shell",
+        csd_h,
+        false,
+        true, // maximized
+        None,
+        None,
+        &layout,
+    );
+    // Row 0 col 0 when maximized has top border line
     assert_eq!(
         renderer.framebuffer.pixels[0],
-        bg_unfocused,
-        "Row 0 col 0 should have unfocused title bar background"
+        border_color,
+        "Row 0 col 0 should have top border line when maximized"
     );
     assert_eq!(
-        renderer.framebuffer.pixels[31 * 400 + 10],
+        renderer.framebuffer.pixels[37 * 400 + 50],
         border_color,
-        "Row 31 must still have border line when unfocused"
+        "Row 37 must still have border line when unfocused"
+    );
+
+    // 3. Render CSD window borders
+    renderer.csd_height = csd_h;
+    renderer.render_csd_window_borders();
+    // Bottom-most row (y = 199) must have border color
+    assert_eq!(
+        renderer.framebuffer.pixels[199 * 400 + 50],
+        border_color,
+        "Bottom window edge must have border line"
     );
 }
 
@@ -1645,5 +1690,56 @@ fn test_software_renderer_tab_bar_with_csd_offset() {
         "Active tab body at y = 35 should have default_bg"
     );
 }
+
+#[test]
+fn test_csd_gtk_window_buttons_and_restore_icon() {
+    let mut renderer = setup_renderer(500, 200);
+    let csd_h = 38u32;
+    let layout = velox::window::csd::CsdButtonLayout::default();
+
+    // 1. Render when window is NOT maximized with Maximize button hovered
+    renderer.render_csd_title_bar(
+        "Velox",
+        csd_h,
+        true,
+        false, // not maximized
+        Some(velox::window::csd::CsdButtonType::Maximize),
+        None,
+        &layout,
+    );
+
+    let max_cx = 500 - 22 - 32; // 446
+    let max_cy = 19;
+    // Square outline has a border at y0 = 14, x in 442..=450
+    let border_px = renderer.framebuffer.pixels[14 * 500 + max_cx];
+    assert_eq!(
+        border_px, 0x00FFFFFF,
+        "Maximize button outline must be white when hovered"
+    );
+    // Center of square (446, 19) is hollow and has highlight background
+    let center_px = renderer.framebuffer.pixels[max_cy * 500 + max_cx];
+    assert_ne!(
+        center_px, 0x00FFFFFF,
+        "Center of unmaximized square must be hollow"
+    );
+
+    // 2. Render when window IS maximized (Restore state)
+    renderer.render_csd_title_bar(
+        "Velox",
+        csd_h,
+        true,
+        true, // maximized!
+        None,
+        None,
+        &layout,
+    );
+    // Back square top edge at by0 = 14, x = 447
+    let restore_top = renderer.framebuffer.pixels[14 * 500 + (max_cx + 1)];
+    assert_eq!(
+        restore_top, renderer.palette.default_fg,
+        "Restore icon back square top must be drawn"
+    );
+}
+
 
 

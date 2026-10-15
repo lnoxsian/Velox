@@ -172,6 +172,9 @@ pub struct WindowState {
     pub separator_color: Option<String>,
     pub active_separator_color: Option<String>,
     pub last_separator_drag_sync: Option<std::time::Instant>,
+    pub csd_button_layout: crate::window::csd::CsdButtonLayout,
+    pub hovered_csd_button: Option<crate::window::csd::CsdButtonType>,
+    pub pressed_csd_button: Option<crate::window::csd::CsdButtonType>,
 }
 
 impl Drop for WindowState {
@@ -977,7 +980,12 @@ impl WindowState {
                 &self.current_title,
                 csd_height,
                 self.is_focused,
+                self.window.is_maximized(),
+                self.hovered_csd_button,
+                self.pressed_csd_button,
+                &self.csd_button_layout,
             );
+            self.renderer.render_csd_window_borders();
         }
 
         self.window.present_frame(self.renderer.framebuffer.as_slice());
@@ -1204,6 +1212,9 @@ impl App {
             separator_color,
             active_separator_color,
             last_separator_drag_sync: None,
+            csd_button_layout: crate::window::csd::CsdButtonLayout::detect_system(),
+            hovered_csd_button: None,
+            pressed_csd_button: None,
         };
 
         window_state.window.set_opacity(window_state.opacity);

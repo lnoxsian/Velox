@@ -219,8 +219,49 @@ impl WindowState {
             return;
         }
 
+        if self.window.uses_csd() && !self.is_mouse_down {
+            let win_size = self.window.inner_size();
+            let border_thickness = 5.0f32;
+            if let Some(edge) = crate::window::csd::detect_resize_edge(
+                self.mouse_x as f32,
+                self.mouse_y as f32,
+                win_size.width,
+                win_size.height,
+                border_thickness,
+            ) {
+                let cursor = match edge {
+                    crate::window::WindowResizeEdge::Left | crate::window::WindowResizeEdge::Right => {
+                        crate::window::event::CursorIcon::ColResize
+                    }
+                    crate::window::WindowResizeEdge::Top | crate::window::WindowResizeEdge::Bottom => {
+                        crate::window::event::CursorIcon::RowResize
+                    }
+                    crate::window::WindowResizeEdge::TopLeft
+                    | crate::window::WindowResizeEdge::BottomRight
+                    | crate::window::WindowResizeEdge::TopRight
+                    | crate::window::WindowResizeEdge::BottomLeft => {
+                        crate::window::event::CursorIcon::Default
+                    }
+                };
+                self.set_cursor_cached(cursor);
+                return;
+            }
+        }
+
         let csd_h = self.window.csd_title_bar_height() as f64;
         if csd_h > 0.0 && self.mouse_y < csd_h {
+            let win_w = self.window.width();
+            let hit = self.csd_button_layout.hit_test(
+                self.mouse_x as f32,
+                self.mouse_y as f32,
+                win_w,
+                csd_h as u32,
+            );
+            if hit != self.hovered_csd_button {
+                self.hovered_csd_button = hit;
+                self.needs_redraw = true;
+            }
+
             let old_hovered_tab = self.tab_bar.hovered_tab;
             let old_hovered_close = self.tab_bar.hovered_close;
             let old_hovered_new = self.tab_bar.hovered_new_tab;
@@ -232,7 +273,14 @@ impl WindowState {
                 self.tab_bar_dirty = true;
                 self.needs_redraw = true;
             }
+            if self.hovered_separator.is_some() {
+                self.hovered_separator = None;
+                self.needs_redraw = true;
+            }
             return;
+        } else if self.hovered_csd_button.is_some() {
+            self.hovered_csd_button = None;
+            self.needs_redraw = true;
         }
 
         let tab_bar_h = self.tab_bar_height() as f64;
@@ -512,10 +560,58 @@ impl WindowState {
         if state == ElementState::Pressed {
             let csd_h = self.window.csd_title_bar_height() as f64;
             if csd_h > 0.0 && self.mouse_y < csd_h {
+                if button == MouseButton::Right {
+                    self.window.show_window_menu(self.mouse_x as i32, self.mouse_y as i32);
+                    return;
+                }
                 if button == MouseButton::Left {
-                    self.window.start_interactive_move();
+                    let win_w = self.window.width();
+                    let hit = self.csd_button_layout.hit_test(
+                        self.mouse_x as f32,
+                        self.mouse_y as f32,
+                        win_w,
+                        csd_h as u32,
+                    );
+                    if let Some(btn_type) = hit {
+                        self.pressed_csd_button = Some(btn_type);
+                        self.needs_redraw = true;
+                    } else {
+                        let now = std::time::Instant::now();
+                        let is_double_click = if let Some(last_time) = self.last_click_instant {
+                            self.last_click_pos == (usize::MAX, usize::MAX)
+                                && self.last_click_pane_id.is_none()
+                                && last_time.elapsed().as_millis() < 400
+                        } else {
+                            false
+                        };
+                        self.last_click_instant = Some(now);
+                        self.last_click_pos = (usize::MAX, usize::MAX);
+                        self.last_click_pane_id = None;
+
+                        if is_double_click {
+                            self.window.toggle_maximize();
+                            self.needs_redraw = true;
+                        } else {
+                            self.window.start_interactive_move();
+                        }
+                    }
                 }
                 return;
+            }
+
+            if self.window.uses_csd() && button == MouseButton::Left {
+                let win_size = self.window.inner_size();
+                let border_thickness = 5.0f32;
+                if let Some(edge) = crate::window::csd::detect_resize_edge(
+                    self.mouse_x as f32,
+                    self.mouse_y as f32,
+                    win_size.width,
+                    win_size.height,
+                    border_thickness,
+                ) {
+                    self.window.start_interactive_resize(edge);
+                    return;
+                }
             }
 
             let tab_bar_h = self.tab_bar_height() as f64;
@@ -794,6 +890,34 @@ impl WindowState {
         } else {
             // ── Mouse Button Release ─────────────────────────────────────────
             self.is_mouse_down = false;
+
+            if let Some(pressed_btn) = self.pressed_csd_button.take() {
+                self.needs_redraw = true;
+                let csd_h = self.window.csd_title_bar_height() as f64;
+                if csd_h > 0.0 && self.mouse_y < csd_h {
+                    let win_w = self.window.width();
+                    let hit = self.csd_button_layout.hit_test(
+                        self.mouse_x as f32,
+                        self.mouse_y as f32,
+                        win_w,
+                        csd_h as u32,
+                    );
+                    if hit == Some(pressed_btn) {
+                        match pressed_btn {
+                            crate::window::csd::CsdButtonType::Close => {
+                                self.window.post_close_requested();
+                            }
+                            crate::window::csd::CsdButtonType::Maximize => {
+                                self.window.toggle_maximize();
+                            }
+                            crate::window::csd::CsdButtonType::Minimize => {
+                                self.window.minimize();
+                            }
+                        }
+                    }
+                }
+                return;
+            }
 
             if self.dragging_separator.take().is_some() {
                 self.last_separator_drag_sync = None;

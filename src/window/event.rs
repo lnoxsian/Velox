@@ -46,7 +46,7 @@ impl ModifiersState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CursorIcon {
     Default,
     Pointer,

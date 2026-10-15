@@ -593,7 +593,17 @@ impl CpuRenderer {
         }
     }
 
-    pub fn render_csd_title_bar(&mut self, title: &str, csd_height: u32, is_focused: bool) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_csd_title_bar(
+        &mut self,
+        title: &str,
+        csd_height: u32,
+        is_focused: bool,
+        is_maximized: bool,
+        hovered_button: Option<crate::window::csd::CsdButtonType>,
+        pressed_button: Option<crate::window::csd::CsdButtonType>,
+        button_layout: &crate::window::csd::CsdButtonLayout,
+    ) {
         if csd_height == 0 {
             return;
         }
@@ -604,21 +614,94 @@ impl CpuRenderer {
             self.palette.tab_inactive_bg
         };
 
-        // Fill title bar background
-        self.framebuffer
-            .fill_span(0, 0, self.viewport_width, csd_height, bar_bg);
-
-        // Draw a 1px bottom border line separating title bar from tab bar or panes
+        let w = self.viewport_width;
         let border_color = self.palette.ansi_colors[8];
-        self.framebuffer
-            .fill_span(0, csd_height.saturating_sub(1), self.viewport_width, 1, border_color);
 
-        // Render title text centered horizontally and vertically
+        // 1. Fill title bar background
+        self.framebuffer
+            .fill_span(0, 0, w, csd_height, bar_bg);
+
+        // 2. Render rounded top corners when not maximized (GTK Adwaita 10px radius)
+        if !is_maximized && w >= 24 && csd_height >= 12 {
+            let r = 10.0f32;
+            let r_sq = r * r;
+            let r_inner_sq = (r - 1.2) * (r - 1.2);
+            let stride = self.framebuffer.stride;
+
+            // Top-left corner
+            for py in 0..10 {
+                for px in 0..10 {
+                    let dx = 9.5 - px as f32;
+                    let dy = 9.5 - py as f32;
+                    let d_sq = dx * dx + dy * dy;
+                    let idx = py * stride + px;
+                    if d_sq > r_sq {
+                        self.framebuffer.pixels[idx] = 0x00000000; // Transparent corner outside window
+                    } else if d_sq >= r_inner_sq {
+                        self.framebuffer.pixels[idx] = border_color; // Border arc
+                    }
+                }
+            }
+
+            // Top-right corner
+            for py in 0..10 {
+                for rx in 0..10 {
+                    let px = (w - 10) + rx as u32;
+                    let dx = rx as f32 - 0.5;
+                    let dy = 9.5 - py as f32;
+                    let d_sq = dx * dx + dy * dy;
+                    let idx = py * stride + (px as usize);
+                    if d_sq > r_sq {
+                        self.framebuffer.pixels[idx] = 0x00000000; // Transparent corner outside window
+                    } else if d_sq >= r_inner_sq {
+                        self.framebuffer.pixels[idx] = border_color; // Border arc
+                    }
+                }
+            }
+
+            // Top border line between corners
+            let top_border_span = w.saturating_sub(20);
+            if top_border_span > 0 {
+                self.framebuffer.fill_span(10, 0, top_border_span, 1, border_color);
+            }
+        } else {
+            // Maximized: square 1px top border line
+            self.framebuffer.fill_span(0, 0, w, 1, border_color);
+        }
+
+        // 3. Draw 1px bottom border line separating title bar from tab bar or panes
+        self.framebuffer
+            .fill_span(0, csd_height.saturating_sub(1), w, 1, border_color);
+
+        // 4. Render GTK Window Control Buttons
+        let button_rects = button_layout.compute_button_rects(w, csd_height);
+        for rect in &button_rects {
+            let cx = rect.center_x.round() as i32;
+            let cy = rect.center_y.round() as i32;
+            let is_hovered = hovered_button == Some(rect.button_type);
+            let is_pressed = pressed_button == Some(rect.button_type);
+
+            self.render_gtk_window_button(
+                rect.button_type,
+                cx,
+                cy,
+                is_hovered,
+                is_pressed,
+                is_focused,
+                is_maximized,
+                bar_bg,
+            );
+        }
+
+        // 5. Render Centered Title Text with Safe Bounds
+        let (safe_min_x, safe_max_x) = button_layout.safe_title_bounds(w, csd_height);
+        let safe_width = (safe_max_x - safe_min_x).max(0.0);
+
         let tab_cw = self.tab_glyph_cache.cell_width;
         let tab_ch = self.tab_glyph_cache.cell_height;
-        let max_chars = ((self.viewport_width as f32 - 16.0) / tab_cw as f32).floor() as usize;
 
-        if max_chars > 0 && !title.is_empty() {
+        if safe_width > tab_cw as f32 && !title.is_empty() {
+            let max_chars = (safe_width / tab_cw as f32).floor() as usize;
             let display_title: String = if title.chars().count() > max_chars {
                 let mut t: String = title.chars().take(max_chars.saturating_sub(1)).collect();
                 t.push('…');
@@ -628,7 +711,10 @@ impl CpuRenderer {
             };
 
             let title_pixel_width = display_title.chars().count() as u32 * tab_cw;
-            let text_x = (self.viewport_width.saturating_sub(title_pixel_width)) / 2;
+            let ideal_x = (w.saturating_sub(title_pixel_width)) / 2;
+            let text_x = (ideal_x as f32)
+                .clamp(safe_min_x, (safe_max_x - title_pixel_width as f32).max(safe_min_x))
+                as u32;
             let text_y = (csd_height.saturating_sub(tab_ch)) / 2;
 
             let text_fg = if is_focused {
@@ -640,6 +726,182 @@ impl CpuRenderer {
             for (i, ch) in display_title.chars().enumerate() {
                 let x = text_x + (i as u32) * tab_cw;
                 self.blit_tab_char(ch, x, text_y, text_fg);
+            }
+        }
+    }
+
+    pub fn render_csd_window_borders(&mut self) {
+        if self.csd_height == 0 {
+            return;
+        }
+        let border_color = self.palette.ansi_colors[8];
+        let w = self.viewport_width;
+        let h = self.viewport_height;
+        if w < 2 || h < 2 {
+            return;
+        }
+        // Left border
+        self.framebuffer
+            .fill_span(0, self.csd_height, 1, h.saturating_sub(self.csd_height), border_color);
+        // Right border
+        self.framebuffer
+            .fill_span(w.saturating_sub(1), self.csd_height, 1, h.saturating_sub(self.csd_height), border_color);
+        // Bottom border
+        self.framebuffer
+            .fill_span(0, h.saturating_sub(1), w, 1, border_color);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_gtk_window_button(
+        &mut self,
+        btn_type: crate::window::csd::CsdButtonType,
+        cx: i32,
+        cy: i32,
+        is_hovered: bool,
+        is_pressed: bool,
+        is_focused: bool,
+        is_maximized: bool,
+        bar_bg: u32,
+    ) {
+        use crate::window::csd::CsdButtonType;
+        use crate::renderer::raster::blend_alpha;
+
+        let width = self.viewport_width as i32;
+        let height = self.viewport_height as i32;
+        let stride = self.framebuffer.stride;
+
+        // 1. Draw circular background button pill (diameter = 24px, radius = 12px)
+        let r = 12;
+        let r_inner_sq = (r - 1) * (r - 1);
+        let r_outer_sq = r * r;
+
+        let bg_color = if is_hovered || is_pressed {
+            match btn_type {
+                CsdButtonType::Close => {
+                    if is_pressed {
+                        0x00B2161E // GTK active pressed red
+                    } else {
+                        0x00E01B24 // GTK Adwaita close hover red
+                    }
+                }
+                CsdButtonType::Maximize | CsdButtonType::Minimize => {
+                    let alpha = if is_pressed { 65 } else { 38 };
+                    blend_alpha(bar_bg, 0x00FFFFFF, alpha)
+                }
+            }
+        } else {
+            // Subtle idle circular button disk for native GTK / Mint styling
+            let alpha = if is_focused { 18 } else { 10 };
+            blend_alpha(bar_bg, 0x00FFFFFF, alpha)
+        };
+
+        for dy in -r..=r {
+            let py = cy + dy;
+            if py < 0 || py >= height {
+                continue;
+            }
+            for dx in -r..=r {
+                let px = cx + dx;
+                if px < 0 || px >= width {
+                    continue;
+                }
+                let d_sq = dx * dx + dy * dy;
+                let idx = (py as usize) * stride + (px as usize);
+                if d_sq <= r_inner_sq {
+                    self.framebuffer.pixels[idx] = bg_color;
+                } else if d_sq <= r_outer_sq {
+                    let existing = self.framebuffer.pixels[idx];
+                    let alpha = (((r_outer_sq - d_sq) as u32 * 255)
+                        / (r_outer_sq - r_inner_sq).max(1) as u32)
+                        .min(255) as u8;
+                    self.framebuffer.pixels[idx] = blend_alpha(existing, bg_color, alpha);
+                }
+            }
+        }
+
+        // 2. Icon Foreground Color
+        let icon_fg = if is_hovered || is_pressed {
+            0x00FFFFFF
+        } else if is_focused {
+            self.palette.default_fg
+        } else {
+            self.palette.tab_inactive_fg
+        };
+
+        let mut put_pixel = |x: i32, y: i32, color: u32| {
+            if x >= 0 && x < width && y >= 0 && y < height {
+                self.framebuffer.pixels[(y as usize) * stride + (x as usize)] = color;
+            }
+        };
+
+        match btn_type {
+            CsdButtonType::Close => {
+                // GTK crisp diagonal cross (2px stroke thickness)
+                for d in -4..=4 {
+                    put_pixel(cx + d, cy + d, icon_fg);
+                    put_pixel(cx + d + 1, cy + d, icon_fg);
+                    put_pixel(cx + d, cy - d, icon_fg);
+                    put_pixel(cx + d + 1, cy - d, icon_fg);
+                }
+            }
+            CsdButtonType::Minimize => {
+                // 10px wide by 2px tall horizontal line
+                for y in (cy + 3)..=(cy + 4) {
+                    for x in (cx - 5)..=(cx + 4) {
+                        put_pixel(x, y, icon_fg);
+                    }
+                }
+            }
+            CsdButtonType::Maximize => {
+                if !is_maximized {
+                    // Single 10x10 square outline with rounded corners
+                    let x0 = cx - 5;
+                    let x1 = cx + 4;
+                    let y0 = cy - 5;
+                    let y1 = cy + 4;
+
+                    for x in (x0 + 1)..=x1 {
+                        put_pixel(x, y0, icon_fg);
+                        put_pixel(x, y1, icon_fg);
+                    }
+                    for y in (y0 + 1)..=y1 {
+                        put_pixel(x0, y, icon_fg);
+                        put_pixel(x1, y, icon_fg);
+                    }
+                } else {
+                    // Two overlapping restore squares (GTK restore icon)
+                    let bx0 = cx - 1;
+                    let bx1 = cx + 5;
+                    let by0 = cy - 5;
+                    let by1 = cy + 1;
+
+                    let fx0 = cx - 5;
+                    let fx1 = cx + 1;
+                    let fy0 = cy - 1;
+                    let fy1 = cy + 5;
+
+                    for x in bx0..=bx1 {
+                        put_pixel(x, by0, icon_fg);
+                    }
+                    for y in by0..=by1 {
+                        put_pixel(bx1, y, icon_fg);
+                    }
+                    for x in (fx1 + 1)..=bx1 {
+                        put_pixel(x, by1, icon_fg);
+                    }
+                    for y in by0..=(fy0 - 1) {
+                        put_pixel(bx0, y, icon_fg);
+                    }
+
+                    for x in fx0..=fx1 {
+                        put_pixel(x, fy0, icon_fg);
+                        put_pixel(x, fy1, icon_fg);
+                    }
+                    for y in fy0..=fy1 {
+                        put_pixel(fx0, y, icon_fg);
+                        put_pixel(fx1, y, icon_fg);
+                    }
+                }
             }
         }
     }
