@@ -21,7 +21,7 @@ png = "0.17"
 owned_ttf_parser = "0.25"
 memmap2 = "0.9"
 ahash = "0.8"
-x11rb = { version = "0.14.0", default-features = false, features = ["shm", "randr"] }
+x11rb = { version = "0.14.0", default-features = false, features = ["shm", "randr", "cursor", "resource_manager"] }
 wayland-client = { version = "0.31.15", default-features = false }
 wayland-protocols = { version = "0.32.13", default-features = false, features = ["client", "staging", "unstable"] }
 xkbcommon-dl = "0.4.2"

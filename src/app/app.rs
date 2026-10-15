@@ -445,7 +445,8 @@ impl WindowState {
         let cols = ((avail_w as u32) / self.base_cell_width.max(1)).max(1);
         let rows = ((avail_h as u32) / self.base_cell_height.max(1)).max(1);
 
-        let pty_master = Arc::new(spawn_process(&self.shell_path, None, None).ok()?);
+        let cwd = self.active_pane().current_working_directory();
+        let pty_master = Arc::new(spawn_process(&self.shell_path, None, cwd.as_deref()).ok()?);
         let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::new(cols as usize, rows as usize);
@@ -595,6 +596,14 @@ impl WindowState {
         custom_title: Option<String>,
         hold: Option<bool>,
     ) -> u64 {
+        let working_directory = working_directory.or_else(|| {
+            if !self.tabs.is_empty() {
+                self.active_pane().current_working_directory()
+            } else {
+                None
+            }
+        });
+
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
         let pane_id = self.next_pane_id;
@@ -1288,6 +1297,15 @@ impl App {
                 title,
                 hold,
             } => {
+                let working_directory = working_directory.or_else(|| {
+                    self.windows.values().next().and_then(|ws| {
+                        if !ws.tabs.is_empty() {
+                            ws.active_pane().current_working_directory()
+                        } else {
+                            None
+                        }
+                    })
+                });
                 let _ = self.create_window(working_directory, command, title, hold);
             }
             CustomEvent::IpcCreateTab {
@@ -1322,7 +1340,14 @@ impl App {
                             break;
                         }
                         PlatformEvent::ModifiersChanged(mods) => {
+                            let old_mods = self.modifiers;
                             self.modifiers = mods;
+                            if old_mods.control_key() != mods.control_key()
+                                || old_mods.shift_key() != mods.shift_key()
+                            {
+                                ws.last_mouse_cell = (usize::MAX, usize::MAX);
+                                ws.handle_cursor_moved((ws.mouse_x, ws.mouse_y), self.modifiers);
+                            }
                         }
                         PlatformEvent::Focused(focused) => {
                             ws.is_focused = focused;

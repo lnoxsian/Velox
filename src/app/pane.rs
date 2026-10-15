@@ -122,4 +122,18 @@ impl Pane {
 
         false
     }
+
+    /// Returns the current working directory of the process running in this pane.
+    /// Checks OS /proc status first, falling back to OSC 7 shell integration.
+    pub fn current_working_directory(&self) -> Option<String> {
+        if let Some(cwd) = self.pty_master.get_foreground_process_cwd() {
+            return Some(cwd);
+        }
+        if let Some(ref cwd) = self.terminal.current_dir {
+            if std::path::Path::new(cwd).is_dir() {
+                return Some(cwd.clone());
+            }
+        }
+        None
+    }
 }

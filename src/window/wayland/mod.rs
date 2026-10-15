@@ -153,6 +153,15 @@ impl WaylandWindow {
             }
         }
 
+        unsafe {
+            if std::env::var("DESKTOP_STARTUP_ID").is_ok() {
+                std::env::remove_var("DESKTOP_STARTUP_ID");
+            }
+            if std::env::var("XDG_ACTIVATION_TOKEN").is_ok() {
+                std::env::remove_var("XDG_ACTIVATION_TOKEN");
+            }
+        }
+
         Ok(Self {
             conn,
             event_queue,

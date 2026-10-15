@@ -32,6 +32,37 @@ fn pane_cell_coords(
 }
 
 #[inline(always)]
+fn pane_coords_if_in_text(
+    pane_rect: &crate::app::split::PaneRect,
+    mouse_x: f64,
+    mouse_y: f64,
+) -> Option<(usize, usize)> {
+    let cw = pane_rect.cell_width as f64;
+    let ch = pane_rect.cell_height as f64;
+    if cw <= 0.0 || ch <= 0.0 {
+        return None;
+    }
+    let px = (pane_rect.x + pane_rect.padding_x) as f64;
+    let py = (pane_rect.y + pane_rect.padding_y) as f64;
+    let max_w = cw * (pane_rect.cols as f64);
+    let max_h = ch * (pane_rect.rows as f64);
+
+    let rel_x = mouse_x - px;
+    let rel_y = mouse_y - py;
+
+    if rel_x >= 0.0 && rel_x < max_w && rel_y >= 0.0 && rel_y < max_h {
+        let col = (rel_x / cw).floor() as usize;
+        let row = (rel_y / ch).floor() as usize;
+        Some((
+            col.min(pane_rect.cols.saturating_sub(1)),
+            row.min(pane_rect.rows.saturating_sub(1)),
+        ))
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
 fn apply_mouse_modifiers(btn: u8, modifiers: ModifiersState) -> usize {
     let mut btn_code = btn as usize;
     if modifiers.shift_key() {
@@ -274,11 +305,15 @@ impl WindowState {
         let hit_pane_rect = pane_rects
             .iter()
             .find(|r| r.contains(self.mouse_x as f32, self.mouse_y as f32))
-            .copied()
-            .or_else(|| pane_rects.first().copied());
+            .copied();
 
         if let Some(pane_rect) = hit_pane_rect {
-            let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
+            let Some((col_idx, row_idx)) =
+                pane_coords_if_in_text(&pane_rect, self.mouse_x, self.mouse_y)
+            else {
+                self.set_cursor_cached(crate::window::event::CursorIcon::Default);
+                return;
+            };
 
             if self.last_mouse_pane_id != Some(pane_rect.pane_id)
                 || (col_idx, row_idx) != self.last_mouse_cell
@@ -292,7 +327,7 @@ impl WindowState {
                         let mouse_mode = pane.terminal.mouse_mode;
                         let mouse_sgr = pane.terminal.mouse_sgr;
 
-                        let is_link = if mouse_mode == 0 {
+                        let is_link = if mouse_mode == 0 || modifiers.shift_key() {
                             let active_grid = if pane.terminal.is_alt_screen {
                                 &pane.terminal.alt_grid
                             } else {
@@ -301,41 +336,7 @@ impl WindowState {
                             let offset = active_grid.scroll_offset;
                             let history_len = active_grid.scrollback.len();
                             let y_offset = (row_idx + history_len).saturating_sub(offset);
-                            let mut link_found =
-                                active_grid.hyperlink_at(col_idx, y_offset).is_some();
-                            if !link_found {
-                                let line_text: String = if y_offset < history_len {
-                                    active_grid
-                                        .scrollback
-                                        .with_row_slice(y_offset, |cells, _| {
-                                            cells.iter().map(|c| c.character).collect()
-                                        })
-                                        .unwrap_or_default()
-                                } else {
-                                    let y = y_offset - history_len;
-                                    if y < active_grid.height {
-                                        let physical_y = active_grid.physical_row(y);
-                                        let src_start = physical_y * active_grid.width;
-                                        let src_end = src_start + active_grid.width;
-                                        active_grid.cells
-                                            [src_start..src_end.min(active_grid.cells.len())]
-                                            .iter()
-                                            .map(|c| c.character)
-                                            .collect()
-                                    } else {
-                                        String::new()
-                                    }
-                                };
-                                crate::hyperlink::detector::for_each_url(
-                                    &line_text,
-                                    |start_col, end_col| {
-                                        if col_idx >= start_col && col_idx < end_col {
-                                            link_found = true;
-                                        }
-                                    },
-                                );
-                            }
-                            link_found
+                            active_grid.has_url_at(col_idx, y_offset)
                         } else {
                             false
                         };
@@ -353,7 +354,7 @@ impl WindowState {
                 if let (Some(mouse_mode), Some(mouse_sgr), Some(pty_master)) =
                     (mouse_mode, mouse_sgr, pty_master)
                 {
-                    if mouse_mode == 0 {
+                    if mouse_mode == 0 || modifiers.shift_key() {
                         if is_link {
                             self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
                         } else {
@@ -370,6 +371,8 @@ impl WindowState {
                     }
                 }
             }
+        } else {
+            self.set_cursor_cached(crate::window::event::CursorIcon::Default);
         }
     }
 
@@ -647,41 +650,10 @@ impl WindowState {
                             let history_len = active_grid.scrollback.len();
                             let y_offset = (row_idx + history_len).saturating_sub(offset);
 
-                            let line_text: String = if y_offset < history_len {
-                                active_grid
-                                    .scrollback
-                                    .with_row_slice(y_offset, |cells, _| {
-                                        cells.iter().map(|c| c.character).collect()
-                                    })
-                                    .unwrap_or_default()
-                            } else {
-                                let y = y_offset - history_len;
-                                if y < active_grid.height {
-                                    let physical_y = active_grid.physical_row(y);
-                                    let src_start = physical_y * grid_width;
-                                    let src_end = src_start + grid_width;
-                                    active_grid.cells
-                                        [src_start..src_end.min(active_grid.cells.len())]
-                                        .iter()
-                                        .map(|c| c.character)
-                                        .collect()
-                                } else {
-                                    String::new()
-                                }
-                            };
                             if modifiers.control_key() {
-                                if let Some(link) = active_grid.hyperlink_at(col_idx, y_offset) {
-                                    let _ = crate::hyperlink::detector::open(&link.url);
+                                if let Some(url) = active_grid.hyperlink_url_at(col_idx, y_offset) {
+                                    let _ = crate::hyperlink::detector::open(&url);
                                     url_opened = true;
-                                } else {
-                                    let urls = crate::hyperlink::detector::detect(&line_text);
-                                    for (start, end, url) in urls {
-                                        if col_idx >= start && col_idx < end {
-                                            let _ = crate::hyperlink::detector::open(url);
-                                            url_opened = true;
-                                            break;
-                                        }
-                                    }
                                 }
                             }
 
@@ -852,6 +824,92 @@ impl WindowState {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::app::App;
+    use crate::cli::CliOptions;
+    use crate::window::event::CursorIcon;
+
+    #[test]
+    fn test_mouse_hover_over_detected_url() {
+        if let Ok(mut app) = App::new(CliOptions::default()) {
+            if let Ok(wid) = app.create_window(None, None, None, None) {
+                let ws = app.windows.get_mut(&wid).unwrap();
+                let pane = ws.active_pane_mut();
+                pane.terminal
+                    .feed(b"Visit https://github.com/rust-lang/rust here\r\n");
+
+                let (pane_rects, _) = ws.recalculate_panes_layout(ws.active_tab_index);
+                let pane_rect = &pane_rects[0];
+                let px = (pane_rect.x + pane_rect.padding_x) as f64;
+                let py = (pane_rect.y + pane_rect.padding_y) as f64;
+                let cw = pane_rect.cell_width as f64;
+                let ch = pane_rect.cell_height as f64;
+
+                // Move over non-URL text first (e.g. col 1 "isit")
+                let text_x = px + cw * 1.0 + cw * 0.5;
+                let text_y = py + ch * 0.0 + ch * 0.5;
+                ws.handle_cursor_moved((text_x, text_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Text);
+
+                // Move over URL (e.g. col 10 "https://gi...")
+                let url_x = px + cw * 10.0 + cw * 0.5;
+                let url_y = py + ch * 0.0 + ch * 0.5;
+                ws.handle_cursor_moved((url_x, url_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Pointer);
+
+                // Move over padding / window margin -> should be Default
+                ws.handle_cursor_moved((px - 5.0, py + 10.0), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Default);
+
+                // Test with Unicode prompt line containing multi-byte characters
+                let pane_mut = ws.active_pane_mut();
+                pane_mut.terminal.feed("Velox on  main ❯ echo https://velox.dev/test\r\n".as_bytes());
+
+                let prompt_line_y = py + ch * 1.0 + ch * 0.5;
+                // Move over 'V' of "Velox" (col 0) -> Text
+                ws.handle_cursor_moved((px + cw * 0.5, prompt_line_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Text);
+
+                // Move over 'h' of "https://velox.dev/test"
+                // "Velox on  main ❯ echo " has 24 chars (cols 0..23)
+                // "https://velox.dev/test" starts at col 24
+                let link_x = px + cw * 25.0 + cw * 0.5;
+                ws.handle_cursor_moved((link_x, prompt_line_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Pointer);
+
+                // Move past the link into empty space on that row -> Text
+                let past_link_x = px + cw * 50.0 + cw * 0.5;
+                ws.handle_cursor_moved((past_link_x, prompt_line_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Text);
+
+                // Test with a soft-wrapped URL across rows
+                // Narrow the active pane or feed a long URL that wraps across lines
+                let pane_mut = ws.active_pane_mut();
+                let width = pane_mut.terminal.grid.width;
+                // Pad so the URL starts near the end of line 2 and wraps onto line 3
+                let padding_spaces = " ".repeat(width - 10);
+                let wrapped_link = "https://github.com/rust-lang/rust/issues/1234567890";
+                pane_mut.terminal.feed(format!("{}{}\r\n", padding_spaces, wrapped_link).as_bytes());
+
+                let wrap_row_1_y = py + ch * 2.0 + ch * 0.5;
+                let wrap_row_2_y = py + ch * 3.0 + ch * 0.5;
+
+                // On wrap_row_1, col (width - 5) is within the first part of the link
+                let part1_x = px + cw * (width as f64 - 5.0) + cw * 0.5;
+                ws.handle_cursor_moved((part1_x, wrap_row_1_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Pointer);
+
+                // On wrap_row_2, col 5 is within the continuation of the link
+                let part2_x = px + cw * 5.0 + cw * 0.5;
+                ws.handle_cursor_moved((part2_x, wrap_row_2_y), ModifiersState::empty());
+                assert_eq!(ws.current_cursor_icon, CursorIcon::Pointer);
             }
         }
     }

@@ -676,3 +676,27 @@ fn test_software_renderer_renders_sharp_tab_bar_when_terminal_small() {
         "Tab bar must render visible pixels with decoupled tab glyph cache"
     );
 }
+
+#[test]
+fn test_pane_current_working_directory_detection() {
+    use velox::app::pane::Pane;
+    use velox::terminal::terminal::Terminal;
+
+    let mut pane = Pane::dummy();
+    assert_eq!(pane.current_working_directory(), None);
+
+    // Test OSC 7 fallback
+    pane.terminal.current_dir = Some("/tmp".to_string());
+    assert_eq!(pane.current_working_directory(), Some("/tmp".to_string()));
+
+    // Test spawned PTY process CWD inspection via /proc
+    let pty = velox::pty::process::spawn_process("/bin/sh", None, Some("/tmp")).unwrap();
+    let spawned_pane = Pane::new(1, std::sync::Arc::new(pty), Terminal::new(80, 24), 14.0, false);
+    let cwd = spawned_pane.current_working_directory();
+    assert!(cwd.is_some(), "Spawned process should report valid CWD");
+    let cwd_path = std::path::PathBuf::from(cwd.unwrap());
+    assert!(
+        cwd_path.ends_with("tmp") || cwd_path == std::path::Path::new("/tmp"),
+        "CWD must resolve to /tmp"
+    );
+}

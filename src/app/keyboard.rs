@@ -185,45 +185,7 @@ impl WindowState {
 
                 if let Key::Character(s) = logical_key {
                     match s.as_str() {
-                        "1" => {
-                            self.switch_tab(0);
-                            return false;
-                        }
-                        "2" => {
-                            self.switch_tab(1);
-                            return false;
-                        }
-                        "3" => {
-                            self.switch_tab(2);
-                            return false;
-                        }
-                        "4" => {
-                            self.switch_tab(3);
-                            return false;
-                        }
-                        "5" => {
-                            self.switch_tab(4);
-                            return false;
-                        }
-                        "6" => {
-                            self.switch_tab(5);
-                            return false;
-                        }
-                        "7" => {
-                            self.switch_tab(6);
-                            return false;
-                        }
-                        "8" => {
-                            self.switch_tab(7);
-                            return false;
-                        }
-                        "9" => {
-                            if !self.tabs.is_empty() {
-                                self.switch_tab(self.tabs.len() - 1);
-                            }
-                            return false;
-                        }
-                        "+" | "=" => {
+                        "+" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size + 1.0;
                             self.set_font_size(new_size);

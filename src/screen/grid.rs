@@ -227,6 +227,179 @@ impl Grid {
         self.hyperlinks.get(abs_row, col)
     }
 
+    pub fn is_row_wrapped(&self, abs_row: usize) -> bool {
+        let history_len = self.scrollback.len();
+        if abs_row < history_len {
+            self.scrollback
+                .with_row_slice(abs_row, |_cells, wrapped| wrapped)
+                .unwrap_or(false)
+        } else {
+            let grid_y = abs_row - history_len;
+            if grid_y < self.height {
+                let physical_y = self.physical_row(grid_y);
+                self.row_wrapped.get(physical_y).copied().unwrap_or(false)
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn with_row_cells<R>(&self, abs_row: usize, f: impl FnOnce(&[Cell]) -> R) -> Option<R> {
+        let history_len = self.scrollback.len();
+        if abs_row < history_len {
+            self.scrollback.with_row_slice(abs_row, |cells, _wrapped| f(cells))
+        } else {
+            let grid_y = abs_row - history_len;
+            if grid_y < self.height {
+                let physical_y = self.physical_row(grid_y);
+                let start = physical_y * self.width;
+                let end = (start + self.width).min(self.cells.len());
+                if start < self.cells.len() {
+                    Some(f(&self.cells[start..end]))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Checks if a cell at `(col, abs_row)` has an explicit OSC-8 hyperlink or detected URL.
+    /// Highly optimized for mouse hover: avoids string allocations for unwrapped rows without triggers.
+    pub fn has_url_at(&self, col: usize, abs_row: usize) -> bool {
+        if self.hyperlink_at(col, abs_row).is_some() {
+            return true;
+        }
+
+        let total_lines = self.scrollback.len() + self.height;
+        if abs_row >= total_lines || self.width == 0 {
+            return false;
+        }
+
+        let is_prev_wrapped = abs_row > 0 && self.is_row_wrapped(abs_row - 1);
+        let is_curr_wrapped = self.is_row_wrapped(abs_row);
+
+        if !is_prev_wrapped && !is_curr_wrapped {
+            let has_trigger = self
+                .with_row_cells(abs_row, |cells| {
+                    cells.iter().any(|c| c.character == ':' || c.character == '.')
+                })
+                .unwrap_or(false);
+
+            if !has_trigger {
+                return false;
+            }
+
+            let mut text = String::with_capacity(self.width);
+            let _ = self.with_row_cells(abs_row, |cells| {
+                for c in cells {
+                    text.push(c.character);
+                }
+            });
+
+            return crate::hyperlink::detector::is_url_at(&text, col);
+        }
+
+        let mut start_r = abs_row;
+        while start_r > 0 && self.is_row_wrapped(start_r - 1) {
+            start_r -= 1;
+        }
+
+        let mut end_r = abs_row;
+        while end_r + 1 < total_lines && self.is_row_wrapped(end_r) {
+            end_r += 1;
+        }
+
+        let mut logical_text = String::with_capacity((end_r - start_r + 1) * self.width);
+        for r in start_r..=end_r {
+            let _ = self.with_row_cells(r, |cells| {
+                for c in cells {
+                    logical_text.push(c.character);
+                }
+                for _ in cells.len()..self.width {
+                    logical_text.push(' ');
+                }
+            });
+        }
+
+        let logical_col = (abs_row - start_r) * self.width + col;
+        crate::hyperlink::detector::is_url_at(&logical_text, logical_col)
+    }
+
+    pub fn hyperlink_url_at(&self, col: usize, abs_row: usize) -> Option<String> {
+        if let Some(link) = self.hyperlink_at(col, abs_row) {
+            return Some(link.url.clone());
+        }
+
+        let total_lines = self.scrollback.len() + self.height;
+        if abs_row >= total_lines || self.width == 0 {
+            return None;
+        }
+
+        let is_prev_wrapped = abs_row > 0 && self.is_row_wrapped(abs_row - 1);
+        let is_curr_wrapped = self.is_row_wrapped(abs_row);
+
+        if !is_prev_wrapped && !is_curr_wrapped {
+            let has_trigger = self
+                .with_row_cells(abs_row, |cells| {
+                    cells.iter().any(|c| c.character == ':' || c.character == '.')
+                })
+                .unwrap_or(false);
+
+            if !has_trigger {
+                return None;
+            }
+
+            let mut text = String::with_capacity(self.width);
+            let _ = self.with_row_cells(abs_row, |cells| {
+                for c in cells {
+                    text.push(c.character);
+                }
+            });
+
+            let urls = crate::hyperlink::detector::detect(&text);
+            for (start, end, url) in urls {
+                if col >= start && col < end {
+                    return Some(url.to_string());
+                }
+            }
+            return None;
+        }
+
+        let mut start_r = abs_row;
+        while start_r > 0 && self.is_row_wrapped(start_r - 1) {
+            start_r -= 1;
+        }
+
+        let mut end_r = abs_row;
+        while end_r + 1 < total_lines && self.is_row_wrapped(end_r) {
+            end_r += 1;
+        }
+
+        let mut logical_text = String::with_capacity((end_r - start_r + 1) * self.width);
+        for r in start_r..=end_r {
+            let _ = self.with_row_cells(r, |cells| {
+                for c in cells {
+                    logical_text.push(c.character);
+                }
+                for _ in cells.len()..self.width {
+                    logical_text.push(' ');
+                }
+            });
+        }
+
+        let logical_col = (abs_row - start_r) * self.width + col;
+        let urls = crate::hyperlink::detector::detect(&logical_text);
+        for (start, end, url) in urls {
+            if logical_col >= start && logical_col < end {
+                return Some(url.to_string());
+            }
+        }
+
+        None
+    }
+
     #[inline(always)]
     pub fn clear_damage(&mut self) {
         self.damage.clear();

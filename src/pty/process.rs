@@ -73,11 +73,19 @@ pub fn spawn_process(
             let err = cmd.exec();
             panic!("exec failed: {}", err);
         }
-        Ok(nix::unistd::ForkResult::Parent { child: _ }) => {
+        Ok(nix::unistd::ForkResult::Parent { child }) => {
             unsafe {
                 libc::close(slave_fd);
             }
-            Ok(PtyMaster { fd: master_fd })
+            let child_pid = if child.as_raw() > 0 {
+                Some(child.as_raw() as u32)
+            } else {
+                None
+            };
+            Ok(PtyMaster {
+                fd: master_fd,
+                child_pid,
+            })
         }
         Err(e) => Err(PtyError::Fork(e.to_string())),
     }

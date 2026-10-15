@@ -33,6 +33,12 @@ pub struct X11Window {
     pub utf8_string: xproto::Atom,
     pub modifiers: ModifiersState,
     pub is_visible: bool,
+    pub root: xproto::Window,
+    cursor_default: Option<xproto::Cursor>,
+    cursor_text: Option<xproto::Cursor>,
+    cursor_pointer: Option<xproto::Cursor>,
+    cursor_col_resize: Option<xproto::Cursor>,
+    cursor_row_resize: Option<xproto::Cursor>,
     events: VecDeque<PlatformEvent>,
     keymap: Option<Vec<u32>>,
     keysyms_per_keycode: usize,
@@ -56,6 +62,182 @@ pub fn find_32bit_visual(
         }
     }
     None
+}
+
+fn create_font_cursor(conn: &RustConnection, glyph: u16) -> Option<xproto::Cursor> {
+    let font = conn.generate_id().ok()?;
+    conn.open_font(font, b"cursor").ok()?;
+    let cursor = conn.generate_id().ok()?;
+    conn.create_glyph_cursor(
+        cursor,
+        font,
+        font,
+        glyph,
+        glyph + 1,
+        0,
+        0,
+        0,
+        0xFFFF,
+        0xFFFF,
+        0xFFFF,
+    )
+    .ok()?;
+    let _ = conn.close_font(font);
+    Some(cursor)
+}
+
+fn detect_desktop_cursor_theme() -> Option<String> {
+    if let Ok(theme) = std::env::var("XCURSOR_THEME") {
+        if !theme.is_empty() {
+            return Some(theme);
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME") {
+        let home_path = std::path::Path::new(&home);
+        // 1. Check ~/.icons/default/index.theme
+        let path = home_path.join(".icons/default/index.theme");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(theme) = trimmed.strip_prefix("Inherits=") {
+                    let theme = theme.trim().trim_matches('"').trim_matches('\'');
+                    if !theme.is_empty() {
+                        return Some(theme.to_string());
+                    }
+                }
+            }
+        }
+
+        // 2. Check ~/.config/gtk-3.0/settings.ini
+        let path = home_path.join(".config/gtk-3.0/settings.ini");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(theme) = trimmed.strip_prefix("gtk-cursor-theme-name=") {
+                    let theme = theme.trim().trim_matches('"').trim_matches('\'');
+                    if !theme.is_empty() {
+                        return Some(theme.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check /usr/share/icons/default/index.theme
+    if let Ok(content) = std::fs::read_to_string("/usr/share/icons/default/index.theme") {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(theme) = trimmed.strip_prefix("Inherits=") {
+                let theme = theme.trim().trim_matches('"').trim_matches('\'');
+                if !theme.is_empty() {
+                    return Some(theme.to_string());
+                }
+            }
+        }
+    }
+
+    // 4. Check Cinnamon / GNOME gsettings
+    for schema in ["org.cinnamon.desktop.interface", "org.gnome.desktop.interface"] {
+        if let Ok(output) = std::process::Command::new("gsettings")
+            .args(["get", schema, "cursor-theme"])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                let theme = s.trim().trim_matches('\'').trim_matches('"').trim();
+                if !theme.is_empty() {
+                    return Some(theme.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn detect_desktop_cursor_size() -> Option<u32> {
+    if let Ok(size_str) = std::env::var("XCURSOR_SIZE") {
+        if let Ok(size) = size_str.parse::<u32>() {
+            return Some(size);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::Path::new(&home).join(".config/gtk-3.0/settings.ini");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(size) = trimmed.strip_prefix("gtk-cursor-theme-size=") {
+                    if let Ok(s) = size.trim().parse::<u32>() {
+                        return Some(s);
+                    }
+                }
+            }
+        }
+    }
+    for schema in ["org.cinnamon.desktop.interface", "org.gnome.desktop.interface"] {
+        if let Ok(output) = std::process::Command::new("gsettings")
+            .args(["get", schema, "cursor-size"])
+            .output()
+        {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout);
+                if let Ok(size) = s.trim().trim_matches('\'').trim_matches('"').trim().parse::<u32>() {
+                    return Some(size);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn load_xcursor_or_fallback(
+    conn: &RustConnection,
+    handle: Option<&x11rb::cursor::Handle>,
+    names: &[&str],
+    fallback_glyph: u16,
+) -> Option<xproto::Cursor> {
+    if let Some(handle) = handle {
+        for name in names {
+            if let Ok(cursor) = handle.load_cursor(conn, name) {
+                if cursor != 0 {
+                    return Some(cursor);
+                }
+            }
+        }
+    }
+    create_font_cursor(conn, fallback_glyph)
+}
+
+fn notify_startup_complete(conn: &RustConnection, root: xproto::Window, startup_id: &str) {
+    let msg = format!("remove: ID=\"{}\"", startup_id);
+    let bytes = msg.as_bytes();
+    let begin_atom = conn
+        .intern_atom(false, b"_NET_STARTUP_INFO_BEGIN")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|r| r.atom);
+    let info_atom = conn
+        .intern_atom(false, b"_NET_STARTUP_INFO")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|r| r.atom);
+    if let (Some(begin_atom), Some(info_atom)) = (begin_atom, info_atom) {
+        for (i, chunk) in bytes.chunks(20).enumerate() {
+            let mut data = [0u8; 20];
+            data[..chunk.len()].copy_from_slice(chunk);
+            let type_atom = if i == 0 { begin_atom } else { info_atom };
+            let event = xproto::ClientMessageEvent {
+                response_type: xproto::CLIENT_MESSAGE_EVENT,
+                format: 8,
+                sequence: 0,
+                window: root,
+                type_: type_atom,
+                data: xproto::ClientMessageData::from(data),
+            };
+            let _ = conn.send_event(false, root, EventMask::PROPERTY_CHANGE, event);
+        }
+    }
 }
 
 impl X11Window {
@@ -95,7 +277,62 @@ impl X11Window {
                 (root_visual, 24u8, None)
             };
 
+        // Detect desktop cursor theme & size if not already set in environment
+        if std::env::var_os("XCURSOR_THEME").is_none() {
+            if let Some(theme) = detect_desktop_cursor_theme() {
+                unsafe {
+                    std::env::set_var("XCURSOR_THEME", &theme);
+                }
+            }
+        }
+        if std::env::var_os("XCURSOR_SIZE").is_none() {
+            if let Some(size) = detect_desktop_cursor_size() {
+                unsafe {
+                    std::env::set_var("XCURSOR_SIZE", size.to_string());
+                }
+            }
+        }
+
+        let db = x11rb::resource_manager::new_from_default(&conn).unwrap_or_default();
+        let cursor_handle = x11rb::cursor::Handle::new(&conn, screen_num, &db)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok());
+
+        let cursor_default = load_xcursor_or_fallback(
+            &conn,
+            cursor_handle.as_ref(),
+            &["left_ptr", "default", "arrow"],
+            68, // XC_left_ptr
+        );
+        let cursor_text = load_xcursor_or_fallback(
+            &conn,
+            cursor_handle.as_ref(),
+            &["xterm", "text", "ibeam"],
+            152, // XC_xterm
+        );
+        let cursor_pointer = load_xcursor_or_fallback(
+            &conn,
+            cursor_handle.as_ref(),
+            &["pointer", "pointing_hand", "hand2", "hand1"],
+            58, // XC_hand2
+        );
+        let cursor_col_resize = load_xcursor_or_fallback(
+            &conn,
+            cursor_handle.as_ref(),
+            &["col-resize", "sb_h_double_arrow", "ew-resize", "h_double_arrow"],
+            108, // XC_sb_h_double_arrow
+        );
+        let cursor_row_resize = load_xcursor_or_fallback(
+            &conn,
+            cursor_handle.as_ref(),
+            &["row-resize", "sb_v_double_arrow", "ns-resize", "v_double_arrow"],
+            116, // XC_sb_v_double_arrow
+        );
+
         let mut win_aux = CreateWindowAux::new().event_mask(event_mask);
+        if let Some(c) = cursor_default {
+            win_aux = win_aux.cursor(c);
+        }
         if let Some(cmap) = colormap {
             // When creating a window with depth different from root (e.g. 32 on 24-bit root),
             // X11 protocol mandates colormap and border_pixel to avoid BadMatch.
@@ -220,6 +457,21 @@ impl X11Window {
             &[wm_delete_window],
         )?;
 
+        // Inform window manager of startup notification sequence if launched from desktop launcher
+        if let Ok(startup_id) = std::env::var("DESKTOP_STARTUP_ID") {
+            if let Ok(cookie) = conn.intern_atom(false, b"_NET_STARTUP_ID") {
+                if let Ok(reply) = cookie.reply() {
+                    let _ = conn.change_property8(
+                        xproto::PropMode::REPLACE,
+                        window_id,
+                        reply.atom,
+                        utf8_string,
+                        startup_id.as_bytes(),
+                    );
+                }
+            }
+        }
+
         // Defer mapping the window until set_visible(true) after initial frame draw
         // to achieve zero-flicker launch without transparent artifacts.
         let fb = X11Framebuffer::new(&conn, win_width, win_height, depth);
@@ -243,6 +495,12 @@ impl X11Window {
             utf8_string,
             modifiers: ModifiersState::empty(),
             is_visible: false,
+            root,
+            cursor_default,
+            cursor_text,
+            cursor_pointer,
+            cursor_col_resize,
+            cursor_row_resize,
             events: VecDeque::new(),
             keymap,
             keysyms_per_keycode,
@@ -260,6 +518,18 @@ impl X11Window {
             let _ = self.conn.map_window(self.window_id);
             self.fb
                 .present(&self.conn, self.window_id, self.gc, self.visual);
+
+            // Signal startup notification completion to WM/desktop environment (stops loading spinner)
+            if let Ok(startup_id) = std::env::var("DESKTOP_STARTUP_ID") {
+                notify_startup_complete(&self.conn, self.root, &startup_id);
+                unsafe {
+                    std::env::remove_var("DESKTOP_STARTUP_ID");
+                }
+            }
+            unsafe {
+                std::env::remove_var("XDG_ACTIVATION_TOKEN");
+            }
+
             let _ = self.conn.flush();
         } else {
             let _ = self.conn.unmap_window(self.window_id);
@@ -309,8 +579,23 @@ impl X11Window {
         let _ = self.conn.flush();
     }
 
-    pub fn set_cursor(&self, _icon: CursorIcon) {
-        // Standard X11 font cursor or xc_cursor can be bound without C libraries if desired
+    pub fn set_cursor(&self, icon: CursorIcon) {
+        let cid = match icon {
+            CursorIcon::Default => self.cursor_default,
+            CursorIcon::Text => self.cursor_text,
+            CursorIcon::Pointer => self.cursor_pointer,
+            CursorIcon::ColResize => self.cursor_col_resize,
+            CursorIcon::RowResize => self.cursor_row_resize,
+        };
+        if let Some(cid) = cid {
+            let aux = ChangeWindowAttributesAux::new().cursor(cid);
+            if let Ok(cookie) = self.conn.change_window_attributes(self.window_id, &aux) {
+                if let Err(e) = cookie.check() {
+                    eprintln!("X11 change_window_attributes cursor error: {:?}", e);
+                }
+            }
+            let _ = self.conn.flush();
+        }
     }
 
     pub fn set_opacity(&self, opacity: f32) {
@@ -610,6 +895,21 @@ impl X11Window {
 
 impl Drop for X11Window {
     fn drop(&mut self) {
+        if let Some(c) = self.cursor_default {
+            let _ = self.conn.free_cursor(c);
+        }
+        if let Some(c) = self.cursor_text {
+            let _ = self.conn.free_cursor(c);
+        }
+        if let Some(c) = self.cursor_pointer {
+            let _ = self.conn.free_cursor(c);
+        }
+        if let Some(c) = self.cursor_col_resize {
+            let _ = self.conn.free_cursor(c);
+        }
+        if let Some(c) = self.cursor_row_resize {
+            let _ = self.conn.free_cursor(c);
+        }
         if let Some(cmap) = self.colormap.take() {
             let _ = self.conn.free_colormap(cmap);
         }
@@ -735,6 +1035,39 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_x11_cursor_initialization_and_set_cursor() {
+        if let Ok((_conn, _screen_num)) = RustConnection::connect(None) {
+            let win = X11Window::new("Cursor Test", 200, 200, None);
+            if let Ok(win) = win {
+                assert!(win.cursor_default.is_some());
+                assert!(win.cursor_text.is_some());
+                assert!(win.cursor_pointer.is_some());
+                assert!(win.cursor_col_resize.is_some());
+                assert!(win.cursor_row_resize.is_some());
+
+                // Test switching cursors
+                win.set_cursor(CursorIcon::Text);
+                win.set_cursor(CursorIcon::Pointer);
+                win.set_cursor(CursorIcon::ColResize);
+                win.set_cursor(CursorIcon::RowResize);
+                win.set_cursor(CursorIcon::Default);
+            }
+        }
+    }
+
+    #[test]
+    fn test_desktop_cursor_theme_and_size_detection() {
+        let theme = detect_desktop_cursor_theme();
+        if let Some(theme) = theme {
+            assert!(!theme.is_empty());
+        }
+        let size = detect_desktop_cursor_size();
+        if let Some(size) = size {
+            assert!(size >= 16 && size <= 128);
         }
     }
 }
