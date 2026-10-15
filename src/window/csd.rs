@@ -273,6 +273,254 @@ pub fn detect_resize_edge(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsdThemeMode {
+    Auto,
+    Light,
+    Dark,
+    Terminal,
+}
+
+impl CsdThemeMode {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            "terminal" => Self::Terminal,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Dynamic CSD color palette supporting GNOME/Cinnamon Light & Dark modes,
+/// terminal palette blending, and custom config overrides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsdPalette {
+    pub is_light: bool,
+    pub bg: u32,
+    pub fg: u32,
+    pub inactive_bg: u32,
+    pub inactive_fg: u32,
+    pub border: u32,
+    pub button_hover_bg: u32,
+    pub button_pressed_bg: u32,
+    pub close_hover_bg: u32,
+    pub close_pressed_bg: u32,
+    pub close_hover_fg: u32,
+    pub close_fg: u32,
+}
+
+impl Default for CsdPalette {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl CsdPalette {
+    /// Native GNOME Adwaita Dark palette
+    pub fn dark() -> Self {
+        Self {
+            is_light: false,
+            bg: 0xFF2E2E2E,
+            fg: 0xFFFFFFFF,
+            inactive_bg: 0xFF202020,
+            inactive_fg: 0xFF808080,
+            border: 0xFF1B1B1B,
+            button_hover_bg: 0x00FFFFFF,
+            button_pressed_bg: 0x00FFFFFF,
+            close_hover_bg: 0x00E01B24,
+            close_pressed_bg: 0x00B2161E,
+            close_hover_fg: 0x00FFFFFF,
+            close_fg: 0xFFFFFFFF,
+        }
+    }
+
+    /// Native GNOME Adwaita Light palette
+    pub fn light() -> Self {
+        Self {
+            is_light: true,
+            bg: 0xFFEBEBEB,
+            fg: 0xFF2E3436,
+            inactive_bg: 0xFFF6F6F6,
+            inactive_fg: 0xFF8F9193,
+            border: 0xFFD1D1D1,
+            button_hover_bg: 0x00000000,
+            button_pressed_bg: 0x00000000,
+            close_hover_bg: 0x00E01B24,
+            close_pressed_bg: 0x00B2161E,
+            close_hover_fg: 0x00FFFFFF,
+            close_fg: 0xFF2E3436,
+        }
+    }
+
+    /// Palette derived from the terminal theme palette (seamless unified terminal look).
+    /// Titlebar background matches the terminal background perfectly, eliminating the bottom separator gap.
+    pub fn terminal(palette: &crate::renderer::color::PrecomputedPalette) -> Self {
+        let r = ((palette.default_bg >> 16) & 0xFF) as f32;
+        let g = ((palette.default_bg >> 8) & 0xFF) as f32;
+        let b = (palette.default_bg & 0xFF) as f32;
+        let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        let is_light = lum > 128.0;
+
+        let red_color = if (palette.ansi_colors[1] & 0x00FFFFFF) != 0 {
+            0xFF000000 | (palette.ansi_colors[1] & 0x00FFFFFF)
+        } else {
+            0xFFE01B24
+        };
+
+        Self {
+            is_light,
+            bg: palette.default_bg,
+            fg: palette.default_fg,
+            inactive_bg: palette.tab_inactive_bg,
+            inactive_fg: palette.tab_inactive_fg,
+            border: palette.default_bg,
+            button_hover_bg: palette.tab_accent,
+            button_pressed_bg: palette.tab_accent,
+            close_hover_bg: 0x00E01B24,
+            close_pressed_bg: 0x00B2161E,
+            close_hover_fg: 0x00FFFFFF,
+            close_fg: red_color,
+        }
+    }
+
+    /// Query the desktop settings for dark/light mode preference
+    pub fn detect_system() -> Self {
+        if let Ok(val) = std::env::var("VELOX_CSD_THEME") {
+            match val.trim().to_lowercase().as_str() {
+                "light" => return Self::light(),
+                "dark" => return Self::dark(),
+                _ => {}
+            }
+        }
+
+        let is_cinnamon = std::env::var("XDG_CURRENT_DESKTOP")
+            .map(|d| d.to_lowercase().contains("cinnamon"))
+            .unwrap_or(false);
+
+        let query_color_scheme = || {
+            Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                        if s.contains("prefer-light") {
+                            return Some(true);
+                        } else if s.contains("prefer-dark") {
+                            return Some(false);
+                        }
+                    }
+                    None
+                })
+        };
+
+        if let Some(is_light) = query_color_scheme() {
+            return if is_light { Self::light() } else { Self::dark() };
+        }
+
+        let query_gtk_theme = |schema: &str| {
+            Command::new("gsettings")
+                .args(["get", schema, "gtk-theme"])
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
+                        let trimmed = s.trim().trim_matches('\'').trim_matches('"');
+                        if !trimmed.is_empty() {
+                            if trimmed.contains("dark") {
+                                return Some(false);
+                            } else {
+                                return Some(true);
+                            }
+                        }
+                    }
+                    None
+                })
+        };
+
+        if is_cinnamon {
+            if let Some(is_light) = query_gtk_theme("org.cinnamon.desktop.interface") {
+                return if is_light { Self::light() } else { Self::dark() };
+            }
+            if let Some(is_light) = query_gtk_theme("org.gnome.desktop.interface") {
+                return if is_light { Self::light() } else { Self::dark() };
+            }
+        } else {
+            if let Some(is_light) = query_gtk_theme("org.gnome.desktop.interface") {
+                return if is_light { Self::light() } else { Self::dark() };
+            }
+            if let Some(is_light) = query_gtk_theme("org.cinnamon.desktop.interface") {
+                return if is_light { Self::light() } else { Self::dark() };
+            }
+        }
+
+        Self::dark()
+    }
+
+    /// Resolve effective palette based on config and system theme
+    pub fn resolve(
+        decorations_config: Option<&crate::config::config::WindowDecorationsConfig>,
+        terminal_palette: &crate::renderer::color::PrecomputedPalette,
+    ) -> Self {
+        let env_mode = std::env::var("VELOX_CSD_THEME").ok();
+        let mode_str = env_mode
+            .as_deref()
+            .or_else(|| decorations_config.and_then(|d| d.theme.as_deref()))
+            .unwrap_or("auto");
+        let mode = CsdThemeMode::parse(mode_str);
+
+        let mut palette = match mode {
+            CsdThemeMode::Auto => Self::detect_system(),
+            CsdThemeMode::Light => Self::light(),
+            CsdThemeMode::Dark => Self::dark(),
+            CsdThemeMode::Terminal => Self::terminal(terminal_palette),
+        };
+
+        if let Some(cfg) = decorations_config {
+            if let Some(bg_str) = &cfg.bg {
+                if let Some(c) = crate::config::config::parse_hex_color(bg_str) {
+                    let packed = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                    palette.bg = packed;
+                    let lum = 0.299 * (c.r as f32) + 0.587 * (c.g as f32) + 0.114 * (c.b as f32);
+                    palette.is_light = lum > 128.0;
+                    palette.button_hover_bg = if palette.is_light { 0x00000000 } else { 0x00FFFFFF };
+                    palette.button_pressed_bg = if palette.is_light { 0x00000000 } else { 0x00FFFFFF };
+                }
+            }
+            if let Some(fg_str) = &cfg.fg {
+                if let Some(c) = crate::config::config::parse_hex_color(fg_str) {
+                    palette.fg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                }
+            }
+            if let Some(inact_bg_str) = &cfg.inactive_bg {
+                if let Some(c) = crate::config::config::parse_hex_color(inact_bg_str) {
+                    palette.inactive_bg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                }
+            }
+            if let Some(inact_fg_str) = &cfg.inactive_fg {
+                if let Some(c) = crate::config::config::parse_hex_color(inact_fg_str) {
+                    palette.inactive_fg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                }
+            }
+            if let Some(border_str) = &cfg.border {
+                if let Some(c) = crate::config::config::parse_hex_color(border_str) {
+                    palette.border = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                }
+            }
+            if let Some(close_fg_str) = &cfg.close_fg {
+                if let Some(c) = crate::config::config::parse_hex_color(close_fg_str) {
+                    palette.close_fg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+                }
+            }
+        }
+
+        palette
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,5 +623,23 @@ mod tests {
             Some(crate::window::WindowResizeEdge::Right)
         );
         assert_eq!(detect_resize_edge(400.0, 300.0, w, h, border), None);
+    }
+
+    #[test]
+    fn test_csd_palette_defaults_and_resolution() {
+        let dark = CsdPalette::dark();
+        assert!(!dark.is_light);
+        assert_eq!(dark.bg, 0xFF2E2E2E);
+        assert_eq!(dark.fg, 0xFFFFFFFF);
+
+        let light = CsdPalette::light();
+        assert!(light.is_light);
+        assert_eq!(light.bg, 0xFFEBEBEB);
+        assert_eq!(light.fg, 0xFF2E3436);
+
+        assert_eq!(CsdThemeMode::parse("light"), CsdThemeMode::Light);
+        assert_eq!(CsdThemeMode::parse("dark"), CsdThemeMode::Dark);
+        assert_eq!(CsdThemeMode::parse("terminal"), CsdThemeMode::Terminal);
+        assert_eq!(CsdThemeMode::parse("anything_else"), CsdThemeMode::Auto);
     }
 }

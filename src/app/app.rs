@@ -173,6 +173,7 @@ pub struct WindowState {
     pub active_separator_color: Option<String>,
     pub last_separator_drag_sync: Option<std::time::Instant>,
     pub csd_button_layout: crate::window::csd::CsdButtonLayout,
+    pub csd_palette: crate::window::csd::CsdPalette,
     pub hovered_csd_button: Option<crate::window::csd::CsdButtonType>,
     pub pressed_csd_button: Option<crate::window::csd::CsdButtonType>,
 }
@@ -984,8 +985,9 @@ impl WindowState {
                 self.hovered_csd_button,
                 self.pressed_csd_button,
                 &self.csd_button_layout,
+                &self.csd_palette,
             );
-            self.renderer.render_csd_window_borders();
+            self.renderer.render_csd_window_borders(self.csd_palette.border);
         }
 
         self.window.present_frame(self.renderer.framebuffer.as_slice());
@@ -1150,6 +1152,10 @@ impl App {
         let min_rows = config.pane_minimum_rows();
         let separator_color = config.pane_separator_color().map(String::from);
         let active_separator_color = config.pane_active_separator_color().map(String::from);
+        let csd_palette = crate::window::csd::CsdPalette::resolve(
+            config.decorations_config().as_ref(),
+            &renderer.palette,
+        );
 
         let mut window_state = WindowState {
             window_id,
@@ -1213,6 +1219,7 @@ impl App {
             active_separator_color,
             last_separator_drag_sync: None,
             csd_button_layout: crate::window::csd::CsdButtonLayout::detect_system(),
+            csd_palette,
             hovered_csd_button: None,
             pressed_csd_button: None,
         };

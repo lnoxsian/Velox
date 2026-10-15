@@ -26,6 +26,8 @@ pub fn default_config() -> Config {
             opacity: Some(1.0),
             window_dim: Some(0.0),
             hide_mouse_on_typing: Some(true),
+            csd_theme: None,
+            decorations: None,
         },
         tabs: TabsConfig {
             show_tab_bar: TabBarVisibility::Auto,

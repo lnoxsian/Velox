@@ -65,6 +65,28 @@ pub struct WindowConfig {
     pub window_dim: Option<f32>,
     #[serde(default)]
     pub hide_mouse_on_typing: Option<bool>,
+    #[serde(default)]
+    pub csd_theme: Option<String>,
+    #[serde(default)]
+    pub decorations: Option<WindowDecorationsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct WindowDecorationsConfig {
+    #[serde(default)]
+    pub theme: Option<String>,
+    #[serde(default)]
+    pub bg: Option<String>,
+    #[serde(default)]
+    pub fg: Option<String>,
+    #[serde(default)]
+    pub inactive_bg: Option<String>,
+    #[serde(default)]
+    pub inactive_fg: Option<String>,
+    #[serde(default)]
+    pub border: Option<String>,
+    #[serde(default)]
+    pub close_fg: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -396,9 +418,37 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) hide_mouse_on_typing_legacy: Option<bool>,
+    #[serde(
+        default,
+        rename = "decorations_theme",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) decorations_theme_legacy: Option<String>,
 }
 
 impl Config {
+    pub fn decorations_config(&self) -> Option<WindowDecorationsConfig> {
+        if let Some(ref d) = self.window.decorations {
+            let mut cfg = d.clone();
+            if cfg.theme.is_none() && self.window.csd_theme.is_some() {
+                cfg.theme = self.window.csd_theme.clone();
+            }
+            Some(cfg)
+        } else if let Some(ref t) = self.window.csd_theme {
+            Some(WindowDecorationsConfig {
+                theme: Some(t.clone()),
+                ..Default::default()
+            })
+        } else if let Some(ref t) = self.decorations_theme_legacy {
+            Some(WindowDecorationsConfig {
+                theme: Some(t.clone()),
+                ..Default::default()
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn opacity(&self) -> f32 {
         self.window
             .opacity

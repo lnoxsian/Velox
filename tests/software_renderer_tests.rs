@@ -1509,6 +1509,7 @@ fn test_software_renderer_csd_title_bar() {
     let csd_h = 38u32;
 
     let layout = velox::window::csd::CsdButtonLayout::default();
+    let csd_palette = velox::window::csd::CsdPalette::dark();
 
     // 1. Render focused title bar with Close hovered (not maximized -> rounded corners)
     renderer.render_csd_title_bar(
@@ -1519,9 +1520,10 @@ fn test_software_renderer_csd_title_bar() {
         Some(velox::window::csd::CsdButtonType::Close),
         None,
         &layout,
+        &csd_palette,
     );
 
-    let border_color = renderer.palette.ansi_colors[8];
+    let border_color = csd_palette.border;
 
     // Check bottom border at y = 37
     assert_eq!(
@@ -1538,7 +1540,7 @@ fn test_software_renderer_csd_title_bar() {
     );
 
     // Inside the titlebar (e.g. x = 50, y = 19), background should be drawn
-    let bg_focused = renderer.palette.tab_bar_bg;
+    let bg_focused = csd_palette.bg;
     assert_eq!(
         renderer.framebuffer.pixels[19 * 400 + 50],
         bg_focused,
@@ -1572,6 +1574,7 @@ fn test_software_renderer_csd_title_bar() {
         None,
         None,
         &layout,
+        &csd_palette,
     );
     // Row 0 col 0 when maximized has top border line
     assert_eq!(
@@ -1587,7 +1590,7 @@ fn test_software_renderer_csd_title_bar() {
 
     // 3. Render CSD window borders
     renderer.csd_height = csd_h;
-    renderer.render_csd_window_borders();
+    renderer.render_csd_window_borders(csd_palette.border);
     // Bottom-most row (y = 199) must have border color
     assert_eq!(
         renderer.framebuffer.pixels[199 * 400 + 50],
@@ -1696,6 +1699,7 @@ fn test_csd_gtk_window_buttons_and_restore_icon() {
     let mut renderer = setup_renderer(500, 200);
     let csd_h = 38u32;
     let layout = velox::window::csd::CsdButtonLayout::default();
+    let csd_palette = velox::window::csd::CsdPalette::dark();
 
     // 1. Render when window is NOT maximized with Maximize button hovered
     renderer.render_csd_title_bar(
@@ -1706,6 +1710,7 @@ fn test_csd_gtk_window_buttons_and_restore_icon() {
         Some(velox::window::csd::CsdButtonType::Maximize),
         None,
         &layout,
+        &csd_palette,
     );
 
     let max_cx = 500 - 22 - 32; // 446
@@ -1732,12 +1737,120 @@ fn test_csd_gtk_window_buttons_and_restore_icon() {
         None,
         None,
         &layout,
+        &csd_palette,
     );
     // Back square top edge at by0 = 14, x = 447
     let restore_top = renderer.framebuffer.pixels[14 * 500 + (max_cx + 1)];
     assert_eq!(
-        restore_top, renderer.palette.default_fg,
+        restore_top, csd_palette.fg,
         "Restore icon back square top must be drawn"
+    );
+}
+
+#[test]
+fn test_csd_theme_customization_and_light_dark_modes() {
+    let mut renderer = setup_renderer(500, 200);
+    let csd_h = 38u32;
+    let layout = velox::window::csd::CsdButtonLayout::default();
+
+    // 1. Light Mode Palette (GNOME Adwaita Light Headerbar)
+    let light_palette = velox::window::csd::CsdPalette::light();
+    assert!(light_palette.is_light);
+    assert_eq!(light_palette.bg, 0xFFEBEBEB);
+    assert_eq!(light_palette.fg, 0xFF2E3436);
+    assert_eq!(light_palette.border, 0xFFD1D1D1);
+
+    renderer.render_csd_title_bar(
+        "Velox Light",
+        csd_h,
+        true,
+        false,
+        Some(velox::window::csd::CsdButtonType::Maximize),
+        None,
+        &layout,
+        &light_palette,
+    );
+
+    // Titlebar background must be light Adwaita headerbar #EBEBEB
+    assert_eq!(
+        renderer.framebuffer.pixels[19 * 500 + 50],
+        0xFFEBEBEB,
+        "Light mode must render #EBEBEB headerbar background"
+    );
+
+    // In light mode, hovered maximize button outline must be dark/black (0x00000000)
+    let max_cx = 500 - 22 - 32;
+    let max_border_px = renderer.framebuffer.pixels[14 * 500 + max_cx];
+    assert_eq!(
+        max_border_px, 0x00000000,
+        "Maximize button outline must be black in light mode"
+    );
+
+    // 2. Custom Config Overrides
+    let custom_config = velox::config::config::WindowDecorationsConfig {
+        theme: Some("custom".to_string()),
+        bg: Some("#334455".to_string()),
+        fg: Some("#ffffff".to_string()),
+        inactive_bg: Some("#223344".to_string()),
+        inactive_fg: Some("#8899aa".to_string()),
+        border: Some("#112233".to_string()),
+        close_fg: Some("#ff5555".to_string()),
+    };
+
+    let resolved = velox::window::csd::CsdPalette::resolve(
+        Some(&custom_config),
+        &renderer.palette,
+    );
+
+    assert_eq!(resolved.bg, 0xFF334455, "Custom bg must be parsed");
+    assert_eq!(resolved.fg, 0xFFFFFFFF, "Custom fg must be parsed");
+    assert_eq!(resolved.inactive_bg, 0xFF223344, "Custom inactive_bg must be parsed");
+    assert_eq!(resolved.border, 0xFF112233, "Custom border must be parsed");
+    assert_eq!(resolved.close_fg, 0xFFFF5555, "Custom close_fg must be parsed");
+
+    // 3. Seamless Terminal Theme Mode
+    let terminal_palette = velox::window::csd::CsdPalette::terminal(&renderer.palette);
+    assert_eq!(terminal_palette.bg, renderer.palette.default_bg);
+    assert_eq!(terminal_palette.border, renderer.palette.default_bg);
+    assert_eq!(terminal_palette.fg, renderer.palette.default_fg);
+    assert_eq!(terminal_palette.close_fg, renderer.palette.ansi_colors[1], "Terminal CSD close_fg must use theme red color");
+    assert_eq!(terminal_palette.button_hover_bg, renderer.palette.tab_accent);
+
+    renderer.render_csd_title_bar(
+        "Velox Terminal Theme",
+        csd_h,
+        true,
+        false,
+        None,
+        None,
+        &layout,
+        &terminal_palette,
+    );
+
+    // Row 19 inside titlebar and row 37 (bottom of titlebar) must match default_bg (no dividing gap line)
+    assert_eq!(
+        renderer.framebuffer.pixels[19 * 500 + 50],
+        renderer.palette.default_bg,
+        "Titlebar background must match terminal background"
+    );
+    assert_eq!(
+        renderer.framebuffer.pixels[37 * 500 + 50],
+        renderer.palette.default_bg,
+        "Row 37 must match terminal background with zero gap/divider line"
+    );
+
+    // Close button icon (cross center at cx=478, cy=19) must be drawn with red theme color (close_fg)
+    let close_px = renderer.framebuffer.pixels[19 * 500 + 478];
+    assert_eq!(
+        close_px, terminal_palette.close_fg,
+        "Close button icon must use the terminal theme's red color instead of fg"
+    );
+
+    // Minimize button icon (line at cx=414, cy=22) must be drawn with standard fg
+    let min_px = renderer.framebuffer.pixels[22 * 500 + 414];
+    assert_eq!(
+        min_px, terminal_palette.fg,
+        "Minimize button icon must use standard fg"
     );
 }
 

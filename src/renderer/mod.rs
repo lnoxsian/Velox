@@ -603,19 +603,20 @@ impl CpuRenderer {
         hovered_button: Option<crate::window::csd::CsdButtonType>,
         pressed_button: Option<crate::window::csd::CsdButtonType>,
         button_layout: &crate::window::csd::CsdButtonLayout,
+        csd_palette: &crate::window::csd::CsdPalette,
     ) {
         if csd_height == 0 {
             return;
         }
 
         let bar_bg = if is_focused {
-            self.palette.tab_bar_bg
+            csd_palette.bg
         } else {
-            self.palette.tab_inactive_bg
+            csd_palette.inactive_bg
         };
 
         let w = self.viewport_width;
-        let border_color = self.palette.ansi_colors[8];
+        let border_color = csd_palette.border;
 
         // 1. Fill title bar background
         self.framebuffer
@@ -669,9 +670,11 @@ impl CpuRenderer {
             self.framebuffer.fill_span(0, 0, w, 1, border_color);
         }
 
-        // 3. Draw 1px bottom border line separating title bar from tab bar or panes
-        self.framebuffer
-            .fill_span(0, csd_height.saturating_sub(1), w, 1, border_color);
+        // 3. Draw 1px bottom border line separating title bar from tab bar or panes (omit in seamless terminal mode)
+        if csd_palette.border != csd_palette.bg {
+            self.framebuffer
+                .fill_span(0, csd_height.saturating_sub(1), w, 1, border_color);
+        }
 
         // 4. Render GTK Window Control Buttons
         let button_rects = button_layout.compute_button_rects(w, csd_height);
@@ -690,6 +693,7 @@ impl CpuRenderer {
                 is_focused,
                 is_maximized,
                 bar_bg,
+                csd_palette,
             );
         }
 
@@ -718,9 +722,9 @@ impl CpuRenderer {
             let text_y = (csd_height.saturating_sub(tab_ch)) / 2;
 
             let text_fg = if is_focused {
-                self.palette.default_fg
+                csd_palette.fg
             } else {
-                self.palette.tab_inactive_fg
+                csd_palette.inactive_fg
             };
 
             for (i, ch) in display_title.chars().enumerate() {
@@ -730,11 +734,10 @@ impl CpuRenderer {
         }
     }
 
-    pub fn render_csd_window_borders(&mut self) {
-        if self.csd_height == 0 {
+    pub fn render_csd_window_borders(&mut self, border_color: u32) {
+        if self.csd_height == 0 || border_color == self.palette.default_bg {
             return;
         }
-        let border_color = self.palette.ansi_colors[8];
         let w = self.viewport_width;
         let h = self.viewport_height;
         if w < 2 || h < 2 {
@@ -762,6 +765,7 @@ impl CpuRenderer {
         is_focused: bool,
         is_maximized: bool,
         bar_bg: u32,
+        csd_palette: &crate::window::csd::CsdPalette,
     ) {
         use crate::window::csd::CsdButtonType;
         use crate::renderer::raster::blend_alpha;
@@ -779,20 +783,28 @@ impl CpuRenderer {
             match btn_type {
                 CsdButtonType::Close => {
                     if is_pressed {
-                        0x00B2161E // GTK active pressed red
+                        csd_palette.close_pressed_bg
                     } else {
-                        0x00E01B24 // GTK Adwaita close hover red
+                        csd_palette.close_hover_bg
                     }
                 }
                 CsdButtonType::Maximize | CsdButtonType::Minimize => {
-                    let alpha = if is_pressed { 65 } else { 38 };
-                    blend_alpha(bar_bg, 0x00FFFFFF, alpha)
+                    let alpha = if is_pressed {
+                        if csd_palette.is_light { 45 } else { 65 }
+                    } else {
+                        if csd_palette.is_light { 25 } else { 38 }
+                    };
+                    blend_alpha(bar_bg, csd_palette.button_hover_bg, alpha)
                 }
             }
         } else {
             // Subtle idle circular button disk for native GTK / Mint styling
-            let alpha = if is_focused { 18 } else { 10 };
-            blend_alpha(bar_bg, 0x00FFFFFF, alpha)
+            let alpha = if is_focused {
+                if csd_palette.is_light { 10 } else { 18 }
+            } else {
+                if csd_palette.is_light { 5 } else { 10 }
+            };
+            blend_alpha(bar_bg, csd_palette.button_hover_bg, alpha)
         };
 
         for dy in -r..=r {
@@ -821,11 +833,32 @@ impl CpuRenderer {
 
         // 2. Icon Foreground Color
         let icon_fg = if is_hovered || is_pressed {
-            0x00FFFFFF
+            match btn_type {
+                CsdButtonType::Close => csd_palette.close_hover_fg,
+                _ => {
+                    if csd_palette.is_light {
+                        0x00000000
+                    } else {
+                        0x00FFFFFF
+                    }
+                }
+            }
         } else if is_focused {
-            self.palette.default_fg
+            match btn_type {
+                CsdButtonType::Close => csd_palette.close_fg,
+                _ => csd_palette.fg,
+            }
         } else {
-            self.palette.tab_inactive_fg
+            match btn_type {
+                CsdButtonType::Close => {
+                    if csd_palette.close_fg != csd_palette.fg {
+                        blend_alpha(bar_bg, csd_palette.close_fg, 140)
+                    } else {
+                        csd_palette.inactive_fg
+                    }
+                }
+                _ => csd_palette.inactive_fg,
+            }
         };
 
         let mut put_pixel = |x: i32, y: i32, color: u32| {
