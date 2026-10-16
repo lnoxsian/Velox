@@ -564,5 +564,66 @@ fn main() {
         (scroll_iters as f64) / elapsed.as_secs_f64()
     );
 
+    // 8. CSD Titlebar Rendering and Hit-Testing Throughput
+    let csd_palette = velox::window::csd::CsdPalette::dark();
+    let button_layout = velox::window::csd::CsdButtonLayout::default();
+    let csd_iters = 10_000u32;
+    let start = Instant::now();
+    for _ in 0..csd_iters {
+        renderer.render_csd_title_bar(
+            "Velox Terminal - /home/lnoxsian/projects/velox",
+            38,
+            true,
+            false,
+            Some(velox::window::csd::CsdButtonType::Close),
+            None,
+            &button_layout,
+            &csd_palette,
+        );
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "8a. CSD Titlebar Render (Table Mask & Scanlines): {:?} per call ({:.2} kfps)",
+        elapsed / csd_iters,
+        (csd_iters as f64) / elapsed.as_secs_f64() / 1_000.0
+    );
+
+    let hit_test_iters = 1_000_000u32;
+    let start = Instant::now();
+    let mut hit_count = 0usize;
+    for i in 0..hit_test_iters {
+        let px = (i % 1920) as f32;
+        let py = (i % 38) as f32;
+        if button_layout.hit_test(px, py, 1920, 38).is_some() {
+            hit_count += 1;
+        }
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "8b. CSD Button Hit-Testing (Zero Heap Alloc): {:?} per test ({:.2} million ops/sec, hits: {})",
+        elapsed / hit_test_iters,
+        (hit_test_iters as f64) / elapsed.as_secs_f64() / 1_000_000.0,
+        hit_count
+    );
+
+    let resize_iters = 1_000_000u32;
+    let start = Instant::now();
+    let mut edge_count = 0usize;
+    for i in 0..resize_iters {
+        let px = (i % 1920) as f32;
+        let py = (i % 1080) as f32;
+        if velox::window::csd::detect_resize_edge(px, py, 1920, 1080, 6.0).is_some() {
+            edge_count += 1;
+        }
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "8c. Window Resize Edge Detection (Bitmask): {:?} per test ({:.2} million ops/sec, hits: {})",
+        elapsed / resize_iters,
+        (resize_iters as f64) / elapsed.as_secs_f64() / 1_000_000.0,
+        edge_count
+    );
+
     println!("=== Benchmark Complete ===");
 }
+

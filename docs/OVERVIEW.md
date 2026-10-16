@@ -129,6 +129,7 @@ Velox reads configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HO
 | **`[window]`**| `scroll_on_keystroke` | bool | `true` | Scroll to bottom when typing |
 | **`[window]`**| `opacity` | float | `1.0` | Background opacity (`0.0` transparent to `1.0` opaque) |
 | **`[window]`**| `window_dim` | float | `0.0` | Dimming factor when window loses focus (`0.0` to `1.0`) |
+| **`[window.decorations]`** | `theme` | string | `"auto"` | Titlebar theme: `auto` (system GTK theme), `terminal` (seamless terminal palette), `dark`, `light` |
 | **`[tabs]`** | `show_tab_bar` | string | `"auto"` | Tab bar visibility: `auto`, `always`, `never` |
 | **`[tabs]`** | `tab_bar_height` | integer | `None` (derived) | Custom tab bar height in pixels |
 | **`[tabs]`** | `show_close_button` | bool | `true` | Render `×` close button on tabs |

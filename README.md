@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v0.2.5-blue.svg?style=for-the-badge" alt="Version 0.2.5">
+  <img src="https://img.shields.io/badge/version-v0.2.8-blue.svg?style=for-the-badge" alt="Version 0.2.8">
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-stable-brightgreen.svg?style=for-the-badge&logo=rust" alt="Rust"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="License"></a>
   <a href="https://platform.linux.org"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20Wayland%20%7C%20X11-informational.svg?style=for-the-badge&logo=linux" alt="Platform"></a>
@@ -31,7 +31,7 @@
 ---
 
 > [!NOTE]
-> **Velox v0.2.5** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, native pure-Rust CPU software rendering via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
+> **Velox v0.2.8** is engineered with zero-compromise performance principles: instant zero-flicker startup under 15ms, native pure-Rust CPU software rendering via `softbuffer`, multi-tab workflow with per-tab font isolation, single-process IPC architecture, low memory footprint, and clean modular isolation.
 
 ---
 
@@ -170,6 +170,9 @@ scroll_on_output = true
 scroll_on_keystroke = true
 opacity = 1.0                 # 0.0 (transparent) to 1.0 (opaque)
 window_dim = 0.0              # 0.0 (normal) to 1.0 (fully dimmed when unfocused)
+
+[window.decorations]
+theme = "auto"              # "auto" (detects desktop GTK theme), "terminal" (seamless terminal match), "dark", or "light"
 
 [tabs]
 show_tab_bar = "auto"         # "auto", "always", or "never"

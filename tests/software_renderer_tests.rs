@@ -1854,5 +1854,97 @@ fn test_csd_theme_customization_and_light_dark_modes() {
     );
 }
 
+#[test]
+fn test_gtk_theme_detection_and_css_palette() {
+    let system_palette = velox::window::csd::CsdPalette::detect_system();
+    // System palette must have valid opaque background and non-zero colors
+    assert_ne!(system_palette.bg, 0);
+    assert_ne!(system_palette.fg, 0);
+    assert_eq!((system_palette.bg >> 24) & 0xFF, 0xFF, "Titlebar background must be fully opaque");
+
+    // Test resolving with theme = "terminal"
+    let renderer = setup_renderer(500, 200);
+    let terminal_config = velox::config::config::WindowDecorationsConfig {
+        theme: Some("terminal".to_string()),
+        ..Default::default()
+    };
+    let resolved = velox::window::csd::CsdPalette::resolve(Some(&terminal_config), &renderer.palette);
+    assert_eq!(resolved.bg, renderer.palette.default_bg);
+    assert_eq!(resolved.border, renderer.palette.default_bg);
+
+    // If Mint-Y-Dark-Purple theme is on the machine, verify load_gtk_theme_palette directly
+    if let Some(mint_palette) = velox::window::csd::load_gtk_theme_palette("Mint-Y-Dark-Purple", true) {
+        assert_eq!(mint_palette.bg, 0xFF222226, "Mint-Y-Dark-Purple titlebar background must match CSS #222226");
+        assert_eq!(mint_palette.border, 0xFF18181B, "Mint-Y-Dark-Purple titlebar border must match CSS #18181b");
+        assert!(!mint_palette.is_light);
+    }
+}
+
+#[test]
+fn test_csd_optimizations_and_truncation() {
+    let mut renderer = setup_renderer(300, 100);
+    let csd_h = 38u32;
+    let layout = velox::window::csd::CsdButtonLayout::default();
+    let dark_palette = velox::window::csd::CsdPalette::dark();
+
+    // 1. Title truncation verification with long title
+    renderer.render_csd_title_bar(
+        "A Very Long Title That Definitely Exceeds Safe Width Bounds And Needs Truncation",
+        csd_h,
+        true,
+        false,
+        None,
+        None,
+        &layout,
+        &dark_palette,
+    );
+
+    // Verify top-left corner transparent outside (0, 0)
+    assert_eq!(
+        renderer.framebuffer.pixels[0], 0x00000000,
+        "Corner pixel (0,0) must be transparent (outside window)"
+    );
+
+    // Verify top-left border arc at (9, 0) is border color
+    assert_eq!(
+        renderer.framebuffer.pixels[9], dark_palette.border,
+        "Pixel (9,0) must be border arc color"
+    );
+
+    // Verify top-right corner pixel (299, 0) is transparent
+    assert_eq!(
+        renderer.framebuffer.pixels[299], 0x00000000,
+        "Corner pixel (299,0) must be transparent (outside window)"
+    );
+
+    // Verify button hit testing returns None in dead space and Some on buttons
+    assert_eq!(
+        layout.hit_test(10.0, 10.0, 300, csd_h),
+        None,
+        "Hit test at (10, 10) should be in titlebar dead space"
+    );
+
+    // Close button is at rightmost: cx = 300 - 22 = 278, cy = 19
+    assert_eq!(
+        layout.hit_test(278.0, 19.0, 300, csd_h),
+        Some(velox::window::csd::CsdButtonType::Close),
+        "Hit test at (278, 19) should hit Close button"
+    );
+
+    // 2. Resize edge bitmask tests
+    use velox::window::csd::detect_resize_edge;
+    use velox::window::WindowResizeEdge;
+    assert_eq!(detect_resize_edge(2.0, 2.0, 300, 100, 6.0), Some(WindowResizeEdge::TopLeft));
+    assert_eq!(detect_resize_edge(298.0, 2.0, 300, 100, 6.0), Some(WindowResizeEdge::TopRight));
+    assert_eq!(detect_resize_edge(2.0, 98.0, 300, 100, 6.0), Some(WindowResizeEdge::BottomLeft));
+    assert_eq!(detect_resize_edge(298.0, 98.0, 300, 100, 6.0), Some(WindowResizeEdge::BottomRight));
+    assert_eq!(detect_resize_edge(150.0, 2.0, 300, 100, 6.0), Some(WindowResizeEdge::Top));
+    assert_eq!(detect_resize_edge(150.0, 98.0, 300, 100, 6.0), Some(WindowResizeEdge::Bottom));
+    assert_eq!(detect_resize_edge(2.0, 50.0, 300, 100, 6.0), Some(WindowResizeEdge::Left));
+    assert_eq!(detect_resize_edge(298.0, 50.0, 300, 100, 6.0), Some(WindowResizeEdge::Right));
+    assert_eq!(detect_resize_edge(150.0, 50.0, 300, 100, 6.0), None);
+}
+
+
 
 

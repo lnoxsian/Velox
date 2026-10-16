@@ -153,6 +153,71 @@ fn is_column_selected(
     }
 }
 
+// Precomputed 10x10 corner masks for GTK Adwaita 10px radius top window corners.
+// 0: inside (retains title bar bg), 1: 1px border arc, 2: outside (transparent 0x00000000).
+#[rustfmt::skip]
+const CORNER_TL_10PX: [u8; 100] = [
+    2, 2, 2, 2, 2, 2, 2, 1, 1, 1,
+    2, 2, 2, 2, 2, 1, 1, 1, 0, 0,
+    2, 2, 2, 1, 1, 0, 0, 0, 0, 0,
+    2, 2, 1, 1, 0, 0, 0, 0, 0, 0,
+    2, 2, 1, 0, 0, 0, 0, 0, 0, 0,
+    2, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    2, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+#[rustfmt::skip]
+const CORNER_TR_10PX: [u8; 100] = [
+    1, 1, 1, 1, 2, 2, 2, 2, 2, 2,
+    0, 0, 0, 1, 1, 1, 2, 2, 2, 2,
+    0, 0, 0, 0, 0, 0, 1, 1, 2, 2,
+    0, 0, 0, 0, 0, 0, 0, 1, 1, 2,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 2,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+struct CircleRow {
+    dy: i8,
+    inner: Option<(i8, u8)>,
+    edges: &'static [(i8, u8)],
+}
+
+#[rustfmt::skip]
+const CIRCLE_24PX_SCANLINES: [CircleRow; 25] = [
+    CircleRow { dy: -12, inner: None, edges: &[] },
+    CircleRow { dy: -11, inner: Some((0, 1)), edges: &[(-4, 77), (-3, 155), (-2, 210), (-1, 243), (1, 243), (2, 210), (3, 155), (4, 77)] },
+    CircleRow { dy: -10, inner: Some((-4, 9)), edges: &[(-6, 88), (-5, 210), (5, 210), (6, 88)] },
+    CircleRow { dy: -9, inner: Some((-6, 13)), edges: &[(-7, 155), (7, 155)] },
+    CircleRow { dy: -8, inner: Some((-7, 15)), edges: &[(-8, 177), (8, 177)] },
+    CircleRow { dy: -7, inner: Some((-8, 17)), edges: &[(-9, 155), (9, 155)] },
+    CircleRow { dy: -6, inner: Some((-9, 19)), edges: &[(-10, 88), (10, 88)] },
+    CircleRow { dy: -5, inner: Some((-9, 19)), edges: &[(-10, 210), (10, 210)] },
+    CircleRow { dy: -4, inner: Some((-10, 21)), edges: &[(-11, 77), (11, 77)] },
+    CircleRow { dy: -3, inner: Some((-10, 21)), edges: &[(-11, 155), (11, 155)] },
+    CircleRow { dy: -2, inner: Some((-10, 21)), edges: &[(-11, 210), (11, 210)] },
+    CircleRow { dy: -1, inner: Some((-10, 21)), edges: &[(-11, 243), (11, 243)] },
+    CircleRow { dy: 0, inner: Some((-11, 23)), edges: &[] },
+    CircleRow { dy: 1, inner: Some((-10, 21)), edges: &[(-11, 243), (11, 243)] },
+    CircleRow { dy: 2, inner: Some((-10, 21)), edges: &[(-11, 210), (11, 210)] },
+    CircleRow { dy: 3, inner: Some((-10, 21)), edges: &[(-11, 155), (11, 155)] },
+    CircleRow { dy: 4, inner: Some((-10, 21)), edges: &[(-11, 77), (11, 77)] },
+    CircleRow { dy: 5, inner: Some((-9, 19)), edges: &[(-10, 210), (10, 210)] },
+    CircleRow { dy: 6, inner: Some((-9, 19)), edges: &[(-10, 88), (10, 88)] },
+    CircleRow { dy: 7, inner: Some((-8, 17)), edges: &[(-9, 155), (9, 155)] },
+    CircleRow { dy: 8, inner: Some((-7, 15)), edges: &[(-8, 177), (8, 177)] },
+    CircleRow { dy: 9, inner: Some((-6, 13)), edges: &[(-7, 155), (7, 155)] },
+    CircleRow { dy: 10, inner: Some((-4, 9)), edges: &[(-6, 88), (-5, 210), (5, 210), (6, 88)] },
+    CircleRow { dy: 11, inner: Some((0, 1)), edges: &[(-4, 77), (-3, 155), (-2, 210), (-1, 243), (1, 243), (2, 210), (3, 155), (4, 77)] },
+    CircleRow { dy: 12, inner: None, edges: &[] },
+];
+
 impl CpuRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
@@ -624,38 +689,31 @@ impl CpuRenderer {
 
         // 2. Render rounded top corners when not maximized (GTK Adwaita 10px radius)
         if !is_maximized && w >= 24 && csd_height >= 12 {
-            let r = 10.0f32;
-            let r_sq = r * r;
-            let r_inner_sq = (r - 1.2) * (r - 1.2);
             let stride = self.framebuffer.stride;
 
-            // Top-left corner
+            // Top-left corner (precomputed mask lookup)
             for py in 0..10 {
+                let row_offset = py * stride;
+                let table_offset = py * 10;
                 for px in 0..10 {
-                    let dx = 9.5 - px as f32;
-                    let dy = 9.5 - py as f32;
-                    let d_sq = dx * dx + dy * dy;
-                    let idx = py * stride + px;
-                    if d_sq > r_sq {
-                        self.framebuffer.pixels[idx] = 0x00000000; // Transparent corner outside window
-                    } else if d_sq >= r_inner_sq {
-                        self.framebuffer.pixels[idx] = border_color; // Border arc
+                    match CORNER_TL_10PX[table_offset + px] {
+                        2 => self.framebuffer.pixels[row_offset + px] = 0x00000000,
+                        1 => self.framebuffer.pixels[row_offset + px] = border_color,
+                        _ => {}
                     }
                 }
             }
 
-            // Top-right corner
+            // Top-right corner (precomputed mask lookup)
+            let tr_start_x = (w - 10) as usize;
             for py in 0..10 {
+                let row_offset = py * stride + tr_start_x;
+                let table_offset = py * 10;
                 for rx in 0..10 {
-                    let px = (w - 10) + rx as u32;
-                    let dx = rx as f32 - 0.5;
-                    let dy = 9.5 - py as f32;
-                    let d_sq = dx * dx + dy * dy;
-                    let idx = py * stride + (px as usize);
-                    if d_sq > r_sq {
-                        self.framebuffer.pixels[idx] = 0x00000000; // Transparent corner outside window
-                    } else if d_sq >= r_inner_sq {
-                        self.framebuffer.pixels[idx] = border_color; // Border arc
+                    match CORNER_TR_10PX[table_offset + rx] {
+                        2 => self.framebuffer.pixels[row_offset + rx] = 0x00000000,
+                        1 => self.framebuffer.pixels[row_offset + rx] = border_color,
+                        _ => {}
                     }
                 }
             }
@@ -706,15 +764,14 @@ impl CpuRenderer {
 
         if safe_width > tab_cw as f32 && !title.is_empty() {
             let max_chars = (safe_width / tab_cw as f32).floor() as usize;
-            let display_title: String = if title.chars().count() > max_chars {
-                let mut t: String = title.chars().take(max_chars.saturating_sub(1)).collect();
-                t.push('…');
-                t
+            let total_chars = title.chars().count();
+            let (display_len, needs_truncation) = if total_chars > max_chars {
+                (max_chars, true)
             } else {
-                title.to_string()
+                (total_chars, false)
             };
 
-            let title_pixel_width = display_title.chars().count() as u32 * tab_cw;
+            let title_pixel_width = display_len as u32 * tab_cw;
             let ideal_x = (w.saturating_sub(title_pixel_width)) / 2;
             let text_x = (ideal_x as f32)
                 .clamp(safe_min_x, (safe_max_x - title_pixel_width as f32).max(safe_min_x))
@@ -727,9 +784,21 @@ impl CpuRenderer {
                 csd_palette.inactive_fg
             };
 
-            for (i, ch) in display_title.chars().enumerate() {
+            if needs_truncation {
+                let take_count = max_chars.saturating_sub(1);
+                let mut i = 0;
+                for ch in title.chars().take(take_count) {
+                    let x = text_x + (i as u32) * tab_cw;
+                    self.blit_tab_char(ch, x, text_y, text_fg);
+                    i += 1;
+                }
                 let x = text_x + (i as u32) * tab_cw;
-                self.blit_tab_char(ch, x, text_y, text_fg);
+                self.blit_tab_char('…', x, text_y, text_fg);
+            } else {
+                for (i, ch) in title.chars().enumerate() {
+                    let x = text_x + (i as u32) * tab_cw;
+                    self.blit_tab_char(ch, x, text_y, text_fg);
+                }
             }
         }
     }
@@ -775,10 +844,6 @@ impl CpuRenderer {
         let stride = self.framebuffer.stride;
 
         // 1. Draw circular background button pill (diameter = 24px, radius = 12px)
-        let r = 12;
-        let r_inner_sq = (r - 1) * (r - 1);
-        let r_outer_sq = r * r;
-
         let bg_color = if is_hovered || is_pressed {
             match btn_type {
                 CsdButtonType::Close => {
@@ -807,25 +872,31 @@ impl CpuRenderer {
             blend_alpha(bar_bg, csd_palette.button_hover_bg, alpha)
         };
 
-        for dy in -r..=r {
-            let py = cy + dy;
+        for row in &CIRCLE_24PX_SCANLINES {
+            let py = cy + row.dy as i32;
             if py < 0 || py >= height {
                 continue;
             }
-            for dx in -r..=r {
-                let px = cx + dx;
-                if px < 0 || px >= width {
-                    continue;
+            let row_offset = (py as usize) * stride;
+
+            // Fill solid inner span using slice fill
+            if let Some((start_dx, count)) = row.inner {
+                let start_x = cx + start_dx as i32;
+                let end_x = start_x + count as i32;
+                let clamped_start = start_x.clamp(0, width) as usize;
+                let clamped_end = end_x.clamp(0, width) as usize;
+                if clamped_start < clamped_end {
+                    self.framebuffer.pixels[row_offset + clamped_start..row_offset + clamped_end]
+                        .fill(bg_color);
                 }
-                let d_sq = dx * dx + dy * dy;
-                let idx = (py as usize) * stride + (px as usize);
-                if d_sq <= r_inner_sq {
-                    self.framebuffer.pixels[idx] = bg_color;
-                } else if d_sq <= r_outer_sq {
+            }
+
+            // Blend antialiased edge pixels
+            for &(edge_dx, alpha) in row.edges {
+                let px = cx + edge_dx as i32;
+                if px >= 0 && px < width {
+                    let idx = row_offset + px as usize;
                     let existing = self.framebuffer.pixels[idx];
-                    let alpha = (((r_outer_sq - d_sq) as u32 * 255)
-                        / (r_outer_sq - r_inner_sq).max(1) as u32)
-                        .min(255) as u8;
                     self.framebuffer.pixels[idx] = blend_alpha(existing, bg_color, alpha);
                 }
             }
