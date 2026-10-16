@@ -100,6 +100,7 @@ pub struct CpuRenderer {
     prev_tab_bar_hash: u64,
     last_target_ptr: usize,
     pub csd_height: u32,
+    pub prev_csd_hash: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -265,6 +266,7 @@ impl CpuRenderer {
             prev_tab_bar_hash: 0,
             last_target_ptr: 0,
             csd_height: 0,
+            prev_csd_hash: 0,
         })
     }
 
@@ -296,6 +298,7 @@ impl CpuRenderer {
         self.viewport_width = width;
         self.viewport_height = height;
         self.last_target_ptr = 0;
+        self.prev_csd_hash = 0;
         self.pane_states.clear();
         if self.framebuffer.resize(width, height) {
             let rows = (height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
@@ -332,7 +335,7 @@ impl CpuRenderer {
         if self.framebuffer.pixels.capacity() > self.framebuffer.pixels.len() {
             self.framebuffer.pixels.shrink_to_fit();
         }
-        self.damage.mark_all();
+        self.prev_csd_hash = 0;
         self.last_target_ptr = 0;
     }
 
@@ -669,10 +672,28 @@ impl CpuRenderer {
         pressed_button: Option<crate::window::csd::CsdButtonType>,
         button_layout: &crate::window::csd::CsdButtonLayout,
         csd_palette: &crate::window::csd::CsdPalette,
-    ) {
+    ) -> bool {
         if csd_height == 0 {
-            return;
+            return false;
         }
+
+        use std::hash::{Hash, Hasher};
+        let mut hasher = ahash::AHasher::default();
+        title.hash(&mut hasher);
+        csd_height.hash(&mut hasher);
+        is_focused.hash(&mut hasher);
+        is_maximized.hash(&mut hasher);
+        hovered_button.hash(&mut hasher);
+        pressed_button.hash(&mut hasher);
+        self.viewport_width.hash(&mut hasher);
+        csd_palette.bg.hash(&mut hasher);
+        csd_palette.border.hash(&mut hasher);
+        let new_hash = hasher.finish();
+
+        if !self.damage.full_redraw && self.prev_csd_hash == new_hash {
+            return false;
+        }
+        self.prev_csd_hash = new_hash;
 
         let bar_bg = if is_focused {
             csd_palette.bg
@@ -801,6 +822,7 @@ impl CpuRenderer {
                 }
             }
         }
+        true
     }
 
     pub fn render_csd_window_borders(&mut self, border_color: u32) {
@@ -1215,7 +1237,7 @@ impl CpuRenderer {
         effective_dim: f32,
         blink_on: bool,
         blink_changed: bool,
-    ) {
+    ) -> Option<(u32, u32)> {
         let font_size = crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
         let cell_w = pane.rect.cell_width.round().max(1.0) as u32;
         let cell_h = pane.rect.cell_height.round().max(1.0) as u32;
@@ -1267,6 +1289,9 @@ impl CpuRenderer {
         let px_offset = (pane.rect.x + pane.rect.padding_x).round() as u32;
         let py_offset = (pane.rect.y + pane.rect.padding_y).round() as u32;
 
+        let mut pane_min_y = u32::MAX;
+        let mut pane_max_y = 0u32;
+
         let mut heap_row_fg: Vec<u32> = if grid_w > 512 {
             vec![0u32; grid_w]
         } else {
@@ -1307,9 +1332,12 @@ impl CpuRenderer {
             state.row_states[y].last_selection_range = row_info.current_selection;
 
             let py = py_offset + (y as u32) * cell_h;
-            if py + cell_h > max_y {
+            if py >= max_y {
                 break;
             }
+            let row_end_y = (py + cell_h).min(max_y);
+            pane_min_y = pane_min_y.min(py);
+            pane_max_y = pane_max_y.max(row_end_y);
 
             if !pane_full_redraw {
                 self.framebuffer
@@ -1800,6 +1828,14 @@ impl CpuRenderer {
         state.last_is_focused = is_focused;
         state.last_dim = pane_effective_dim;
         state.last_font_size = font_size;
+
+        if pane_full_redraw {
+            Some((tile_y, (tile_y + tile_h).min(self.framebuffer.height)))
+        } else if pane_min_y < pane_max_y {
+            Some((pane_min_y, pane_max_y))
+        } else {
+            None
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1814,9 +1850,9 @@ impl CpuRenderer {
         tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
         separator_color_override: Option<crate::screen::cell::Color>,
         active_separator_color_override: Option<crate::screen::cell::Color>,
-    ) {
+    ) -> Option<crate::window::DamageRect> {
         if panes.is_empty() {
-            return;
+            return None;
         }
 
         let active_pane = panes.iter().find(|p| p.is_active).unwrap_or(&panes[0]);
@@ -1862,10 +1898,15 @@ impl CpuRenderer {
                     self.last_target_ptr = current_ptr;
                 }
             }
-            return;
+            return None;
         }
 
+        let mut min_damaged_y = u32::MAX;
+        let mut max_damaged_y = 0u32;
+
         if self.damage.full_redraw {
+            min_damaged_y = 0;
+            max_damaged_y = self.viewport_height;
             self.framebuffer.clear(self.palette.default_bg);
         }
 
@@ -1874,15 +1915,32 @@ impl CpuRenderer {
 
         // 6. Render each pane
         for pane in panes {
-            self.render_single_pane(pane, is_focused, opacity, effective_dim, blink_on, blink_changed);
+            if let Some((p_min, p_max)) = self.render_single_pane(
+                pane,
+                is_focused,
+                opacity,
+                effective_dim,
+                blink_on,
+                blink_changed,
+            ) {
+                min_damaged_y = min_damaged_y.min(p_min);
+                max_damaged_y = max_damaged_y.max(p_max);
+            }
         }
 
         // 7. Render Separators
-        self.render_separators(separators, separator_color_override, active_separator_color_override);
+        if !separators.is_empty() {
+            self.render_separators(separators, separator_color_override, active_separator_color_override);
+        }
 
         // 8. Render Tab Bar
         if let Some(tab_bar) = tab_bar_info {
-            self.render_tab_bar(tab_bar, self.csd_height);
+            if tab_bar_dirty || self.damage.full_redraw {
+                self.render_tab_bar(tab_bar, self.csd_height);
+                let tab_h = tab_bar.height.ceil() as u32;
+                min_damaged_y = min_damaged_y.min(self.csd_height);
+                max_damaged_y = max_damaged_y.max(self.csd_height + tab_h);
+            }
         }
         self.prev_tab_bar_hash = new_tab_bar_hash;
 
@@ -1895,6 +1953,17 @@ impl CpuRenderer {
         }
 
         self.damage.clear();
+
+        if min_damaged_y < max_damaged_y {
+            Some(crate::window::DamageRect {
+                x: 0,
+                y: min_damaged_y,
+                width: self.viewport_width,
+                height: max_damaged_y.saturating_sub(min_damaged_y).max(1),
+            })
+        } else {
+            None
+        }
     }
 }
 

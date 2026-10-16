@@ -153,10 +153,10 @@ impl PlatformWindow {
     }
 
     #[inline]
-    pub fn present_frame(&mut self, src_pixels: &[u32]) {
+    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<DamageRect>) {
         match self {
-            Self::X11(w) => w.present_frame(src_pixels),
-            Self::Wayland(w) => w.present_frame(src_pixels),
+            Self::X11(w) => w.present_frame(src_pixels, damage),
+            Self::Wayland(w) => w.present_frame(src_pixels, damage),
         }
     }
 
@@ -309,6 +309,14 @@ pub enum WindowResizeEdge {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageRect {
+    pub x: u32,
+    pub y: u32,
     pub width: u32,
     pub height: u32,
 }

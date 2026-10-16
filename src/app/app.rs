@@ -56,22 +56,29 @@ pub enum CustomEvent {
 pub struct EventLoopProxy {
     sender: Sender<CustomEvent>,
     wake_fd: RawFd,
+    pub(crate) wake_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EventLoopProxy {
     pub fn new(sender: Sender<CustomEvent>, wake_fd: RawFd) -> Self {
-        Self { sender, wake_fd }
+        Self {
+            sender,
+            wake_fd,
+            wake_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
     }
 
     pub fn send(&self, event: CustomEvent) -> Result<(), std::sync::mpsc::SendError<CustomEvent>> {
         self.sender.send(event)?;
-        let val = 1u64;
-        unsafe {
-            libc::write(
-                self.wake_fd,
-                &val as *const _ as *const libc::c_void,
-                std::mem::size_of::<u64>(),
-            );
+        if !self.wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let val = 1u64;
+            unsafe {
+                libc::write(
+                    self.wake_fd,
+                    &val as *const _ as *const libc::c_void,
+                    std::mem::size_of::<u64>(),
+                );
+            }
         }
         Ok(())
     }
@@ -89,14 +96,9 @@ fn spawn_pty_reader(
         loop {
             match pty_reader.read(&mut buf) {
                 Ok(n) if n > 0 => {
-                    let send_buf = if n <= 4096 {
-                        buf[..n].to_vec()
-                    } else {
-                        let mut pooled = crate::pty::acquire_pty_buffer();
-                        pooled[..n].copy_from_slice(&buf[..n]);
-                        pooled.truncate(n);
-                        pooled
-                    };
+                    let mut send_buf = crate::pty::acquire_pty_buffer_for_len(n);
+                    send_buf[..n].copy_from_slice(&buf[..n]);
+                    send_buf.truncate(n);
                     let _ = proxy.send(CustomEvent::PtyData {
                         window_id,
                         tab_id,
@@ -964,7 +966,7 @@ impl WindowState {
         self.renderer.csd_height = csd_height;
 
         // 6. Render & Present
-        self.renderer.render_splits(
+        let damage_rect = self.renderer.render_splits(
             &cpu_pane_render_datas,
             &separator_render_datas,
             self.opacity,
@@ -976,8 +978,10 @@ impl WindowState {
             effective_active_separator_color,
         );
 
+        let mut final_damage = damage_rect;
+
         if csd_height > 0 {
-            self.renderer.render_csd_title_bar(
+            let csd_redrawn = self.renderer.render_csd_title_bar(
                 &self.current_title,
                 csd_height,
                 self.is_focused,
@@ -987,10 +991,19 @@ impl WindowState {
                 &self.csd_button_layout,
                 &self.csd_palette,
             );
-            self.renderer.render_csd_window_borders(self.csd_palette.border);
+            if csd_redrawn {
+                self.renderer.render_csd_window_borders(self.csd_palette.border);
+                final_damage = Some(crate::window::DamageRect {
+                    x: 0,
+                    y: 0,
+                    width: self.renderer.viewport_width,
+                    height: self.renderer.viewport_height,
+                });
+            }
         }
 
-        self.window.present_frame(self.renderer.framebuffer.as_slice());
+        self.window
+            .present_frame(self.renderer.framebuffer.as_slice(), final_damage);
 
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
             for pane in active_tab.tree.panes_mut() {
@@ -1475,18 +1488,18 @@ impl App {
             let mut min_next_wake: Option<std::time::Instant> = None;
 
             for ws in self.windows.values_mut() {
-                let mut should_release = false;
+                let mut should_prune = false;
                 for tab in &mut ws.tabs {
                     if now.duration_since(tab.last_activity)
-                        >= std::time::Duration::from_millis(1500)
+                        >= std::time::Duration::from_secs(60)
                         && tab.last_activity >= tab.last_cleanup
                     {
-                        should_release = true;
                         tab.last_cleanup = now;
+                        should_prune = true;
                     }
                 }
-                if should_release {
-                    ws.release_memory();
+                if should_prune {
+                    ws.prune_idle_fallbacks(std::time::Duration::from_secs(60));
                 }
 
                 let cursor_blink_active = ws.is_cursor_blink_active();
@@ -1518,6 +1531,9 @@ impl App {
                             .terminal
                             .is_synchronized_output_active()
                     {
+                        let sync_deadline = now + std::time::Duration::from_millis(8);
+                        min_next_wake =
+                            Some(min_next_wake.map_or(sync_deadline, |t| t.min(sync_deadline)));
                         continue;
                     }
 
@@ -1562,14 +1578,14 @@ impl App {
                     let cur = std::time::Instant::now();
                     if wake_time > cur {
                         let diff = wake_time.duration_since(cur).as_millis();
-                        (diff as i32).clamp(1, 100)
+                        (diff as i32).max(1)
                     } else {
                         0
                     }
                 }
                 None => {
                     if self.windows.iter().any(|(_, w)| w.needs_redraw) {
-                        0
+                        8
                     } else {
                         -1
                     }
@@ -1588,6 +1604,9 @@ impl App {
                 unsafe {
                     libc::read(self.wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8);
                 }
+                self.event_loop_proxy
+                    .wake_pending
+                    .store(false, std::sync::atomic::Ordering::Release);
 
                 let mut poll_fds: Vec<libc::pollfd> =
                     Vec::with_capacity(self.windows.len() + 1);
@@ -1617,6 +1636,9 @@ impl App {
                     unsafe {
                         libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
                     }
+                    self.event_loop_proxy
+                        .wake_pending
+                        .store(false, std::sync::atomic::Ordering::Release);
                 }
             }
         }

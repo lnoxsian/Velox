@@ -93,8 +93,25 @@ impl X11Framebuffer {
         conn: &RustConnection,
         drawable: Drawable,
         gc: Gcontext,
-        _visual: Visualid,
+        visual: Visualid,
     ) {
+        self.present_damaged(conn, drawable, gc, visual, 0, self.height);
+    }
+
+    pub fn present_damaged(
+        &self,
+        conn: &RustConnection,
+        drawable: Drawable,
+        gc: Gcontext,
+        _visual: Visualid,
+        damaged_y: u32,
+        damaged_height: u32,
+    ) {
+        let h = damaged_height.min(self.height.saturating_sub(damaged_y));
+        if h == 0 || self.width == 0 {
+            return;
+        }
+
         if let Some(seg) = self.shm_seg {
             let _ = conn.shm_put_image(
                 drawable,
@@ -102,11 +119,11 @@ impl X11Framebuffer {
                 self.width as u16,
                 self.height as u16,
                 0,
-                0,
+                damaged_y as u16,
                 self.width as u16,
-                self.height as u16,
+                h as u16,
                 0,
-                0,
+                damaged_y as i16,
                 self.depth,
                 xproto::ImageFormat::Z_PIXMAP.into(),
                 false,
@@ -114,21 +131,31 @@ impl X11Framebuffer {
                 0,
             );
         } else {
-            let bytes = unsafe {
-                std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, self.buffer.len() * 4)
-            };
-            let _ = conn.put_image(
-                xproto::ImageFormat::Z_PIXMAP,
-                drawable,
-                gc,
-                self.width as u16,
-                self.height as u16,
-                0,
-                0,
-                0,
-                self.depth,
-                bytes,
-            );
+            let stride = self.width as usize;
+            let start_px = (damaged_y as usize) * stride;
+            let num_px = (h as usize) * stride;
+            let end_px = (start_px + num_px).min(self.buffer.len());
+
+            if start_px < end_px {
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        self.buffer[start_px..end_px].as_ptr() as *const u8,
+                        (end_px - start_px) * 4,
+                    )
+                };
+                let _ = conn.put_image(
+                    xproto::ImageFormat::Z_PIXMAP,
+                    drawable,
+                    gc,
+                    self.width as u16,
+                    h as u16,
+                    0,
+                    damaged_y as i16,
+                    0,
+                    self.depth,
+                    bytes,
+                );
+            }
         }
         let _ = conn.flush();
     }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CsdButtonType {
     Minimize,
     Maximize,

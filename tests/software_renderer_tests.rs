@@ -1945,6 +1945,122 @@ fn test_csd_optimizations_and_truncation() {
     assert_eq!(detect_resize_edge(150.0, 50.0, 300, 100, 6.0), None);
 }
 
+#[test]
+fn test_software_renderer_damage_rect_bounding_box() {
+    let theme = velox::theme::theme::Theme::new();
+    let mut renderer = velox::renderer::CpuRenderer::new("monospace", 14.0, 1.0, &theme, 400, 300, true, 1.0);
+    let mut target = vec![0u32; 400 * 300];
+    let mut grid = velox::screen::grid::Grid::new(20, 15, theme.default_fg, theme.default_bg, 100, false);
+
+    let cell_h = renderer.glyph_cache.cell_height;
+
+    let pane_rect = velox::app::split::PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: 400.0,
+        height: 300.0,
+        cols: 20,
+        rows: 15,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cell_width: renderer.glyph_cache.cell_width as f32,
+        cell_height: cell_h as f32,
+    };
+
+    // 1. Initial render of pane 1
+    let pane_data = velox::renderer::CpuPaneRenderData {
+        pane_id: 1,
+        rect: pane_rect,
+        cells: &grid.cells,
+        grid: &grid,
+        font_size: 14.0,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: velox::screen::cursor::CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    let first_damage = renderer.render_splits(
+        &[pane_data],
+        &[],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target),
+        None,
+        None,
+        None,
+    );
+    assert!(first_damage.is_some(), "First frame should have damage");
+
+    grid.damage.clear();
+
+    // 2. Second frame: zero damage -> returns None
+    let pane_data = velox::renderer::CpuPaneRenderData {
+        pane_id: 1,
+        rect: pane_rect,
+        cells: &grid.cells,
+        grid: &grid,
+        font_size: 14.0,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: velox::screen::cursor::CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    let damage = renderer.render_splits(
+        &[pane_data],
+        &[],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target),
+        None,
+        None,
+        None,
+    );
+    assert_eq!(damage, None, "Zero damage frame should return None");
+
+    // 3. Third frame: single row damage at row 5
+    grid.damage.dirty_rows[5] = true;
+    let pane_data = velox::renderer::CpuPaneRenderData {
+        pane_id: 1,
+        rect: pane_rect,
+        cells: &grid.cells,
+        grid: &grid,
+        font_size: 14.0,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: false,
+        cursor_shape: velox::screen::cursor::CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    let damage = renderer.render_splits(
+        &[pane_data],
+        &[],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target),
+        None,
+        None,
+        None,
+    );
+    assert!(damage.is_some(), "Damaged row should return Some(DamageRect)");
+    let rect = damage.unwrap();
+    let expected_y = 5 * cell_h;
+    assert_eq!(rect.y, expected_y, "DamageRect y should match dirty row top");
+    assert_eq!(rect.height, cell_h, "DamageRect height should match dirty row height");
+}
+
+
 
 
 

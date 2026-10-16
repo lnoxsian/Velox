@@ -291,15 +291,40 @@ impl WaylandWindow {
         self.state.events.push_back(PlatformEvent::CloseRequested);
     }
 
-    pub fn present_frame(&mut self, src_pixels: &[u32]) {
+    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<crate::window::DamageRect>) {
+        let Some(rect) = damage else {
+            return;
+        };
+        if rect.width == 0 || rect.height == 0 {
+            return;
+        }
+
         if let Some(buf) = &mut self.state.buffer {
-            let dest = buf.pixels_mut();
-            if dest.len() == src_pixels.len() {
-                dest.copy_from_slice(src_pixels);
+            let width = buf.width;
+            let height = buf.height;
+            if width == 0 || height == 0 {
+                return;
             }
+
+            let damaged_y = rect.y.min(height);
+            let damaged_h = rect.height.min(height.saturating_sub(damaged_y));
+            if damaged_h == 0 {
+                return;
+            }
+
+            let stride = width as usize;
+            let start_px = (damaged_y as usize) * stride;
+            let num_px = (damaged_h as usize) * stride;
+            let end_px = (start_px + num_px).min(src_pixels.len());
+
+            let dest = buf.pixels_mut();
+            if start_px < dest.len() && end_px <= dest.len() && end_px <= src_pixels.len() {
+                dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
+            }
+
             if let Some(surface) = &self.state.surface {
                 surface.attach(Some(&buf.buffer), 0, 0);
-                surface.damage_buffer(0, 0, buf.width as i32, buf.height as i32);
+                surface.damage_buffer(0, damaged_y as i32, width as i32, damaged_h as i32);
                 surface.commit();
             }
         }

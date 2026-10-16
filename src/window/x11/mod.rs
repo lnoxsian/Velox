@@ -618,13 +618,32 @@ impl X11Window {
         }
     }
 
-    pub fn present_frame(&mut self, src_pixels: &[u32]) {
-        let dest = self.fb.pixels_mut();
-        if dest.len() == src_pixels.len() {
-            dest.copy_from_slice(src_pixels);
+    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<crate::window::DamageRect>) {
+        let Some(rect) = damage else {
+            return;
+        };
+        if rect.width == 0 || rect.height == 0 || self.width == 0 || self.height == 0 {
+            return;
         }
+
+        let damaged_y = rect.y.min(self.height);
+        let damaged_h = rect.height.min(self.height.saturating_sub(damaged_y));
+        if damaged_h == 0 {
+            return;
+        }
+
+        let stride = self.width as usize;
+        let start_px = (damaged_y as usize) * stride;
+        let num_px = (damaged_h as usize) * stride;
+        let end_px = (start_px + num_px).min(src_pixels.len());
+
+        let dest = self.fb.pixels_mut();
+        if start_px < dest.len() && end_px <= dest.len() && end_px <= src_pixels.len() {
+            dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
+        }
+
         self.fb
-            .present(&self.conn, self.window_id, self.gc, self.visual);
+            .present_damaged(&self.conn, self.window_id, self.gc, self.visual, damaged_y, damaged_h);
     }
 
     #[inline]
@@ -944,7 +963,13 @@ mod tests {
 
                 // Present a frame with semi-transparent ARGB pixels
                 let frame = vec![0x80123456u32; (win.width * win.height) as usize];
-                win.present_frame(&frame);
+                let damage = Some(crate::window::DamageRect {
+                    x: 0,
+                    y: 0,
+                    width: win.width,
+                    height: win.height,
+                });
+                win.present_frame(&frame, damage);
                 win.set_visible(true);
                 assert!(win.is_visible);
             }
