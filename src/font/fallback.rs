@@ -32,6 +32,7 @@ pub struct FallbackFont {
     pub last_used: u64,
     pub last_used_instant: std::time::Instant,
     pub path: PathBuf,
+    pub face_index: u32,
 }
 
 pub struct FallbackManager {
@@ -180,6 +181,7 @@ impl FallbackManager {
     fn insert_fallback(
         &mut self,
         path: PathBuf,
+        face_index: u32,
         font: FontArc,
         storage: Arc<FontStorage>,
     ) -> usize {
@@ -195,6 +197,7 @@ impl FallbackManager {
             last_used: self.usage_counter,
             last_used_instant: std::time::Instant::now(),
             path,
+            face_index,
         });
 
         // Enforce bounds and eviction
@@ -206,13 +209,15 @@ impl FallbackManager {
     pub fn find_fallback_for_char(&mut self, c: char) -> Option<usize> {
         let emoji = crate::font::loader::is_emoji(c);
 
-        // 1. Check existing loaded fallback fonts first and update LRU timestamp
-        // If it is an emoji, prefer loaded fallbacks that have a color image for `c`
+        // 1. Check existing loaded fallback fonts first and update LRU timestamp.
+        // If it is an emoji, ONLY match loaded fallbacks that have an embedded color PNG image for `c`.
+        // Non-color fallbacks (e.g. DejaVu Sans with monochrome emoji outlines) must NOT be returned here,
+        // because that would render wireframe glyphs instead of loading the system color emoji font.
         if emoji {
             for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
                 let id = fallback.font.glyph_id(c);
                 if id.0 != 0
-                    && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), 0)
+                    && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), fallback.face_index)
                     && face
                         .glyph_raster_image(owned_ttf_parser::GlyphId(id.0), 32)
                         .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
@@ -223,14 +228,14 @@ impl FallbackManager {
                     return Some(idx);
                 }
             }
-        }
-
-        for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
-            if fallback.font.glyph_id(c).0 != 0 {
-                self.usage_counter = self.usage_counter.wrapping_add(1);
-                fallback.last_used = self.usage_counter;
-                fallback.last_used_instant = std::time::Instant::now();
-                return Some(idx);
+        } else {
+            for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
+                if fallback.font.glyph_id(c).0 != 0 {
+                    self.usage_counter = self.usage_counter.wrapping_add(1);
+                    fallback.last_used = self.usage_counter;
+                    fallback.last_used_instant = std::time::Instant::now();
+                    return Some(idx);
+                }
             }
         }
 
@@ -241,7 +246,7 @@ impl FallbackManager {
 
         let db = self.ensure_db();
 
-        // 3. If emoji, check popular color emoji families FIRST
+        // 3. If emoji, check popular color emoji families FIRST and verify they contain color raster images
         if emoji {
             let emoji_families = [
                 "Noto Color Emoji",
@@ -252,7 +257,6 @@ impl FallbackManager {
                 "EmojiOne Color",
                 "JoyPixels",
                 "OpenMoji Color",
-                "Noto Emoji",
             ];
 
             for family in &emoji_families {
@@ -269,8 +273,13 @@ impl FallbackManager {
                     && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
                     && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
                     && font.glyph_id(c).0 != 0
+                    && let Ok(face_parsed) =
+                        owned_ttf_parser::Face::parse(storage.as_bytes(), face.index)
+                    && face_parsed
+                        .glyph_raster_image(owned_ttf_parser::GlyphId(font.glyph_id(c).0), 32)
+                        .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
                 {
-                    let idx = self.insert_fallback(path.clone(), font, storage);
+                    let idx = self.insert_fallback(path.clone(), face.index, font, storage);
                     return Some(idx);
                 }
             }
@@ -309,13 +318,13 @@ impl FallbackManager {
                     && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
                     && font.glyph_id(c).0 != 0
                 {
-                    let idx = self.insert_fallback(path.clone(), font, storage);
+                    let idx = self.insert_fallback(path.clone(), face.index, font, storage);
                     return Some(idx);
                 }
             }
         }
 
-        // 5. Scan system font faces directly via iterator (zero Vec/PathBuf heap allocations)
+        // 5. Scan system font faces directly for color PNG emoji fonts
         if emoji {
             for face in db.faces() {
                 if let fontdb::Source::File(path) = &face.source
@@ -329,12 +338,26 @@ impl FallbackManager {
                         .glyph_raster_image(owned_ttf_parser::GlyphId(font.glyph_id(c).0), 32)
                         .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
                 {
-                    let idx = self.insert_fallback(path.clone(), font, storage);
+                    let idx = self.insert_fallback(path.clone(), face.index, font, storage);
                     return Some(idx);
                 }
             }
         }
 
+        // 6. Last resort for emoji when no color emoji font exists on the system:
+        // check loaded fallbacks for an outline glyph.
+        if emoji {
+            for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
+                if fallback.font.glyph_id(c).0 != 0 {
+                    self.usage_counter = self.usage_counter.wrapping_add(1);
+                    fallback.last_used = self.usage_counter;
+                    fallback.last_used_instant = std::time::Instant::now();
+                    return Some(idx);
+                }
+            }
+        }
+
+        // 7. General scan across system font faces for any matching glyph outline
         for face in db.faces() {
             if let fontdb::Source::File(path) = &face.source
                 && !self.loaded_paths.contains(path)
@@ -342,7 +365,7 @@ impl FallbackManager {
                 && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
                 && font.glyph_id(c).0 != 0
             {
-                let idx = self.insert_fallback(path.clone(), font, storage);
+                let idx = self.insert_fallback(path.clone(), face.index, font, storage);
                 return Some(idx);
             }
         }
@@ -354,6 +377,7 @@ impl FallbackManager {
         self.missing_chars.insert(c);
         None
     }
+
 }
 
 #[cfg(test)]

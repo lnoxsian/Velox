@@ -263,3 +263,45 @@ fn test_global_scrollback_cache_clear() {
         assert!(lock.get(1002, 0).is_none());
     }
 }
+
+#[test]
+fn test_emoji_renders_color_even_when_outline_font_loaded_first() {
+    let mut cache = GlyphCache::from_font_family("ComicShannsMono Nerd Font", 11.0, 1.5);
+    // Explicitly pre-load DejaVu Sans into fallbacks (which contains monochrome emoji outlines)
+    let db = velox::font::fallback::get_system_font_db();
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Name("DejaVu Sans")],
+        weight: fontdb::Weight::NORMAL,
+        stretch: fontdb::Stretch::Normal,
+        style: fontdb::Style::Normal,
+    };
+    if let Some(id) = db.query(&query) {
+        if let Some(face) = db.face(id) {
+            if let fontdb::Source::File(path) = &face.source {
+                let storage = std::sync::Arc::new(velox::font::storage::FontStorage::from_file(path).unwrap());
+                let font = velox::font::storage::create_font_arc(std::sync::Arc::clone(&storage), face.index).unwrap();
+                cache.fallback_manager.fallbacks.push(velox::font::fallback::FallbackFont {
+                    font,
+                    storage,
+                    byte_size: 1000,
+                    last_used: 1,
+                    last_used_instant: std::time::Instant::now(),
+                    path: path.clone(),
+                    face_index: face.index,
+                });
+            }
+        }
+    }
+
+    for emoji in ['😀', '📦', '🦀', '🚀'] {
+        let g_ref = cache.get_or_rasterize(GlyphKey::new(emoji, false, false, true)).unwrap();
+        assert!(g_ref.is_color, "Emoji {} must be color bitmap, but was wireframe outline!", emoji);
+    }
+}
+
+
+
+
+
+
+

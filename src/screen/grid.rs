@@ -569,6 +569,14 @@ impl Grid {
         }
         let is_combining = UnicodeWidthChar::width(c) == Some(0);
         if is_combining && self.cursor.x > 0 {
+            // Variation Selectors (e.g. U+FE0E text style, U+FE0F emoji presentation) have zero width.
+            // They must NOT replace the base emoji with a combining registry PUA character,
+            // which would break emoji identification and color rasterization.
+            if ('\u{fe00}'..='\u{fe0f}').contains(&c) || ('\u{e0100}'..='\u{e01ef}').contains(&c) {
+                self.damage.mark_dirty(self.cursor.y);
+                return;
+            }
+
             let physical_y = self.physical_row(self.cursor.y);
             let row_start = physical_y * self.width;
             let mut target_x = self.cursor.x - 1;
@@ -603,6 +611,7 @@ impl Grid {
                     self.cells[idx].character = new_char;
                 }
             }
+            self.damage.mark_dirty(self.cursor.y);
             return;
         }
 
@@ -1299,5 +1308,28 @@ mod tests {
         // Scroll 1 more line: row 0 is evicted, selection is dropped
         grid.scroll(1, bg);
         assert!(!grid.selection.active);
+    }
+
+    #[test]
+    fn test_variation_selector_does_not_corrupt_emoji_codepoint() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+
+        // Put emoji followed by VS16 (emoji presentation selector: \u{fe0f})
+        grid.put_char('\u{2764}', fg, bg, None, CellFlags::empty());
+        grid.put_char('\u{fe0f}', fg, bg, None, CellFlags::empty());
+
+        let ch = grid
+            .with_display_row_slice(0, |row| row[0].character)
+            .unwrap();
+        assert_eq!(
+            ch, '\u{2764}',
+            "Base emoji codepoint must be preserved, not converted to PUA"
+        );
     }
 }

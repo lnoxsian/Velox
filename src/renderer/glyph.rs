@@ -727,7 +727,7 @@ impl GlyphCache {
             let fallback = &self.fallback_manager.fallbacks[idx];
             let id = fallback.font.glyph_id(c);
             if id.0 != 0
-                && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), 0)
+                && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), fallback.face_index)
             {
                 let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
                 if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
@@ -743,6 +743,54 @@ impl GlyphCache {
                         if let Ok(info) = reader.next_frame(&mut self.scratch.png_buf[..out_size]) {
                             let (output_color, _) = reader.output_color_type();
                             if output_color == png::ColorType::Rgba {
+                                return Some((info.width, info.height));
+                            } else if output_color == png::ColorType::Rgb {
+                                let num_pixels = (info.width * info.height) as usize;
+                                let rgba_size = num_pixels * 4;
+                                if self.scratch.png_buf.len() < rgba_size {
+                                    self.scratch.png_buf.resize(rgba_size, 0);
+                                }
+                                for i in (0..num_pixels).rev() {
+                                    let r = self.scratch.png_buf[i * 3];
+                                    let g = self.scratch.png_buf[i * 3 + 1];
+                                    let b = self.scratch.png_buf[i * 3 + 2];
+                                    let dst = i * 4;
+                                    self.scratch.png_buf[dst] = r;
+                                    self.scratch.png_buf[dst + 1] = g;
+                                    self.scratch.png_buf[dst + 2] = b;
+                                    self.scratch.png_buf[dst + 3] = 255;
+                                }
+                                return Some((info.width, info.height));
+                            } else if output_color == png::ColorType::GrayscaleAlpha {
+                                let num_pixels = (info.width * info.height) as usize;
+                                let rgba_size = num_pixels * 4;
+                                if self.scratch.png_buf.len() < rgba_size {
+                                    self.scratch.png_buf.resize(rgba_size, 0);
+                                }
+                                for i in (0..num_pixels).rev() {
+                                    let gray = self.scratch.png_buf[i * 2];
+                                    let a = self.scratch.png_buf[i * 2 + 1];
+                                    let dst = i * 4;
+                                    self.scratch.png_buf[dst] = gray;
+                                    self.scratch.png_buf[dst + 1] = gray;
+                                    self.scratch.png_buf[dst + 2] = gray;
+                                    self.scratch.png_buf[dst + 3] = a;
+                                }
+                                return Some((info.width, info.height));
+                            } else if output_color == png::ColorType::Grayscale {
+                                let num_pixels = (info.width * info.height) as usize;
+                                let rgba_size = num_pixels * 4;
+                                if self.scratch.png_buf.len() < rgba_size {
+                                    self.scratch.png_buf.resize(rgba_size, 0);
+                                }
+                                for i in (0..num_pixels).rev() {
+                                    let gray = self.scratch.png_buf[i];
+                                    let dst = i * 4;
+                                    self.scratch.png_buf[dst] = gray;
+                                    self.scratch.png_buf[dst + 1] = gray;
+                                    self.scratch.png_buf[dst + 2] = gray;
+                                    self.scratch.png_buf[dst + 3] = 255;
+                                }
                                 return Some((info.width, info.height));
                             }
                         }

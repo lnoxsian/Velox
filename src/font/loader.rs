@@ -50,18 +50,28 @@ pub fn is_emoji(c: char) -> bool {
     matches!(c,
         '\u{1f300}'..='\u{1faff}' | // Misc Symbols & Pictographs, Emoticons, Transport, Supplemental, Extended-A
         '\u{1f1e6}'..='\u{1f1ff}' | // Regional indicator symbols (Flags)
+        '\u{1f170}'..='\u{1f19a}' | // Enclosed Alphanumeric Supplement (SOS, UP!, VS, etc.)
+        '\u{1f200}'..='\u{1f251}' | // Enclosed Ideographic Supplement
         '\u{1f004}' | '\u{1f0cf}' | // Mahjong, Playing Card Joker
         '\u{2600}'..='\u{27bf}'   | // Misc Symbols & Dingbats
         '\u{2b50}' | '\u{2b55}' | '\u{2b1b}' | '\u{2b1c}' | // Star, Circle, Large Squares
+        '\u{2b05}'..='\u{2b07}'   | // Leftwards, upwards, downwards black arrow
+        '\u{203c}' | '\u{2049}'   | // Double exclamation, exclamation question
+        '\u{2122}' | '\u{2139}'   | // Trademark, information
+        '\u{2194}'..='\u{2199}'   | // Left-right, up-down, diagonal arrows
+        '\u{21a9}'..='\u{21aa}'   | // Arrows with hook
         '\u{231a}' | '\u{231b}'   | // Watch, Hourglass
-        '\u{23e9}'..='\u{23ec}'   | // Fast-forward, Rewind, Up, Down
-        '\u{23f0}' | '\u{23f3}'   | // Alarm clock, Hourglass done
+        '\u{2328}' | '\u{23cf}'   | // Keyboard, Eject
+        '\u{23e9}'..='\u{23f3}'   | // Fast-forward, Rewind, Play/Pause, Alarm clock, Hourglass done
         '\u{23f8}'..='\u{23fa}'   | // Pause, Stop, Record
+        '\u{24c2}'                | // Circled M
         '\u{25aa}'..='\u{25ab}'   | // Black/white small square
+        '\u{25b6}' | '\u{25c0}'   | // Black right/left pointing triangle (Play / Reverse)
         '\u{25fb}'..='\u{25fe}'   | // Medium squares
         '\u{2934}'..='\u{2935}'   | // Arrow curving up/down
         '\u{3030}' | '\u{303d}'   | // Wavy dash, part alternation mark
-        '\u{3297}' | '\u{3299}'     // Circled ideographs
+        '\u{3297}' | '\u{3299}'   | // Circled ideographs
+        '\u{00a9}' | '\u{00ae}'     // Copyright, Registered
     )
 }
 
