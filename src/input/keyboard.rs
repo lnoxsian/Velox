@@ -19,6 +19,14 @@ pub fn translate_key(
         + (if has_ctrl { 4 } else { 0 })
         + (if has_super { 8 } else { 0 });
 
+    // ── 0. Reject modifier-only key events from generating PTY input ───────
+    if matches!(
+        key,
+        Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super)
+    ) {
+        return None;
+    }
+
     // ── 1. Kitty Keyboard Protocol (if enabled) ──────────────────────────────
     if kitty_flags > 0 {
         let disambiguate = (kitty_flags & 1) != 0;
@@ -75,27 +83,36 @@ pub fn translate_key(
     }
 
     // ── 3. Control Key Combinations for Printable Characters ─────────────────
-    if has_ctrl && !has_alt {
-        match key {
+    if has_ctrl {
+        let ctrl_code = match key {
             Key::Character(s) if s.len() == 1 => {
                 let c = s.chars().next().unwrap();
                 if c.is_ascii_alphabetic() {
-                    let code = c.to_ascii_uppercase() as u8 - b'A' + 1;
-                    return Some(smallvec![code]);
-                }
-                match c {
-                    '@' | '2' | ' ' => return Some(smallvec![0]),
-                    '[' | '3' => return Some(smallvec![27]),
-                    '\\' | '4' => return Some(smallvec![28]),
-                    ']' | '5' => return Some(smallvec![29]),
-                    '^' | '6' => return Some(smallvec![30]),
-                    '_' | '7' | '/' => return Some(smallvec![31]),
-                    '8' | '?' => return Some(smallvec![127]),
-                    _ => {}
+                    Some(c.to_ascii_uppercase() as u8 - b'A' + 1)
+                } else {
+                    match c {
+                        '@' | '2' => Some(0),
+                        '[' | '3' => Some(27),
+                        '\\' | '4' => Some(28),
+                        ']' | '5' => Some(29),
+                        '^' | '6' => Some(30),
+                        '_' | '7' | '/' => Some(31),
+                        '8' | '?' => Some(127),
+                        ' ' => Some(0),
+                        _ => None,
+                    }
                 }
             }
-            Key::Named(NamedKey::Space) => return Some(smallvec![0]),
-            _ => {}
+            Key::Named(NamedKey::Space) => Some(0),
+            _ => None,
+        };
+
+        if let Some(code) = ctrl_code {
+            if has_alt {
+                return Some(smallvec![27, code]);
+            } else {
+                return Some(smallvec![code]);
+            }
         }
     }
 
@@ -147,7 +164,9 @@ pub fn translate_key(
             }
         }
         Key::Named(NamedKey::Backspace) => {
-            if has_alt {
+            if has_alt && has_ctrl {
+                Some(smallvec![27, 8])
+            } else if has_alt {
                 Some(smallvec![27, 127])
             } else if has_ctrl {
                 Some(smallvec![8]) // ASCII BS for Ctrl+Backspace (word deletion)
@@ -162,6 +181,7 @@ pub fn translate_key(
                 Some(smallvec![9])
             }
         }
+        Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super) => None,
         Key::Named(NamedKey::Escape) => {
             if has_alt {
                 Some(smallvec![27, 27])
@@ -412,5 +432,359 @@ pub fn translate_key(
         }
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shift_tab_traditional_and_kitty() {
+        // Traditional xterm CBT sequence (\x1b[Z) when kitty_flags == 0
+        let cbt = translate_key(
+            &Key::Named(NamedKey::Tab),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(cbt.as_deref(), Some(&b"\x1b[Z"[..]));
+
+        // Negotiated Kitty CSI-u sequence (\x1b[9;2u) when kitty_flags > 0
+        let kitty_cbt = translate_key(
+            &Key::Named(NamedKey::Tab),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            1,
+        );
+        assert_eq!(kitty_cbt.as_deref(), Some(&b"\x1b[9;2u"[..]));
+
+        // Plain tab -> 0x09
+        let plain_tab = translate_key(
+            &Key::Named(NamedKey::Tab),
+            Some("\t"),
+            ModifiersState::empty(),
+            false,
+            0,
+        );
+        assert_eq!(plain_tab.as_deref(), Some(&[9][..]));
+    }
+
+    #[test]
+    fn test_control_and_alt_printable_keys() {
+        // Ctrl+C -> 0x03
+        let ctrl_c = translate_key(
+            &Key::Character("c".to_string()),
+            Some("c"),
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_c.as_deref(), Some(&[3][..]));
+
+        // Alt+x -> ESC x (\x1b x)
+        let alt_x = translate_key(
+            &Key::Character("x".to_string()),
+            Some("x"),
+            ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(alt_x.as_deref(), Some(&b"\x1bx"[..]));
+
+        // Ctrl+Alt+a -> ESC 0x01
+        let ctrl_alt_a = translate_key(
+            &Key::Character("a".to_string()),
+            Some("a"),
+            ModifiersState::CONTROL | ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_alt_a.as_deref(), Some(&[27, 1][..]));
+
+        // Ctrl+Alt+c -> ESC 0x03
+        let ctrl_alt_c = translate_key(
+            &Key::Character("c".to_string()),
+            Some("c"),
+            ModifiersState::CONTROL | ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_alt_c.as_deref(), Some(&[27, 3][..]));
+
+        // Unbound Ctrl+Shift+R -> Ctrl+R (0x12) when kitty is off
+        let ctrl_shift_r = translate_key(
+            &Key::Character("r".to_string()),
+            Some("r"),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_shift_r.as_deref(), Some(&[18][..]));
+    }
+
+    #[test]
+    fn test_modified_arrows() {
+        // Ctrl+Up -> ESC [ 1;5 A
+        let ctrl_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_up.as_deref(), Some(&b"\x1b[1;5A"[..]));
+
+        // Alt+Up -> ESC [ 1;3 A
+        let alt_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(alt_up.as_deref(), Some(&b"\x1b[1;3A"[..]));
+
+        // Ctrl+Shift+Up -> ESC [ 1;6 A
+        let ctrl_shift_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_shift_up.as_deref(), Some(&b"\x1b[1;6A"[..]));
+
+        // Ctrl+Alt+Up -> ESC [ 1;7 A
+        let ctrl_alt_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::CONTROL | ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_alt_up.as_deref(), Some(&b"\x1b[1;7A"[..]));
+
+        // Ctrl+Alt+Shift+Up -> ESC [ 1;8 A
+        let ctrl_alt_shift_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_alt_shift_up.as_deref(), Some(&b"\x1b[1;8A"[..]));
+    }
+
+    #[test]
+    fn test_modified_navigation_keys() {
+        // Shift+Home (mod 2) -> ESC [ 1;2 H
+        let shift_home = translate_key(
+            &Key::Named(NamedKey::Home),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(shift_home.as_deref(), Some(&b"\x1b[1;2H"[..]));
+
+        // Ctrl+End (mod 5) -> ESC [ 1;5 F
+        let ctrl_end = translate_key(
+            &Key::Named(NamedKey::End),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_end.as_deref(), Some(&b"\x1b[1;5F"[..]));
+
+        // Alt+Delete (mod 3) -> ESC [ 3;3 ~
+        let alt_del = translate_key(
+            &Key::Named(NamedKey::Delete),
+            None,
+            ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(alt_del.as_deref(), Some(&b"\x1b[3;3~"[..]));
+
+        // Ctrl+Shift+Insert (mod 6) -> ESC [ 2;6 ~
+        let ctrl_shift_ins = translate_key(
+            &Key::Named(NamedKey::Insert),
+            None,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_shift_ins.as_deref(), Some(&b"\x1b[2;6~"[..]));
+
+        // Ctrl+PageUp (mod 5) -> ESC [ 5;5 ~
+        let ctrl_pgup = translate_key(
+            &Key::Named(NamedKey::PageUp),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_pgup.as_deref(), Some(&b"\x1b[5;5~"[..]));
+
+        // Alt+PageDown (mod 3) -> ESC [ 6;3 ~
+        let alt_pgdn = translate_key(
+            &Key::Named(NamedKey::PageDown),
+            None,
+            ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(alt_pgdn.as_deref(), Some(&b"\x1b[6;3~"[..]));
+    }
+
+    #[test]
+    fn test_modified_function_keys() {
+        // Shift+F1 (mod 2) -> ESC [ 1;2 P
+        let shift_f1 = translate_key(
+            &Key::Named(NamedKey::F1),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(shift_f1.as_deref(), Some(&b"\x1b[1;2P"[..]));
+
+        // Alt+F4 (mod 3) -> ESC [ 1;3 S
+        let alt_f4 = translate_key(
+            &Key::Named(NamedKey::F4),
+            None,
+            ModifiersState::ALT,
+            false,
+            0,
+        );
+        assert_eq!(alt_f4.as_deref(), Some(&b"\x1b[1;3S"[..]));
+
+        // Ctrl+F5 (mod 5) -> ESC [ 15;5 ~
+        let ctrl_f5 = translate_key(
+            &Key::Named(NamedKey::F5),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_f5.as_deref(), Some(&b"\x1b[15;5~"[..]));
+
+        // Ctrl+Alt+Shift+F12 (mod 8) -> ESC [ 24;8 ~
+        let full_f12 = translate_key(
+            &Key::Named(NamedKey::F12),
+            None,
+            ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT,
+            false,
+            0,
+        );
+        assert_eq!(full_f12.as_deref(), Some(&b"\x1b[24;8~"[..]));
+    }
+
+    #[test]
+    fn test_dead_keys_and_resolved_text() {
+        // Dead tilde
+        let dead = translate_key(
+            &Key::Dead(Some('~')),
+            None,
+            ModifiersState::empty(),
+            false,
+            0,
+        );
+        assert_eq!(dead.as_deref(), Some(&b"~"[..]));
+
+        // Alt+dead circumflex
+        let alt_dead = translate_key(&Key::Dead(Some('^')), None, ModifiersState::ALT, false, 0);
+        assert_eq!(alt_dead.as_deref(), Some(&b"\x1b^"[..]));
+
+        // Resolved text from AltGr or composed key (e.g. '@' or '€')
+        let euro = translate_key(
+            &Key::Character("€".to_string()),
+            Some("€"),
+            ModifiersState::empty(),
+            false,
+            0,
+        );
+        assert_eq!(euro.as_deref(), Some("€".as_bytes()));
+    }
+
+    #[test]
+    fn test_super_meta_combinations() {
+        // Super+Up (mod 9) -> ESC [ 1;9 A
+        let super_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::SUPER,
+            false,
+            0,
+        );
+        assert_eq!(super_up.as_deref(), Some(&b"\x1b[1;9A"[..]));
+
+        // Super+Ctrl+Up (mod 13) -> ESC [ 1;13 A
+        let super_ctrl_up = translate_key(
+            &Key::Named(NamedKey::ArrowUp),
+            None,
+            ModifiersState::SUPER | ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(super_ctrl_up.as_deref(), Some(&b"\x1b[1;13A"[..]));
+
+        // Kitty protocol Super+a (mod 9) -> ESC [ 97;9 u
+        let kitty_super_a = translate_key(
+            &Key::Character("a".to_string()),
+            Some("a"),
+            ModifiersState::SUPER,
+            false,
+            1,
+        );
+        assert_eq!(kitty_super_a.as_deref(), Some(&b"\x1b[97;9u"[..]));
+    }
+
+    #[test]
+    fn test_modifier_only_keys_return_none() {
+        assert!(
+            translate_key(
+                &Key::Named(NamedKey::Shift),
+                None,
+                ModifiersState::SHIFT,
+                false,
+                0
+            )
+            .is_none()
+        );
+        assert!(
+            translate_key(
+                &Key::Named(NamedKey::Control),
+                None,
+                ModifiersState::CONTROL,
+                false,
+                0
+            )
+            .is_none()
+        );
+        assert!(
+            translate_key(
+                &Key::Named(NamedKey::Alt),
+                None,
+                ModifiersState::ALT,
+                false,
+                0
+            )
+            .is_none()
+        );
+        assert!(
+            translate_key(
+                &Key::Named(NamedKey::Super),
+                None,
+                ModifiersState::SUPER,
+                false,
+                0
+            )
+            .is_none()
+        );
     }
 }

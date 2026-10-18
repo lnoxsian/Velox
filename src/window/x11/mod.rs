@@ -138,7 +138,10 @@ fn detect_desktop_cursor_theme() -> Option<String> {
     }
 
     // 4. Check Cinnamon / GNOME gsettings
-    for schema in ["org.cinnamon.desktop.interface", "org.gnome.desktop.interface"] {
+    for schema in [
+        "org.cinnamon.desktop.interface",
+        "org.gnome.desktop.interface",
+    ] {
         if let Ok(output) = std::process::Command::new("gsettings")
             .args(["get", schema, "cursor-theme"])
             .output()
@@ -175,14 +178,23 @@ fn detect_desktop_cursor_size() -> Option<u32> {
             }
         }
     }
-    for schema in ["org.cinnamon.desktop.interface", "org.gnome.desktop.interface"] {
+    for schema in [
+        "org.cinnamon.desktop.interface",
+        "org.gnome.desktop.interface",
+    ] {
         if let Ok(output) = std::process::Command::new("gsettings")
             .args(["get", schema, "cursor-size"])
             .output()
         {
             if output.status.success() {
                 let s = String::from_utf8_lossy(&output.stdout);
-                if let Ok(size) = s.trim().trim_matches('\'').trim_matches('"').trim().parse::<u32>() {
+                if let Ok(size) = s
+                    .trim()
+                    .trim_matches('\'')
+                    .trim_matches('"')
+                    .trim()
+                    .parse::<u32>()
+                {
                     return Some(size);
                 }
             }
@@ -319,13 +331,23 @@ impl X11Window {
         let cursor_col_resize = load_xcursor_or_fallback(
             &conn,
             cursor_handle.as_ref(),
-            &["col-resize", "sb_h_double_arrow", "ew-resize", "h_double_arrow"],
+            &[
+                "col-resize",
+                "sb_h_double_arrow",
+                "ew-resize",
+                "h_double_arrow",
+            ],
             108, // XC_sb_h_double_arrow
         );
         let cursor_row_resize = load_xcursor_or_fallback(
             &conn,
             cursor_handle.as_ref(),
-            &["row-resize", "sb_v_double_arrow", "ns-resize", "v_double_arrow"],
+            &[
+                "row-resize",
+                "sb_v_double_arrow",
+                "ns-resize",
+                "v_double_arrow",
+            ],
             116, // XC_sb_v_double_arrow
         );
 
@@ -642,8 +664,14 @@ impl X11Window {
             dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
         }
 
-        self.fb
-            .present_damaged(&self.conn, self.window_id, self.gc, self.visual, damaged_y, damaged_h);
+        self.fb.present_damaged(
+            &self.conn,
+            self.window_id,
+            self.gc,
+            self.visual,
+            damaged_y,
+            damaged_h,
+        );
     }
 
     #[inline]
@@ -699,7 +727,8 @@ impl X11Window {
                 }
                 self.modifiers = mods;
                 if self.modifiers != old_mods {
-                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                    self.events
+                        .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
                 let (key, text) = self.lookup_key(ev.detail, ev.state);
                 if let Some(key) = key {
@@ -718,7 +747,8 @@ impl X11Window {
                 }
                 self.modifiers = mods;
                 if self.modifiers != old_mods {
-                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                    self.events
+                        .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
                 let (key, _) = self.lookup_key(ev.detail, ev.state);
                 if let Some(key) = key {
@@ -732,7 +762,8 @@ impl X11Window {
                 let old_mods = self.modifiers;
                 self.modifiers = Self::parse_modifiers(ev.state);
                 if self.modifiers != old_mods {
-                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                    self.events
+                        .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
                 self.events.push_back(PlatformEvent::CursorMoved {
                     x: ev.event_x as f64,
@@ -743,11 +774,16 @@ impl X11Window {
                 let old_mods = self.modifiers;
                 self.modifiers = Self::parse_modifiers(ev.state);
                 if self.modifiers != old_mods {
-                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                    self.events
+                        .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
                 match ev.detail {
-                    4 => self.events.push_back(PlatformEvent::MouseWheel { delta_y: 1.0 }),
-                    5 => self.events.push_back(PlatformEvent::MouseWheel { delta_y: -1.0 }),
+                    4 => self
+                        .events
+                        .push_back(PlatformEvent::MouseWheel { delta_y: 1.0 }),
+                    5 => self
+                        .events
+                        .push_back(PlatformEvent::MouseWheel { delta_y: -1.0 }),
                     1 => self.events.push_back(PlatformEvent::MouseInput {
                         state: ElementState::Pressed,
                         button: MouseButton::Left,
@@ -770,7 +806,8 @@ impl X11Window {
                 let old_mods = self.modifiers;
                 self.modifiers = Self::parse_modifiers(ev.state);
                 if self.modifiers != old_mods {
-                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                    self.events
+                        .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
                 match ev.detail {
                     1 => self.events.push_back(PlatformEvent::MouseInput {
@@ -799,12 +836,15 @@ impl X11Window {
                 let old_mods = self.modifiers;
                 self.modifiers = ModifiersState::empty();
                 if self.modifiers != old_mods {
-                    self.events.push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                    self.events
+                        .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
                 self.events.push_back(PlatformEvent::Focused(false));
             }
             x11rb::protocol::Event::MappingNotify(ev) => {
-                if ev.request == xproto::Mapping::KEYBOARD || ev.request == xproto::Mapping::MODIFIER {
+                if ev.request == xproto::Mapping::KEYBOARD
+                    || ev.request == xproto::Mapping::MODIFIER
+                {
                     self.refresh_keyboard_mapping();
                 }
             }
@@ -874,8 +914,8 @@ impl X11Window {
         match keysym {
             0xffe1 | 0xffe2 => Some(ModifiersState::SHIFT),
             0xffe3 | 0xffe4 => Some(ModifiersState::CONTROL),
-            0xffe7 | 0xffe8 | 0xffe9 | 0xffea => Some(ModifiersState::ALT),
-            0xffeb | 0xffec | 0xffed | 0xffee => Some(ModifiersState::SUPER),
+            0xffe7..=0xffea => Some(ModifiersState::ALT),
+            0xffeb..=0xffee => Some(ModifiersState::SUPER),
             _ => None,
         }
     }
@@ -891,11 +931,21 @@ impl X11Window {
         let val: u16 = state.into();
         let is_shift = val & xproto::ModMask::SHIFT.bits() != 0;
         let is_lock = val & xproto::ModMask::LOCK.bits() != 0;
+        let is_mod5 = val & xproto::ModMask::M5.bits() != 0;
         let keysym_col0 = self.keysym_for_keycode(keycode, 0);
-        let is_letter = (b'a'..=b'z').contains(&(keysym_col0 as u8))
-            || (b'A'..=b'Z').contains(&(keysym_col0 as u8));
-        let col = if (if is_letter { is_shift ^ is_lock } else { is_shift })
-            && self.keysyms_per_keycode > 1
+        let is_letter =
+            (keysym_col0 as u8).is_ascii_lowercase() || (keysym_col0 as u8).is_ascii_uppercase();
+        let col = if is_mod5 && self.keysyms_per_keycode > 2 {
+            if is_shift && self.keysyms_per_keycode > 3 {
+                3
+            } else {
+                2
+            }
+        } else if (if is_letter {
+            is_shift ^ is_lock
+        } else {
+            is_shift
+        }) && self.keysyms_per_keycode > 1
         {
             1
         } else {
@@ -1096,5 +1146,3 @@ mod tests {
         }
     }
 }
-
-

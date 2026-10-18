@@ -91,6 +91,10 @@ pub enum NamedKey {
     F10,
     F11,
     F12,
+    Shift,
+    Control,
+    Alt,
+    Super,
 }
 
 #[derive(Debug, Clone)]

@@ -15,12 +15,17 @@ pub enum WindowBackendKind {
     Wayland,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum PlatformWindow {
     X11(X11Window),
     Wayland(Box<WaylandWindow>),
+    Dummy { width: u32, height: u32 },
 }
 
 impl PlatformWindow {
+    pub fn dummy(width: u32, height: u32) -> Self {
+        Self::Dummy { width, height }
+    }
     pub fn new(
         title: &str,
         width: u32,
@@ -34,7 +39,10 @@ impl PlatformWindow {
                 match X11Window::new(title, width, height, bg_pixel) {
                     Ok(w) => Ok(PlatformWindow::X11(w)),
                     Err(e) => {
-                        log::warn!("X11 window creation failed ({}), attempting Wayland fallback...", e);
+                        log::warn!(
+                            "X11 window creation failed ({}), attempting Wayland fallback...",
+                            e
+                        );
                         if let Ok(wd) = std::env::var("WAYLAND_DISPLAY")
                             && !wd.trim().is_empty()
                         {
@@ -53,7 +61,10 @@ impl PlatformWindow {
                 match WaylandWindow::new(title, width, height) {
                     Ok(w) => Ok(PlatformWindow::Wayland(Box::new(w))),
                     Err(e) => {
-                        log::warn!("Wayland connection failed ({}), attempting X11 fallback...", e);
+                        log::warn!(
+                            "Wayland connection failed ({}), attempting X11 fallback...",
+                            e
+                        );
                         if let Ok(xd) = std::env::var("DISPLAY")
                             && !xd.trim().is_empty()
                         {
@@ -75,7 +86,10 @@ impl PlatformWindow {
                     match WaylandWindow::new(title, width, height) {
                         Ok(w) => return Ok(PlatformWindow::Wayland(Box::new(w))),
                         Err(e) => {
-                            log::warn!("Wayland connection failed ({}), attempting X11 fallback...", e);
+                            log::warn!(
+                                "Wayland connection failed ({}), attempting X11 fallback...",
+                                e
+                            );
                         }
                     }
                 }
@@ -101,6 +115,7 @@ impl PlatformWindow {
         match self {
             Self::X11(_) => WindowBackendKind::X11,
             Self::Wayland(_) => WindowBackendKind::Wayland,
+            Self::Dummy { .. } => WindowBackendKind::X11,
         }
     }
 
@@ -109,6 +124,7 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.width,
             Self::Wayland(w) => w.state.width,
+            Self::Dummy { width, .. } => *width,
         }
     }
 
@@ -117,6 +133,7 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.height,
             Self::Wayland(w) => w.state.height,
+            Self::Dummy { height, .. } => *height,
         }
     }
 
@@ -125,6 +142,7 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.set_title(title),
             Self::Wayland(w) => w.set_title(title),
+            Self::Dummy { .. } => {}
         }
     }
 
@@ -133,6 +151,7 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.set_cursor(icon),
             Self::Wayland(w) => w.set_cursor(icon),
+            Self::Dummy { .. } => {}
         }
     }
 
@@ -140,7 +159,7 @@ impl PlatformWindow {
     pub fn set_opacity(&self, opacity: f32) {
         match self {
             Self::X11(w) => w.set_opacity(opacity),
-            Self::Wayland(_) => {}
+            Self::Wayland(_) | Self::Dummy { .. } => {}
         }
     }
 
@@ -148,7 +167,7 @@ impl PlatformWindow {
     pub fn set_background_pixel(&self, bg_pixel: u32) {
         match self {
             Self::X11(w) => w.set_background_pixel(bg_pixel),
-            Self::Wayland(_) => {}
+            Self::Wayland(_) | Self::Dummy { .. } => {}
         }
     }
 
@@ -157,6 +176,7 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.present_frame(src_pixels, damage),
             Self::Wayland(w) => w.present_frame(src_pixels, damage),
+            Self::Dummy { .. } => {}
         }
     }
 
@@ -165,13 +185,14 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.poll_event(),
             Self::Wayland(w) => w.poll_event(),
+            Self::Dummy { .. } => None,
         }
     }
 
     #[inline]
     pub fn next_wake_time(&self) -> Option<std::time::Instant> {
         match self {
-            Self::X11(_) => None,
+            Self::X11(_) | Self::Dummy { .. } => None,
             Self::Wayland(w) => w.next_wake_time(),
         }
     }
@@ -184,6 +205,7 @@ impl PlatformWindow {
                 use std::os::fd::{AsFd, AsRawFd};
                 w.conn.as_fd().as_raw_fd()
             }
+            Self::Dummy { .. } => -1,
         }
     }
 
@@ -200,6 +222,7 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.set_visible(visible),
             Self::Wayland(w) => w.set_visible(visible),
+            Self::Dummy { .. } => {}
         }
     }
 
@@ -210,6 +233,7 @@ impl PlatformWindow {
             Self::Wayland(w) => {
                 let _ = w.conn.flush();
             }
+            Self::Dummy { .. } => {}
         }
     }
 
@@ -219,7 +243,7 @@ impl PlatformWindow {
     #[inline]
     pub fn uses_csd(&self) -> bool {
         match self {
-            Self::X11(_) => false,
+            Self::X11(_) | Self::Dummy { .. } => false,
             Self::Wayland(w) => w.uses_csd(),
         }
     }
@@ -227,7 +251,7 @@ impl PlatformWindow {
     #[inline]
     pub fn csd_title_bar_height(&self) -> u32 {
         match self {
-            Self::X11(_) => 0,
+            Self::X11(_) | Self::Dummy { .. } => 0,
             Self::Wayland(w) => w.csd_title_bar_height(),
         }
     }
@@ -235,7 +259,7 @@ impl PlatformWindow {
     #[inline]
     pub fn start_interactive_move(&self) {
         match self {
-            Self::X11(_) => {}
+            Self::X11(_) | Self::Dummy { .. } => {}
             Self::Wayland(w) => w.start_interactive_move(),
         }
     }
@@ -243,7 +267,7 @@ impl PlatformWindow {
     #[inline]
     pub fn minimize(&self) {
         match self {
-            Self::X11(_) => {}
+            Self::X11(_) | Self::Dummy { .. } => {}
             Self::Wayland(w) => w.minimize(),
         }
     }
@@ -251,7 +275,7 @@ impl PlatformWindow {
     #[inline]
     pub fn toggle_maximize(&mut self) {
         match self {
-            Self::X11(_) => {}
+            Self::X11(_) | Self::Dummy { .. } => {}
             Self::Wayland(w) => w.toggle_maximize(),
         }
     }
@@ -259,7 +283,7 @@ impl PlatformWindow {
     #[inline]
     pub fn is_maximized(&self) -> bool {
         match self {
-            Self::X11(_) => false,
+            Self::X11(_) | Self::Dummy { .. } => false,
             Self::Wayland(w) => w.is_maximized(),
         }
     }
@@ -267,7 +291,7 @@ impl PlatformWindow {
     #[inline]
     pub fn show_window_menu(&self, x: i32, y: i32) {
         match self {
-            Self::X11(_) => {}
+            Self::X11(_) | Self::Dummy { .. } => {}
             Self::Wayland(w) => w.show_window_menu(x, y),
         }
     }
@@ -275,7 +299,7 @@ impl PlatformWindow {
     #[inline]
     pub fn start_interactive_resize(&self, edge: WindowResizeEdge) {
         match self {
-            Self::X11(_) => {}
+            Self::X11(_) | Self::Dummy { .. } => {}
             Self::Wayland(w) => w.start_interactive_resize(edge),
         }
     }
@@ -291,6 +315,7 @@ impl PlatformWindow {
             Self::Wayland(w) => {
                 w.post_close_requested();
             }
+            Self::Dummy { .. } => {}
         }
     }
 }

@@ -51,7 +51,10 @@ impl XkbHandler {
                 }
             }
             Err(e) => {
-                log::warn!("libxkbcommon.so not found (error: {:?}); using evdev fallback", e);
+                log::warn!(
+                    "libxkbcommon.so not found (error: {:?}); using evdev fallback",
+                    e
+                );
                 (None, std::ptr::null_mut())
             }
         };
@@ -74,7 +77,10 @@ impl XkbHandler {
         }
 
         let mmap = unsafe {
-            match memmap2::MmapOptions::new().len(size as usize).map(fd.as_raw_fd()) {
+            match memmap2::MmapOptions::new()
+                .len(size as usize)
+                .map(fd.as_raw_fd())
+            {
                 Ok(m) => m,
                 Err(e) => {
                     log::error!("Failed to mmap Wayland keymap fd: {}", e);
@@ -202,12 +208,12 @@ impl XkbHandler {
         m
     }
 
-    /// Translate a Linux evdev scancode into a `(Key, Option<String>, repeats)` tuple.
+    /// Translate a Linux evdev scancode into a `(Key, Option<String>, repeats, ModifiersState)` tuple.
     pub fn translate_key(
         &self,
         scancode: u32,
-        modifiers: ModifiersState,
-    ) -> (Option<Key>, Option<String>, bool) {
+        mut modifiers: ModifiersState,
+    ) -> (Option<Key>, Option<String>, bool, ModifiersState) {
         if let Some(lib) = &self.lib
             && !self.state.is_null()
             && !self.keymap.is_null()
@@ -234,6 +240,9 @@ impl XkbHandler {
             };
 
             let (mut key, mut text) = xkb_keysym_to_key(sym);
+            if sym == 0xfe20 {
+                modifiers.insert(ModifiersState::SHIFT);
+            }
             if text.is_none() && xkb_text.is_some() {
                 text = xkb_text;
             }
@@ -242,13 +251,31 @@ impl XkbHandler {
             {
                 key = Some(Key::Character(t.clone()));
             }
-            return (key, text, repeats);
+            if let Some(ref k) = key {
+                match k {
+                    Key::Named(NamedKey::Shift) => modifiers.insert(ModifiersState::SHIFT),
+                    Key::Named(NamedKey::Control) => modifiers.insert(ModifiersState::CONTROL),
+                    Key::Named(NamedKey::Alt) => modifiers.insert(ModifiersState::ALT),
+                    Key::Named(NamedKey::Super) => modifiers.insert(ModifiersState::SUPER),
+                    _ => {}
+                }
+            }
+            return (key, text, repeats, modifiers);
         }
 
         // Fallback to internal evdev scancode table
         let (key, text) = evdev_scancode_to_key(scancode, modifiers);
         let repeats = !matches!(scancode, 29 | 42 | 54 | 56 | 58 | 97 | 100 | 125 | 126);
-        (key, text, repeats)
+        if let Some(ref k) = key {
+            match k {
+                Key::Named(NamedKey::Shift) => modifiers.insert(ModifiersState::SHIFT),
+                Key::Named(NamedKey::Control) => modifiers.insert(ModifiersState::CONTROL),
+                Key::Named(NamedKey::Alt) => modifiers.insert(ModifiersState::ALT),
+                Key::Named(NamedKey::Super) => modifiers.insert(ModifiersState::SUPER),
+                _ => {}
+            }
+        }
+        (key, text, repeats, modifiers)
     }
 }
 
@@ -276,18 +303,90 @@ pub fn evdev_scancode_to_key(
     let shift = modifiers.contains(ModifiersState::SHIFT);
     match scancode {
         1 => (Some(Key::Named(NamedKey::Escape)), Some("\x1b".to_string())),
-        2 => if shift { (Some(Key::Character("!".to_string())), Some("!".to_string())) } else { (Some(Key::Character("1".to_string())), Some("1".to_string())) },
-        3 => if shift { (Some(Key::Character("@".to_string())), Some("@".to_string())) } else { (Some(Key::Character("2".to_string())), Some("2".to_string())) },
-        4 => if shift { (Some(Key::Character("#".to_string())), Some("#".to_string())) } else { (Some(Key::Character("3".to_string())), Some("3".to_string())) },
-        5 => if shift { (Some(Key::Character("$".to_string())), Some("$".to_string())) } else { (Some(Key::Character("4".to_string())), Some("4".to_string())) },
-        6 => if shift { (Some(Key::Character("%".to_string())), Some("%".to_string())) } else { (Some(Key::Character("5".to_string())), Some("5".to_string())) },
-        7 => if shift { (Some(Key::Character("^".to_string())), Some("^".to_string())) } else { (Some(Key::Character("6".to_string())), Some("6".to_string())) },
-        8 => if shift { (Some(Key::Character("&".to_string())), Some("&".to_string())) } else { (Some(Key::Character("7".to_string())), Some("7".to_string())) },
-        9 => if shift { (Some(Key::Character("*".to_string())), Some("*".to_string())) } else { (Some(Key::Character("8".to_string())), Some("8".to_string())) },
-        10 => if shift { (Some(Key::Character("(".to_string())), Some("(".to_string())) } else { (Some(Key::Character("9".to_string())), Some("9".to_string())) },
-        11 => if shift { (Some(Key::Character(")".to_string())), Some(")".to_string())) } else { (Some(Key::Character("0".to_string())), Some("0".to_string())) },
-        12 => if shift { (Some(Key::Character("_".to_string())), Some("_".to_string())) } else { (Some(Key::Character("-".to_string())), Some("-".to_string())) },
-        13 => if shift { (Some(Key::Character("+".to_string())), Some("+".to_string())) } else { (Some(Key::Character("=".to_string())), Some("=".to_string())) },
+        2 => {
+            if shift {
+                (Some(Key::Character("!".to_string())), Some("!".to_string()))
+            } else {
+                (Some(Key::Character("1".to_string())), Some("1".to_string()))
+            }
+        }
+        3 => {
+            if shift {
+                (Some(Key::Character("@".to_string())), Some("@".to_string()))
+            } else {
+                (Some(Key::Character("2".to_string())), Some("2".to_string()))
+            }
+        }
+        4 => {
+            if shift {
+                (Some(Key::Character("#".to_string())), Some("#".to_string()))
+            } else {
+                (Some(Key::Character("3".to_string())), Some("3".to_string()))
+            }
+        }
+        5 => {
+            if shift {
+                (Some(Key::Character("$".to_string())), Some("$".to_string()))
+            } else {
+                (Some(Key::Character("4".to_string())), Some("4".to_string()))
+            }
+        }
+        6 => {
+            if shift {
+                (Some(Key::Character("%".to_string())), Some("%".to_string()))
+            } else {
+                (Some(Key::Character("5".to_string())), Some("5".to_string()))
+            }
+        }
+        7 => {
+            if shift {
+                (Some(Key::Character("^".to_string())), Some("^".to_string()))
+            } else {
+                (Some(Key::Character("6".to_string())), Some("6".to_string()))
+            }
+        }
+        8 => {
+            if shift {
+                (Some(Key::Character("&".to_string())), Some("&".to_string()))
+            } else {
+                (Some(Key::Character("7".to_string())), Some("7".to_string()))
+            }
+        }
+        9 => {
+            if shift {
+                (Some(Key::Character("*".to_string())), Some("*".to_string()))
+            } else {
+                (Some(Key::Character("8".to_string())), Some("8".to_string()))
+            }
+        }
+        10 => {
+            if shift {
+                (Some(Key::Character("(".to_string())), Some("(".to_string()))
+            } else {
+                (Some(Key::Character("9".to_string())), Some("9".to_string()))
+            }
+        }
+        11 => {
+            if shift {
+                (Some(Key::Character(")".to_string())), Some(")".to_string()))
+            } else {
+                (Some(Key::Character("0".to_string())), Some("0".to_string()))
+            }
+        }
+        12 => {
+            if shift {
+                (Some(Key::Character("_".to_string())), Some("_".to_string()))
+            } else {
+                (Some(Key::Character("-".to_string())), Some("-".to_string()))
+            }
+        }
+        13 => {
+            if shift {
+                (Some(Key::Character("+".to_string())), Some("+".to_string()))
+            } else {
+                (Some(Key::Character("=".to_string())), Some("=".to_string()))
+            }
+        }
         14 => (Some(Key::Named(NamedKey::Backspace)), None),
         15 => (Some(Key::Named(NamedKey::Tab)), Some("\t".to_string())),
 
@@ -301,10 +400,22 @@ pub fn evdev_scancode_to_key(
         23 => letter('i', shift),
         24 => letter('o', shift),
         25 => letter('p', shift),
-        26 => if shift { (Some(Key::Character("{".to_string())), Some("{".to_string())) } else { (Some(Key::Character("[".to_string())), Some("[".to_string())) },
-        27 => if shift { (Some(Key::Character("}".to_string())), Some("}".to_string())) } else { (Some(Key::Character("]".to_string())), Some("]".to_string())) },
+        26 => {
+            if shift {
+                (Some(Key::Character("{".to_string())), Some("{".to_string()))
+            } else {
+                (Some(Key::Character("[".to_string())), Some("[".to_string()))
+            }
+        }
+        27 => {
+            if shift {
+                (Some(Key::Character("}".to_string())), Some("}".to_string()))
+            } else {
+                (Some(Key::Character("]".to_string())), Some("]".to_string()))
+            }
+        }
         28 => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),
-        29 => (None, None), // LCtrl
+        29 => (Some(Key::Named(NamedKey::Control)), None), // LCtrl
 
         30 => letter('a', shift),
         31 => letter('s', shift),
@@ -315,11 +426,41 @@ pub fn evdev_scancode_to_key(
         36 => letter('j', shift),
         37 => letter('k', shift),
         38 => letter('l', shift),
-        39 => if shift { (Some(Key::Character(":".to_string())), Some(":".to_string())) } else { (Some(Key::Character(";".to_string())), Some(";".to_string())) },
-        40 => if shift { (Some(Key::Character("\"".to_string())), Some("\"".to_string())) } else { (Some(Key::Character("'".to_string())), Some("'".to_string())) },
-        41 => if shift { (Some(Key::Character("~".to_string())), Some("~".to_string())) } else { (Some(Key::Character("`".to_string())), Some("`".to_string())) },
-        42 => (None, None), // LShift
-        43 => if shift { (Some(Key::Character("|".to_string())), Some("|".to_string())) } else { (Some(Key::Character("\\".to_string())), Some("\\".to_string())) },
+        39 => {
+            if shift {
+                (Some(Key::Character(":".to_string())), Some(":".to_string()))
+            } else {
+                (Some(Key::Character(";".to_string())), Some(";".to_string()))
+            }
+        }
+        40 => {
+            if shift {
+                (
+                    Some(Key::Character("\"".to_string())),
+                    Some("\"".to_string()),
+                )
+            } else {
+                (Some(Key::Character("'".to_string())), Some("'".to_string()))
+            }
+        }
+        41 => {
+            if shift {
+                (Some(Key::Character("~".to_string())), Some("~".to_string()))
+            } else {
+                (Some(Key::Character("`".to_string())), Some("`".to_string()))
+            }
+        }
+        42 => (Some(Key::Named(NamedKey::Shift)), None), // LShift
+        43 => {
+            if shift {
+                (Some(Key::Character("|".to_string())), Some("|".to_string()))
+            } else {
+                (
+                    Some(Key::Character("\\".to_string())),
+                    Some("\\".to_string()),
+                )
+            }
+        }
 
         44 => letter('z', shift),
         45 => letter('x', shift),
@@ -328,11 +469,29 @@ pub fn evdev_scancode_to_key(
         48 => letter('b', shift),
         49 => letter('n', shift),
         50 => letter('m', shift),
-        51 => if shift { (Some(Key::Character("<".to_string())), Some("<".to_string())) } else { (Some(Key::Character(",".to_string())), Some(",".to_string())) },
-        52 => if shift { (Some(Key::Character(">".to_string())), Some(">".to_string())) } else { (Some(Key::Character(".".to_string())), Some(".".to_string())) },
-        53 => if shift { (Some(Key::Character("?".to_string())), Some("?".to_string())) } else { (Some(Key::Character("/".to_string())), Some("/".to_string())) },
-        54 => (None, None), // RShift
-        56 => (None, None), // LAlt
+        51 => {
+            if shift {
+                (Some(Key::Character("<".to_string())), Some("<".to_string()))
+            } else {
+                (Some(Key::Character(",".to_string())), Some(",".to_string()))
+            }
+        }
+        52 => {
+            if shift {
+                (Some(Key::Character(">".to_string())), Some(">".to_string()))
+            } else {
+                (Some(Key::Character(".".to_string())), Some(".".to_string()))
+            }
+        }
+        53 => {
+            if shift {
+                (Some(Key::Character("?".to_string())), Some("?".to_string()))
+            } else {
+                (Some(Key::Character("/".to_string())), Some("/".to_string()))
+            }
+        }
+        54 => (Some(Key::Named(NamedKey::Shift)), None), // RShift
+        56 => (Some(Key::Named(NamedKey::Alt)), None),   // LAlt
         57 => (Some(Key::Named(NamedKey::Space)), Some(" ".to_string())),
         58 => (None, None), // CapsLock
 
@@ -349,8 +508,8 @@ pub fn evdev_scancode_to_key(
         87 => (Some(Key::Named(NamedKey::F11)), None),
         88 => (Some(Key::Named(NamedKey::F12)), None),
 
-        97 => (None, None), // RCtrl
-        100 => (None, None), // RAlt
+        97 => (Some(Key::Named(NamedKey::Control)), None), // RCtrl
+        100 => (Some(Key::Named(NamedKey::Alt)), None),    // RAlt
         102 => (Some(Key::Named(NamedKey::Home)), None),
         103 => (Some(Key::Named(NamedKey::ArrowUp)), None),
         104 => (Some(Key::Named(NamedKey::PageUp)), None),
@@ -361,8 +520,8 @@ pub fn evdev_scancode_to_key(
         109 => (Some(Key::Named(NamedKey::PageDown)), None),
         110 => (Some(Key::Named(NamedKey::Insert)), None),
         111 => (Some(Key::Named(NamedKey::Delete)), None),
-        125 => (None, None), // LSuper
-        126 => (None, None), // RSuper
+        125 => (Some(Key::Named(NamedKey::Super)), None), // LSuper
+        126 => (Some(Key::Named(NamedKey::Super)), None), // RSuper
 
         _ => (None, None),
     }
@@ -383,6 +542,7 @@ pub fn xkb_keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
     match keysym {
         0xff08 => (Some(Key::Named(NamedKey::Backspace)), None),
         0xff09 => (Some(Key::Named(NamedKey::Tab)), Some("\t".to_string())),
+        0xfe20 => (Some(Key::Named(NamedKey::Tab)), None), // XK_ISO_Left_Tab (Shift+Tab)
         0xff0d => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),
         0xff1b => (Some(Key::Named(NamedKey::Escape)), Some("\x1b".to_string())),
         0x0020 => (Some(Key::Named(NamedKey::Space)), Some(" ".to_string())),
@@ -409,7 +569,11 @@ pub fn xkb_keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
             (Some(Key::Character(s.clone())), Some(s))
         }
 
-        0xffe1..=0xffec => (None, None), // Modifiers (Shift, Ctrl, Alt, Super, Caps)
+        // Modifiers (Shift, Ctrl, Alt, Super/Hyper)
+        0xffe1 | 0xffe2 => (Some(Key::Named(NamedKey::Shift)), None),
+        0xffe3 | 0xffe4 => (Some(Key::Named(NamedKey::Control)), None),
+        0xffe7 | 0xffe8 | 0xffe9 | 0xffea => (Some(Key::Named(NamedKey::Alt)), None),
+        0xffeb | 0xffec | 0xffed | 0xffee => (Some(Key::Named(NamedKey::Super)), None),
 
         0xffbe => (Some(Key::Named(NamedKey::F1)), None),
         0xffbf => (Some(Key::Named(NamedKey::F2)), None),
@@ -473,6 +637,10 @@ mod tests {
             xkb_keysym_to_key(0xffbe),
             (Some(Key::Named(NamedKey::F1)), None)
         );
+        assert_eq!(
+            xkb_keysym_to_key(0xfe20),
+            (Some(Key::Named(NamedKey::Tab)), None)
+        );
     }
 
     #[test]
@@ -516,7 +684,7 @@ mod tests {
     #[test]
     fn test_xkb_handler_initialization() {
         let handler = XkbHandler::new();
-        let (key, text, repeats) = handler.translate_key(30, ModifiersState::empty());
+        let (key, text, repeats, _) = handler.translate_key(30, ModifiersState::empty());
         assert!(key.is_some());
         assert_eq!(text, Some("a".to_string()));
         assert!(repeats);

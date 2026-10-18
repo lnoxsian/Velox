@@ -22,7 +22,8 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 fn resolve_wayland_app_id() -> &'static str {
     if std::path::Path::new("/usr/share/applications/io.github.lnoxsian.Velox.desktop").exists()
-        || std::path::Path::new("/usr/local/share/applications/io.github.lnoxsian.Velox.desktop").exists()
+        || std::path::Path::new("/usr/local/share/applications/io.github.lnoxsian.Velox.desktop")
+            .exists()
     {
         return CANONICAL_APP_ID;
     }
@@ -208,7 +209,8 @@ impl WaylandWindow {
     pub fn set_cursor(&mut self, icon: CursorIcon) {
         self.state.current_cursor = icon;
         if self.state.pointer_inside {
-            if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer) {
+            if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer)
+            {
                 cm.apply_cursor(self.state.pointer_serial, icon, pointer);
                 let _ = self.conn.flush();
             }
@@ -518,7 +520,11 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
         qh: &QueueHandle<Self>,
     ) {
         match event {
-            xdg_toplevel::Event::Configure { width, height, states } => {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
                 let w = if width > 0 { width as u32 } else { state.width };
                 let h = if height > 0 {
                     height as u32
@@ -526,7 +532,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
                     state.height
                 };
                 state.is_maximized = states.chunks_exact(4).any(|c| {
-                    u32::from_ne_bytes(c.try_into().unwrap_or([0; 4])) == xdg_toplevel::State::Maximized as u32
+                    u32::from_ne_bytes(c.try_into().unwrap_or([0; 4]))
+                        == xdg_toplevel::State::Maximized as u32
                 });
                 if w != state.width || h != state.height {
                     state.width = w;
@@ -672,7 +679,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                 let prev_mods = state.modifiers;
                 state.modifiers = ModifiersState::empty();
                 if state.modifiers != prev_mods {
-                    state.events.push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                    state
+                        .events
+                        .push_back(PlatformEvent::ModifiersChanged(state.modifiers));
                 }
                 state.events.push_back(PlatformEvent::Focused(false));
             }
@@ -685,7 +694,17 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                     key_state,
                     wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
                 );
-                let (k, text, repeats) = state.xkb_handler.translate_key(key, state.modifiers);
+                let (k, text, repeats, mods) =
+                    state.xkb_handler.translate_key(key, state.modifiers);
+                if is_pressed {
+                    let prev_mods = state.modifiers;
+                    state.modifiers = mods;
+                    if state.modifiers != prev_mods {
+                        state
+                            .events
+                            .push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                    }
+                }
                 if let Some(k) = k {
                     if is_pressed {
                         state.events.push_back(PlatformEvent::KeyPressed {
@@ -744,7 +763,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                     repeat.modifiers = state.modifiers;
                 }
                 if state.modifiers != prev_mods {
-                    state.events.push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                    state
+                        .events
+                        .push_back(PlatformEvent::ModifiersChanged(state.modifiers));
                 }
             }
             wl_keyboard::Event::RepeatInfo { rate, delay } => {

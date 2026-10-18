@@ -5,6 +5,7 @@ pub fn keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
     match keysym {
         0xff08 => (Some(Key::Named(NamedKey::Backspace)), None),
         0xff09 => (Some(Key::Named(NamedKey::Tab)), Some("\t".to_string())),
+        0xfe20 => (Some(Key::Named(NamedKey::Tab)), None), // XK_ISO_Left_Tab (Shift+Tab)
         0xff0d => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),
         0xff1b => (Some(Key::Named(NamedKey::Escape)), Some("\x1b".to_string())),
         0x0020 => (Some(Key::Named(NamedKey::Space)), Some(" ".to_string())),
@@ -44,6 +45,12 @@ pub fn keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
         0xffc7 => (Some(Key::Named(NamedKey::F10)), None),
         0xffc8 => (Some(Key::Named(NamedKey::F11)), None),
         0xffc9 => (Some(Key::Named(NamedKey::F12)), None),
+
+        // Modifiers (Shift, Ctrl, Alt, Super/Hyper)
+        0xffe1 | 0xffe2 => (Some(Key::Named(NamedKey::Shift)), None),
+        0xffe3 | 0xffe4 => (Some(Key::Named(NamedKey::Control)), None),
+        0xffe7 | 0xffe8 | 0xffe9 | 0xffea => (Some(Key::Named(NamedKey::Alt)), None),
+        0xffeb | 0xffec | 0xffed | 0xffee => (Some(Key::Named(NamedKey::Super)), None),
 
         // ASCII & Latin-1 direct printable mapping
         0x20..=0x7e | 0xa0..=0xff => {

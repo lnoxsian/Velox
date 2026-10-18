@@ -2,17 +2,17 @@ use crate::app::pane::{Pane, PaneId};
 use crate::app::split::{FocusDirection, PaneRect, SeparatorRect, SplitDirection, SplitId};
 use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
-use crate::ipc::{start_ipc_server, IpcListenerHandle};
+use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_process;
 use crate::renderer::{CpuPaneRenderData, CpuRenderer, SeparatorRenderData};
 use crate::terminal::terminal::Terminal;
-use crate::window::event::{CursorIcon, ModifiersState, PlatformEvent};
 use crate::window::PlatformWindow;
+use crate::window::event::{CursorIcon, ModifiersState, PlatformEvent};
 use std::collections::HashMap;
 use std::os::fd::RawFd;
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 
 pub type WindowId = u64;
 
@@ -60,6 +60,15 @@ pub struct EventLoopProxy {
 }
 
 impl EventLoopProxy {
+    pub fn dummy() -> Self {
+        let (sender, _) = std::sync::mpsc::channel();
+        Self {
+            sender,
+            wake_fd: -1,
+            wake_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
     pub fn new(sender: Sender<CustomEvent>, wake_fd: RawFd) -> Self {
         Self {
             sender,
@@ -70,7 +79,11 @@ impl EventLoopProxy {
 
     pub fn send(&self, event: CustomEvent) -> Result<(), std::sync::mpsc::SendError<CustomEvent>> {
         self.sender.send(event)?;
-        if !self.wake_pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        if self.wake_fd >= 0
+            && !self
+                .wake_pending
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
             let val = 1u64;
             unsafe {
                 libc::write(
@@ -187,6 +200,88 @@ impl Drop for WindowState {
 }
 
 impl WindowState {
+    pub fn create_test_window_state(pty_master: Arc<PtyMaster>, cols: usize, rows: usize) -> Self {
+        let theme = crate::theme::theme::Theme::default();
+        let renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 800, 600, true, 1.0);
+        let terminal = Terminal::new(cols, rows);
+        let config = crate::config::defaults::default_config();
+        let tab_bar = TabBar::from_config(&config);
+        let tab = Tab::new(
+            0,
+            pty_master,
+            terminal,
+            None,
+            "test".to_string(),
+            false,
+            14.0,
+        );
+        let csd_palette = crate::window::csd::CsdPalette::resolve(
+            config.decorations_config().as_ref(),
+            &renderer.palette,
+        );
+        let now = std::time::Instant::now();
+        WindowState {
+            window_id: 1,
+            renderer,
+            window: PlatformWindow::dummy(800, 600),
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            scroll_multiplier: 1.0,
+            fps_limit: Some(60),
+            last_frame_instant: now,
+            last_input_instant: now,
+            last_key_instant: now,
+            current_title: "test".to_string(),
+            default_font_size: 14.0,
+            current_font_size: 14.0,
+            base_cell_width: 8,
+            base_cell_height: 16,
+            padding_x: 4.0,
+            padding_y: 4.0,
+            is_mouse_down: false,
+            mouse_down_pane_id: None,
+            last_mouse_button: 0,
+            last_click_instant: None,
+            last_click_pos: (0, 0),
+            last_click_pane_id: None,
+            click_count: 0,
+            last_mouse_cell: (0, 0),
+            last_mouse_pane_id: None,
+            is_focused: true,
+            current_cursor_icon: CursorIcon::Default,
+            needs_redraw: false,
+            content_dirty: false,
+            cursor_blink_enabled: false,
+            cursor_blink_on: true,
+            last_cursor_blink: now,
+            hide_mouse_on_typing: false,
+            opacity: 1.0,
+            window_dim: 0.0,
+            shell_path: "/bin/sh".to_string(),
+            tabs: vec![tab],
+            active_tab_index: 0,
+            next_tab_id: 1,
+            next_pane_id: 1,
+            next_split_id: 1,
+            tab_bar,
+            event_loop_proxy: EventLoopProxy::dummy(),
+            tab_bar_dirty: false,
+            tab_bar_render_cache: None,
+            dragging_separator: None,
+            hovered_separator: None,
+            separator_size: 4.0,
+            min_cols: 10,
+            min_rows: 5,
+            separator_color: None,
+            active_separator_color: None,
+            last_separator_drag_sync: None,
+            csd_button_layout: crate::window::csd::CsdButtonLayout::default(),
+            csd_palette,
+            hovered_csd_button: None,
+            pressed_csd_button: None,
+        }
+    }
+
     #[inline]
     pub fn mark_interaction(&mut self) {
         let now = std::time::Instant::now();
@@ -992,7 +1087,8 @@ impl WindowState {
                 &self.csd_palette,
             );
             if csd_redrawn {
-                self.renderer.render_csd_window_borders(self.csd_palette.border);
+                self.renderer
+                    .render_csd_window_borders(self.csd_palette.border);
                 final_damage = Some(crate::window::DamageRect {
                     x: 0,
                     y: 0,
@@ -1080,12 +1176,8 @@ impl App {
             },
         };
 
-        let (window, mut renderer) = crate::renderer::create_window_and_renderer(
-            &initial_title,
-            800,
-            600,
-            &config,
-        )?;
+        let (window, mut renderer) =
+            crate::renderer::create_window_and_renderer(&initial_title, 800, 600, &config)?;
 
         let size = window.inner_size();
         let win_width = size.width.max(1);
@@ -1403,6 +1495,7 @@ impl App {
                         PlatformEvent::Focused(focused) => {
                             ws.is_focused = focused;
                             if !focused {
+                                self.modifiers = ModifiersState::empty();
                                 ws.is_mouse_down = false;
                                 ws.mouse_down_pane_id = None;
                                 ws.dragging_separator = None;
@@ -1472,7 +1565,10 @@ impl App {
                 // If keyboard input was just dispatched to PTY, give the shell up to 1.5ms to return its echo.
                 // Typical shell latency is 100-300µs; as soon as the echo arrives, recv_timeout returns
                 // immediately and renders in the exact same frame with zero delay!
-                if let Ok(event) = self.event_receiver.recv_timeout(std::time::Duration::from_micros(1500)) {
+                if let Ok(event) = self
+                    .event_receiver
+                    .recv_timeout(std::time::Duration::from_micros(1500))
+                {
                     self.handle_custom_event(event);
                     while let Ok(event) = self.event_receiver.try_recv() {
                         self.handle_custom_event(event);
@@ -1490,8 +1586,7 @@ impl App {
             for ws in self.windows.values_mut() {
                 let mut should_prune = false;
                 for tab in &mut ws.tabs {
-                    if now.duration_since(tab.last_activity)
-                        >= std::time::Duration::from_secs(60)
+                    if now.duration_since(tab.last_activity) >= std::time::Duration::from_secs(60)
                         && tab.last_activity >= tab.last_cleanup
                     {
                         tab.last_cleanup = now;
@@ -1513,15 +1608,12 @@ impl App {
                 }
 
                 if cursor_blink_active {
-                    let next_blink =
-                        ws.last_cursor_blink + std::time::Duration::from_millis(500);
-                    min_next_wake =
-                        Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
+                    let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
+                    min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
                 }
 
                 if let Some(repeat_wake) = ws.window.next_wake_time() {
-                    min_next_wake =
-                        Some(min_next_wake.map_or(repeat_wake, |t| t.min(repeat_wake)));
+                    min_next_wake = Some(min_next_wake.map_or(repeat_wake, |t| t.min(repeat_wake)));
                 }
 
                 if ws.needs_redraw {
@@ -1608,8 +1700,7 @@ impl App {
                     .wake_pending
                     .store(false, std::sync::atomic::Ordering::Release);
 
-                let mut poll_fds: Vec<libc::pollfd> =
-                    Vec::with_capacity(self.windows.len() + 1);
+                let mut poll_fds: Vec<libc::pollfd> = Vec::with_capacity(self.windows.len() + 1);
                 poll_fds.push(libc::pollfd {
                     fd: self.wake_fd,
                     events: libc::POLLIN,
