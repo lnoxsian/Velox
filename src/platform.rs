@@ -44,7 +44,6 @@ pub fn detect_backend_from_env() -> LinuxWindowBackend {
         }
     }
 
-
     let session_type = std::env::var("XDG_SESSION_TYPE").ok();
     if let Some(ref st) = session_type {
         if st.eq_ignore_ascii_case("x11") {
@@ -57,7 +56,10 @@ pub fn detect_backend_from_env() -> LinuxWindowBackend {
     let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
     let x11_display = std::env::var("DISPLAY").ok();
 
-    if wayland_display.as_ref().is_some_and(|wd| !wd.trim().is_empty()) {
+    if wayland_display
+        .as_ref()
+        .is_some_and(|wd| !wd.trim().is_empty())
+    {
         return LinuxWindowBackend::Wayland;
     }
 

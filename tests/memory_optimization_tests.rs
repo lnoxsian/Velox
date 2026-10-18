@@ -168,8 +168,7 @@ fn test_multicycle_unicode_memory_stability() {
     assert_eq!(cycle_atlas_capacities[1], cycle_atlas_capacities[2]);
     assert!(
         cycle_atlas_capacities[2]
-            <= DEFAULT_ALPHA_CAPACITY
-                + (velox::renderer::atlas::DEFAULT_COLOR_CAPACITY * 4)
+            <= DEFAULT_ALPHA_CAPACITY + (velox::renderer::atlas::DEFAULT_COLOR_CAPACITY * 4)
     );
 }
 
@@ -278,30 +277,38 @@ fn test_emoji_renders_color_even_when_outline_font_loaded_first() {
     if let Some(id) = db.query(&query) {
         if let Some(face) = db.face(id) {
             if let fontdb::Source::File(path) = &face.source {
-                let storage = std::sync::Arc::new(velox::font::storage::FontStorage::from_file(path).unwrap());
-                let font = velox::font::storage::create_font_arc(std::sync::Arc::clone(&storage), face.index).unwrap();
-                cache.fallback_manager.fallbacks.push(velox::font::fallback::FallbackFont {
-                    font,
-                    storage,
-                    byte_size: 1000,
-                    last_used: 1,
-                    last_used_instant: std::time::Instant::now(),
-                    path: path.clone(),
-                    face_index: face.index,
-                });
+                let storage = std::sync::Arc::new(
+                    velox::font::storage::FontStorage::from_file(path).unwrap(),
+                );
+                let font = velox::font::storage::create_font_arc(
+                    std::sync::Arc::clone(&storage),
+                    face.index,
+                )
+                .unwrap();
+                cache
+                    .fallback_manager
+                    .fallbacks
+                    .push(velox::font::fallback::FallbackFont {
+                        font,
+                        storage,
+                        byte_size: 1000,
+                        last_used: 1,
+                        last_used_instant: std::time::Instant::now(),
+                        path: path.clone(),
+                        face_index: face.index,
+                    });
             }
         }
     }
 
     for emoji in ['😀', '📦', '🦀', '🚀'] {
-        let g_ref = cache.get_or_rasterize(GlyphKey::new(emoji, false, false, true)).unwrap();
-        assert!(g_ref.is_color, "Emoji {} must be color bitmap, but was wireframe outline!", emoji);
+        let g_ref = cache
+            .get_or_rasterize(GlyphKey::new(emoji, false, false, true))
+            .unwrap();
+        assert!(
+            g_ref.is_color,
+            "Emoji {} must be color bitmap, but was wireframe outline!",
+            emoji
+        );
     }
 }
-
-
-
-
-
-
-

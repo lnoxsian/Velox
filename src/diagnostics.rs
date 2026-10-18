@@ -39,7 +39,15 @@ pub fn run_diagnostics(_config: &Config) {
     println!("\n[Renderer Architecture]");
     println!("  Rendering Pipeline: Pure CPU Software Renderer");
     println!("  Framebuffer:        CPU-owned 32-bit linear memory buffer (0x00RRGGBB)");
-    println!("  Presentation:       Pure-Rust Native Shared Memory Display (X11 MIT-SHM / Wayland wl_shm)");
+    println!(
+        "  Presentation:       Pure-Rust Native Shared Memory Display (X11 MIT-SHM / Wayland wl_shm)"
+    );
+
+    println!("\n[PTY & Thread Architecture]");
+    println!("  PTY I/O Architecture: Shared Epoll Reactor (1 persistent thread for all panes)");
+    println!(
+        "  Persistent Threads:   2 (main event/render thread + shared PTY reactor; 3 with IPC enabled)"
+    );
 
     println!("\n[Desktop & Icon Integration]");
     println!("  Canonical App ID:   {}", CANONICAL_APP_ID);

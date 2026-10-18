@@ -7,9 +7,7 @@ pub const SYNTHETIC_ITALIC_SHEAR: f32 = 0.20;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FontError {
     NoFontsInstalled,
-    FontNotFound {
-        requested: String,
-    },
+    FontNotFound { requested: String },
 }
 
 impl std::fmt::Display for FontError {
@@ -484,7 +482,8 @@ mod tests {
         );
         let set = result.unwrap();
         assert_ne!(
-            set.regular.font.glyph_id('A').0, 0,
+            set.regular.font.glyph_id('A').0,
+            0,
             "Fallback font must have glyphs"
         );
     }
@@ -505,7 +504,9 @@ mod tests {
     fn test_font_error_display_formatting() {
         let err_no_fonts = FontError::NoFontsInstalled;
         assert!(
-            err_no_fonts.to_string().contains("No fonts are installed on the system"),
+            err_no_fonts
+                .to_string()
+                .contains("No fonts are installed on the system"),
             "Display message must explain no fonts installed: {}",
             err_no_fonts
         );

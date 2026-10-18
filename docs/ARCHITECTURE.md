@@ -11,7 +11,7 @@ Velox is a modular, high-performance terminal emulator built around focused, dec
 2. Software-Only Rendering: Pure CPU rasterization and composition.
 3. Zero-Allocation Hot Paths: Reuse cell buffers and scratch pixel vectors.
 4. Bounded Memory Budgets: Fallback fonts, scrollback history, and glyph caches enforce strict limits.
-5. Async/Non-Blocking I/O: PTY readers run on dedicated threads communicating via event loop proxies.
+5. Shared Epoll Reactor: A single background PTY reactor thread services all terminal panes via non-blocking epoll.
 6. Zero-Flicker Presentation: Windows render their initial frame synchronously before being mapped.
 7. Modular Isolation: Screen grids, tabs, and font sizes operate in clean isolation per tab.
 ```
@@ -138,7 +138,7 @@ sequenceDiagram
     App->>OS: create_window(visible: false, transparent: opacity < 1.0)
     OS-->>App: Window created (Hidden)
     App->>Backend: Initialize softbuffer Surface & CpuRenderer
-    App->>PTY: Spawn shell & start reader thread
+    App->>PTY: Spawn shell & register with PtyReactor
     App->>WS: Construct WindowState
     App->>WS: draw() (Synchronous First Paint)
     WS->>Backend: Render background and cells into Framebuffer
@@ -151,19 +151,19 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    subgraph PTYStream["PTY Background Stream"]
+    subgraph PTYStream["PTY Background Reactor (Single Thread)"]
         Shell["Shell / Subprocess"]
         PTYMaster["PTY Master Descriptor"]
-        PTYReader["Dedicated Reader Thread"]
+        PTYReactor["Shared PtyReactor<br/>(epoll multiplexer)"]
         Shell <--> PTYMaster
-        PTYMaster --> PTYReader
+        PTYMaster --> PTYReactor
     end
 
     subgraph EventLoop["Main Thread (winit Event Loop)"]
         Proxy["EventLoopProxy<br/>(CustomEvent::PtyData)"]
         Parser["ansi::Parser<br/>(VT / CSI / OSC Byte Stream)"]
         Term["terminal::Terminal<br/>(Grid & Alternate Screen)"]
-        PTYReader -->|Bytes| Proxy
+        PTYReactor -->|Bytes| Proxy
         Proxy --> Parser
         Parser --> Term
     end

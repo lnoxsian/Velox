@@ -173,10 +173,8 @@ fn test_software_renderer_selection_and_cursor() {
     let sample_y = 4 + 2 * cell_h + 2;
     let cursor_pixel_idx = ((4 + 2 * cell_h + 2) as usize) * 800 + ((8 + 5 * cell_w + 2) as usize);
 
-    let default_bg =
-        velox::renderer::color::PackedColor::from_color(grid.default_bg).to_u32();
-    let inverted_bg =
-        velox::renderer::color::PackedColor::from_color(grid.default_fg).to_u32();
+    let default_bg = velox::renderer::color::PackedColor::from_color(grid.default_bg).to_u32();
+    let inverted_bg = velox::renderer::color::PackedColor::from_color(grid.default_fg).to_u32();
     let cursor_color = velox::renderer::color::PackedColor::from_color(
         theme.resolve_cursor_color(grid.default_fg),
     )
@@ -1322,8 +1320,7 @@ fn test_software_renderer_unified_background_and_padding_no_dual_shading() {
         None,
     );
 
-    let expected_bg =
-        velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
+    let expected_bg = velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // 1. Verify padding pixel (e.g. top-left margin (2, 2))
     let padding_pixel = target[2 * 800 + 2];
@@ -1400,7 +1397,11 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
     let mut grid = Grid::new(
         80,
         24,
-        Color { r: 255, g: 255, b: 255 },
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
         Color { r: 0, g: 0, b: 0 },
         100,
         false,
@@ -1425,7 +1426,11 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
 
     // Fill row 1 with coalesced upper half blocks '▀'
     let green_fg = Color { r: 0, g: 255, b: 0 };
-    let yellow_bg = Color { r: 255, g: 255, b: 0 };
+    let yellow_bg = Color {
+        r: 255,
+        g: 255,
+        b: 0,
+    };
     for col in 0..4 {
         grid.cells[80 + col] = Cell::new('▀', green_fg, yellow_bg, CellFlags::empty());
     }
@@ -1476,8 +1481,16 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
         let bottom_y = (ch + (ch * 3) / 4) as usize;
         let top_pixel = target[top_y * 800 + center_x];
         let bottom_pixel = target[bottom_y * 800 + center_x];
-        assert_eq!(top_pixel, expected_green, "Col {} top half must be green", col);
-        assert_eq!(bottom_pixel, expected_yellow, "Col {} bottom half must be yellow", col);
+        assert_eq!(
+            top_pixel, expected_green,
+            "Col {} top half must be green",
+            col
+        );
+        assert_eq!(
+            bottom_pixel, expected_yellow,
+            "Col {} bottom half must be yellow",
+            col
+        );
     }
 
     // Verify scrollback scroll of colorblocks
@@ -1500,7 +1513,10 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
 
     // After scroll_offset = 1, row 0 in scrollback is displayed at y = 0
     let pixel = target[(ch / 2) as usize * 800 + (cw / 2) as usize];
-    assert_eq!(pixel, expected_red, "Scrollback row 0 must be red full block");
+    assert_eq!(
+        pixel, expected_red,
+        "Scrollback row 0 must be red full block"
+    );
 }
 
 #[test]
@@ -1534,8 +1550,7 @@ fn test_software_renderer_csd_title_bar() {
 
     // Top-left outer corner at (0, 0) is outside the 10px radius, so it must be transparent (0)
     assert_eq!(
-        renderer.framebuffer.pixels[0],
-        0x00000000,
+        renderer.framebuffer.pixels[0], 0x00000000,
         "Row 0 col 0 should be transparent (rounded corner)"
     );
 
@@ -1578,8 +1593,7 @@ fn test_software_renderer_csd_title_bar() {
     );
     // Row 0 col 0 when maximized has top border line
     assert_eq!(
-        renderer.framebuffer.pixels[0],
-        border_color,
+        renderer.framebuffer.pixels[0], border_color,
         "Row 0 col 0 should have top border line when maximized"
     );
     assert_eq!(
@@ -1797,24 +1811,33 @@ fn test_csd_theme_customization_and_light_dark_modes() {
         close_fg: Some("#ff5555".to_string()),
     };
 
-    let resolved = velox::window::csd::CsdPalette::resolve(
-        Some(&custom_config),
-        &renderer.palette,
-    );
+    let resolved = velox::window::csd::CsdPalette::resolve(Some(&custom_config), &renderer.palette);
 
     assert_eq!(resolved.bg, 0xFF334455, "Custom bg must be parsed");
     assert_eq!(resolved.fg, 0xFFFFFFFF, "Custom fg must be parsed");
-    assert_eq!(resolved.inactive_bg, 0xFF223344, "Custom inactive_bg must be parsed");
+    assert_eq!(
+        resolved.inactive_bg, 0xFF223344,
+        "Custom inactive_bg must be parsed"
+    );
     assert_eq!(resolved.border, 0xFF112233, "Custom border must be parsed");
-    assert_eq!(resolved.close_fg, 0xFFFF5555, "Custom close_fg must be parsed");
+    assert_eq!(
+        resolved.close_fg, 0xFFFF5555,
+        "Custom close_fg must be parsed"
+    );
 
     // 3. Seamless Terminal Theme Mode
     let terminal_palette = velox::window::csd::CsdPalette::terminal(&renderer.palette);
     assert_eq!(terminal_palette.bg, renderer.palette.default_bg);
     assert_eq!(terminal_palette.border, renderer.palette.default_bg);
     assert_eq!(terminal_palette.fg, renderer.palette.default_fg);
-    assert_eq!(terminal_palette.close_fg, renderer.palette.ansi_colors[1], "Terminal CSD close_fg must use theme red color");
-    assert_eq!(terminal_palette.button_hover_bg, renderer.palette.tab_accent);
+    assert_eq!(
+        terminal_palette.close_fg, renderer.palette.ansi_colors[1],
+        "Terminal CSD close_fg must use theme red color"
+    );
+    assert_eq!(
+        terminal_palette.button_hover_bg,
+        renderer.palette.tab_accent
+    );
 
     renderer.render_csd_title_bar(
         "Velox Terminal Theme",
@@ -1860,7 +1883,11 @@ fn test_gtk_theme_detection_and_css_palette() {
     // System palette must have valid opaque background and non-zero colors
     assert_ne!(system_palette.bg, 0);
     assert_ne!(system_palette.fg, 0);
-    assert_eq!((system_palette.bg >> 24) & 0xFF, 0xFF, "Titlebar background must be fully opaque");
+    assert_eq!(
+        (system_palette.bg >> 24) & 0xFF,
+        0xFF,
+        "Titlebar background must be fully opaque"
+    );
 
     // Test resolving with theme = "terminal"
     let renderer = setup_renderer(500, 200);
@@ -1868,14 +1895,23 @@ fn test_gtk_theme_detection_and_css_palette() {
         theme: Some("terminal".to_string()),
         ..Default::default()
     };
-    let resolved = velox::window::csd::CsdPalette::resolve(Some(&terminal_config), &renderer.palette);
+    let resolved =
+        velox::window::csd::CsdPalette::resolve(Some(&terminal_config), &renderer.palette);
     assert_eq!(resolved.bg, renderer.palette.default_bg);
     assert_eq!(resolved.border, renderer.palette.default_bg);
 
     // If Mint-Y-Dark-Purple theme is on the machine, verify load_gtk_theme_palette directly
-    if let Some(mint_palette) = velox::window::csd::load_gtk_theme_palette("Mint-Y-Dark-Purple", true) {
-        assert_eq!(mint_palette.bg, 0xFF222226, "Mint-Y-Dark-Purple titlebar background must match CSS #222226");
-        assert_eq!(mint_palette.border, 0xFF18181B, "Mint-Y-Dark-Purple titlebar border must match CSS #18181b");
+    if let Some(mint_palette) =
+        velox::window::csd::load_gtk_theme_palette("Mint-Y-Dark-Purple", true)
+    {
+        assert_eq!(
+            mint_palette.bg, 0xFF222226,
+            "Mint-Y-Dark-Purple titlebar background must match CSS #222226"
+        );
+        assert_eq!(
+            mint_palette.border, 0xFF18181B,
+            "Mint-Y-Dark-Purple titlebar border must match CSS #18181b"
+        );
         assert!(!mint_palette.is_light);
     }
 }
@@ -1932,25 +1968,51 @@ fn test_csd_optimizations_and_truncation() {
     );
 
     // 2. Resize edge bitmask tests
-    use velox::window::csd::detect_resize_edge;
     use velox::window::WindowResizeEdge;
-    assert_eq!(detect_resize_edge(2.0, 2.0, 300, 100, 6.0), Some(WindowResizeEdge::TopLeft));
-    assert_eq!(detect_resize_edge(298.0, 2.0, 300, 100, 6.0), Some(WindowResizeEdge::TopRight));
-    assert_eq!(detect_resize_edge(2.0, 98.0, 300, 100, 6.0), Some(WindowResizeEdge::BottomLeft));
-    assert_eq!(detect_resize_edge(298.0, 98.0, 300, 100, 6.0), Some(WindowResizeEdge::BottomRight));
-    assert_eq!(detect_resize_edge(150.0, 2.0, 300, 100, 6.0), Some(WindowResizeEdge::Top));
-    assert_eq!(detect_resize_edge(150.0, 98.0, 300, 100, 6.0), Some(WindowResizeEdge::Bottom));
-    assert_eq!(detect_resize_edge(2.0, 50.0, 300, 100, 6.0), Some(WindowResizeEdge::Left));
-    assert_eq!(detect_resize_edge(298.0, 50.0, 300, 100, 6.0), Some(WindowResizeEdge::Right));
+    use velox::window::csd::detect_resize_edge;
+    assert_eq!(
+        detect_resize_edge(2.0, 2.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::TopLeft)
+    );
+    assert_eq!(
+        detect_resize_edge(298.0, 2.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::TopRight)
+    );
+    assert_eq!(
+        detect_resize_edge(2.0, 98.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::BottomLeft)
+    );
+    assert_eq!(
+        detect_resize_edge(298.0, 98.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::BottomRight)
+    );
+    assert_eq!(
+        detect_resize_edge(150.0, 2.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::Top)
+    );
+    assert_eq!(
+        detect_resize_edge(150.0, 98.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::Bottom)
+    );
+    assert_eq!(
+        detect_resize_edge(2.0, 50.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::Left)
+    );
+    assert_eq!(
+        detect_resize_edge(298.0, 50.0, 300, 100, 6.0),
+        Some(WindowResizeEdge::Right)
+    );
     assert_eq!(detect_resize_edge(150.0, 50.0, 300, 100, 6.0), None);
 }
 
 #[test]
 fn test_software_renderer_damage_rect_bounding_box() {
     let theme = velox::theme::theme::Theme::new();
-    let mut renderer = velox::renderer::CpuRenderer::new("monospace", 14.0, 1.0, &theme, 400, 300, true, 1.0);
+    let mut renderer =
+        velox::renderer::CpuRenderer::new("monospace", 14.0, 1.0, &theme, 400, 300, true, 1.0);
     let mut target = vec![0u32; 400 * 300];
-    let mut grid = velox::screen::grid::Grid::new(20, 15, theme.default_fg, theme.default_bg, 100, false);
+    let mut grid =
+        velox::screen::grid::Grid::new(20, 15, theme.default_fg, theme.default_bg, 100, false);
 
     let cell_h = renderer.glyph_cache.cell_height;
 
@@ -2053,14 +2115,18 @@ fn test_software_renderer_damage_rect_bounding_box() {
         None,
         None,
     );
-    assert!(damage.is_some(), "Damaged row should return Some(DamageRect)");
+    assert!(
+        damage.is_some(),
+        "Damaged row should return Some(DamageRect)"
+    );
     let rect = damage.unwrap();
     let expected_y = 5 * cell_h;
-    assert_eq!(rect.y, expected_y, "DamageRect y should match dirty row top");
-    assert_eq!(rect.height, cell_h, "DamageRect height should match dirty row height");
+    assert_eq!(
+        rect.y, expected_y,
+        "DamageRect y should match dirty row top"
+    );
+    assert_eq!(
+        rect.height, cell_h,
+        "DamageRect height should match dirty row height"
+    );
 }
-
-
-
-
-

@@ -19,7 +19,7 @@ pub mod glyph;
 pub mod primitives;
 pub mod raster;
 
-pub use backend::{create_window_and_renderer, RendererInitError, WindowAndRenderer};
+pub use backend::{RendererInitError, WindowAndRenderer, create_window_and_renderer};
 pub use color::{PackedColor, PrecomputedPalette};
 pub use damage::DamageMap;
 pub use framebuffer::Framebuffer;
@@ -705,8 +705,7 @@ impl CpuRenderer {
         let border_color = csd_palette.border;
 
         // 1. Fill title bar background
-        self.framebuffer
-            .fill_span(0, 0, w, csd_height, bar_bg);
+        self.framebuffer.fill_span(0, 0, w, csd_height, bar_bg);
 
         // 2. Render rounded top corners when not maximized (GTK Adwaita 10px radius)
         if !is_maximized && w >= 24 && csd_height >= 12 {
@@ -742,7 +741,8 @@ impl CpuRenderer {
             // Top border line between corners
             let top_border_span = w.saturating_sub(20);
             if top_border_span > 0 {
-                self.framebuffer.fill_span(10, 0, top_border_span, 1, border_color);
+                self.framebuffer
+                    .fill_span(10, 0, top_border_span, 1, border_color);
             }
         } else {
             // Maximized: square 1px top border line
@@ -794,9 +794,10 @@ impl CpuRenderer {
 
             let title_pixel_width = display_len as u32 * tab_cw;
             let ideal_x = (w.saturating_sub(title_pixel_width)) / 2;
-            let text_x = (ideal_x as f32)
-                .clamp(safe_min_x, (safe_max_x - title_pixel_width as f32).max(safe_min_x))
-                as u32;
+            let text_x = (ideal_x as f32).clamp(
+                safe_min_x,
+                (safe_max_x - title_pixel_width as f32).max(safe_min_x),
+            ) as u32;
             let text_y = (csd_height.saturating_sub(tab_ch)) / 2;
 
             let text_fg = if is_focused {
@@ -835,11 +836,21 @@ impl CpuRenderer {
             return;
         }
         // Left border
-        self.framebuffer
-            .fill_span(0, self.csd_height, 1, h.saturating_sub(self.csd_height), border_color);
+        self.framebuffer.fill_span(
+            0,
+            self.csd_height,
+            1,
+            h.saturating_sub(self.csd_height),
+            border_color,
+        );
         // Right border
-        self.framebuffer
-            .fill_span(w.saturating_sub(1), self.csd_height, 1, h.saturating_sub(self.csd_height), border_color);
+        self.framebuffer.fill_span(
+            w.saturating_sub(1),
+            self.csd_height,
+            1,
+            h.saturating_sub(self.csd_height),
+            border_color,
+        );
         // Bottom border
         self.framebuffer
             .fill_span(0, h.saturating_sub(1), w, 1, border_color);
@@ -858,8 +869,8 @@ impl CpuRenderer {
         bar_bg: u32,
         csd_palette: &crate::window::csd::CsdPalette,
     ) {
-        use crate::window::csd::CsdButtonType;
         use crate::renderer::raster::blend_alpha;
+        use crate::window::csd::CsdButtonType;
 
         let width = self.viewport_width as i32;
         let height = self.viewport_height as i32;
@@ -1043,8 +1054,13 @@ impl CpuRenderer {
         let tab_cw = self.tab_glyph_cache.cell_width;
         let tab_ch = self.tab_glyph_cache.cell_height;
 
-        self.framebuffer
-            .fill_span(0, csd_y_offset, self.viewport_width, bar_h, self.palette.tab_bar_bg);
+        self.framebuffer.fill_span(
+            0,
+            csd_y_offset,
+            self.viewport_width,
+            bar_h,
+            self.palette.tab_bar_bg,
+        );
 
         for (i, tab) in tab_bar.tabs.iter().enumerate() {
             let tab_x = (i as f32 * tab_w) as u32;
@@ -1061,8 +1077,13 @@ impl CpuRenderer {
                 .fill_span(tab_x, csd_y_offset, actual_w, bar_h, tab_bg);
 
             if tab.is_active {
-                self.framebuffer
-                    .fill_span(tab_x, csd_y_offset, actual_w, 2, self.palette.tab_accent);
+                self.framebuffer.fill_span(
+                    tab_x,
+                    csd_y_offset,
+                    actual_w,
+                    2,
+                    self.palette.tab_accent,
+                );
             }
 
             // Text title
@@ -1119,13 +1140,8 @@ impl CpuRenderer {
             let btn_y = csd_y_offset + 2u32;
 
             if tab_bar.is_new_tab_hovered {
-                self.framebuffer.fill_span(
-                    btn_x,
-                    btn_y,
-                    btn_w,
-                    btn_h,
-                    self.palette.tab_hover_bg,
-                );
+                self.framebuffer
+                    .fill_span(btn_x, btn_y, btn_w, btn_h, self.palette.tab_hover_bg);
             }
 
             let plus_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;
@@ -1159,7 +1175,8 @@ impl CpuRenderer {
             let sep_h = sep.rect.height as u32;
 
             if sep.is_dragging || sep.is_hovered {
-                self.framebuffer.fill_span(sep_x, sep_y, sep_w, sep_h, active_color);
+                self.framebuffer
+                    .fill_span(sep_x, sep_y, sep_w, sep_h, active_color);
             } else if let Some((start, end)) = sep.active_segment {
                 match sep.rect.direction {
                     SplitDirection::Vertical => {
@@ -1224,7 +1241,8 @@ impl CpuRenderer {
                     }
                 }
             } else {
-                self.framebuffer.fill_span(sep_x, sep_y, sep_w, sep_h, inactive_color);
+                self.framebuffer
+                    .fill_span(sep_x, sep_y, sep_w, sep_h, inactive_color);
             }
         }
     }
@@ -1621,8 +1639,8 @@ impl CpuRenderer {
                                         sel_max_x,
                                         sel_max_abs_y,
                                     );
-                                    let next_inv = next_is_sel
-                                        ^ next_cell.flags.contains(CellFlags::REVERSE);
+                                    let next_inv =
+                                        next_is_sel ^ next_cell.flags.contains(CellFlags::REVERSE);
                                     let (f, _) = self.palette.resolve_cell_colors_pane(
                                         next_cell,
                                         next_inv,
@@ -1643,8 +1661,13 @@ impl CpuRenderer {
                             let span_w = ((span_count as u32) * cell_w).min(clip_w);
                             match cell.character {
                                 '█' => {
-                                    self.framebuffer
-                                        .fill_span(px, py, span_w, cell_h.min(clip_h), fg);
+                                    self.framebuffer.fill_span(
+                                        px,
+                                        py,
+                                        span_w,
+                                        cell_h.min(clip_h),
+                                        fg,
+                                    );
                                 }
                                 '▀' => {
                                     let h = (cell_h / 2).min(clip_h);
@@ -1655,8 +1678,7 @@ impl CpuRenderer {
                                     let h = ((cell_h as f32 * frac).round() as u32).max(1);
                                     let y = py + cell_h.saturating_sub(h);
                                     let h_clip = max_y.saturating_sub(y);
-                                    self.framebuffer
-                                        .fill_span(px, y, span_w, h.min(h_clip), fg);
+                                    self.framebuffer.fill_span(px, y, span_w, h.min(h_clip), fg);
                                 }
                                 '▔' => {
                                     let h = (cell_h / 8).max(1).min(clip_h);
@@ -1733,14 +1755,7 @@ impl CpuRenderer {
                     let deco_w = target_w.min(clip_w);
                     if deco_w > 0 {
                         if cell.flags.contains(CellFlags::UNDERLINE) {
-                            draw_underline(
-                                &mut self.framebuffer,
-                                px,
-                                py,
-                                deco_w,
-                                cell_h,
-                                ul_color,
-                            );
+                            draw_underline(&mut self.framebuffer, px, py, deco_w, cell_h, ul_color);
                         }
                         if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
                             draw_double_underline(
@@ -1763,14 +1778,7 @@ impl CpuRenderer {
                             );
                         }
                         if cell.flags.contains(CellFlags::STRIKE) {
-                            draw_strike(
-                                &mut self.framebuffer,
-                                px,
-                                py,
-                                deco_w,
-                                cell_h,
-                                ul_color,
-                            );
+                            draw_strike(&mut self.framebuffer, px, py, deco_w, cell_h, ul_color);
                         }
                     }
 
@@ -1893,7 +1901,8 @@ impl CpuRenderer {
         if !force_redraw && !self.damage.has_damage() {
             if let Some(buf) = target_buffer {
                 let current_ptr = buf.as_ptr() as usize;
-                if current_ptr != self.last_target_ptr && buf.len() == self.framebuffer.pixels.len() {
+                if current_ptr != self.last_target_ptr && buf.len() == self.framebuffer.pixels.len()
+                {
                     buf.copy_from_slice(self.framebuffer.as_slice());
                     self.last_target_ptr = current_ptr;
                 }
@@ -1930,7 +1939,11 @@ impl CpuRenderer {
 
         // 7. Render Separators
         if !separators.is_empty() {
-            self.render_separators(separators, separator_color_override, active_separator_color_override);
+            self.render_separators(
+                separators,
+                separator_color_override,
+                active_separator_color_override,
+            );
         }
 
         // 8. Render Tab Bar
@@ -1966,4 +1979,3 @@ impl CpuRenderer {
         }
     }
 }
-

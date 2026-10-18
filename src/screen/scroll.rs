@@ -92,7 +92,8 @@ impl Grid {
                             if max_y < evicted {
                                 self.selection.clear();
                             } else {
-                                self.selection.start_y = self.selection.start_y.saturating_sub(evicted);
+                                self.selection.start_y =
+                                    self.selection.start_y.saturating_sub(evicted);
                                 self.selection.end_y = self.selection.end_y.saturating_sub(evicted);
                             }
                         }

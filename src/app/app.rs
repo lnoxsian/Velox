@@ -97,41 +97,6 @@ impl EventLoopProxy {
     }
 }
 
-fn spawn_pty_reader(
-    pty_reader: Arc<PtyMaster>,
-    proxy: EventLoopProxy,
-    window_id: WindowId,
-    tab_id: u64,
-    pane_id: u64,
-) {
-    std::thread::spawn(move || {
-        let mut buf = vec![0u8; crate::pty::PTY_BUFFER_SIZE];
-        loop {
-            match pty_reader.read(&mut buf) {
-                Ok(n) if n > 0 => {
-                    let mut send_buf = crate::pty::acquire_pty_buffer_for_len(n);
-                    send_buf[..n].copy_from_slice(&buf[..n]);
-                    send_buf.truncate(n);
-                    let _ = proxy.send(CustomEvent::PtyData {
-                        window_id,
-                        tab_id,
-                        pane_id,
-                        data: send_buf,
-                    });
-                }
-                _ => {
-                    let _ = proxy.send(CustomEvent::PtyExit {
-                        window_id,
-                        tab_id,
-                        pane_id,
-                    });
-                    break;
-                }
-            }
-        }
-    });
-}
-
 pub struct WindowState {
     pub window_id: WindowId,
     pub renderer: CpuRenderer,
@@ -177,6 +142,7 @@ pub struct WindowState {
     pub next_split_id: u64,
     pub tab_bar: TabBar,
     pub event_loop_proxy: EventLoopProxy,
+    pub pty_reactor: crate::pty::PtyReactorHandle,
     pub tab_bar_dirty: bool,
     pub tab_bar_render_cache: Option<TabBarRenderInfo>,
     pub dragging_separator: Option<DraggingSeparator>,
@@ -265,6 +231,7 @@ impl WindowState {
             next_split_id: 1,
             tab_bar,
             event_loop_proxy: EventLoopProxy::dummy(),
+            pty_reactor: crate::pty::PtyReactorHandle::dummy(),
             tab_bar_dirty: false,
             tab_bar_render_cache: None,
             dragging_separator: None,
@@ -558,13 +525,9 @@ impl WindowState {
         let mut terminal = Terminal::new(cols as usize, rows as usize);
         terminal.set_cell_dimensions(self.base_cell_width, self.base_cell_height);
 
-        spawn_pty_reader(
-            pty_master.clone(),
-            self.event_loop_proxy.clone(),
-            self.window_id,
-            tab_id,
-            new_pane_id,
-        );
+        let _ = self
+            .pty_reactor
+            .register(self.window_id, tab_id, new_pane_id, pty_master.clone());
 
         let font_size = self.default_font_size;
         let new_pane = Pane::new(new_pane_id, pty_master, terminal, font_size, false);
@@ -610,6 +573,7 @@ impl WindowState {
 
         let removed = tab.remove_pane(pane_id);
         if removed.is_some() {
+            let _ = self.pty_reactor.unregister(self.window_id, tab_id, pane_id);
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.sync_tab_panes_dimensions(tab_idx);
@@ -739,13 +703,9 @@ impl WindowState {
         terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
         let initial_title = custom_title.clone().unwrap_or_else(|| "velox".to_string());
 
-        spawn_pty_reader(
-            pty_master.clone(),
-            self.event_loop_proxy.clone(),
-            self.window_id,
-            tab_id,
-            pane_id,
-        );
+        let _ = self
+            .pty_reactor
+            .register(self.window_id, tab_id, pane_id, pty_master.clone());
 
         let pane = Pane::with_title(
             pane_id,
@@ -787,7 +747,12 @@ impl WindowState {
             return false;
         }
 
-        self.tabs.remove(index);
+        let removed_tab = self.tabs.remove(index);
+        for pane in removed_tab.tree.panes() {
+            let _ = self
+                .pty_reactor
+                .unregister(self.window_id, removed_tab.id, pane.id);
+        }
 
         if self.tabs.is_empty() {
             return true;
@@ -1120,10 +1085,14 @@ pub struct App {
     pub(crate) single_instance_mode: bool,
     pub(crate) ipc_listener: Option<IpcListenerHandle>,
     pub(crate) initial_options: Option<CliOptions>,
+    pub(crate) pty_reactor: Option<crate::pty::PtyReactor>,
 }
 
 impl Drop for App {
     fn drop(&mut self) {
+        if let Some(mut reactor) = self.pty_reactor.take() {
+            reactor.shutdown();
+        }
         if self.wake_fd >= 0 {
             unsafe {
                 libc::close(self.wake_fd);
@@ -1141,6 +1110,7 @@ impl App {
         }
 
         let proxy = EventLoopProxy::new(sender, wake_fd);
+        let pty_reactor = crate::pty::PtyReactor::new(proxy.clone())?;
         let daemon_mode = options.daemon;
         let single_instance_mode = options.single_instance;
 
@@ -1155,6 +1125,7 @@ impl App {
             single_instance_mode,
             ipc_listener: None,
             initial_options: Some(options),
+            pty_reactor: Some(pty_reactor),
         })
     }
 
@@ -1234,13 +1205,9 @@ impl App {
         self.next_window_id += 1;
         let tab_id = 0u64;
         let pane_id = 0u64;
-        spawn_pty_reader(
-            pty_master.clone(),
-            self.event_loop_proxy.clone(),
-            window_id,
-            tab_id,
-            pane_id,
-        );
+        if let Some(ref reactor) = self.pty_reactor {
+            reactor.register(window_id, tab_id, pane_id, pty_master.clone())?;
+        }
 
         let tab = Tab::new(
             tab_id,
@@ -1313,6 +1280,11 @@ impl App {
             next_split_id: 1,
             tab_bar,
             event_loop_proxy: self.event_loop_proxy.clone(),
+            pty_reactor: self
+                .pty_reactor
+                .as_ref()
+                .map(|r| r.handle())
+                .unwrap_or_else(crate::pty::PtyReactorHandle::dummy),
             tab_bar_dirty: true,
             tab_bar_render_cache: None,
             dragging_separator: None,
@@ -1430,7 +1402,13 @@ impl App {
                     should_remove_window = ws.close_pane_in_tab(tab_id, pane_id);
                 }
                 if should_remove_window {
-                    self.windows.remove(&window_id);
+                    if let Some(ws) = self.windows.remove(&window_id) {
+                        for tab in &ws.tabs {
+                            for pane in tab.tree.panes() {
+                                let _ = ws.pty_reactor.unregister(window_id, tab.id, pane.id);
+                            }
+                        }
+                    }
                     crate::memory::trim_allocator_memory();
                 }
             }
@@ -1549,7 +1527,13 @@ impl App {
             }
 
             for wid in closed_windows {
-                self.windows.remove(&wid);
+                if let Some(ws) = self.windows.remove(&wid) {
+                    for tab in &ws.tabs {
+                        for pane in tab.tree.panes() {
+                            let _ = ws.pty_reactor.unregister(wid, tab.id, pane.id);
+                        }
+                    }
+                }
                 crate::memory::trim_allocator_memory();
             }
 

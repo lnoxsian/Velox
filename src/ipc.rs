@@ -152,10 +152,7 @@ pub fn start_ipc_server(proxy: EventLoopProxy) -> Result<IpcListenerHandle, Stri
             if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let proxy = proxy.clone();
-                        thread::spawn(move || {
-                            let _ = handle_client_stream(&mut stream, &proxy);
-                        });
+                        let _ = handle_client_stream(&mut stream, &proxy);
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(_) => {
@@ -179,10 +176,7 @@ pub fn start_ipc_server(proxy: EventLoopProxy) -> Result<IpcListenerHandle, Stri
     })
 }
 
-fn handle_client_stream(
-    stream: &mut UnixStream,
-    proxy: &EventLoopProxy,
-) -> Result<(), String> {
+fn handle_client_stream(stream: &mut UnixStream, proxy: &EventLoopProxy) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|e| e.to_string())?;

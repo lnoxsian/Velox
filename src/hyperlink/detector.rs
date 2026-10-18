@@ -7,7 +7,9 @@ pub fn open(url: &str) -> std::io::Result<()> {
         } else {
             url.to_string()
         };
-        let mut child = std::process::Command::new("xdg-open").arg(&formatted_url).spawn()?;
+        let mut child = std::process::Command::new("xdg-open")
+            .arg(&formatted_url)
+            .spawn()?;
 
         // Spawn a background thread to wait for the process to exit.
         // This reaps the child process, preventing it from becoming a zombie,
@@ -71,7 +73,10 @@ fn scan_raw_matches(text: &str) -> smallvec::SmallVec<[(usize, usize); 4]> {
             // Strip trailing punctuation common at the end of sentences
             while end_idx > abs_start + scheme.len() {
                 let last_byte = bytes[end_idx - 1];
-                if matches!(last_byte, b'.' | b',' | b';' | b'?' | b'!' | b':' | b'\'' | b'"') {
+                if matches!(
+                    last_byte,
+                    b'.' | b',' | b';' | b'?' | b'!' | b':' | b'\'' | b'"'
+                ) {
                     end_idx -= 1;
                 } else if last_byte == b')' && close_parens > open_parens {
                     end_idx -= 1;
@@ -231,10 +236,20 @@ mod tests {
         let urls = detect(text);
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].2, "www.rust-lang.org");
-        assert_eq!(urls[1].2, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+        assert_eq!(
+            urls[1].2,
+            "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        );
 
-        let extracted_wiki: String = text.chars().skip(urls[1].0).take(urls[1].1 - urls[1].0).collect();
-        assert_eq!(extracted_wiki, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
+        let extracted_wiki: String = text
+            .chars()
+            .skip(urls[1].0)
+            .take(urls[1].1 - urls[1].0)
+            .collect();
+        assert_eq!(
+            extracted_wiki,
+            "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        );
     }
 
     #[test]

@@ -181,8 +181,7 @@ fn test_cache_key_isolation_regular_vs_italic() {
 #[test]
 fn test_software_renderer_renders_italic_and_bold_italic_lines() {
     let theme = velox::theme::theme::Theme::new();
-    let dummy_cache =
-        velox::renderer::glyph::GlyphCache::from_font_family("monospace", 14.0, 1.0);
+    let dummy_cache = velox::renderer::glyph::GlyphCache::from_font_family("monospace", 14.0, 1.0);
     let cell_w = dummy_cache.cell_width;
     let cell_h = dummy_cache.cell_height;
     let screen_w = 40 * cell_w;

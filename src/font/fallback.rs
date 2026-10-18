@@ -217,7 +217,10 @@ impl FallbackManager {
             for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
                 let id = fallback.font.glyph_id(c);
                 if id.0 != 0
-                    && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), fallback.face_index)
+                    && let Ok(face) = owned_ttf_parser::Face::parse(
+                        fallback.storage.as_bytes(),
+                        fallback.face_index,
+                    )
                     && face
                         .glyph_raster_image(owned_ttf_parser::GlyphId(id.0), 32)
                         .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
@@ -377,7 +380,6 @@ impl FallbackManager {
         self.missing_chars.insert(c);
         None
     }
-
 }
 
 #[cfg(test)]

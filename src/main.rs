@@ -63,7 +63,9 @@ fn main() {
 
     cli_opts.single_instance = single_instance;
 
-    log::info!("Initialized Velox with native pure-Rust zero-C-libraries display backend and CPU software renderer.");
+    log::info!(
+        "Initialized Velox with native pure-Rust zero-C-libraries display backend and CPU software renderer."
+    );
 
     let mut app = match App::new(cli_opts) {
         Ok(app) => app,

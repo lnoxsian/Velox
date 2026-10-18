@@ -41,7 +41,8 @@ pub fn decode_png_to_icon(bytes: &[u8]) -> Option<(u32, u32, Vec<u32>)> {
     match info.color_type {
         png::ColorType::Rgba => {
             for &[r, g, b, a] in frame_bytes.as_chunks::<4>().0 {
-                pixels.push(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32));
+                pixels
+                    .push(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32));
             }
         }
         png::ColorType::Rgb => {

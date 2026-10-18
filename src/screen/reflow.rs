@@ -377,7 +377,9 @@ mod tests {
         // Verify that in the visible grid, every line is distinct and non-duplicated
         let mut non_empty_rows: Vec<String> = Vec::new();
         for y in 0..24 {
-            let row: String = (0..40).map(|x| term.grid.cells[y * 40 + x].character).collect();
+            let row: String = (0..40)
+                .map(|x| term.grid.cells[y * 40 + x].character)
+                .collect();
             let trimmed = row.trim_end().to_string();
             if !trimmed.is_empty() {
                 non_empty_rows.push(trimmed);
@@ -393,4 +395,3 @@ mod tests {
         }
     }
 }
-

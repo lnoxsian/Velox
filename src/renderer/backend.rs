@@ -16,11 +16,7 @@ impl std::fmt::Display for RendererInitError {
         match self {
             Self::WindowCreation(e) => write!(f, "Failed to create OS window: {}", e),
             Self::SoftwareInit(e) => {
-                write!(
-                    f,
-                    "Failed to initialize software renderer: {}",
-                    e
-                )
+                write!(f, "Failed to initialize software renderer: {}", e)
             }
             Self::Font(e) => write!(f, "{}", e),
         }
@@ -65,7 +61,11 @@ pub fn create_window_and_renderer(
     )
     .map_err(RendererInitError::Font)?;
 
-    log::info!("Zero-C pure-Rust CPU software renderer initialized successfully ({}x{}).", win_width, win_height);
+    log::info!(
+        "Zero-C pure-Rust CPU software renderer initialized successfully ({}x{}).",
+        win_width,
+        win_height
+    );
 
     Ok((window, renderer))
 }

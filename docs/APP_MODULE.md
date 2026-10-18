@@ -96,7 +96,7 @@ pub enum CustomEvent {
 1. Creates native window with `.with_visible(false)` and `.with_transparent(opacity < 1.0)`.
 2. Initializes software rendering backend (`CpuRenderer` with `softbuffer::Surface`).
 3. Calculates cell dimensions and spawns initial shell process inside PTY.
-4. Spawns dedicated background reader thread (`spawn_pty_reader`).
+4. Registers PTY master descriptor with the shared `PtyReactor` (`epoll`-based background multiplexer).
 5. Constructs `WindowState` with `last_frame_instant` initialized in the past.
 6. **Zero-Flicker Presentation**: Synchronously calls `window_state.draw()` to render background and prompt, then reveals the window via `window_state.window.set_visible(true)`.
 

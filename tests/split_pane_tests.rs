@@ -1483,8 +1483,7 @@ fn test_software_renderer_multi_pane_focus_switching() {
         theme.resolve_cursor_color(theme.default_fg),
     )
     .to_u32();
-    let bg_color =
-        velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
+    let bg_color = velox::renderer::color::PackedColor::from_color(theme.default_bg).to_u32();
 
     // Verify cursor on active pane
     assert_eq!(
@@ -1501,8 +1500,7 @@ fn test_software_renderer_multi_pane_focus_switching() {
     let (fg2, _) = renderer
         .palette
         .resolve_cell_colors_pane(cell2, false, false, 0.0, &theme, 0);
-    let bright_red =
-        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
+    let bright_red = velox::renderer::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
     let regular_red =
         velox::renderer::color::PackedColor::from_color(theme.ansi_colors[1]).to_u32();
     assert_eq!(
@@ -1524,8 +1522,7 @@ fn test_software_renderer_multi_pane_focus_switching() {
     let undimmed_fg =
         velox::renderer::color::PackedColor::from_color(theme.ansi_colors[9]).to_u32();
     let dimmed_fg =
-        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15))
-            .to_u32();
+        velox::renderer::color::PackedColor::from_color(theme.ansi_colors[1].dim(0.15)).to_u32();
     assert_eq!(
         p1_f1_fg, undimmed_fg,
         "Pane 1 should be undimmed in Frame 1"
@@ -1760,7 +1757,8 @@ fn test_narrow_pane_text_duplication() {
     }
 
     // Set a prompt and type a command
-    pty.write(b"PS1='user@host:~/some/long/directory/path$ '\n").unwrap();
+    pty.write(b"PS1='user@host:~/some/long/directory/path$ '\n")
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(150));
     if let Ok(n) = pty.read(&mut buf) {
         term.feed(&buf[..n]);
@@ -1775,35 +1773,52 @@ fn test_narrow_pane_text_duplication() {
 
     println!("--- BEFORE NARROW ---");
     for y in 0..term.grid.height {
-        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        let row: String = (0..term.grid.width)
+            .map(|x| term.grid.cells[y * term.grid.width + x].character)
+            .collect();
         if !row.trim().is_empty() {
             println!("row {}: {:?}", y, row.trim_end());
         }
     }
 
-    println!("cursor before narrow: {:?}", (term.grid.cursor.x, term.grid.cursor.y));
+    println!(
+        "cursor before narrow: {:?}",
+        (term.grid.cursor.x, term.grid.cursor.y)
+    );
 
     // Now narrow to 35 columns
     term.resize(35, 24);
-    println!("cursor after term.resize(35, 24): {:?}", (term.grid.cursor.x, term.grid.cursor.y));
+    println!(
+        "cursor after term.resize(35, 24): {:?}",
+        (term.grid.cursor.x, term.grid.cursor.y)
+    );
     pty.resize(35, 24).unwrap();
 
     std::thread::sleep(std::time::Duration::from_millis(150));
     if let Ok(n) = pty.read(&mut buf) {
-        println!("BASH BYTES ON RESIZE: {:?}", String::from_utf8_lossy(&buf[..n]));
+        println!(
+            "BASH BYTES ON RESIZE: {:?}",
+            String::from_utf8_lossy(&buf[..n])
+        );
         term.feed(&buf[..n]);
     }
 
     println!("--- AFTER NARROW TO 35 ---");
     for y in 0..term.grid.height {
-        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        let row: String = (0..term.grid.width)
+            .map(|x| term.grid.cells[y * term.grid.width + x].character)
+            .collect();
         if !row.trim().is_empty() {
             println!("row {}: {:?}", y, row.trim_end());
         }
     }
 
-    let r3: String = (0..term.grid.width).map(|x| term.grid.cells[3 * term.grid.width + x].character).collect();
-    let r4: String = (0..term.grid.width).map(|x| term.grid.cells[4 * term.grid.width + x].character).collect();
+    let r3: String = (0..term.grid.width)
+        .map(|x| term.grid.cells[3 * term.grid.width + x].character)
+        .collect();
+    let r4: String = (0..term.grid.width)
+        .map(|x| term.grid.cells[4 * term.grid.width + x].character)
+        .collect();
     assert_ne!(r3.trim(), r4.trim(), "Rows 3 and 4 must not duplicate");
     assert!(r3.contains("user@host:~/some/long/directory/pat"));
     assert!(r4.contains("h$ echo 'this is a long command'"));
@@ -1818,7 +1833,9 @@ fn test_narrow_pane_text_duplication() {
 
     println!("--- AFTER NARROW TO 25 ---");
     for y in 0..term.grid.height {
-        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        let row: String = (0..term.grid.width)
+            .map(|x| term.grid.cells[y * term.grid.width + x].character)
+            .collect();
         if !row.trim().is_empty() {
             println!("row {}: {:?}", y, row.trim_end());
         }
@@ -1827,13 +1844,20 @@ fn test_narrow_pane_text_duplication() {
     // Verify no consecutive duplicated lines in the active grid
     let mut non_empty_rows: Vec<String> = Vec::new();
     for y in 0..term.grid.height {
-        let row: String = (0..term.grid.width).map(|x| term.grid.cells[y * term.grid.width + x].character).collect();
+        let row: String = (0..term.grid.width)
+            .map(|x| term.grid.cells[y * term.grid.width + x].character)
+            .collect();
         let trimmed = row.trim().to_string();
         if !trimmed.is_empty() {
             non_empty_rows.push(trimmed);
         }
     }
     for i in 1..non_empty_rows.len() {
-        assert_ne!(non_empty_rows[i - 1], non_empty_rows[i], "Consecutive duplicate row detected at index {}", i);
+        assert_ne!(
+            non_empty_rows[i - 1],
+            non_empty_rows[i],
+            "Consecutive duplicate row detected at index {}",
+            i
+        );
     }
 }

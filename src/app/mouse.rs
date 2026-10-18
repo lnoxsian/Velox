@@ -1,7 +1,7 @@
 use crate::app::app::{DraggingSeparator, WindowState};
 use crate::app::split::SplitDirection;
 use crate::app::tab::TabBarHitResult;
-use crate::window::event::{ElementState, MouseButton, ModifiersState};
+use crate::window::event::{ElementState, ModifiersState, MouseButton};
 
 #[inline(always)]
 fn pane_cell_coords(
@@ -90,7 +90,14 @@ fn send_mouse_report(
         use std::io::Write;
         let mut cur = std::io::Cursor::new(&mut buf[..]);
         let suffix = if is_release { 'm' } else { 'M' };
-        let _ = write!(cur, "\x1b[<{};{};{}{}", btn_code, col_idx + 1, row_idx + 1, suffix);
+        let _ = write!(
+            cur,
+            "\x1b[<{};{};{}{}",
+            btn_code,
+            col_idx + 1,
+            row_idx + 1,
+            suffix
+        );
         cur.position() as usize
     } else {
         let cb = if is_release { 32 + 3 } else { 32 + btn_code };
@@ -114,11 +121,7 @@ fn send_mouse_report(
 }
 
 impl WindowState {
-    pub fn handle_cursor_moved(
-        &mut self,
-        position: (f64, f64),
-        modifiers: ModifiersState,
-    ) {
+    pub fn handle_cursor_moved(&mut self, position: (f64, f64), modifiers: ModifiersState) {
         self.mark_interaction();
         self.mouse_x = position.0;
         self.mouse_y = position.1;
@@ -140,7 +143,9 @@ impl WindowState {
                 if tab.tree.set_split_ratio(dragging.split_id, ratio) {
                     let now = std::time::Instant::now();
                     let should_sync = match self.last_separator_drag_sync {
-                        Some(last) => now.duration_since(last) >= std::time::Duration::from_millis(60),
+                        Some(last) => {
+                            now.duration_since(last) >= std::time::Duration::from_millis(60)
+                        }
                         None => true,
                     };
                     if should_sync {
@@ -198,8 +203,16 @@ impl WindowState {
                 if should_report_motion {
                     self.set_cursor_cached(crate::window::event::CursorIcon::Default);
                     if let Some(pty_master) = pty_master {
-                        let btn_code = apply_mouse_modifiers(32 + self.last_mouse_button, modifiers);
-                        send_mouse_report(&pty_master, mouse_sgr, btn_code, col_idx, row_idx, false);
+                        let btn_code =
+                            apply_mouse_modifiers(32 + self.last_mouse_button, modifiers);
+                        send_mouse_report(
+                            &pty_master,
+                            mouse_sgr,
+                            btn_code,
+                            col_idx,
+                            row_idx,
+                            false,
+                        );
                     }
                 } else {
                     self.set_cursor_cached(crate::window::event::CursorIcon::Text);
@@ -230,10 +243,12 @@ impl WindowState {
                 border_thickness,
             ) {
                 let cursor = match edge {
-                    crate::window::WindowResizeEdge::Left | crate::window::WindowResizeEdge::Right => {
+                    crate::window::WindowResizeEdge::Left
+                    | crate::window::WindowResizeEdge::Right => {
                         crate::window::event::CursorIcon::ColResize
                     }
-                    crate::window::WindowResizeEdge::Top | crate::window::WindowResizeEdge::Bottom => {
+                    crate::window::WindowResizeEdge::Top
+                    | crate::window::WindowResizeEdge::Bottom => {
                         crate::window::event::CursorIcon::RowResize
                     }
                     crate::window::WindowResizeEdge::TopLeft
@@ -457,7 +472,6 @@ impl WindowState {
         let lines_f = delta_y as f64;
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
-
             let csd_h = self.window.csd_title_bar_height() as f64;
             if csd_h > 0.0 && self.mouse_y < csd_h {
                 return false;
@@ -561,7 +575,8 @@ impl WindowState {
             let csd_h = self.window.csd_title_bar_height() as f64;
             if csd_h > 0.0 && self.mouse_y < csd_h {
                 if button == MouseButton::Right {
-                    self.window.show_window_menu(self.mouse_x as i32, self.mouse_y as i32);
+                    self.window
+                        .show_window_menu(self.mouse_x as i32, self.mouse_y as i32);
                     return;
                 }
                 if button == MouseButton::Left {
@@ -807,52 +822,48 @@ impl WindowState {
                             let y_offset = (row_idx + history_len).saturating_sub(offset);
 
                             match click_count {
-                                    1 => {
-                                        if modifiers.shift_key() && active_grid.selection.active {
-                                            active_grid
-                                                .selection
-                                                .update_selection(col_idx, y_offset);
-                                        } else {
-                                            active_grid
-                                                .selection
-                                                .start_selection(col_idx, y_offset);
-                                        }
-                                    }
-                                    2 => {
-                                        active_grid.select_word_at(col_idx, y_offset);
-                                        let text = active_grid.extract_selection_text();
-                                        if !text.is_empty() {
-                                            crate::clipboard::clipboard::copy(text);
-                                        }
-                                    }
-                                    3 => {
-                                        active_grid.select_line_at(y_offset);
-                                        let text = active_grid.extract_selection_text();
-                                        if !text.is_empty() {
-                                            crate::clipboard::clipboard::copy(text);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-
-                                if click_count == 1 && row_idx == active_grid.cursor.y {
-                                    let cursor_x = active_grid.cursor.x;
-                                    let pty_master = pane.pty_master.clone();
-                                    if col_idx < cursor_x {
-                                        let diff = cursor_x - col_idx;
-                                        let seq = b"\x1b[D".repeat(diff);
-                                        let _ = pty_master.write(&seq);
-                                    } else if col_idx > cursor_x {
-                                        let diff = col_idx - cursor_x;
-                                        let seq = b"\x1b[C".repeat(diff);
-                                        let _ = pty_master.write(&seq);
+                                1 => {
+                                    if modifiers.shift_key() && active_grid.selection.active {
+                                        active_grid.selection.update_selection(col_idx, y_offset);
+                                    } else {
+                                        active_grid.selection.start_selection(col_idx, y_offset);
                                     }
                                 }
-
-                                self.needs_redraw = true;
+                                2 => {
+                                    active_grid.select_word_at(col_idx, y_offset);
+                                    let text = active_grid.extract_selection_text();
+                                    if !text.is_empty() {
+                                        crate::clipboard::clipboard::copy(text);
+                                    }
+                                }
+                                3 => {
+                                    active_grid.select_line_at(y_offset);
+                                    let text = active_grid.extract_selection_text();
+                                    if !text.is_empty() {
+                                        crate::clipboard::clipboard::copy(text);
+                                    }
+                                }
+                                _ => {}
                             }
+
+                            if click_count == 1 && row_idx == active_grid.cursor.y {
+                                let cursor_x = active_grid.cursor.x;
+                                let pty_master = pane.pty_master.clone();
+                                if col_idx < cursor_x {
+                                    let diff = cursor_x - col_idx;
+                                    let seq = b"\x1b[D".repeat(diff);
+                                    let _ = pty_master.write(&seq);
+                                } else if col_idx > cursor_x {
+                                    let diff = col_idx - cursor_x;
+                                    let seq = b"\x1b[C".repeat(diff);
+                                    let _ = pty_master.write(&seq);
+                                }
+                            }
+
+                            self.needs_redraw = true;
                         }
                     }
+                }
                 MouseButton::Middle => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 1;
@@ -1049,7 +1060,9 @@ mod tests {
 
                 // Test with Unicode prompt line containing multi-byte characters
                 let pane_mut = ws.active_pane_mut();
-                pane_mut.terminal.feed("Velox on  main ❯ echo https://velox.dev/test\r\n".as_bytes());
+                pane_mut
+                    .terminal
+                    .feed("Velox on  main ❯ echo https://velox.dev/test\r\n".as_bytes());
 
                 let prompt_line_y = py + ch * 1.0 + ch * 0.5;
                 // Move over 'V' of "Velox" (col 0) -> Text
@@ -1075,7 +1088,9 @@ mod tests {
                 // Pad so the URL starts near the end of line 2 and wraps onto line 3
                 let padding_spaces = " ".repeat(width - 10);
                 let wrapped_link = "https://github.com/rust-lang/rust/issues/1234567890";
-                pane_mut.terminal.feed(format!("{}{}\r\n", padding_spaces, wrapped_link).as_bytes());
+                pane_mut
+                    .terminal
+                    .feed(format!("{}{}\r\n", padding_spaces, wrapped_link).as_bytes());
 
                 let wrap_row_1_y = py + ch * 2.0 + ch * 0.5;
                 let wrap_row_2_y = py + ch * 3.0 + ch * 0.5;
@@ -1115,9 +1130,16 @@ mod tests {
 
                 // 1. Plain left click should NOT open URL; selection becomes active
                 ws.handle_cursor_moved((url_x, url_y), ModifiersState::empty());
-                ws.handle_mouse_input(ElementState::Pressed, MouseButton::Left, ModifiersState::empty());
+                ws.handle_mouse_input(
+                    ElementState::Pressed,
+                    MouseButton::Left,
+                    ModifiersState::empty(),
+                );
                 let pane = ws.active_pane();
-                assert!(pane.terminal.grid.selection.active, "Plain click should start text selection, not open link");
+                assert!(
+                    pane.terminal.grid.selection.active,
+                    "Plain click should start text selection, not open link"
+                );
 
                 // Clear selection
                 let pane_mut = ws.active_pane_mut();
@@ -1127,7 +1149,10 @@ mod tests {
                 let ctrl_only = ModifiersState::CONTROL;
                 ws.handle_mouse_input(ElementState::Pressed, MouseButton::Left, ctrl_only);
                 let pane = ws.active_pane();
-                assert!(!pane.terminal.grid.selection.active, "Ctrl+Click should open URL and not start text selection");
+                assert!(
+                    !pane.terminal.grid.selection.active,
+                    "Ctrl+Click should open URL and not start text selection"
+                );
 
                 // 3. Test when terminal is in application mouse mode (e.g. mouse_mode = 1000)
                 let pane_mut = ws.active_pane_mut();

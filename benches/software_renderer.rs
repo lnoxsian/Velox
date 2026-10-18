@@ -510,7 +510,11 @@ fn main() {
     let mut cb_grid = Grid::new(
         cols as usize,
         rows as usize,
-        Color { r: 255, g: 255, b: 255 },
+        Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
         Color { r: 0, g: 0, b: 0 },
         1000,
         false,
@@ -522,11 +526,27 @@ fn main() {
                 0 => Color { r: 0, g: 0, b: 0 },
                 1 => Color { r: 205, g: 0, b: 0 },
                 2 => Color { r: 0, g: 205, b: 0 },
-                3 => Color { r: 205, g: 205, b: 0 },
+                3 => Color {
+                    r: 205,
+                    g: 205,
+                    b: 0,
+                },
                 4 => Color { r: 0, g: 0, b: 238 },
-                5 => Color { r: 205, g: 0, b: 205 },
-                6 => Color { r: 0, g: 205, b: 205 },
-                _ => Color { r: 229, g: 229, b: 229 },
+                5 => Color {
+                    r: 205,
+                    g: 0,
+                    b: 205,
+                },
+                6 => Color {
+                    r: 0,
+                    g: 205,
+                    b: 205,
+                },
+                _ => Color {
+                    r: 229,
+                    g: 229,
+                    b: 229,
+                },
             };
             row_cells.push(Cell::new(
                 '█',
@@ -626,4 +646,3 @@ fn main() {
 
     println!("=== Benchmark Complete ===");
 }
-

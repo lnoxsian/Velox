@@ -19,278 +19,294 @@ impl WindowState {
         );
 
         // ── 1. Velox-Owned Shortcuts ──────────────────────────────────────────
+        let has_ctrl = modifiers.control_key();
+        let has_alt = modifiers.alt_key();
+        let has_shift = modifiers.shift_key();
 
-        // Split Pane Divider Resizing (Ctrl+Alt+Arrows without Shift)
-        if modifiers.control_key() && modifiers.alt_key() && !modifiers.shift_key() {
-            match logical_key {
-                Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
-                    self.adjust_active_split_ratio(-0.05);
-                    log::debug!("Velox shortcut: split resize -0.05");
-                    return false;
-                }
-                Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
-                    self.adjust_active_split_ratio(0.05);
-                    log::debug!("Velox shortcut: split resize +0.05");
-                    return false;
-                }
-                _ => {}
-            }
-        }
-
-        // Split Pane Navigation (Alt+Arrows without Ctrl/Shift)
-        if modifiers.alt_key() && !modifiers.control_key() && !modifiers.shift_key() {
-            match logical_key {
-                Key::Named(NamedKey::ArrowLeft) => {
-                    self.focus_direction(FocusDirection::Left);
-                    log::debug!("Velox shortcut: focus left");
-                    return false;
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    self.focus_direction(FocusDirection::Right);
-                    log::debug!("Velox shortcut: focus right");
-                    return false;
-                }
-                Key::Named(NamedKey::ArrowUp) => {
-                    self.focus_direction(FocusDirection::Up);
-                    log::debug!("Velox shortcut: focus up");
-                    return false;
-                }
-                Key::Named(NamedKey::ArrowDown) => {
-                    self.focus_direction(FocusDirection::Down);
-                    log::debug!("Velox shortcut: focus down");
-                    return false;
-                }
-                _ => {}
-            }
-
-            // Alt+1 .. Alt+9: Switch to Tab N
-            if let Key::Character(s) = logical_key {
-                if s.len() == 1 {
-                    let ch = s.chars().next().unwrap();
-                    if ('1'..='9').contains(&ch) {
-                        let idx = (ch as usize) - ('1' as usize);
-                        self.switch_tab(idx);
-                        log::debug!("Velox shortcut: switch to tab {}", idx);
-                        return false;
-                    }
-                }
-            }
-        }
-
-        // Tab Management & Split Shortcuts (Ctrl+Shift without Alt)
-        if modifiers.control_key() && modifiers.shift_key() && !modifiers.alt_key() {
-            if let Key::Character(s) = &logical_key {
-                let ch = s.to_lowercase();
-                match ch.as_str() {
-                    "t" => {
-                        self.create_tab(None, None, None, None);
-                        log::debug!("Velox shortcut: create tab");
-                        return false;
-                    }
-                    "w" => {
-                        self.close_pane();
-                        log::debug!("Velox shortcut: close pane");
-                        return false;
-                    }
-                    "o" | "h" => {
-                        self.split_horizontal();
-                        log::debug!("Velox shortcut: split horizontal");
-                        return false;
-                    }
-                    "e" | "d" => {
-                        self.split_vertical();
-                        log::debug!("Velox shortcut: split vertical");
-                        return false;
-                    }
-                    "n" => {
-                        self.focus_next_pane();
-                        log::debug!("Velox shortcut: focus next pane");
-                        return false;
-                    }
-                    "p" => {
-                        self.focus_previous_pane();
-                        log::debug!("Velox shortcut: focus previous pane");
-                        return false;
-                    }
-                    "c" => {
-                        let active_pane = self.active_pane();
-                        let active_grid = active_pane.terminal.active_grid();
-                        let text = if active_grid.selection.active {
-                            active_grid.extract_selection_text()
+        // Fast path: if neither Ctrl nor Alt is held, the only possible Velox shortcut is Shift+PageUp/PageDown
+        if !has_ctrl && !has_alt {
+            if has_shift {
+                match logical_key {
+                    Key::Named(NamedKey::PageUp) => {
+                        let active_pane = self.active_pane_mut();
+                        let active_grid = if active_pane.terminal.is_alt_screen {
+                            &mut active_pane.terminal.alt_grid
                         } else {
-                            (0..active_grid.height)
-                                .map(|y| {
-                                    (0..active_grid.width)
-                                        .map(|x| {
-                                            active_grid.cells[y * active_grid.width + x].character
-                                        })
-                                        .collect::<String>()
-                                        .trim_end()
-                                        .to_string()
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
+                            &mut active_pane.terminal.grid
                         };
-                        if !text.is_empty() {
-                            crate::clipboard::clipboard::copy(text);
-                        }
-                        log::debug!("Velox shortcut: copy");
+                        let history_len = active_grid.scrollback.len();
+                        active_grid.scroll_offset =
+                            (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                        active_grid.damage.mark_all();
+                        self.needs_redraw = true;
+                        log::debug!("Velox shortcut: scroll half page up");
                         return false;
                     }
-                    "v" => {
-                        let text = crate::clipboard::clipboard::paste();
-                        if !text.is_empty() {
-                            let formatted = self.active_pane().terminal.format_paste(&text);
-                            if self.active_pane().terminal.scroll_on_keystroke {
-                                self.active_pane_mut()
-                                    .terminal
-                                    .active_grid_mut()
-                                    .scroll_offset = 0;
-                                self.needs_redraw = true;
+                    Key::Named(NamedKey::PageDown) => {
+                        let active_pane = self.active_pane_mut();
+                        let active_grid = if active_pane.terminal.is_alt_screen {
+                            &mut active_pane.terminal.alt_grid
+                        } else {
+                            &mut active_pane.terminal.grid
+                        };
+                        active_grid.scroll_offset = active_grid
+                            .scroll_offset
+                            .saturating_sub(active_grid.height / 2);
+                        active_grid.damage.mark_all();
+                        self.needs_redraw = true;
+                        log::debug!("Velox shortcut: scroll half page down");
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            // All other unmodified or Shift-only keystrokes bypass remaining shortcut matchers!
+        } else {
+            // Split Pane Divider Resizing (Ctrl+Alt+Arrows without Shift)
+            if has_ctrl && has_alt && !has_shift {
+                match logical_key {
+                    Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
+                        self.adjust_active_split_ratio(-0.05);
+                        log::debug!("Velox shortcut: split resize -0.05");
+                        return false;
+                    }
+                    Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
+                        self.adjust_active_split_ratio(0.05);
+                        log::debug!("Velox shortcut: split resize +0.05");
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+
+            // Split Pane Navigation (Alt+Arrows without Ctrl/Shift)
+            if has_alt && !has_ctrl && !has_shift {
+                match logical_key {
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.focus_direction(FocusDirection::Left);
+                        log::debug!("Velox shortcut: focus left");
+                        return false;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.focus_direction(FocusDirection::Right);
+                        log::debug!("Velox shortcut: focus right");
+                        return false;
+                    }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        self.focus_direction(FocusDirection::Up);
+                        log::debug!("Velox shortcut: focus up");
+                        return false;
+                    }
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.focus_direction(FocusDirection::Down);
+                        log::debug!("Velox shortcut: focus down");
+                        return false;
+                    }
+                    _ => {}
+                }
+
+                // Alt+1 .. Alt+9: Switch to Tab N
+                if let Key::Character(s) = logical_key {
+                    if s.len() == 1 {
+                        let ch = s.chars().next().unwrap();
+                        if ('1'..='9').contains(&ch) {
+                            let idx = (ch as usize) - ('1' as usize);
+                            self.switch_tab(idx);
+                            log::debug!("Velox shortcut: switch to tab {}", idx);
+                            return false;
+                        }
+                    }
+                }
+            }
+
+            // Tab Management & Split Shortcuts (Ctrl+Shift without Alt)
+            if has_ctrl && has_shift && !has_alt {
+                if let Key::Character(s) = &logical_key {
+                    if s.len() == 1 {
+                        let ch = s.as_bytes()[0].to_ascii_lowercase();
+                        match ch {
+                            b't' => {
+                                self.create_tab(None, None, None, None);
+                                log::debug!("Velox shortcut: create tab");
+                                return false;
                             }
-                            let _ = self.active_pane().pty_master.write(formatted.as_bytes());
-                            self.last_key_instant = std::time::Instant::now();
-                            self.mark_interaction();
-                            log::debug!("Velox shortcut: paste");
-                            return true;
+                            b'w' => {
+                                self.close_pane();
+                                log::debug!("Velox shortcut: close pane");
+                                return false;
+                            }
+                            b'o' | b'h' => {
+                                self.split_horizontal();
+                                log::debug!("Velox shortcut: split horizontal");
+                                return false;
+                            }
+                            b'e' | b'd' => {
+                                self.split_vertical();
+                                log::debug!("Velox shortcut: split vertical");
+                                return false;
+                            }
+                            b'n' => {
+                                self.focus_next_pane();
+                                log::debug!("Velox shortcut: focus next pane");
+                                return false;
+                            }
+                            b'p' => {
+                                self.focus_previous_pane();
+                                log::debug!("Velox shortcut: focus previous pane");
+                                return false;
+                            }
+                            b'c' => {
+                                let active_pane = self.active_pane();
+                                let active_grid = active_pane.terminal.active_grid();
+                                let text = if active_grid.selection.active {
+                                    active_grid.extract_selection_text()
+                                } else {
+                                    (0..active_grid.height)
+                                        .map(|y| {
+                                            (0..active_grid.width)
+                                                .map(|x| {
+                                                    active_grid.cells[y * active_grid.width + x]
+                                                        .character
+                                                })
+                                                .collect::<String>()
+                                                .trim_end()
+                                                .to_string()
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                };
+                                if !text.is_empty() {
+                                    crate::clipboard::clipboard::copy(text);
+                                }
+                                log::debug!("Velox shortcut: copy");
+                                return false;
+                            }
+                            b'v' => {
+                                let text = crate::clipboard::clipboard::paste();
+                                if !text.is_empty() {
+                                    let formatted = self.active_pane().terminal.format_paste(&text);
+                                    if self.active_pane().terminal.scroll_on_keystroke {
+                                        self.active_pane_mut()
+                                            .terminal
+                                            .active_grid_mut()
+                                            .scroll_offset = 0;
+                                        self.needs_redraw = true;
+                                    }
+                                    let _ =
+                                        self.active_pane().pty_master.write(formatted.as_bytes());
+                                    self.last_key_instant = std::time::Instant::now();
+                                    self.mark_interaction();
+                                    log::debug!("Velox shortcut: paste");
+                                    return true;
+                                }
+                                return false;
+                            }
+                            b'+' | b'=' => {
+                                let active_size = self.active_pane().font_size;
+                                let new_size = active_size + 1.0;
+                                self.set_font_size(new_size);
+                                log::debug!("Velox shortcut: zoom in");
+                                return false;
+                            }
+                            b'_' | b'-' => {
+                                let active_size = self.active_pane().font_size;
+                                let new_size = (active_size - 1.0).max(4.0);
+                                self.set_font_size(new_size);
+                                log::debug!("Velox shortcut: zoom out");
+                                return false;
+                            }
+                            b']' | b'}' => {
+                                self.next_tab();
+                                log::debug!("Velox shortcut: next tab");
+                                return false;
+                            }
+                            b'[' | b'{' => {
+                                self.prev_tab();
+                                log::debug!("Velox shortcut: prev tab");
+                                return false;
+                            }
+                            _ => {}
                         }
-                        return false;
                     }
-                    "+" | "=" => {
-                        let active_size = self.active_pane().font_size;
-                        let new_size = active_size + 1.0;
-                        self.set_font_size(new_size);
-                        log::debug!("Velox shortcut: zoom in");
-                        return false;
-                    }
-                    "_" | "-" => {
-                        let active_size = self.active_pane().font_size;
-                        let new_size = (active_size - 1.0).max(4.0);
-                        self.set_font_size(new_size);
-                        log::debug!("Velox shortcut: zoom out");
-                        return false;
-                    }
-                    "]" | "}" => {
-                        self.next_tab();
-                        log::debug!("Velox shortcut: next tab");
-                        return false;
-                    }
-                    "[" | "{" => {
+                }
+
+                match logical_key {
+                    Key::Named(NamedKey::Tab) => {
                         self.prev_tab();
-                        log::debug!("Velox shortcut: prev tab");
+                        log::debug!("Velox shortcut: prev tab (Ctrl+Shift+Tab)");
+                        return false;
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        if self.active_tab_index > 0 {
+                            self.move_tab(self.active_tab_index, self.active_tab_index - 1);
+                        }
+                        log::debug!("Velox shortcut: move tab left");
+                        return false;
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        if self.active_tab_index + 1 < self.tabs.len() {
+                            self.move_tab(self.active_tab_index, self.active_tab_index + 1);
+                        }
+                        log::debug!("Velox shortcut: move tab right");
                         return false;
                     }
                     _ => {}
                 }
             }
 
-            match logical_key {
-                Key::Named(NamedKey::Tab) => {
-                    self.prev_tab();
-                    log::debug!("Velox shortcut: prev tab (Ctrl+Shift+Tab)");
-                    return false;
-                }
-                Key::Named(NamedKey::ArrowLeft) => {
-                    if self.active_tab_index > 0 {
-                        self.move_tab(self.active_tab_index, self.active_tab_index - 1);
-                    }
-                    log::debug!("Velox shortcut: move tab left");
-                    return false;
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    if self.active_tab_index + 1 < self.tabs.len() {
-                        self.move_tab(self.active_tab_index, self.active_tab_index + 1);
-                    }
-                    log::debug!("Velox shortcut: move tab right");
-                    return false;
-                }
-                _ => {}
-            }
-        }
-
-        // Single Ctrl shortcuts (Ctrl without Shift or Alt)
-        if modifiers.control_key() && !modifiers.shift_key() && !modifiers.alt_key() {
-            match logical_key {
-                Key::Named(NamedKey::Tab) | Key::Named(NamedKey::PageDown) => {
-                    self.next_tab();
-                    log::debug!("Velox shortcut: next tab (Ctrl+Tab/PageDown)");
-                    return false;
-                }
-                Key::Named(NamedKey::PageUp) => {
-                    self.prev_tab();
-                    log::debug!("Velox shortcut: prev tab (Ctrl+PageUp)");
-                    return false;
-                }
-                _ => {}
-            }
-
-            if let Key::Character(s) = logical_key {
-                match s.as_str() {
-                    "+" | "=" => {
-                        let active_size = self.active_pane().font_size;
-                        let new_size = active_size + 1.0;
-                        self.set_font_size(new_size);
-                        log::debug!("Velox shortcut: zoom in");
+            // Single Ctrl shortcuts (Ctrl without Shift or Alt)
+            if has_ctrl && !has_shift && !has_alt {
+                match logical_key {
+                    Key::Named(NamedKey::Tab) | Key::Named(NamedKey::PageDown) => {
+                        self.next_tab();
+                        log::debug!("Velox shortcut: next tab (Ctrl+Tab/PageDown)");
                         return false;
                     }
-                    "-" => {
-                        let active_size = self.active_pane().font_size;
-                        let new_size = (active_size - 1.0).max(4.0);
-                        self.set_font_size(new_size);
-                        log::debug!("Velox shortcut: zoom out");
-                        return false;
-                    }
-                    "0" => {
-                        let new_size = self.default_font_size;
-                        self.set_font_size(new_size);
-                        log::debug!("Velox shortcut: reset zoom");
+                    Key::Named(NamedKey::PageUp) => {
+                        self.prev_tab();
+                        log::debug!("Velox shortcut: prev tab (Ctrl+PageUp)");
                         return false;
                     }
                     _ => {}
                 }
-            }
-        }
 
-        // Single Shift shortcuts (Shift without Ctrl or Alt)
-        if modifiers.shift_key() && !modifiers.control_key() && !modifiers.alt_key() {
-            match logical_key {
-                Key::Named(NamedKey::PageUp) => {
-                    let active_pane = self.active_pane_mut();
-                    let active_grid = if active_pane.terminal.is_alt_screen {
-                        &mut active_pane.terminal.alt_grid
-                    } else {
-                        &mut active_pane.terminal.grid
-                    };
-                    let history_len = active_grid.scrollback.len();
-                    active_grid.scroll_offset =
-                        (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
-                    active_grid.damage.mark_all();
-                    self.needs_redraw = true;
-                    log::debug!("Velox shortcut: scroll half page up");
-                    return false;
+                if let Key::Character(s) = logical_key {
+                    match s.as_str() {
+                        "+" | "=" => {
+                            let active_size = self.active_pane().font_size;
+                            let new_size = active_size + 1.0;
+                            self.set_font_size(new_size);
+                            log::debug!("Velox shortcut: zoom in");
+                            return false;
+                        }
+                        "-" => {
+                            let active_size = self.active_pane().font_size;
+                            let new_size = (active_size - 1.0).max(4.0);
+                            self.set_font_size(new_size);
+                            log::debug!("Velox shortcut: zoom out");
+                            return false;
+                        }
+                        "0" => {
+                            let new_size = self.default_font_size;
+                            self.set_font_size(new_size);
+                            log::debug!("Velox shortcut: reset zoom");
+                            return false;
+                        }
+                        _ => {}
+                    }
                 }
-                Key::Named(NamedKey::PageDown) => {
-                    let active_pane = self.active_pane_mut();
-                    let active_grid = if active_pane.terminal.is_alt_screen {
-                        &mut active_pane.terminal.alt_grid
-                    } else {
-                        &mut active_pane.terminal.grid
-                    };
-                    active_grid.scroll_offset = active_grid
-                        .scroll_offset
-                        .saturating_sub(active_grid.height / 2);
-                    active_grid.damage.mark_all();
-                    self.needs_redraw = true;
-                    log::debug!("Velox shortcut: scroll half page down");
-                    return false;
-                }
-                _ => {}
             }
         }
 
         // ── 2. PTY Input Translation and Dispatch ─────────────────────────────
-        let cursor_keys_mode = self.active_pane().terminal.cursor_keys_mode;
-        let kitty_flags = self.active_pane().terminal.kitty_keyboard_flags;
+        let (cursor_keys_mode, kitty_flags, scroll_on_keystroke) = {
+            let active_term = &self.active_pane().terminal;
+            (
+                active_term.cursor_keys_mode,
+                active_term.kitty_keyboard_flags,
+                active_term.scroll_on_keystroke,
+            )
+        };
         if let Some(bytes) = crate::input::keyboard::translate_key(
             logical_key,
             text,
@@ -299,7 +315,6 @@ impl WindowState {
             kitty_flags,
         ) {
             log::debug!("PTY write: {} bytes: {:?}", bytes.len(), bytes.as_slice());
-            let scroll_on_keystroke = self.active_pane().terminal.scroll_on_keystroke;
             let active_pane = self.active_pane_mut();
             let active_grid = active_pane.terminal.active_grid_mut();
             let mut redraw = false;

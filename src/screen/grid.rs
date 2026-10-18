@@ -247,7 +247,8 @@ impl Grid {
     pub fn with_row_cells<R>(&self, abs_row: usize, f: impl FnOnce(&[Cell]) -> R) -> Option<R> {
         let history_len = self.scrollback.len();
         if abs_row < history_len {
-            self.scrollback.with_row_slice(abs_row, |cells, _wrapped| f(cells))
+            self.scrollback
+                .with_row_slice(abs_row, |cells, _wrapped| f(cells))
         } else {
             let grid_y = abs_row - history_len;
             if grid_y < self.height {
@@ -283,7 +284,9 @@ impl Grid {
         if !is_prev_wrapped && !is_curr_wrapped {
             let has_trigger = self
                 .with_row_cells(abs_row, |cells| {
-                    cells.iter().any(|c| c.character == ':' || c.character == '.')
+                    cells
+                        .iter()
+                        .any(|c| c.character == ':' || c.character == '.')
                 })
                 .unwrap_or(false);
 
@@ -343,7 +346,9 @@ impl Grid {
         if !is_prev_wrapped && !is_curr_wrapped {
             let has_trigger = self
                 .with_row_cells(abs_row, |cells| {
-                    cells.iter().any(|c| c.character == ':' || c.character == '.')
+                    cells
+                        .iter()
+                        .any(|c| c.character == ':' || c.character == '.')
                 })
                 .unwrap_or(false);
 

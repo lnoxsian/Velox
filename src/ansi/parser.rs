@@ -547,7 +547,8 @@ impl AnsiParser {
             resp_buf.extend_from_slice(b"\x1bP1+q");
 
             for cap_hex in req.split(|&b| b == b';') {
-                if cap_hex.eq_ignore_ascii_case(b"524742") || cap_hex.eq_ignore_ascii_case(b"5463") {
+                if cap_hex.eq_ignore_ascii_case(b"524742") || cap_hex.eq_ignore_ascii_case(b"5463")
+                {
                     // RGB / Tc: 24-bit TrueColor support
                     if matched {
                         resp_buf.push(b';');

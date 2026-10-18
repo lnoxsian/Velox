@@ -1,6 +1,47 @@
 use crate::window::event::{Key, ModifiersState, NamedKey};
 use smallvec::{SmallVec, smallvec};
 
+#[inline(always)]
+fn xterm_mod_seq(prefix: &[u8], mod_num: u8, suffix: &[u8]) -> SmallVec<[u8; 16]> {
+    let mut buf = SmallVec::<[u8; 16]>::new();
+    buf.extend_from_slice(prefix);
+    if mod_num >= 10 {
+        buf.push(b'0' + (mod_num / 10));
+    }
+    buf.push(b'0' + (mod_num % 10));
+    buf.extend_from_slice(suffix);
+    buf
+}
+
+#[inline(always)]
+fn kitty_char_seq(cp: u32, mod_num: u8) -> SmallVec<[u8; 16]> {
+    let mut buf = SmallVec::<[u8; 16]>::new();
+    buf.extend_from_slice(b"\x1b[");
+    let mut digits = [0u8; 10];
+    let mut n = cp;
+    let mut i = 0;
+    if n == 0 {
+        digits[0] = b'0';
+        i = 1;
+    } else {
+        while n > 0 {
+            digits[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+        }
+    }
+    for idx in (0..i).rev() {
+        buf.push(digits[idx]);
+    }
+    buf.push(b';');
+    if mod_num >= 10 {
+        buf.push(b'0' + (mod_num / 10));
+    }
+    buf.push(b'0' + (mod_num % 10));
+    buf.push(b'u');
+    buf
+}
+
 pub fn translate_key(
     key: &Key,
     text: Option<&str>,
@@ -33,31 +74,19 @@ pub fn translate_key(
         let report_all = (kitty_flags & 8) != 0;
 
         if disambiguate || report_all {
-            let kitty_mod = xterm_mod;
+            let kitty_mod = xterm_mod as u8;
             match key {
                 Key::Named(NamedKey::Enter) if kitty_mod > 1 || report_all => {
-                    let mut buf = SmallVec::<[u8; 16]>::new();
-                    let s = format!("\x1b[13;{}u", kitty_mod);
-                    buf.extend_from_slice(s.as_bytes());
-                    return Some(buf);
+                    return Some(xterm_mod_seq(b"\x1b[13;", kitty_mod, b"u"));
                 }
                 Key::Named(NamedKey::Tab) if kitty_mod > 1 || report_all => {
-                    let mut buf = SmallVec::<[u8; 16]>::new();
-                    let s = format!("\x1b[9;{}u", kitty_mod);
-                    buf.extend_from_slice(s.as_bytes());
-                    return Some(buf);
+                    return Some(xterm_mod_seq(b"\x1b[9;", kitty_mod, b"u"));
                 }
                 Key::Named(NamedKey::Backspace) if kitty_mod > 1 || report_all => {
-                    let mut buf = SmallVec::<[u8; 16]>::new();
-                    let s = format!("\x1b[127;{}u", kitty_mod);
-                    buf.extend_from_slice(s.as_bytes());
-                    return Some(buf);
+                    return Some(xterm_mod_seq(b"\x1b[127;", kitty_mod, b"u"));
                 }
                 Key::Named(NamedKey::Escape) if kitty_mod > 1 || report_all => {
-                    let mut buf = SmallVec::<[u8; 16]>::new();
-                    let s = format!("\x1b[27;{}u", kitty_mod);
-                    buf.extend_from_slice(s.as_bytes());
-                    return Some(buf);
+                    return Some(xterm_mod_seq(b"\x1b[27;", kitty_mod, b"u"));
                 }
                 Key::Character(s) if s.len() == 1 => {
                     // In disambiguate mode, only encode modified keys (Ctrl, Alt, Super).
@@ -66,10 +95,7 @@ pub fn translate_key(
                     if report_all || has_command_mod {
                         let c = s.chars().next().unwrap();
                         let cp = c.to_ascii_lowercase() as u32;
-                        let mut buf = SmallVec::<[u8; 16]>::new();
-                        let s = format!("\x1b[{};{}u", cp, kitty_mod);
-                        buf.extend_from_slice(s.as_bytes());
-                        return Some(buf);
+                        return Some(kitty_char_seq(cp, kitty_mod));
                     }
                 }
                 _ => {}
@@ -123,37 +149,37 @@ pub fn translate_key(
         && let Some(t) = text
         && !t.is_empty()
     {
-        let buf = SmallVec::<[u8; 16]>::from_slice(t.as_bytes());
         if has_alt {
-            let mut escaped: SmallVec<[u8; 16]> = smallvec![27u8];
-            escaped.extend_from_slice(&buf);
+            let mut escaped = SmallVec::<[u8; 16]>::with_capacity(1 + t.len());
+            escaped.push(27);
+            escaped.extend_from_slice(t.as_bytes());
             return Some(escaped);
         } else {
-            return Some(buf);
+            return Some(SmallVec::from_slice(t.as_bytes()));
         }
     }
 
     match key {
         Key::Character(s) => {
-            let buf = SmallVec::<[u8; 16]>::from_slice(s.as_bytes());
             if has_alt {
-                let mut escaped: SmallVec<[u8; 16]> = smallvec![27u8];
-                escaped.extend_from_slice(&buf);
+                let mut escaped = SmallVec::<[u8; 16]>::with_capacity(1 + s.len());
+                escaped.push(27);
+                escaped.extend_from_slice(s.as_bytes());
                 Some(escaped)
             } else {
-                Some(buf)
+                Some(SmallVec::from_slice(s.as_bytes()))
             }
         }
         Key::Dead(Some(c)) => {
             let mut char_buf = [0u8; 4];
             let s = c.encode_utf8(&mut char_buf);
-            let buf = SmallVec::<[u8; 16]>::from_slice(s.as_bytes());
             if has_alt {
-                let mut escaped: SmallVec<[u8; 16]> = smallvec![27u8];
-                escaped.extend_from_slice(&buf);
+                let mut escaped = SmallVec::<[u8; 16]>::with_capacity(1 + s.len());
+                escaped.push(27);
+                escaped.extend_from_slice(s.as_bytes());
                 Some(escaped)
             } else {
-                Some(buf)
+                Some(SmallVec::from_slice(s.as_bytes()))
             }
         }
         Key::Named(NamedKey::Enter) => {
@@ -200,10 +226,7 @@ pub fn translate_key(
         // Arrow Keys (with full modifier encoding)
         Key::Named(NamedKey::ArrowUp) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}A", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"A"))
             } else if cursor_keys_mode {
                 Some(SmallVec::from_slice(b"\x1bOA"))
             } else {
@@ -212,10 +235,7 @@ pub fn translate_key(
         }
         Key::Named(NamedKey::ArrowDown) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}B", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"B"))
             } else if cursor_keys_mode {
                 Some(SmallVec::from_slice(b"\x1bOB"))
             } else {
@@ -224,10 +244,7 @@ pub fn translate_key(
         }
         Key::Named(NamedKey::ArrowRight) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}C", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"C"))
             } else if cursor_keys_mode {
                 Some(SmallVec::from_slice(b"\x1bOC"))
             } else {
@@ -236,10 +253,7 @@ pub fn translate_key(
         }
         Key::Named(NamedKey::ArrowLeft) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}D", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"D"))
             } else if cursor_keys_mode {
                 Some(SmallVec::from_slice(b"\x1bOD"))
             } else {
@@ -250,60 +264,42 @@ pub fn translate_key(
         // Navigation Keys (with modifier encoding)
         Key::Named(NamedKey::Home) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}H", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"H"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[H"))
             }
         }
         Key::Named(NamedKey::End) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}F", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"F"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[F"))
             }
         }
         Key::Named(NamedKey::PageUp) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[5;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[5;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[5~"))
             }
         }
         Key::Named(NamedKey::PageDown) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[6;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[6;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[6~"))
             }
         }
         Key::Named(NamedKey::Delete) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[3;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[3;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[3~"))
             }
         }
         Key::Named(NamedKey::Insert) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[2;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[2;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[2~"))
             }
@@ -312,120 +308,84 @@ pub fn translate_key(
         // Function Keys (with modifier encoding)
         Key::Named(NamedKey::F1) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}P", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"P"))
             } else {
                 Some(SmallVec::from_slice(b"\x1bOP"))
             }
         }
         Key::Named(NamedKey::F2) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}Q", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"Q"))
             } else {
                 Some(SmallVec::from_slice(b"\x1bOQ"))
             }
         }
         Key::Named(NamedKey::F3) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}R", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"R"))
             } else {
                 Some(SmallVec::from_slice(b"\x1bOR"))
             }
         }
         Key::Named(NamedKey::F4) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[1;{}S", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[1;", xterm_mod as u8, b"S"))
             } else {
                 Some(SmallVec::from_slice(b"\x1bOS"))
             }
         }
         Key::Named(NamedKey::F5) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[15;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[15;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[15~"))
             }
         }
         Key::Named(NamedKey::F6) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[17;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[17;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[17~"))
             }
         }
         Key::Named(NamedKey::F7) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[18;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[18;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[18~"))
             }
         }
         Key::Named(NamedKey::F8) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[19;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[19;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[19~"))
             }
         }
         Key::Named(NamedKey::F9) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[20;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[20;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[20~"))
             }
         }
         Key::Named(NamedKey::F10) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[21;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[21;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[21~"))
             }
         }
         Key::Named(NamedKey::F11) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[23;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[23;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[23~"))
             }
         }
         Key::Named(NamedKey::F12) => {
             if xterm_mod > 1 {
-                let mut buf = SmallVec::<[u8; 16]>::new();
-                let s = format!("\x1b[24;{}~", xterm_mod);
-                buf.extend_from_slice(s.as_bytes());
-                Some(buf)
+                Some(xterm_mod_seq(b"\x1b[24;", xterm_mod as u8, b"~"))
             } else {
                 Some(SmallVec::from_slice(b"\x1b[24~"))
             }

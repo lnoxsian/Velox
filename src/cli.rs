@@ -118,7 +118,22 @@ impl CliOptions {
 
     pub fn print_help() {
         println!(
-            "Velox Terminal Emulator
+            "---------------------------------------
+| VELOX               VELOX           |
+| VELOX               VELOX           |
+| VELOX               VELOX           |
+|      VELOX     VELOX     VELOX      |
+|      VELOX     VELOX     VELOX      |
+|      VELOX     VELOX     VELOX      |
+|      VELOX     VELOX     VELOX      |
+|      VELOX     VELOX     VELOX      |
+|      VELOX     VELOX     VELOX      |
+|           VELOX               VELOX |
+|           VELOX               VELOX |
+|           VELOX               VELOX |
+---------------------------------------
+
+Velox Terminal Emulator
 
 USAGE:
     velox [OPTIONS]
@@ -215,8 +230,28 @@ mod tests {
         let opts1 = CliOptions::parse_args(&args1);
         assert_eq!(opts1.backend, Some("x11".to_string()));
 
-        let args2 = vec!["velox".to_string(), "--backend".to_string(), "wayland".to_string()];
+        let args2 = vec![
+            "velox".to_string(),
+            "--backend".to_string(),
+            "wayland".to_string(),
+        ];
         let opts2 = CliOptions::parse_args(&args2);
         assert_eq!(opts2.backend, Some("wayland".to_string()));
+    }
+
+    #[test]
+    fn test_cli_help_flag() {
+        let args1 = vec!["velox".to_string(), "-h".to_string()];
+        let opts1 = CliOptions::parse_args(&args1);
+        assert!(opts1.help);
+
+        let args2 = vec!["velox".to_string(), "--help".to_string()];
+        let opts2 = CliOptions::parse_args(&args2);
+        assert!(opts2.help);
+    }
+
+    #[test]
+    fn test_cli_print_help() {
+        CliOptions::print_help();
     }
 }

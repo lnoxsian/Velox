@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use wayland_client::protocol::{wl_compositor, wl_pointer, wl_shm, wl_surface};
 use wayland_client::QueueHandle;
+use wayland_client::protocol::{wl_compositor, wl_pointer, wl_shm, wl_surface};
 
-use super::shm::WaylandShmBuffer;
 use super::WaylandState;
+use super::shm::WaylandShmBuffer;
 use crate::window::event::CursorIcon;
 
 pub struct LoadedCursor {
@@ -37,21 +37,30 @@ impl WaylandCursorManager {
                 CursorIcon::Default,
                 &["left_ptr", "default", "arrow", "top_left_arrow"][..],
             ),
-            (
-                CursorIcon::Text,
-                &["xterm", "text", "ibeam"][..],
-            ),
+            (CursorIcon::Text, &["xterm", "text", "ibeam"][..]),
             (
                 CursorIcon::Pointer,
                 &["pointer", "pointing_hand", "hand2", "hand1"][..],
             ),
             (
                 CursorIcon::ColResize,
-                &["col-resize", "sb_h_double_arrow", "ew-resize", "h_double_arrow", "split_h"][..],
+                &[
+                    "col-resize",
+                    "sb_h_double_arrow",
+                    "ew-resize",
+                    "h_double_arrow",
+                    "split_h",
+                ][..],
             ),
             (
                 CursorIcon::RowResize,
-                &["row-resize", "sb_v_double_arrow", "ns-resize", "v_double_arrow", "split_v"][..],
+                &[
+                    "row-resize",
+                    "sb_v_double_arrow",
+                    "ns-resize",
+                    "v_double_arrow",
+                    "split_v",
+                ][..],
             ),
         ];
 
@@ -86,16 +95,13 @@ impl WaylandCursorManager {
         })
     }
 
-    pub fn apply_cursor(
-        &mut self,
-        serial: u32,
-        icon: CursorIcon,
-        pointer: &wl_pointer::WlPointer,
-    ) {
+    pub fn apply_cursor(&mut self, serial: u32, icon: CursorIcon, pointer: &wl_pointer::WlPointer) {
         self.active_icon = icon;
         if let Some(cursor) = self.cursors.get(&icon) {
-            self.cursor_surface.attach(Some(&cursor.buffer.buffer), 0, 0);
-            self.cursor_surface.damage_buffer(0, 0, cursor.width as i32, cursor.height as i32);
+            self.cursor_surface
+                .attach(Some(&cursor.buffer.buffer), 0, 0);
+            self.cursor_surface
+                .damage_buffer(0, 0, cursor.width as i32, cursor.height as i32);
             self.cursor_surface.commit();
             pointer.set_cursor(
                 serial,
@@ -214,7 +220,8 @@ pub fn parse_xcursor(data: &[u8], target_size: u32) -> Option<CursorImageData> {
         let toc_offset = header_bytes + i * 12;
         let entry_type = u32::from_le_bytes(data[toc_offset..toc_offset + 4].try_into().ok()?);
         let subtype = u32::from_le_bytes(data[toc_offset + 4..toc_offset + 8].try_into().ok()?);
-        let position = u32::from_le_bytes(data[toc_offset + 8..toc_offset + 12].try_into().ok()?) as usize;
+        let position =
+            u32::from_le_bytes(data[toc_offset + 8..toc_offset + 12].try_into().ok()?) as usize;
 
         if entry_type == XCUR_IMAGE_TYPE {
             let diff = (subtype as i32 - target_size as i32).unsigned_abs();

@@ -100,6 +100,21 @@ impl PtyMaster {
             Ok(())
         }
     }
+
+    pub fn set_nonblocking(&self) -> std::io::Result<()> {
+        if self.fd < 0 {
+            return Ok(());
+        }
+        let flags = unsafe { libc::fcntl(self.fd, libc::F_GETFL, 0) };
+        if flags < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let res = unsafe { libc::fcntl(self.fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        if res < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 
 impl Drop for PtyMaster {

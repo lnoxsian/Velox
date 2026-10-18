@@ -691,7 +691,13 @@ fn test_pane_current_working_directory_detection() {
 
     // Test spawned PTY process CWD inspection via /proc
     let pty = velox::pty::process::spawn_process("/bin/sh", None, Some("/tmp")).unwrap();
-    let spawned_pane = Pane::new(1, std::sync::Arc::new(pty), Terminal::new(80, 24), 14.0, false);
+    let spawned_pane = Pane::new(
+        1,
+        std::sync::Arc::new(pty),
+        Terminal::new(80, 24),
+        14.0,
+        false,
+    );
     let cwd = spawned_pane.current_working_directory();
     assert!(cwd.is_some(), "Spawned process should report valid CWD");
     let cwd_path = std::path::PathBuf::from(cwd.unwrap());
@@ -730,4 +736,3 @@ fn test_csd_title_bar_tab_hit_test_separation() {
     let hit = tab_bar.hit_test(100.0, relative_tab_y, win_w, 20, tab_count);
     assert_eq!(hit, TabBarHitResult::Tab(0));
 }
-

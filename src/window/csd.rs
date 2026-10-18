@@ -112,7 +112,11 @@ impl CsdButtonLayout {
 
         let query_cinnamon = || {
             Command::new("gsettings")
-                .args(["get", "org.cinnamon.desktop.wm.preferences", "button-layout"])
+                .args([
+                    "get",
+                    "org.cinnamon.desktop.wm.preferences",
+                    "button-layout",
+                ])
                 .output()
                 .ok()
                 .and_then(|out| {
@@ -429,16 +433,14 @@ impl CsdPalette {
         let is_dark = detect_is_dark();
 
         // 1. Try detecting installed GTK theme and parsing its CSS colors
-        if let Some(palette) = detect_gtk_theme_name().and_then(|t| load_gtk_theme_palette(&t, is_dark)) {
+        if let Some(palette) =
+            detect_gtk_theme_name().and_then(|t| load_gtk_theme_palette(&t, is_dark))
+        {
             return palette;
         }
 
         // 2. Fallback to native Adwaita Dark / Light
-        if is_dark {
-            Self::dark()
-        } else {
-            Self::light()
-        }
+        if is_dark { Self::dark() } else { Self::light() }
     }
 
     /// Resolve effective palette based on config and system theme
@@ -461,28 +463,64 @@ impl CsdPalette {
         };
 
         if let Some(cfg) = decorations_config {
-            if let Some(c) = cfg.bg.as_deref().and_then(crate::config::config::parse_hex_color) {
+            if let Some(c) = cfg
+                .bg
+                .as_deref()
+                .and_then(crate::config::config::parse_hex_color)
+            {
                 let packed = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
                 palette.bg = packed;
                 let lum = 0.299 * (c.r as f32) + 0.587 * (c.g as f32) + 0.114 * (c.b as f32);
                 palette.is_light = lum > 128.0;
-                palette.button_hover_bg = if palette.is_light { 0x00000000 } else { 0x00FFFFFF };
-                palette.button_pressed_bg = if palette.is_light { 0x00000000 } else { 0x00FFFFFF };
+                palette.button_hover_bg = if palette.is_light {
+                    0x00000000
+                } else {
+                    0x00FFFFFF
+                };
+                palette.button_pressed_bg = if palette.is_light {
+                    0x00000000
+                } else {
+                    0x00FFFFFF
+                };
             }
-            if let Some(c) = cfg.fg.as_deref().and_then(crate::config::config::parse_hex_color) {
+            if let Some(c) = cfg
+                .fg
+                .as_deref()
+                .and_then(crate::config::config::parse_hex_color)
+            {
                 palette.fg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
             }
-            if let Some(c) = cfg.inactive_bg.as_deref().and_then(crate::config::config::parse_hex_color) {
-                palette.inactive_bg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+            if let Some(c) = cfg
+                .inactive_bg
+                .as_deref()
+                .and_then(crate::config::config::parse_hex_color)
+            {
+                palette.inactive_bg =
+                    0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
             }
-            if let Some(c) = cfg.inactive_fg.as_deref().and_then(crate::config::config::parse_hex_color) {
-                palette.inactive_fg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+            if let Some(c) = cfg
+                .inactive_fg
+                .as_deref()
+                .and_then(crate::config::config::parse_hex_color)
+            {
+                palette.inactive_fg =
+                    0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
             }
-            if let Some(c) = cfg.border.as_deref().and_then(crate::config::config::parse_hex_color) {
-                palette.border = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+            if let Some(c) = cfg
+                .border
+                .as_deref()
+                .and_then(crate::config::config::parse_hex_color)
+            {
+                palette.border =
+                    0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
             }
-            if let Some(c) = cfg.close_fg.as_deref().and_then(crate::config::config::parse_hex_color) {
-                palette.close_fg = 0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
+            if let Some(c) = cfg
+                .close_fg
+                .as_deref()
+                .and_then(crate::config::config::parse_hex_color)
+            {
+                palette.close_fg =
+                    0xFF000000 | ((c.r as u32) << 16) | ((c.g as u32) << 8) | (c.b as u32);
             }
         }
 
@@ -548,7 +586,10 @@ pub fn detect_gtk_theme_name() -> Option<String> {
             if let Ok(content) = fs::read_to_string(&path) {
                 for line in content.lines() {
                     let trimmed = line.trim();
-                    if let Some((_, val)) = trimmed.strip_prefix("gtk-theme-name").and_then(|r| r.split_once('=')) {
+                    if let Some((_, val)) = trimmed
+                        .strip_prefix("gtk-theme-name")
+                        .and_then(|r| r.split_once('='))
+                    {
                         let v = val.trim().trim_matches('\'').trim_matches('"');
                         if !v.is_empty() {
                             return Some(v.to_string());
@@ -593,7 +634,8 @@ pub fn detect_is_dark() -> bool {
     }
 
     // 3. Check if detected theme name contains "dark"
-    if detect_gtk_theme_name().is_some_and(|theme_name| theme_name.to_lowercase().contains("dark")) {
+    if detect_gtk_theme_name().is_some_and(|theme_name| theme_name.to_lowercase().contains("dark"))
+    {
         return true;
     }
 
@@ -604,7 +646,10 @@ pub fn detect_is_dark() -> bool {
             if let Ok(content) = fs::read_to_string(&path) {
                 for line in content.lines() {
                     let trimmed = line.trim();
-                    if let Some((_, val)) = trimmed.strip_prefix("gtk-application-prefer-dark-theme").and_then(|r| r.split_once('=')) {
+                    if let Some((_, val)) = trimmed
+                        .strip_prefix("gtk-application-prefer-dark-theme")
+                        .and_then(|r| r.split_once('='))
+                    {
                         let v = val.trim();
                         if v == "1" || v.eq_ignore_ascii_case("true") {
                             return true;
@@ -685,8 +730,6 @@ pub fn find_theme_css_files(theme_name: &str, is_dark: bool) -> Vec<PathBuf> {
     files
 }
 
-
-
 /// Adjusts brightness of a 32-bit ARGB color by a scaling factor.
 pub fn adjust_brightness(c: u32, factor: f32) -> u32 {
     let a = (c >> 24) & 0xFF;
@@ -733,14 +776,21 @@ pub fn parse_color_value(val: &str, defs: &HashMap<&str, &str>, depth: usize) ->
                 let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
                 let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
                 let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
-                Some(0xFF000000 | ((r as u32 * 17) << 16) | ((g as u32 * 17) << 8) | (b as u32 * 17))
+                Some(
+                    0xFF000000 | ((r as u32 * 17) << 16) | ((g as u32 * 17) << 8) | (b as u32 * 17),
+                )
             }
             4 => {
                 let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
                 let g = u8::from_str_radix(&hex[1..2], 16).ok()?;
                 let b = u8::from_str_radix(&hex[2..3], 16).ok()?;
                 let a = u8::from_str_radix(&hex[3..4], 16).ok()?;
-                Some(((a as u32 * 17) << 24) | ((r as u32 * 17) << 16) | ((g as u32 * 17) << 8) | (b as u32 * 17))
+                Some(
+                    ((a as u32 * 17) << 24)
+                        | ((r as u32 * 17) << 16)
+                        | ((g as u32 * 17) << 8)
+                        | (b as u32 * 17),
+                )
             }
             6 => {
                 let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -773,7 +823,8 @@ pub fn parse_color_value(val: &str, defs: &HashMap<&str, &str>, depth: usize) ->
             .split(|c: char| c == ',' || c == '/' || c.is_ascii_whitespace())
             .filter(|s| !s.is_empty());
 
-        if let (Some(r_str), Some(g_str), Some(b_str)) = (parts.next(), parts.next(), parts.next()) {
+        if let (Some(r_str), Some(g_str), Some(b_str)) = (parts.next(), parts.next(), parts.next())
+        {
             let r: f32 = r_str.parse().ok()?;
             let g: f32 = g_str.parse().ok()?;
             let b: f32 = b_str.parse().ok()?;
@@ -821,14 +872,17 @@ fn trim_comments(mut s: &str) -> &str {
     s
 }
 
-pub type GtkCssColors = (Option<u32>, Option<u32>, Option<u32>, Option<u32>, Option<u32>);
+pub type GtkCssColors = (
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+    Option<u32>,
+);
 
 /// Parses GTK CSS text content in-place without heap-copying comments,
 /// extracting headerbar background, foreground, border, and backdrop colors.
-pub fn parse_gtk_css_content(
-    content: &str,
-    _is_dark: bool,
-) -> GtkCssColors {
+pub fn parse_gtk_css_content(content: &str, _is_dark: bool) -> GtkCssColors {
     let mut defs: HashMap<&str, &str> = HashMap::new();
 
     // 1. In-place collection of @define-color declarations
@@ -848,9 +902,14 @@ pub fn parse_gtk_css_content(
     }
 
     // Check predefined named variables in themes
-    let def_bg = ["headerbar_bg_color", "theme_bg_color", "window_bg_color", "mint_header"]
-        .iter()
-        .find_map(|k| defs.get(*k).and_then(|v| parse_color_value(v, &defs, 0)));
+    let def_bg = [
+        "headerbar_bg_color",
+        "theme_bg_color",
+        "window_bg_color",
+        "mint_header",
+    ]
+    .iter()
+    .find_map(|k| defs.get(*k).and_then(|v| parse_color_value(v, &defs, 0)));
 
     let def_fg = ["headerbar_fg_color", "theme_fg_color", "window_fg_color"]
         .iter()
@@ -906,17 +965,23 @@ pub fn parse_gtk_css_content(
                         }
                         if let Some(c) = parse_color_value(val, &defs, 0) {
                             if is_backdrop {
-                                if (key == "background-color" || key == "background") && rule_inactive_bg.is_none() {
+                                if (key == "background-color" || key == "background")
+                                    && rule_inactive_bg.is_none()
+                                {
                                     rule_inactive_bg = Some(c);
                                 } else if key == "color" && rule_inactive_fg.is_none() {
                                     rule_inactive_fg = Some(c);
                                 }
                             } else {
-                                if (key == "background-color" || key == "background") && rule_bg.is_none() {
+                                if (key == "background-color" || key == "background")
+                                    && rule_bg.is_none()
+                                {
                                     rule_bg = Some(c);
                                 } else if key == "color" && rule_fg.is_none() {
                                     rule_fg = Some(c);
-                                } else if (key == "border-color" || key == "border-bottom-color") && rule_border.is_none() {
+                                } else if (key == "border-color" || key == "border-bottom-color")
+                                    && rule_border.is_none()
+                                {
                                     rule_border = Some(c);
                                 }
                             }
@@ -1153,11 +1218,20 @@ mod tests {
         assert_eq!(parse_color_value("white", &defs, 0), Some(0xFFFFFFFF));
         assert_eq!(parse_color_value("transparent", &defs, 0), Some(0x00000000));
         // rgb(...)
-        assert_eq!(parse_color_value("rgb(46, 46, 51)", &defs, 0), Some(0xFF2E2E33));
+        assert_eq!(
+            parse_color_value("rgb(46, 46, 51)", &defs, 0),
+            Some(0xFF2E2E33)
+        );
         // rgba(...) with fractional alpha
-        assert_eq!(parse_color_value("rgba(255, 255, 255, 0.87)", &defs, 0), Some(0xDDFFFFFF));
+        assert_eq!(
+            parse_color_value("rgba(255, 255, 255, 0.87)", &defs, 0),
+            Some(0xDDFFFFFF)
+        );
         // CSS Color Level 4 RGB(r g b / a%)
-        assert_eq!(parse_color_value("RGB(0 0 6/36%)", &defs, 0), Some(0x5B000006));
+        assert_eq!(
+            parse_color_value("RGB(0 0 6/36%)", &defs, 0),
+            Some(0x5B000006)
+        );
     }
 
     #[test]
@@ -1181,10 +1255,22 @@ mod tests {
         "#;
 
         let (bg, fg, border, inact_bg, inact_fg) = parse_gtk_css_content(css, true);
-        assert_eq!(bg, Some(0xFF222226), "headerbar background must be extracted via variable chain");
-        assert_eq!(fg, Some(0xDDFFFFFF), "headerbar foreground color must be extracted");
+        assert_eq!(
+            bg,
+            Some(0xFF222226),
+            "headerbar background must be extracted via variable chain"
+        );
+        assert_eq!(
+            fg,
+            Some(0xDDFFFFFF),
+            "headerbar foreground color must be extracted"
+        );
         assert_eq!(border, Some(0xFF18181B), "border color must be extracted");
-        assert_eq!(inact_fg, Some(0x77FFFFFF), "backdrop inactive foreground must be extracted");
+        assert_eq!(
+            inact_fg,
+            Some(0x77FFFFFF),
+            "backdrop inactive foreground must be extracted"
+        );
         assert!(inact_bg.is_none());
     }
 

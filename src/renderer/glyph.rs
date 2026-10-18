@@ -558,23 +558,11 @@ impl GlyphCache {
                 (xo, yo)
             };
 
-            Some(self.blit_alpha_glyph(
-                the_outlined,
-                target_width,
-                x_offset,
-                y_offset,
-                width_mult,
-            ))
+            Some(self.blit_alpha_glyph(the_outlined, target_width, x_offset, y_offset, width_mult))
         }
     }
 
-    fn blit_color_glyph(
-        &mut self,
-        w: u32,
-        h: u32,
-        target_width: u32,
-        width_mult: u8,
-    ) -> GlyphRef {
+    fn blit_color_glyph(&mut self, w: u32, h: u32, target_width: u32, width_mult: u8) -> GlyphRef {
         let tw = target_width;
         let th = self.cell_height;
         let needed_u32 = (tw * th) as usize;
@@ -662,8 +650,7 @@ impl GlyphCache {
                     let a = rgba[src_idx + 3] as u32;
 
                     if a > 0 {
-                        self.scratch.color_pixels[dst_idx] =
-                            (a << 24) | (r << 16) | (g << 8) | b;
+                        self.scratch.color_pixels[dst_idx] = (a << 24) | (r << 16) | (g << 8) | b;
                     }
                 }
             }
@@ -727,7 +714,8 @@ impl GlyphCache {
             let fallback = &self.fallback_manager.fallbacks[idx];
             let id = fallback.font.glyph_id(c);
             if id.0 != 0
-                && let Ok(face) = owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), fallback.face_index)
+                && let Ok(face) =
+                    owned_ttf_parser::Face::parse(fallback.storage.as_bytes(), fallback.face_index)
             {
                 let ttf_glyph_id = owned_ttf_parser::GlyphId(id.0);
                 if let Some(img) = face.glyph_raster_image(ttf_glyph_id, self.cell_height as u16)
@@ -809,9 +797,15 @@ mod tests {
     #[test]
     fn test_glyph_cache_fallback_on_missing_font() {
         let res = GlyphCache::try_from_font_family("NonExistentFont_12345", 14.0, 1.5);
-        assert!(res.is_ok(), "GlyphCache must successfully fall back to system font");
+        assert!(
+            res.is_ok(),
+            "GlyphCache must successfully fall back to system font"
+        );
         let mut cache = res.unwrap();
         let glyph_ref = cache.get_or_rasterize(GlyphKey::new('A', false, false, false));
-        assert!(glyph_ref.is_some(), "Must rasterize glyph using fallback font");
+        assert!(
+            glyph_ref.is_some(),
+            "Must rasterize glyph using fallback font"
+        );
     }
 }
