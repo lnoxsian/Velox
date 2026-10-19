@@ -202,9 +202,11 @@ impl Terminal {
 
     pub fn format_paste(&self, text: &str) -> String {
         if self.bracketed_paste_mode {
-            format!("\x1b[200~{}\x1b[201~", text)
+            let sanitized = text.replace("\x1b[201~", "");
+            let normalized = sanitized.replace("\r\n", "\r").replace('\n', "\r");
+            format!("\x1b[200~{}\x1b[201~", normalized)
         } else {
-            text.to_string()
+            text.replace("\r\n", "\r").replace('\n', "\r")
         }
     }
 
@@ -883,7 +885,8 @@ mod tests {
     fn test_bracketed_paste_mode() {
         let mut term = Terminal::new(80, 24);
         assert!(!term.bracketed_paste_mode);
-        assert_eq!(term.format_paste("echo hello"), "echo hello");
+        // Test multiline paste and newline normalization
+        assert_eq!(term.format_paste("echo 1\r\necho 2\n"), "echo 1\recho 2\r");
 
         // Enable bracketed paste mode via CSI ? 2004 h
         term.feed(b"\x1b[?2004h");
@@ -891,6 +894,14 @@ mod tests {
         assert_eq!(
             term.format_paste("echo hello"),
             "\x1b[200~echo hello\x1b[201~"
+        );
+        assert_eq!(
+            term.format_paste("echo 1\r\necho 2\n"),
+            "\x1b[200~echo 1\recho 2\r\x1b[201~"
+        );
+        assert_eq!(
+            term.format_paste("evil\x1b[201~payload"),
+            "\x1b[200~evilpayload\x1b[201~"
         );
 
         // Disable bracketed paste mode via CSI ? 2004 l

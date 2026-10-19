@@ -23,7 +23,7 @@ impl WindowState {
         let has_alt = modifiers.alt_key();
         let has_shift = modifiers.shift_key();
 
-        // Fast path: if neither Ctrl nor Alt is held, the only possible Velox shortcut is Shift+PageUp/PageDown
+        // Fast path: if neither Ctrl nor Alt is held, check Shift-only Velox shortcuts
         if !has_ctrl && !has_alt {
             if has_shift {
                 match logical_key {
@@ -57,6 +57,55 @@ impl WindowState {
                         log::debug!("Velox shortcut: scroll half page down");
                         return false;
                     }
+                    Key::Named(NamedKey::Home) => {
+                        let active_pane = self.active_pane_mut();
+                        let active_grid = if active_pane.terminal.is_alt_screen {
+                            &mut active_pane.terminal.alt_grid
+                        } else {
+                            &mut active_pane.terminal.grid
+                        };
+                        let history_len = active_grid.scrollback.len();
+                        active_grid.scroll_offset = history_len;
+                        active_grid.damage.mark_all();
+                        self.needs_redraw = true;
+                        log::debug!("Velox shortcut: scroll to top of history");
+                        return false;
+                    }
+                    Key::Named(NamedKey::End) => {
+                        let active_pane = self.active_pane_mut();
+                        let active_grid = if active_pane.terminal.is_alt_screen {
+                            &mut active_pane.terminal.alt_grid
+                        } else {
+                            &mut active_pane.terminal.grid
+                        };
+                        active_grid.scroll_offset = 0;
+                        active_grid.damage.mark_all();
+                        self.needs_redraw = true;
+                        log::debug!("Velox shortcut: scroll to bottom of history");
+                        return false;
+                    }
+                    Key::Named(NamedKey::Insert) => {
+                        let mut text = crate::clipboard::clipboard::paste();
+                        if text.is_empty() {
+                            text = crate::clipboard::clipboard::primary_selection();
+                        }
+                        if !text.is_empty() {
+                            let formatted = self.active_pane().terminal.format_paste(&text);
+                            if self.active_pane().terminal.scroll_on_keystroke {
+                                self.active_pane_mut()
+                                    .terminal
+                                    .active_grid_mut()
+                                    .scroll_offset = 0;
+                            }
+                            let _ = self.active_pane().pty_master.write(formatted.as_bytes());
+                            self.last_key_instant = std::time::Instant::now();
+                            self.mark_interaction();
+                            self.needs_redraw = true;
+                            log::debug!("Velox shortcut: paste (Shift+Insert)");
+                            return true;
+                        }
+                        return false;
+                    }
                     _ => {}
                 }
             }
@@ -66,14 +115,16 @@ impl WindowState {
             if has_ctrl && has_alt && !has_shift {
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowUp) => {
-                        self.adjust_active_split_ratio(-0.05);
-                        log::debug!("Velox shortcut: split resize -0.05");
-                        return false;
+                        if self.adjust_active_split_ratio(-0.05) {
+                            log::debug!("Velox shortcut: split resize -0.05");
+                            return false;
+                        }
                     }
                     Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::ArrowDown) => {
-                        self.adjust_active_split_ratio(0.05);
-                        log::debug!("Velox shortcut: split resize +0.05");
-                        return false;
+                        if self.adjust_active_split_ratio(0.05) {
+                            log::debug!("Velox shortcut: split resize +0.05");
+                            return false;
+                        }
                     }
                     _ => {}
                 }
@@ -83,24 +134,28 @@ impl WindowState {
             if has_alt && !has_ctrl && !has_shift {
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
-                        self.focus_direction(FocusDirection::Left);
-                        log::debug!("Velox shortcut: focus left");
-                        return false;
+                        if self.focus_direction(FocusDirection::Left) {
+                            log::debug!("Velox shortcut: focus left");
+                            return false;
+                        }
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        self.focus_direction(FocusDirection::Right);
-                        log::debug!("Velox shortcut: focus right");
-                        return false;
+                        if self.focus_direction(FocusDirection::Right) {
+                            log::debug!("Velox shortcut: focus right");
+                            return false;
+                        }
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        self.focus_direction(FocusDirection::Up);
-                        log::debug!("Velox shortcut: focus up");
-                        return false;
+                        if self.focus_direction(FocusDirection::Up) {
+                            log::debug!("Velox shortcut: focus up");
+                            return false;
+                        }
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        self.focus_direction(FocusDirection::Down);
-                        log::debug!("Velox shortcut: focus down");
-                        return false;
+                        if self.focus_direction(FocusDirection::Down) {
+                            log::debug!("Velox shortcut: focus down");
+                            return false;
+                        }
                     }
                     _ => {}
                 }
@@ -158,10 +213,10 @@ impl WindowState {
                             b'c' => {
                                 let active_pane = self.active_pane();
                                 let active_grid = active_pane.terminal.active_grid();
-                                let text = if active_grid.selection.active {
+                                let text = if active_grid.selection.active && !active_grid.selection.is_empty() {
                                     active_grid.extract_selection_text()
                                 } else {
-                                    (0..active_grid.height)
+                                    let lines: Vec<String> = (0..active_grid.height)
                                         .map(|y| {
                                             (0..active_grid.width)
                                                 .map(|x| {
@@ -172,8 +227,12 @@ impl WindowState {
                                                 .trim_end()
                                                 .to_string()
                                         })
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
+                                        .collect();
+                                    if let Some(idx) = lines.iter().rposition(|l| !l.is_empty()) {
+                                        lines[..=idx].join("\n")
+                                    } else {
+                                        String::new()
+                                    }
                                 };
                                 if !text.is_empty() {
                                     crate::clipboard::clipboard::copy(text);
@@ -182,7 +241,10 @@ impl WindowState {
                                 return false;
                             }
                             b'v' => {
-                                let text = crate::clipboard::clipboard::paste();
+                                let mut text = crate::clipboard::clipboard::paste();
+                                if text.is_empty() {
+                                    text = crate::clipboard::clipboard::primary_selection();
+                                }
                                 if !text.is_empty() {
                                     let formatted = self.active_pane().terminal.format_paste(&text);
                                     if self.active_pane().terminal.scroll_on_keystroke {
@@ -190,12 +252,12 @@ impl WindowState {
                                             .terminal
                                             .active_grid_mut()
                                             .scroll_offset = 0;
-                                        self.needs_redraw = true;
                                     }
                                     let _ =
                                         self.active_pane().pty_master.write(formatted.as_bytes());
                                     self.last_key_instant = std::time::Instant::now();
                                     self.mark_interaction();
+                                    self.needs_redraw = true;
                                     log::debug!("Velox shortcut: paste");
                                     return true;
                                 }
@@ -256,6 +318,37 @@ impl WindowState {
 
             // Single Ctrl shortcuts (Ctrl without Shift or Alt)
             if has_ctrl && !has_shift && !has_alt {
+                if matches!(logical_key, Key::Named(NamedKey::Insert)) {
+                    let active_pane = self.active_pane();
+                    let active_grid = active_pane.terminal.active_grid();
+                    let text = if active_grid.selection.active && !active_grid.selection.is_empty() {
+                        active_grid.extract_selection_text()
+                    } else {
+                        let lines: Vec<String> = (0..active_grid.height)
+                            .map(|y| {
+                                (0..active_grid.width)
+                                    .map(|x| {
+                                        active_grid.cells[y * active_grid.width + x]
+                                            .character
+                                    })
+                                    .collect::<String>()
+                                    .trim_end()
+                                    .to_string()
+                            })
+                            .collect();
+                        if let Some(idx) = lines.iter().rposition(|l| !l.is_empty()) {
+                            lines[..=idx].join("\n")
+                        } else {
+                            String::new()
+                        }
+                    };
+                    if !text.is_empty() {
+                        crate::clipboard::clipboard::copy(text);
+                    }
+                    log::debug!("Velox shortcut: copy (Ctrl+Insert)");
+                    return false;
+                }
+
                 match logical_key {
                     Key::Named(NamedKey::Tab) | Key::Named(NamedKey::PageDown) => {
                         self.next_tab();
@@ -271,19 +364,27 @@ impl WindowState {
                 }
 
                 if let Key::Character(s) = logical_key {
+                    if s.eq_ignore_ascii_case("c") {
+                        let active_pane = self.active_pane();
+                        let active_grid = active_pane.terminal.active_grid();
+                        if active_grid.selection.active && !active_grid.selection.is_empty() {
+                            let text = active_grid.extract_selection_text();
+                            if !text.is_empty() {
+                                crate::clipboard::clipboard::copy(text);
+                            }
+                            self.active_pane_mut().terminal.active_grid_mut().selection.clear();
+                            self.needs_redraw = true;
+                            log::debug!("Velox shortcut: copy selection via Ctrl+C");
+                            return false;
+                        }
+                    }
+
                     match s.as_str() {
                         "+" | "=" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size + 1.0;
                             self.set_font_size(new_size);
                             log::debug!("Velox shortcut: zoom in");
-                            return false;
-                        }
-                        "-" => {
-                            let active_size = self.active_pane().font_size;
-                            let new_size = (active_size - 1.0).max(4.0);
-                            self.set_font_size(new_size);
-                            log::debug!("Velox shortcut: zoom out");
                             return false;
                         }
                         "0" => {
@@ -413,33 +514,96 @@ mod tests {
     }
 
     #[test]
-    fn test_alt_arrow_consumed_for_navigation() {
+    fn test_alt_arrow_falls_through_on_single_pane() {
         let (pty, read_end) = create_test_pty_pipe();
         let mut ws = WindowState::create_test_window_state(pty, 80, 24);
 
-        // Alt+ArrowLeft consumed for pane navigation (not forwarded to PTY even if single pane)
+        // Alt+ArrowLeft forwards to PTY when there is no neighboring pane
         let handled =
             ws.handle_keyboard_input(&Key::Named(NamedKey::ArrowLeft), None, ModifiersState::ALT);
-        assert!(!handled);
-        assert_eq!(read_pty_output(&read_end), b"");
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), b"\x1b[1;3D");
 
         let handled =
             ws.handle_keyboard_input(&Key::Named(NamedKey::ArrowUp), None, ModifiersState::ALT);
-        assert!(!handled);
-        assert_eq!(read_pty_output(&read_end), b"");
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), b"\x1b[1;3A");
     }
 
     #[test]
-    fn test_ctrl_alt_arrow_consumed_for_split_resizing() {
+    fn test_ctrl_alt_arrow_falls_through_on_single_pane() {
         let (pty, read_end) = create_test_pty_pipe();
         let mut ws = WindowState::create_test_window_state(pty, 80, 24);
 
-        // Ctrl+Alt+ArrowLeft consumed for split resizing
+        // Ctrl+Alt+ArrowLeft forwards to PTY when there are no split panes
         let handled = ws.handle_keyboard_input(
             &Key::Named(NamedKey::ArrowLeft),
             None,
             ModifiersState::CONTROL | ModifiersState::ALT,
         );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), b"\x1b[1;7D");
+    }
+
+    #[test]
+    fn test_ctrl_c_selection_copy_vs_sigint() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // When NO selection is active, Ctrl+C sends SIGINT (0x03)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("c".to_string()),
+            Some("c"),
+            ModifiersState::CONTROL,
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[3]);
+
+        // When selection IS active and non-empty, Ctrl+C copies selection without sending 0x03
+        {
+            let grid = ws.active_pane_mut().terminal.active_grid_mut();
+            grid.selection.start_selection(0, 0);
+            grid.selection.update_selection(5, 0);
+        }
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("c".to_string()),
+            Some("c"),
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert!(!ws.active_pane().terminal.active_grid().selection.active);
+    }
+
+    #[test]
+    fn test_insert_shortcuts() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // Ctrl+Insert is consumed for copy
+        let handled = ws.handle_keyboard_input(
+            &Key::Named(NamedKey::Insert),
+            None,
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+    }
+
+    #[test]
+    fn test_shift_home_and_end() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // Shift+Home consumed for scroll to top
+        let handled =
+            ws.handle_keyboard_input(&Key::Named(NamedKey::Home), None, ModifiersState::SHIFT);
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+
+        // Shift+End consumed for scroll to bottom
+        let handled =
+            ws.handle_keyboard_input(&Key::Named(NamedKey::End), None, ModifiersState::SHIFT);
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
     }
@@ -481,6 +645,15 @@ mod tests {
         );
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), b"\x1bx");
+
+        // Ctrl+- passes through to PTY as 0x1f (readline Undo)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("-".to_string()),
+            Some("-"),
+            ModifiersState::CONTROL,
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[31]);
     }
 
     #[test]

@@ -18,8 +18,24 @@ pub fn copy(text: String) {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(&text_bytes);
             }
-            let _ = child.wait();
-            return;
+            if let Ok(status) = child.wait()
+                && status.success()
+            {
+                // Also update Wayland primary selection if possible
+                if let Ok(mut pchild) = Command::new("wl-copy")
+                    .arg("--primary")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    if let Some(mut pstdin) = pchild.stdin.take() {
+                        let _ = pstdin.write_all(&text_bytes);
+                    }
+                    let _ = pchild.wait();
+                }
+                return;
+            }
         }
 
         // Try xclip (X11)
@@ -34,8 +50,25 @@ pub fn copy(text: String) {
             if let Some(mut stdin) = child.stdin.take() {
                 let _ = stdin.write_all(&text_bytes);
             }
-            let _ = child.wait();
-            return;
+            if let Ok(status) = child.wait()
+                && status.success()
+            {
+                // Also update primary selection
+                if let Ok(mut pchild) = Command::new("xclip")
+                    .arg("-selection")
+                    .arg("primary")
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    if let Some(mut pstdin) = pchild.stdin.take() {
+                        let _ = pstdin.write_all(&text_bytes);
+                    }
+                    let _ = pchild.wait();
+                }
+                return;
+            }
         }
 
         // Try xsel (X11 fallback)
@@ -51,6 +84,21 @@ pub fn copy(text: String) {
                 let _ = stdin.write_all(&text_bytes);
             }
             let _ = child.wait();
+
+            // Also copy to primary with xsel
+            if let Ok(mut pchild) = Command::new("xsel")
+                .arg("--primary")
+                .arg("--input")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut pstdin) = pchild.stdin.take() {
+                    let _ = pstdin.write_all(&text_bytes);
+                }
+                let _ = pchild.wait();
+            }
         }
     });
 }
@@ -60,6 +108,7 @@ pub fn paste() -> String {
     if let Ok(output) = Command::new("wl-paste").arg("--no-newline").output()
         && output.status.success()
         && let Ok(text) = String::from_utf8(output.stdout)
+        && !text.is_empty()
     {
         return text;
     }
@@ -72,6 +121,7 @@ pub fn paste() -> String {
         .output()
         && output.status.success()
         && let Ok(text) = String::from_utf8(output.stdout)
+        && !text.is_empty()
     {
         return text;
     }
@@ -83,11 +133,13 @@ pub fn paste() -> String {
         .output()
         && output.status.success()
         && let Ok(text) = String::from_utf8(output.stdout)
+        && !text.is_empty()
     {
         return text;
     }
 
-    String::new()
+    // Fall back to primary selection if clipboard is empty
+    primary_selection()
 }
 
 pub fn primary_selection() -> String {
@@ -98,6 +150,7 @@ pub fn primary_selection() -> String {
         .output()
         && output.status.success()
         && let Ok(text) = String::from_utf8(output.stdout)
+        && !text.is_empty()
     {
         return text;
     }
@@ -110,6 +163,19 @@ pub fn primary_selection() -> String {
         .output()
         && output.status.success()
         && let Ok(text) = String::from_utf8(output.stdout)
+        && !text.is_empty()
+    {
+        return text;
+    }
+
+    // 3. Try xsel --primary
+    if let Ok(output) = Command::new("xsel")
+        .arg("--primary")
+        .arg("--output")
+        .output()
+        && output.status.success()
+        && let Ok(text) = String::from_utf8(output.stdout)
+        && !text.is_empty()
     {
         return text;
     }

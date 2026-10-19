@@ -846,20 +846,6 @@ impl WindowState {
                                 _ => {}
                             }
 
-                            if click_count == 1 && row_idx == active_grid.cursor.y {
-                                let cursor_x = active_grid.cursor.x;
-                                let pty_master = pane.pty_master.clone();
-                                if col_idx < cursor_x {
-                                    let diff = cursor_x - col_idx;
-                                    let seq = b"\x1b[D".repeat(diff);
-                                    let _ = pty_master.write(&seq);
-                                } else if col_idx > cursor_x {
-                                    let diff = col_idx - cursor_x;
-                                    let seq = b"\x1b[C".repeat(diff);
-                                    let _ = pty_master.write(&seq);
-                                }
-                            }
-
                             self.needs_redraw = true;
                         }
                     }

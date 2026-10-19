@@ -117,12 +117,12 @@ pub fn translate_key(
                     Some(c.to_ascii_uppercase() as u8 - b'A' + 1)
                 } else {
                     match c {
-                        '@' | '2' => Some(0),
+                        '@' | '2' | '`' => Some(0),
                         '[' | '3' => Some(27),
                         '\\' | '4' => Some(28),
                         ']' | '5' => Some(29),
                         '^' | '6' => Some(30),
-                        '_' | '7' | '/' => Some(31),
+                        '-' | '_' | '7' | '/' => Some(31),
                         '8' | '?' => Some(127),
                         ' ' => Some(0),
                         _ => None,
@@ -483,6 +483,26 @@ mod tests {
             0,
         );
         assert_eq!(ctrl_shift_r.as_deref(), Some(&[18][..]));
+
+        // Ctrl+- -> 0x1f (Unit Separator / Undo)
+        let ctrl_minus = translate_key(
+            &Key::Character("-".to_string()),
+            Some("-"),
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_minus.as_deref(), Some(&[31][..]));
+
+        // Ctrl+` -> 0x00 (NUL)
+        let ctrl_backtick = translate_key(
+            &Key::Character("`".to_string()),
+            Some("`"),
+            ModifiersState::CONTROL,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_backtick.as_deref(), Some(&[0][..]));
     }
 
     #[test]

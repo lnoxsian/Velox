@@ -932,10 +932,22 @@ impl X11Window {
         let is_shift = val & xproto::ModMask::SHIFT.bits() != 0;
         let is_lock = val & xproto::ModMask::LOCK.bits() != 0;
         let is_mod5 = val & xproto::ModMask::M5.bits() != 0;
+        let is_numlock = val & xproto::ModMask::M2.bits() != 0;
         let keysym_col0 = self.keysym_for_keycode(keycode, 0);
-        let is_letter =
-            (keysym_col0 as u8).is_ascii_lowercase() || (keysym_col0 as u8).is_ascii_uppercase();
-        let col = if is_mod5 && self.keysyms_per_keycode > 2 {
+        let is_letter = keysym_col0 <= 0x7f
+            && ((keysym_col0 as u8).is_ascii_lowercase()
+                || (keysym_col0 as u8).is_ascii_uppercase());
+        let is_keypad = (0xff80..=0xffbd).contains(&keysym_col0)
+            || (0xff95..=0xff9f).contains(&keysym_col0);
+
+        let col = if is_keypad {
+            let keypad_shift = is_shift ^ is_numlock;
+            if keypad_shift && self.keysyms_per_keycode > 1 {
+                1
+            } else {
+                0
+            }
+        } else if is_mod5 && self.keysyms_per_keycode > 2 {
             if is_shift && self.keysyms_per_keycode > 3 {
                 3
             } else {
@@ -952,7 +964,7 @@ impl X11Window {
             0
         };
         let mut keysym = self.keysym_for_keycode(keycode, col);
-        if keysym == 0 && col == 1 {
+        if keysym == 0 {
             keysym = keysym_col0;
         }
         if keysym == 0 {
@@ -1142,7 +1154,7 @@ mod tests {
         }
         let size = detect_desktop_cursor_size();
         if let Some(size) = size {
-            assert!(size >= 16 && size <= 128);
+            assert!((16..=128).contains(&size));
         }
     }
 }

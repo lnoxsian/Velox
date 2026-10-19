@@ -563,11 +563,25 @@ pub fn xkb_keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
         0xffad => (Some(Key::Character("-".to_string())), Some("-".to_string())),
         0xffaa => (Some(Key::Character("*".to_string())), Some("*".to_string())),
         0xffaf => (Some(Key::Character("/".to_string())), Some("/".to_string())),
+        0xffae => (Some(Key::Character(".".to_string())), Some(".".to_string())),
+        0xffac => (Some(Key::Character(",".to_string())), Some(",".to_string())),
+        0xffbd => (Some(Key::Character("=".to_string())), Some("=".to_string())),
         0xffb0..=0xffb9 => {
             let digit = (b'0' + (keysym - 0xffb0) as u8) as char;
             let s = digit.to_string();
             (Some(Key::Character(s.clone())), Some(s))
         }
+        0xff95 => (Some(Key::Named(NamedKey::Home)), None),
+        0xff96 => (Some(Key::Named(NamedKey::ArrowLeft)), None),
+        0xff97 => (Some(Key::Named(NamedKey::ArrowUp)), None),
+        0xff98 => (Some(Key::Named(NamedKey::ArrowRight)), None),
+        0xff99 => (Some(Key::Named(NamedKey::ArrowDown)), None),
+        0xff9a => (Some(Key::Named(NamedKey::PageUp)), None),
+        0xff9b => (Some(Key::Named(NamedKey::PageDown)), None),
+        0xff9c => (Some(Key::Named(NamedKey::End)), None),
+        0xff9d => (Some(Key::Named(NamedKey::Space)), Some(" ".to_string())),
+        0xff9e => (Some(Key::Named(NamedKey::Insert)), None),
+        0xff9f => (Some(Key::Named(NamedKey::Delete)), None),
 
         // Modifiers (Shift, Ctrl, Alt, Super/Hyper)
         0xffe1 | 0xffe2 => (Some(Key::Named(NamedKey::Shift)), None),
@@ -597,7 +611,7 @@ pub fn xkb_keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
             }
         }
 
-        0x01000100..=0x0110ffff => {
+        0x01000000..=0x0110ffff => {
             let cp = keysym - 0x01000000;
             if let Some(ch) = char::from_u32(cp) {
                 let s = ch.to_string();
