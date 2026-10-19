@@ -127,8 +127,12 @@ APP_DIR="${PKG_ROOT}/usr/share/applications"
 ICON_DIR="${PKG_ROOT}/usr/share/icons/hicolor"
 DOC_DIR="${PKG_ROOT}/usr/share/doc/velox"
 DEBIAN_DIR="${PKG_ROOT}/DEBIAN"
+BASH_COMP_DIR="${PKG_ROOT}/usr/share/bash-completion/completions"
+ZSH_COMP_DIR="${PKG_ROOT}/usr/share/zsh/vendor-completions"
+FISH_COMP_DIR="${PKG_ROOT}/usr/share/fish/vendor_completions.d"
 
-mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" "${DOC_DIR}" "${DEBIAN_DIR}"
+mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" "${DOC_DIR}" "${DEBIAN_DIR}" \
+         "${BASH_COMP_DIR}" "${ZSH_COMP_DIR}" "${FISH_COMP_DIR}"
 
 # 1. Install binary
 install -m 755 "${BINARY_PATH}" "${BIN_DIR}/velox"
@@ -158,7 +162,18 @@ if [[ -f "assets/icons/velox_terminal_icon_final.svg" ]]; then
     install -m 644 "assets/icons/velox_terminal_icon_final.svg" "${ICON_DIR}/scalable/apps/io.github.lnoxsian.Velox.svg"
 fi
 
-# 4. Install documentation and copyright
+# 4. Install shell completions
+if [[ -f "assets/completions/bash/velox" ]]; then
+    install -m 644 "assets/completions/bash/velox" "${BASH_COMP_DIR}/velox"
+fi
+if [[ -f "assets/completions/zsh/_velox" ]]; then
+    install -m 644 "assets/completions/zsh/_velox" "${ZSH_COMP_DIR}/_velox"
+fi
+if [[ -f "assets/completions/fish/velox.fish" ]]; then
+    install -m 644 "assets/completions/fish/velox.fish" "${FISH_COMP_DIR}/velox.fish"
+fi
+
+# 5. Install documentation and copyright
 if [[ -f "README.md" ]]; then
     install -m 644 "README.md" "${DOC_DIR}/README.md"
 fi

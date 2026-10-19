@@ -127,6 +127,9 @@ mkdir -p "${PKG_DIR}/usr/share/applications"
 mkdir -p "${PKG_DIR}/usr/share/icons/hicolor"
 mkdir -p "${PKG_DIR}/usr/share/licenses/velox"
 mkdir -p "${PKG_DIR}/usr/share/doc/velox"
+mkdir -p "${PKG_DIR}/usr/share/bash-completion/completions"
+mkdir -p "${PKG_DIR}/usr/share/zsh/site-functions"
+mkdir -p "${PKG_DIR}/usr/share/fish/vendor_completions.d"
 
 # 1. Binary
 install -m 755 "${BINARY_PATH}" "${PKG_DIR}/usr/bin/velox"
@@ -153,7 +156,18 @@ if [[ -f "assets/icons/velox_terminal_icon_final.svg" ]]; then
     install -m 644 "assets/icons/velox_terminal_icon_final.svg" "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/io.github.lnoxsian.Velox.svg"
 fi
 
-# 4. License and Documentation
+# 4. Shell Completions
+if [[ -f "assets/completions/bash/velox" ]]; then
+    install -m 644 "assets/completions/bash/velox" "${PKG_DIR}/usr/share/bash-completion/completions/velox"
+fi
+if [[ -f "assets/completions/zsh/_velox" ]]; then
+    install -m 644 "assets/completions/zsh/_velox" "${PKG_DIR}/usr/share/zsh/site-functions/_velox"
+fi
+if [[ -f "assets/completions/fish/velox.fish" ]]; then
+    install -m 644 "assets/completions/fish/velox.fish" "${PKG_DIR}/usr/share/fish/vendor_completions.d/velox.fish"
+fi
+
+# 5. License and Documentation
 if [[ -f "LICENSE" ]]; then
     install -m 644 "LICENSE" "${PKG_DIR}/usr/share/licenses/velox/LICENSE"
 fi

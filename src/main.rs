@@ -15,6 +15,11 @@ fn main() {
         }
     }
 
+    if cli_opts.banner {
+        CliOptions::print_banner();
+        return;
+    }
+
     if cli_opts.help {
         CliOptions::print_help();
         return;

@@ -11,6 +11,7 @@ pub struct CliOptions {
     pub backend: Option<String>,
     pub hold: bool,
     pub is_msg_create_window: bool,
+    pub banner: bool,
     pub help: bool,
     pub version: bool,
     pub diagnostics: bool,
@@ -87,6 +88,9 @@ impl CliOptions {
                         break;
                     }
                 }
+                "--banner" => {
+                    options.banner = true;
+                }
                 "-h" | "--help" => {
                     options.help = true;
                 }
@@ -116,9 +120,9 @@ impl CliOptions {
         options
     }
 
-    pub fn print_help() {
+    pub fn print_banner() {
         println!(
-            "---------------------------------------
+            "┌─────────────────────────────────────┐
 | VELOX               VELOX           |
 | VELOX               VELOX           |
 | VELOX               VELOX           |
@@ -131,9 +135,15 @@ impl CliOptions {
 |           VELOX               VELOX |
 |           VELOX               VELOX |
 |           VELOX               VELOX |
----------------------------------------
+└─────────────────────────────────────┘"
+        );
+    }
 
-Velox Terminal Emulator
+    pub fn print_help() {
+        Self::print_banner();
+        println!();
+        println!(
+            "Velox Terminal Emulator
 
 USAGE:
     velox [OPTIONS]
@@ -145,6 +155,7 @@ FLAGS:
     -d, --daemon            Start in background daemon mode (keeps process alive for IPC requests)
         --hold              Keep window open after child command exits
         --diagnostics       Print system, display backend, and desktop diagnostics
+        --banner            Print ASCII art banner
     -h, --help              Print help information
     -v, --version           Print version information
 
@@ -248,6 +259,18 @@ mod tests {
         let args2 = vec!["velox".to_string(), "--help".to_string()];
         let opts2 = CliOptions::parse_args(&args2);
         assert!(opts2.help);
+    }
+
+    #[test]
+    fn test_cli_banner_flag() {
+        let args = vec!["velox".to_string(), "--banner".to_string()];
+        let opts = CliOptions::parse_args(&args);
+        assert!(opts.banner);
+    }
+
+    #[test]
+    fn test_cli_print_banner() {
+        CliOptions::print_banner();
     }
 
     #[test]

@@ -13,6 +13,9 @@ BINDIR ?= $(DESTDIR)$(PREFIX)/bin
 DATADIR ?= $(DESTDIR)$(PREFIX)/share
 APPDIR ?= $(DATADIR)/applications
 ICONDIR ?= $(DATADIR)/icons/hicolor
+BASHCOMPDIR ?= $(DATADIR)/bash-completion/completions
+ZSHCOMPDIR ?= $(DATADIR)/zsh/site-functions
+FISHCOMPDIR ?= $(DATADIR)/fish/vendor_completions.d
 ICON_SIZES := 16x16 32x32 48x48 64x64 128x128 256x256 512x512 1024x1024
 
 VERSION_FILE := VERSION
@@ -22,8 +25,8 @@ PROFILE ?= release
 ARGS ?=
 
 .PHONY: all build release optimized-release run run-release run-optimized-release check test clean update lint \
-	update-version bump-version bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
-	ram-debug palette generate-icons install install-desktop install-icons uninstall deb rpm arch-pkg list help
+	update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
+	ram-debug palette generate-icons install install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
 
 # Default target
 all: build
@@ -102,12 +105,27 @@ install-icons:
 		gtk-update-icon-cache -q -t -f $(DATADIR)/icons/hicolor 2>/dev/null || true; \
 	fi
 
-# Install Velox binary, desktop entry, and icons
-install: release install-desktop install-icons
+# Install shell completions for Bash, Zsh, and Fish
+install-completions:
+	install -d $(BASHCOMPDIR)
+	if [ -f "assets/completions/bash/velox" ]; then \
+		install -m 644 assets/completions/bash/velox $(BASHCOMPDIR)/velox; \
+	fi
+	install -d $(ZSHCOMPDIR)
+	if [ -f "assets/completions/zsh/_velox" ]; then \
+		install -m 644 assets/completions/zsh/_velox $(ZSHCOMPDIR)/_velox; \
+	fi
+	install -d $(FISHCOMPDIR)
+	if [ -f "assets/completions/fish/velox.fish" ]; then \
+		install -m 644 assets/completions/fish/velox.fish $(FISHCOMPDIR)/velox.fish; \
+	fi
+
+# Install Velox binary, desktop entry, icons, and shell completions
+install: release install-desktop install-icons install-completions
 	install -d $(BINDIR)
 	install -m 755 target/release/velox $(BINDIR)/velox
 
-# Uninstall Velox binary, desktop entry, and icons
+# Uninstall Velox binary, desktop entry, icons, and shell completions
 uninstall:
 	rm -f $(BINDIR)/velox
 	rm -f $(APPDIR)/io.github.lnoxsian.Velox.desktop
@@ -115,6 +133,9 @@ uninstall:
 		rm -f $(ICONDIR)/$$size/apps/io.github.lnoxsian.Velox.png; \
 	done
 	rm -f $(ICONDIR)/scalable/apps/io.github.lnoxsian.Velox.svg
+	rm -f $(BASHCOMPDIR)/velox
+	rm -f $(ZSHCOMPDIR)/_velox
+	rm -f $(FISHCOMPDIR)/velox.fish
 	@if [ -z "$(DESTDIR)" ]; then \
 		echo "Updating icon and desktop caches..."; \
 		gtk-update-icon-cache -q -t -f $(DATADIR)/icons/hicolor 2>/dev/null || true; \
@@ -175,6 +196,15 @@ bump-version:
 	bash scripts/update-version.sh
 	cargo check
 
+# Update ASCII banner in src/cli.rs from assets/ascii_banner.txt
+update-banner:
+	bash scripts/banner_update.sh
+	cargo check
+
+# Alias banner-update to update-banner
+banner-update: update-banner
+
+
 # Package as Debian / Ubuntu (.deb) package
 deb:
 	bash scripts/packaging/debian/build-deb.sh
@@ -211,10 +241,11 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "arch-pkg" "Build Arch Linux package in dist/ (*.pkg.tar.zst)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "rpm" "Build Fedora / RHEL RPM package in dist/ (*.rpm)"
 	@printf "\n\033[1;32mInstallation & Desktop:\033[0m\n"
-	@printf "  \033[36m%-25s\033[0m %s\n" "install" "Install binary, desktop file, and icons (PREFIX=/usr/local)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "install" "Install binary, desktop file, icons, and completions (PREFIX=/usr/local)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-desktop" "Install .desktop launcher entry"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-icons" "Install hicolor icons for all supported resolutions"
-	@printf "  \033[36m%-25s\033[0m %s\n" "uninstall" "Remove installed binary, desktop file, and icons"
+	@printf "  \033[36m%-25s\033[0m %s\n" "install-completions" "Install Bash, Zsh, and Fish shell completions"
+	@printf "  \033[36m%-25s\033[0m %s\n" "uninstall" "Remove installed binary, desktop file, icons, and completions"
 	@printf "\n\033[1;32mBenchmarking & Memory:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bench" "Run text rendering benchmark script"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bench-grid" "Run text rendering benchmark in grid mode"
@@ -227,6 +258,7 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "update" "Update Cargo dependencies in Cargo.lock"
 	@printf "  \033[36m%-25s\033[0m %s\n" "update-version" "Sync VERSION file to Cargo.toml and README.md"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bump-version" "Interactive prompt to bump version across files"
+	@printf "  \033[36m%-25s\033[0m %s\n" "update-banner" "Update ASCII banner in CLI from assets/ascii_banner.txt"
 	@printf "  \033[36m%-25s\033[0m %s\n" "list / help" "Show this command list and help guide"
 	@printf "\n\033[1mVariables:\033[0m\n"
 	@printf "  \033[33mPREFIX\033[0m       Installation prefix (default: /usr/local)\n"

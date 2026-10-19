@@ -45,6 +45,18 @@ if [ -f "assets/icons/velox_terminal_icon_final.svg" ]; then
         %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.lnoxsian.Velox.svg
 fi
 
+if [ -f "assets/completions/bash/velox" ]; then
+    install -D -p -m 0644 assets/completions/bash/velox %{buildroot}%{_datadir}/bash-completion/completions/velox
+fi
+
+if [ -f "assets/completions/zsh/_velox" ]; then
+    install -D -p -m 0644 assets/completions/zsh/_velox %{buildroot}%{_datadir}/zsh/site-functions/_velox
+fi
+
+if [ -f "assets/completions/fish/velox.fish" ]; then
+    install -D -p -m 0644 assets/completions/fish/velox.fish %{buildroot}%{_datadir}/fish/vendor_completions.d/velox.fish
+fi
+
 install -D -p -m 0644 README.md %{buildroot}%{_docdir}/%{name}/README.md
 install -D -p -m 0644 LICENSE %{buildroot}%{_licensesdir}/%{name}/LICENSE
 
@@ -71,6 +83,9 @@ fi
 %{_bindir}/velox
 %{_datadir}/applications/io.github.lnoxsian.Velox.desktop
 %{_datadir}/icons/hicolor/*/apps/io.github.lnoxsian.Velox.*
+%{_datadir}/bash-completion/completions/velox
+%{_datadir}/zsh/site-functions/_velox
+%{_datadir}/fish/vendor_completions.d/velox.fish
 
 %changelog
 * Mon Oct 14 2026 lnoxsian <https://github.com/lnoxsian/Velox> - 0.2.4-1
