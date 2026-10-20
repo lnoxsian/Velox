@@ -337,6 +337,44 @@ impl WindowState {
         self.active_tab_mut().active_pane_mut()
     }
 
+    pub fn write_to_pane(&self, pane_id: u64, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        let tab = self.active_tab();
+        if let Some(pane) = tab.tree.find_pane(pane_id) {
+            // Fast-path: small input (e.g. single keystrokes <= 4096 bytes) directly calls
+            // non-blocking write to avoid reactor wake/channel latency.
+            if data.len() <= 4096 {
+                match pane.pty_master.write(&data) {
+                    Ok(n) if n == data.len() => return,
+                    Ok(n) => {
+                        let remainder = data[n..].to_vec();
+                        let _ = self.pty_reactor.write(self.window_id, tab.id, pane_id, remainder);
+                        return;
+                    }
+                    Err(e)
+                        if e.raw_os_error() == Some(libc::EAGAIN)
+                            || e.raw_os_error() == Some(libc::EWOULDBLOCK) =>
+                    {
+                        let _ = self.pty_reactor.write(self.window_id, tab.id, pane_id, data);
+                        return;
+                    }
+                    Err(_) => {}
+                }
+            } else {
+                // Large burst (e.g. paste of large text/corpus): queue asynchronously through the reactor
+                let _ = self.pty_reactor.write(self.window_id, tab.id, pane_id, data);
+            }
+        }
+    }
+
+    #[inline(always)]
+    pub fn write_to_active_pane(&self, data: Vec<u8>) {
+        let active_id = self.active_pane().id;
+        self.write_to_pane(active_id, data);
+    }
+
     #[inline(always)]
     pub fn set_cursor_cached(&mut self, icon: CursorIcon) {
         if self.current_cursor_icon != icon {

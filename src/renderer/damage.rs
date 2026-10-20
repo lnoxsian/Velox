@@ -106,12 +106,22 @@ impl DamageMap {
 
         if self.prev_selection != new_selection {
             let mark_selection_rows = |dm: &mut DamageMap, min_abs_y: usize, max_abs_y: usize| {
-                for abs_y in min_abs_y..=max_abs_y {
-                    let total_y = abs_y + scroll_offset;
-                    if total_y >= history_len {
-                        let screen_y = total_y - history_len;
-                        if screen_y < grid_h {
-                            dm.mark_row(screen_y);
+                if history_len + grid_h <= scroll_offset {
+                    return;
+                }
+                let vis_min = history_len.saturating_sub(scroll_offset);
+                let vis_max = (history_len + grid_h.saturating_sub(1)).saturating_sub(scroll_offset);
+                let start_y = min_abs_y.max(vis_min);
+                let end_y = max_abs_y.min(vis_max);
+
+                if start_y <= end_y {
+                    for abs_y in start_y..=end_y {
+                        let total_y = abs_y + scroll_offset;
+                        if total_y >= history_len {
+                            let screen_y = total_y - history_len;
+                            if screen_y < grid_h {
+                                dm.mark_row(screen_y);
+                            }
                         }
                     }
                 }
@@ -147,5 +157,25 @@ mod tests {
         assert!(dm.has_damage());
         assert!(dm.is_dirty(3));
         assert!(!dm.is_dirty(4));
+    }
+
+    #[test]
+    fn test_update_selection_large_bounds_clamped() {
+        let mut dm = DamageMap::new(24);
+        dm.clear();
+        assert!(!dm.has_damage());
+
+        // Massive selection spanning 100,000 lines
+        let bounds = ((0, 0), (80, 100_000));
+        let history_len = 90_000;
+        let scroll_offset = 0;
+        let grid_h = 24;
+
+        dm.update_selection(true, bounds, history_len, scroll_offset, grid_h);
+        assert!(dm.has_damage());
+        // All 24 screen rows should be dirty, but no out-of-bounds rows
+        for r in 0..grid_h {
+            assert!(dm.is_dirty(r));
+        }
     }
 }

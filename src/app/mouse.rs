@@ -1002,14 +1002,21 @@ impl WindowState {
                         text = crate::clipboard::clipboard::paste();
                     }
                     if !text.is_empty() {
-                        let tab = self.active_tab_mut();
-                        if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
-                            let scroll_on_keystroke = pane.terminal.scroll_on_keystroke;
-                            let formatted = pane.terminal.format_paste(&text);
-                            if scroll_on_keystroke {
-                                pane.terminal.active_grid_mut().scroll_offset = 0;
+                        let formatted = {
+                            let tab = self.active_tab_mut();
+                            if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
+                                let scroll_on_keystroke = pane.terminal.scroll_on_keystroke;
+                                let f = pane.terminal.format_paste(&text);
+                                if scroll_on_keystroke {
+                                    pane.terminal.active_grid_mut().scroll_offset = 0;
+                                }
+                                Some(f)
+                            } else {
+                                None
                             }
-                            let _ = pane.pty_master.write(formatted.as_bytes());
+                        };
+                        if let Some(formatted) = formatted {
+                            self.write_to_pane(clicked_pane_id, formatted.into_bytes());
                             self.needs_redraw = true;
                         }
                     }

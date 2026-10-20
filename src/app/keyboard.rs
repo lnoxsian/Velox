@@ -85,10 +85,7 @@ impl WindowState {
                         return false;
                     }
                     Key::Named(NamedKey::Insert) => {
-                        let mut text = crate::clipboard::clipboard::paste();
-                        if text.is_empty() {
-                            text = crate::clipboard::clipboard::primary_selection();
-                        }
+                        let text = crate::clipboard::clipboard::paste();
                         if !text.is_empty() {
                             let formatted = self.active_pane().terminal.format_paste(&text);
                             if self.active_pane().terminal.scroll_on_keystroke {
@@ -97,7 +94,7 @@ impl WindowState {
                                     .active_grid_mut()
                                     .scroll_offset = 0;
                             }
-                            let _ = self.active_pane().pty_master.write(formatted.as_bytes());
+                            self.write_to_active_pane(formatted.into_bytes());
                             self.last_key_instant = std::time::Instant::now();
                             self.mark_interaction();
                             self.needs_redraw = true;
@@ -241,10 +238,7 @@ impl WindowState {
                                 return false;
                             }
                             b'v' => {
-                                let mut text = crate::clipboard::clipboard::paste();
-                                if text.is_empty() {
-                                    text = crate::clipboard::clipboard::primary_selection();
-                                }
+                                let text = crate::clipboard::clipboard::paste();
                                 if !text.is_empty() {
                                     let formatted = self.active_pane().terminal.format_paste(&text);
                                     if self.active_pane().terminal.scroll_on_keystroke {
@@ -253,8 +247,7 @@ impl WindowState {
                                             .active_grid_mut()
                                             .scroll_offset = 0;
                                     }
-                                    let _ =
-                                        self.active_pane().pty_master.write(formatted.as_bytes());
+                                    self.write_to_active_pane(formatted.into_bytes());
                                     self.last_key_instant = std::time::Instant::now();
                                     self.mark_interaction();
                                     self.needs_redraw = true;

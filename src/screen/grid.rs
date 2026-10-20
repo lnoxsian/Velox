@@ -1192,11 +1192,21 @@ impl Grid {
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
 
-        let mut lines = Vec::new();
+        if min_y >= total_lines {
+            return String::new();
+        }
+        let clamped_max_y = max_y.min(total_lines.saturating_sub(1));
+        if min_y > clamped_max_y {
+            return String::new();
+        }
 
-        for y in min_y..=max_y {
-            if y >= total_lines {
-                break;
+        let num_lines = clamped_max_y - min_y + 1;
+        let estimated_capacity = (num_lines * self.width.min(80)).min(20 * 1024 * 1024);
+        let mut result = String::with_capacity(estimated_capacity);
+
+        for y in min_y..=clamped_max_y {
+            if y > min_y {
+                result.push('\n');
             }
 
             let start_col = if y == min_y { min_x } else { 0 };
@@ -1206,14 +1216,25 @@ impl Grid {
                 self.width.saturating_sub(1)
             };
 
-            let mut line = String::new();
+            if start_col > end_col {
+                continue;
+            }
+
             if y < history_len {
                 self.scrollback.with_row_slice(y, |cells, _| {
-                    for x in start_col..=end_col {
-                        if x < cells.len() {
-                            line.push(cells[x].character);
-                        } else {
-                            line.push(' ');
+                    let upper = end_col.min(cells.len().saturating_sub(1));
+                    let mut last_col = None;
+                    if upper >= start_col {
+                        for x in (start_col..=upper).rev() {
+                            if cells[x].character != ' ' {
+                                last_col = Some(x);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(last) = last_col {
+                        for x in start_col..=last {
+                            result.push(cells[x].character);
                         }
                     }
                 });
@@ -1222,21 +1243,29 @@ impl Grid {
                 if grid_y < self.height {
                     let physical_y = self.physical_row(grid_y);
                     let row_start = physical_y * self.width;
-                    for x in start_col..=end_col {
-                        let idx = row_start + x;
-                        if idx < self.cells.len() {
-                            line.push(self.cells[idx].character);
-                        } else {
-                            line.push(' ');
+                    if row_start + self.width <= self.cells.len() {
+                        let row_cells = &self.cells[row_start..row_start + self.width];
+                        let upper = end_col.min(row_cells.len().saturating_sub(1));
+                        let mut last_col = None;
+                        if upper >= start_col {
+                            for x in (start_col..=upper).rev() {
+                                if row_cells[x].character != ' ' {
+                                    last_col = Some(x);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(last) = last_col {
+                            for x in start_col..=last {
+                                result.push(row_cells[x].character);
+                            }
                         }
                     }
                 }
             }
-            line.truncate(line.trim_end().len());
-            lines.push(line);
         }
 
-        lines.join("\n")
+        result
     }
 
     pub fn select_word_at(&mut self, col: usize, abs_y: usize) {

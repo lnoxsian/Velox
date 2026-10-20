@@ -289,13 +289,58 @@ impl Terminal {
     }
 
     pub fn format_paste(&self, text: &str) -> String {
-        if self.bracketed_paste_mode {
-            let sanitized = text.replace("\x1b[201~", "");
-            let normalized = sanitized.replace("\r\n", "\r").replace('\n', "\r");
-            format!("\x1b[200~{}\x1b[201~", normalized)
-        } else {
-            text.replace("\r\n", "\r").replace('\n', "\r")
+        let bracketed = self.bracketed_paste_mode;
+        let mut out = String::with_capacity(text.len() + if bracketed { 16 } else { 0 });
+        if bracketed {
+            out.push_str("\x1b[200~");
         }
+        let bytes = text.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        let mut slice_start = 0;
+
+        while i < len {
+            // Strip any nested bracketed paste closing markers for security
+            if bracketed && i + 6 <= len && &bytes[i..i + 6] == b"\x1b[201~" {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                i += 6;
+                slice_start = i;
+                continue;
+            }
+
+            let b = bytes[i];
+            if b == b'\r' {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                out.push('\r');
+                if i + 1 < len && bytes[i + 1] == b'\n' {
+                    i += 1;
+                }
+                i += 1;
+                slice_start = i;
+            } else if b == b'\n' {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                out.push('\r');
+                i += 1;
+                slice_start = i;
+            } else {
+                i += 1;
+            }
+        }
+
+        if slice_start < len {
+            out.push_str(&text[slice_start..]);
+        }
+
+        if bracketed {
+            out.push_str("\x1b[201~");
+        }
+        out
     }
 
     pub fn feed(&mut self, data: &[u8]) {

@@ -1,7 +1,7 @@
 use crate::app::app::{CustomEvent, EventLoopProxy, WindowId};
 use crate::pty::buffer_pool::{PTY_BUFFER_SIZE, acquire_pty_buffer, recycle_pty_buffer};
 use crate::pty::master::PtyMaster;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +26,12 @@ pub enum ReactorCommand {
         window_id: WindowId,
         tab_id: u64,
         pane_id: u64,
+    },
+    Write {
+        window_id: WindowId,
+        tab_id: u64,
+        pane_id: u64,
+        data: Vec<u8>,
     },
     Shutdown,
 }
@@ -75,6 +81,24 @@ impl PtyReactorHandle {
             window_id,
             tab_id,
             pane_id,
+        })
+    }
+
+    pub fn write(
+        &self,
+        window_id: WindowId,
+        tab_id: u64,
+        pane_id: u64,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        if data.is_empty() || self.is_stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.send_command(ReactorCommand::Write {
+            window_id,
+            tab_id,
+            pane_id,
+            data,
         })
     }
 
@@ -240,6 +264,20 @@ impl Drop for PtyReactor {
     }
 }
 
+fn set_epoll_out_interest(epoll_fd: RawFd, fd: RawFd, enable: bool) {
+    let mut events = (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32;
+    if enable {
+        events |= libc::EPOLLOUT as u32;
+    }
+    let mut ep_event = libc::epoll_event {
+        events,
+        u64: fd as u64,
+    };
+    unsafe {
+        libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut ep_event);
+    }
+}
+
 fn run_reactor_loop(
     epoll_fd: RawFd,
     wake_fd: RawFd,
@@ -250,6 +288,7 @@ fn run_reactor_loop(
 ) {
     let mut fds: HashMap<RawFd, Registration> = HashMap::new();
     let mut key_to_fd: HashMap<PaneKey, RawFd> = HashMap::new();
+    let mut write_buffers: HashMap<RawFd, VecDeque<u8>> = HashMap::new();
     let mut events = [libc::epoll_event { events: 0, u64: 0 }; 64];
 
     'reactor: loop {
@@ -314,6 +353,7 @@ fn run_reactor_loop(
                                         );
                                     }
                                     fds.remove(&old_fd);
+                                    write_buffers.remove(&old_fd);
                                 }
                             }
 
@@ -381,6 +421,53 @@ fn run_reactor_loop(
                                     );
                                 }
                                 fds.remove(&pty_fd);
+                                write_buffers.remove(&pty_fd);
+                            }
+                        }
+                        ReactorCommand::Write {
+                            window_id,
+                            tab_id,
+                            pane_id,
+                            data,
+                        } => {
+                            let key = PaneKey {
+                                window_id,
+                                tab_id,
+                                pane_id,
+                            };
+                            if let Some(&pty_fd) = key_to_fd.get(&key) {
+                                let queue = write_buffers.entry(pty_fd).or_default();
+                                if queue.is_empty() {
+                                    let mut written = 0;
+                                    while written < data.len() {
+                                        let chunk = &data[written..];
+                                        let res = unsafe {
+                                            libc::write(
+                                                pty_fd,
+                                                chunk.as_ptr() as *const libc::c_void,
+                                                chunk.len(),
+                                            )
+                                        };
+                                        if res > 0 {
+                                            written += res as usize;
+                                        } else if res < 0 {
+                                            let err = std::io::Error::last_os_error();
+                                            if err.raw_os_error() == Some(libc::EINTR) {
+                                                continue;
+                                            }
+                                            break;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    if written < data.len() {
+                                        queue.extend(&data[written..]);
+                                        set_epoll_out_interest(epoll_fd, pty_fd, true);
+                                    }
+                                } else {
+                                    queue.extend(data);
+                                    set_epoll_out_interest(epoll_fd, pty_fd, true);
+                                }
                             }
                         }
                         ReactorCommand::Shutdown => {
@@ -389,6 +476,36 @@ fn run_reactor_loop(
                     }
                 }
             } else if fds.contains_key(&fd) {
+                // 1. Flush pending write queue if writable
+                if (ev.events & libc::EPOLLOUT as u32) != 0 {
+                    if let Some(queue) = write_buffers.get_mut(&fd) {
+                        while !queue.is_empty() {
+                            let (first, _) = queue.as_slices();
+                            let chunk_len = first.len().min(32768);
+                            let res = unsafe {
+                                libc::write(fd, first.as_ptr() as *const libc::c_void, chunk_len)
+                            };
+                            if res > 0 {
+                                queue.drain(..res as usize);
+                            } else if res < 0 {
+                                let err = std::io::Error::last_os_error();
+                                if err.raw_os_error() == Some(libc::EINTR) {
+                                    continue;
+                                }
+                                break;
+                            } else {
+                                break;
+                            }
+                        }
+                        if queue.is_empty() {
+                            write_buffers.remove(&fd);
+                            set_epoll_out_interest(epoll_fd, fd, false);
+                        }
+                    } else {
+                        set_epoll_out_interest(epoll_fd, fd, false);
+                    }
+                }
+
                 let (key, exit_detected) = {
                     let reg = fds.get(&fd).unwrap();
                     let key = reg.key;
@@ -476,6 +593,7 @@ fn run_reactor_loop(
                     }
                     fds.remove(&fd);
                     key_to_fd.remove(&key);
+                    write_buffers.remove(&fd);
 
                     let _ = proxy.send(CustomEvent::PtyExit {
                         window_id: key.window_id,
@@ -717,6 +835,45 @@ mod tests {
         assert_eq!(
             received_bytes, test_data,
             "Burst data must be completely lossless and retain ordering"
+        );
+    }
+
+    #[test]
+    fn test_reactor_async_write_queue_large_burst() {
+        let (sender, _receiver) = channel();
+        let proxy = EventLoopProxy::new(sender, -1);
+        let reactor = PtyReactor::new(proxy).expect("PtyReactor::new failed");
+        let handle = reactor.handle();
+
+        let mut fds = [0; 2];
+        let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(res, 0);
+
+        // fds[1] is write end, wrapped in PtyMaster
+        let pty = Arc::new(PtyMaster::new(fds[1], None));
+        let mut read_end = unsafe { File::from_raw_fd(fds[0]) };
+
+        handle.register(1, 0, 77, pty).expect("register failed");
+
+        // 200KB of test data (far exceeds default 64KB Linux pipe buffer capacity, forcing EPOLLOUT queue)
+        let total_bytes = 200 * 1024;
+        let test_data: Vec<u8> = (0..total_bytes).map(|i| (i % 251) as u8).collect();
+
+        let mut reader_buf = vec![0u8; total_bytes];
+        let reader_thread = thread::spawn(move || {
+            use std::io::Read;
+            read_end.read_exact(&mut reader_buf).unwrap();
+            reader_buf
+        });
+
+        // Queue the large write through reactor
+        handle.write(1, 0, 77, test_data.clone()).unwrap();
+
+        let received = reader_thread.join().unwrap();
+        assert_eq!(received.len(), test_data.len());
+        assert_eq!(
+            received, test_data,
+            "Async write queue must deliver burst data completely and losslessly"
         );
     }
 }
