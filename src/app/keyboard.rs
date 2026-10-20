@@ -400,10 +400,11 @@ impl WindowState {
         }
 
         // ── 2. PTY Input Translation and Dispatch ─────────────────────────────
-        let (cursor_keys_mode, kitty_flags, scroll_on_keystroke) = {
+        let (cursor_keys_mode, keypad_application_mode, kitty_flags, scroll_on_keystroke) = {
             let active_term = &self.active_pane().terminal;
             (
                 active_term.cursor_keys_mode,
+                active_term.keypad_application_mode,
                 active_term.kitty_keyboard_flags,
                 active_term.scroll_on_keystroke,
             )
@@ -413,6 +414,7 @@ impl WindowState {
             text,
             modifiers,
             cursor_keys_mode,
+            keypad_application_mode,
             kitty_flags,
         ) {
             log::debug!("PTY write: {} bytes: {:?}", bytes.len(), bytes.as_slice());

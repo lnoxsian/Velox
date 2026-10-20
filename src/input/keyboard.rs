@@ -1,4 +1,4 @@
-use crate::window::event::{Key, ModifiersState, NamedKey};
+use crate::window::event::{Key, KeypadKey, ModifiersState, NamedKey};
 use smallvec::{SmallVec, smallvec};
 
 #[inline(always)]
@@ -47,6 +47,7 @@ pub fn translate_key(
     text: Option<&str>,
     modifiers: ModifiersState,
     cursor_keys_mode: bool,
+    keypad_application_mode: bool,
     kitty_flags: u16,
 ) -> Option<SmallVec<[u8; 16]>> {
     let has_shift = modifiers.shift_key();
@@ -103,6 +104,32 @@ pub fn translate_key(
         }
     }
 
+    // ── 1.5 Keypad Application Mode (DECKPAM) ────────────────────────────────
+    if keypad_application_mode && !has_ctrl && !has_alt && !has_super {
+        if let Key::Keypad(kp) = key {
+            match kp {
+                KeypadKey::Num0 => return Some(SmallVec::from_slice(b"\x1bOp")),
+                KeypadKey::Num1 => return Some(SmallVec::from_slice(b"\x1bOq")),
+                KeypadKey::Num2 => return Some(SmallVec::from_slice(b"\x1bOr")),
+                KeypadKey::Num3 => return Some(SmallVec::from_slice(b"\x1bOs")),
+                KeypadKey::Num4 => return Some(SmallVec::from_slice(b"\x1bOt")),
+                KeypadKey::Num5 => return Some(SmallVec::from_slice(b"\x1bOu")),
+                KeypadKey::Num6 => return Some(SmallVec::from_slice(b"\x1bOv")),
+                KeypadKey::Num7 => return Some(SmallVec::from_slice(b"\x1bOw")),
+                KeypadKey::Num8 => return Some(SmallVec::from_slice(b"\x1bOx")),
+                KeypadKey::Num9 => return Some(SmallVec::from_slice(b"\x1bOy")),
+                KeypadKey::Decimal => return Some(SmallVec::from_slice(b"\x1bOn")),
+                KeypadKey::Plus => return Some(SmallVec::from_slice(b"\x1bOk")),
+                KeypadKey::Minus => return Some(SmallVec::from_slice(b"\x1bOm")),
+                KeypadKey::Multiply => return Some(SmallVec::from_slice(b"\x1bOj")),
+                KeypadKey::Divide => return Some(SmallVec::from_slice(b"\x1bOo")),
+                KeypadKey::Equal => return Some(SmallVec::from_slice(b"\x1bOX")),
+                KeypadKey::Separator => return Some(SmallVec::from_slice(b"\x1bOl")),
+                KeypadKey::Enter => return Some(SmallVec::from_slice(b"\x1bOM")),
+            }
+        }
+    }
+
     // ── 2. Shift+Tab (Cursor Backward Tab / CBT) ─────────────────────────────
     if has_shift && matches!(key, Key::Named(NamedKey::Tab)) {
         return Some(SmallVec::from_slice(b"\x1b[Z"));
@@ -129,6 +156,13 @@ pub fn translate_key(
                     }
                 }
             }
+            Key::Keypad(kp) => match kp {
+                KeypadKey::Num2 => Some(0),
+                KeypadKey::Num6 => Some(30),
+                KeypadKey::Minus => Some(31),
+                KeypadKey::Enter => Some(10),
+                _ => None,
+            },
             Key::Named(NamedKey::Space) => Some(0),
             _ => None,
         };
@@ -391,6 +425,43 @@ pub fn translate_key(
             }
         }
 
+        Key::Keypad(kp) => match kp {
+            KeypadKey::Enter => {
+                if has_alt {
+                    Some(smallvec![27, 13])
+                } else {
+                    Some(smallvec![13])
+                }
+            }
+            _ => {
+                let byte = match kp {
+                    KeypadKey::Num0 => b'0',
+                    KeypadKey::Num1 => b'1',
+                    KeypadKey::Num2 => b'2',
+                    KeypadKey::Num3 => b'3',
+                    KeypadKey::Num4 => b'4',
+                    KeypadKey::Num5 => b'5',
+                    KeypadKey::Num6 => b'6',
+                    KeypadKey::Num7 => b'7',
+                    KeypadKey::Num8 => b'8',
+                    KeypadKey::Num9 => b'9',
+                    KeypadKey::Decimal => b'.',
+                    KeypadKey::Plus => b'+',
+                    KeypadKey::Minus => b'-',
+                    KeypadKey::Multiply => b'*',
+                    KeypadKey::Divide => b'/',
+                    KeypadKey::Equal => b'=',
+                    KeypadKey::Separator => b',',
+                    KeypadKey::Enter => unreachable!(),
+                };
+                if has_alt {
+                    Some(smallvec![27, byte])
+                } else {
+                    Some(smallvec![byte])
+                }
+            }
+        },
+
         _ => None,
     }
 }
@@ -407,6 +478,7 @@ mod tests {
             None,
             ModifiersState::SHIFT,
             false,
+            false,
             0,
         );
         assert_eq!(cbt.as_deref(), Some(&b"\x1b[Z"[..]));
@@ -417,6 +489,7 @@ mod tests {
             None,
             ModifiersState::SHIFT,
             false,
+            false,
             1,
         );
         assert_eq!(kitty_cbt.as_deref(), Some(&b"\x1b[9;2u"[..]));
@@ -426,6 +499,7 @@ mod tests {
             &Key::Named(NamedKey::Tab),
             Some("\t"),
             ModifiersState::empty(),
+            false,
             false,
             0,
         );
@@ -440,6 +514,7 @@ mod tests {
             Some("c"),
             ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_c.as_deref(), Some(&[3][..]));
@@ -449,6 +524,7 @@ mod tests {
             &Key::Character("x".to_string()),
             Some("x"),
             ModifiersState::ALT,
+            false,
             false,
             0,
         );
@@ -460,6 +536,7 @@ mod tests {
             Some("a"),
             ModifiersState::CONTROL | ModifiersState::ALT,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_alt_a.as_deref(), Some(&[27, 1][..]));
@@ -469,6 +546,7 @@ mod tests {
             &Key::Character("c".to_string()),
             Some("c"),
             ModifiersState::CONTROL | ModifiersState::ALT,
+            false,
             false,
             0,
         );
@@ -480,6 +558,7 @@ mod tests {
             Some("r"),
             ModifiersState::CONTROL | ModifiersState::SHIFT,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_shift_r.as_deref(), Some(&[18][..]));
@@ -490,6 +569,7 @@ mod tests {
             Some("-"),
             ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_minus.as_deref(), Some(&[31][..]));
@@ -499,6 +579,7 @@ mod tests {
             &Key::Character("`".to_string()),
             Some("`"),
             ModifiersState::CONTROL,
+            false,
             false,
             0,
         );
@@ -513,6 +594,7 @@ mod tests {
             None,
             ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_up.as_deref(), Some(&b"\x1b[1;5A"[..]));
@@ -522,6 +604,7 @@ mod tests {
             &Key::Named(NamedKey::ArrowUp),
             None,
             ModifiersState::ALT,
+            false,
             false,
             0,
         );
@@ -533,6 +616,7 @@ mod tests {
             None,
             ModifiersState::CONTROL | ModifiersState::SHIFT,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_shift_up.as_deref(), Some(&b"\x1b[1;6A"[..]));
@@ -543,6 +627,7 @@ mod tests {
             None,
             ModifiersState::CONTROL | ModifiersState::ALT,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_alt_up.as_deref(), Some(&b"\x1b[1;7A"[..]));
@@ -552,6 +637,7 @@ mod tests {
             &Key::Named(NamedKey::ArrowUp),
             None,
             ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT,
+            false,
             false,
             0,
         );
@@ -566,6 +652,7 @@ mod tests {
             None,
             ModifiersState::SHIFT,
             false,
+            false,
             0,
         );
         assert_eq!(shift_home.as_deref(), Some(&b"\x1b[1;2H"[..]));
@@ -575,6 +662,7 @@ mod tests {
             &Key::Named(NamedKey::End),
             None,
             ModifiersState::CONTROL,
+            false,
             false,
             0,
         );
@@ -586,6 +674,7 @@ mod tests {
             None,
             ModifiersState::ALT,
             false,
+            false,
             0,
         );
         assert_eq!(alt_del.as_deref(), Some(&b"\x1b[3;3~"[..]));
@@ -595,6 +684,7 @@ mod tests {
             &Key::Named(NamedKey::Insert),
             None,
             ModifiersState::CONTROL | ModifiersState::SHIFT,
+            false,
             false,
             0,
         );
@@ -606,6 +696,7 @@ mod tests {
             None,
             ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_pgup.as_deref(), Some(&b"\x1b[5;5~"[..]));
@@ -615,6 +706,7 @@ mod tests {
             &Key::Named(NamedKey::PageDown),
             None,
             ModifiersState::ALT,
+            false,
             false,
             0,
         );
@@ -629,6 +721,7 @@ mod tests {
             None,
             ModifiersState::SHIFT,
             false,
+            false,
             0,
         );
         assert_eq!(shift_f1.as_deref(), Some(&b"\x1b[1;2P"[..]));
@@ -638,6 +731,7 @@ mod tests {
             &Key::Named(NamedKey::F4),
             None,
             ModifiersState::ALT,
+            false,
             false,
             0,
         );
@@ -649,6 +743,7 @@ mod tests {
             None,
             ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_f5.as_deref(), Some(&b"\x1b[15;5~"[..]));
@@ -658,6 +753,7 @@ mod tests {
             &Key::Named(NamedKey::F12),
             None,
             ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT,
+            false,
             false,
             0,
         );
@@ -672,12 +768,13 @@ mod tests {
             None,
             ModifiersState::empty(),
             false,
+            false,
             0,
         );
         assert_eq!(dead.as_deref(), Some(&b"~"[..]));
 
         // Alt+dead circumflex
-        let alt_dead = translate_key(&Key::Dead(Some('^')), None, ModifiersState::ALT, false, 0);
+        let alt_dead = translate_key(&Key::Dead(Some('^')), None, ModifiersState::ALT, false, false, 0);
         assert_eq!(alt_dead.as_deref(), Some(&b"\x1b^"[..]));
 
         // Resolved text from AltGr or composed key (e.g. '@' or '€')
@@ -685,6 +782,7 @@ mod tests {
             &Key::Character("€".to_string()),
             Some("€"),
             ModifiersState::empty(),
+            false,
             false,
             0,
         );
@@ -699,6 +797,7 @@ mod tests {
             None,
             ModifiersState::SUPER,
             false,
+            false,
             0,
         );
         assert_eq!(super_up.as_deref(), Some(&b"\x1b[1;9A"[..]));
@@ -709,6 +808,7 @@ mod tests {
             None,
             ModifiersState::SUPER | ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(super_ctrl_up.as_deref(), Some(&b"\x1b[1;13A"[..]));
@@ -718,6 +818,7 @@ mod tests {
             &Key::Character("a".to_string()),
             Some("a"),
             ModifiersState::SUPER,
+            false,
             false,
             1,
         );
@@ -732,6 +833,7 @@ mod tests {
                 None,
                 ModifiersState::SHIFT,
                 false,
+                false,
                 0
             )
             .is_none()
@@ -741,6 +843,7 @@ mod tests {
                 &Key::Named(NamedKey::Control),
                 None,
                 ModifiersState::CONTROL,
+                false,
                 false,
                 0
             )
@@ -752,6 +855,7 @@ mod tests {
                 None,
                 ModifiersState::ALT,
                 false,
+                false,
                 0
             )
             .is_none()
@@ -762,9 +866,37 @@ mod tests {
                 None,
                 ModifiersState::SUPER,
                 false,
+                false,
                 0
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn test_keypad_mode() {
+        // Numeric mode (keypad_application_mode = false)
+        let kp0 = translate_key(&Key::Keypad(KeypadKey::Num0), None, ModifiersState::empty(), false, false, 0);
+        assert_eq!(kp0.as_deref(), Some(&b"0"[..]));
+
+        let kp_enter = translate_key(&Key::Keypad(KeypadKey::Enter), None, ModifiersState::empty(), false, false, 0);
+        assert_eq!(kp_enter.as_deref(), Some(&[13][..]));
+
+        // Application mode (keypad_application_mode = true)
+        let app_kp0 = translate_key(&Key::Keypad(KeypadKey::Num0), None, ModifiersState::empty(), false, true, 0);
+        assert_eq!(app_kp0.as_deref(), Some(&b"\x1bOp"[..]));
+
+        let app_kp9 = translate_key(&Key::Keypad(KeypadKey::Num9), None, ModifiersState::empty(), false, true, 0);
+        assert_eq!(app_kp9.as_deref(), Some(&b"\x1bOy"[..]));
+
+        let app_kp_enter = translate_key(&Key::Keypad(KeypadKey::Enter), None, ModifiersState::empty(), false, true, 0);
+        assert_eq!(app_kp_enter.as_deref(), Some(&b"\x1bOM"[..]));
+
+        let app_kp_plus = translate_key(&Key::Keypad(KeypadKey::Plus), None, ModifiersState::empty(), false, true, 0);
+        assert_eq!(app_kp_plus.as_deref(), Some(&b"\x1bOk"[..]));
+
+        // In application mode with Ctrl modifier, falls back to control code
+        let ctrl_kp_enter = translate_key(&Key::Keypad(KeypadKey::Enter), None, ModifiersState::CONTROL, false, true, 0);
+        assert_eq!(ctrl_kp_enter.as_deref(), Some(&[10][..]));
     }
 }

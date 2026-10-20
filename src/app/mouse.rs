@@ -77,28 +77,95 @@ fn apply_mouse_modifiers(btn: u8, modifiers: ModifiersState) -> usize {
     btn_code
 }
 
-fn send_mouse_report(
-    pty: &crate::pty::master::PtyMaster,
-    mouse_sgr: bool,
+#[derive(Debug, Clone, Copy, Default)]
+struct MouseProtocol {
+    sgr: bool,
+    utf8: bool,
+    pixel: bool,
+}
+
+#[inline(always)]
+fn pane_pixel_coords(
+    pane_rect: &crate::app::split::PaneRect,
+    mouse_x: f64,
+    mouse_y: f64,
+) -> (usize, usize) {
+    let px = (pane_rect.x + pane_rect.padding_x) as f64;
+    let py = (pane_rect.y + pane_rect.padding_y) as f64;
+    let x = (mouse_x - px).max(0.0) as usize;
+    let y = (mouse_y - py).max(0.0) as usize;
+    (x, y)
+}
+
+#[inline]
+fn format_usize_into(mut n: usize, buf: &mut [u8]) -> usize {
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut temp = [0u8; 20];
+    let mut i = 0;
+    while n > 0 {
+        temp[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    for j in 0..i {
+        buf[j] = temp[i - 1 - j];
+    }
+    i
+}
+
+#[inline]
+fn format_mouse_report(
+    proto: MouseProtocol,
     btn_code: usize,
     col_idx: usize,
     row_idx: usize,
+    pixel_x: usize,
+    pixel_y: usize,
     is_release: bool,
-) {
-    let mut buf = [0u8; 32];
-    let written = if mouse_sgr {
-        use std::io::Write;
-        let mut cur = std::io::Cursor::new(&mut buf[..]);
-        let suffix = if is_release { 'm' } else { 'M' };
-        let _ = write!(
-            cur,
-            "\x1b[<{};{};{}{}",
-            btn_code,
-            col_idx + 1,
-            row_idx + 1,
-            suffix
-        );
-        cur.position() as usize
+    buf: &mut [u8; 64],
+) -> usize {
+    if proto.pixel || proto.sgr {
+        let suffix = if is_release { b'm' } else { b'M' };
+        let (x_coord, y_coord) = if proto.pixel {
+            (pixel_x + 1, pixel_y + 1)
+        } else {
+            (col_idx + 1, row_idx + 1)
+        };
+        buf[0] = 0x1b;
+        buf[1] = b'[';
+        buf[2] = b'<';
+        let mut offset = 3;
+        offset += format_usize_into(btn_code, &mut buf[offset..]);
+        buf[offset] = b';';
+        offset += 1;
+        offset += format_usize_into(x_coord, &mut buf[offset..]);
+        buf[offset] = b';';
+        offset += 1;
+        offset += format_usize_into(y_coord, &mut buf[offset..]);
+        buf[offset] = suffix;
+        offset + 1
+    } else if proto.utf8 {
+        let cb = if is_release { 32 + 3 } else { 32 + btn_code };
+        let cx = 32 + col_idx + 1;
+        let cy = 32 + row_idx + 1;
+        if let (Some(cb_char), Some(cx_char), Some(cy_char)) = (
+            char::from_u32(cb as u32),
+            char::from_u32(cx as u32),
+            char::from_u32(cy as u32),
+        ) {
+            let mut offset = 0;
+            buf[offset..offset + 3].copy_from_slice(b"\x1b[M");
+            offset += 3;
+            offset += cb_char.encode_utf8(&mut buf[offset..]).len();
+            offset += cx_char.encode_utf8(&mut buf[offset..]).len();
+            offset += cy_char.encode_utf8(&mut buf[offset..]).len();
+            offset
+        } else {
+            0
+        }
     } else {
         let cb = if is_release { 32 + 3 } else { 32 + btn_code };
         let cx = 32 + col_idx + 1;
@@ -114,7 +181,30 @@ fn send_mouse_report(
         } else {
             0
         }
-    };
+    }
+}
+
+fn send_mouse_report(
+    pty: &crate::pty::master::PtyMaster,
+    proto: MouseProtocol,
+    btn_code: usize,
+    col_idx: usize,
+    row_idx: usize,
+    pixel_x: usize,
+    pixel_y: usize,
+    is_release: bool,
+) {
+    let mut buf = [0u8; 64];
+    let written = format_mouse_report(
+        proto,
+        btn_code,
+        col_idx,
+        row_idx,
+        pixel_x,
+        pixel_y,
+        is_release,
+        &mut buf,
+    );
     if written > 0 {
         let _ = pty.write(&buf[..written]);
     }
@@ -184,16 +274,28 @@ impl WindowState {
                 self.last_mouse_pane_id = Some(drag_pane_id);
                 self.last_mouse_cell = (col_idx, row_idx);
 
-                let (mouse_mode, mouse_sgr, pty_master) = {
+                let (mouse_mode, mouse_proto, pty_master) = {
                     let tab = self.active_tab();
                     if let Some(pane) = tab.tree.find_pane(drag_pane_id) {
                         (
                             pane.terminal.mouse_mode,
-                            pane.terminal.mouse_sgr,
+                            MouseProtocol {
+                                sgr: pane.terminal.mouse_sgr,
+                                utf8: pane.terminal.mouse_utf8,
+                                pixel: pane.terminal.mouse_pixel,
+                            },
                             Some(pane.pty_master.clone()),
                         )
                     } else {
-                        (0, false, None)
+                        (
+                            0,
+                            MouseProtocol {
+                                sgr: false,
+                                utf8: false,
+                                pixel: false,
+                            },
+                            None,
+                        )
                     }
                 };
 
@@ -205,12 +307,15 @@ impl WindowState {
                     if let Some(pty_master) = pty_master {
                         let btn_code =
                             apply_mouse_modifiers(32 + self.last_mouse_button, modifiers);
+                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
                             &pty_master,
-                            mouse_sgr,
+                            mouse_proto,
                             btn_code,
                             col_idx,
                             row_idx,
+                            pixel_x,
+                            pixel_y,
                             false,
                         );
                     }
@@ -409,11 +514,15 @@ impl WindowState {
                 self.last_mouse_pane_id = Some(pane_rect.pane_id);
                 self.last_mouse_cell = (col_idx, row_idx);
 
-                let (mouse_mode, mouse_sgr, is_link, pty_master) = {
+                let (mouse_mode, mouse_proto, is_link, pty_master) = {
                     let tab = self.active_tab();
                     if let Some(pane) = tab.tree.find_pane(pane_rect.pane_id) {
                         let mouse_mode = pane.terminal.mouse_mode;
-                        let mouse_sgr = pane.terminal.mouse_sgr;
+                        let mouse_proto = MouseProtocol {
+                            sgr: pane.terminal.mouse_sgr,
+                            utf8: pane.terminal.mouse_utf8,
+                            pixel: pane.terminal.mouse_pixel,
+                        };
 
                         let is_link = if mouse_mode == 0
                             || modifiers.shift_key()
@@ -433,7 +542,7 @@ impl WindowState {
                         };
                         (
                             Some(mouse_mode),
-                            Some(mouse_sgr),
+                            Some(mouse_proto),
                             is_link,
                             Some(pane.pty_master.clone()),
                         )
@@ -442,8 +551,8 @@ impl WindowState {
                     }
                 };
 
-                if let (Some(mouse_mode), Some(mouse_sgr), Some(pty_master)) =
-                    (mouse_mode, mouse_sgr, pty_master)
+                if let (Some(mouse_mode), Some(mouse_proto), Some(pty_master)) =
+                    (mouse_mode, mouse_proto, pty_master)
                 {
                     if mouse_mode == 0 || modifiers.shift_key() || modifiers.control_key() {
                         if is_link {
@@ -458,7 +567,17 @@ impl WindowState {
                     let should_report_motion = mouse_mode == 1003 && !modifiers.shift_key();
 
                     if should_report_motion {
-                        send_mouse_report(&pty_master, mouse_sgr, 35, col_idx, row_idx, false);
+                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        send_mouse_report(
+                            &pty_master,
+                            mouse_proto,
+                            35,
+                            col_idx,
+                            row_idx,
+                            pixel_x,
+                            pixel_y,
+                            false,
+                        );
                     }
                 }
             }
@@ -507,13 +626,21 @@ impl WindowState {
                 if let Some(pane) = tab.tree.find_pane(pane_rect.pane_id) {
                     if pane.terminal.mouse_mode > 0 {
                         let btn = if lines > 0 { 64 } else { 65 };
+                        let proto = MouseProtocol {
+                            sgr: pane.terminal.mouse_sgr,
+                            utf8: pane.terminal.mouse_utf8,
+                            pixel: pane.terminal.mouse_pixel,
+                        };
+                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         for _ in 0..lines.abs() {
                             send_mouse_report(
                                 &pane.pty_master,
-                                pane.terminal.mouse_sgr,
+                                proto,
                                 btn,
                                 col_idx,
                                 row_idx,
+                                pixel_x,
+                                pixel_y,
                                 false,
                             );
                         }
@@ -756,12 +883,19 @@ impl WindowState {
                 }
             }
 
-            let (mouse_mode, mouse_sgr) = {
+            let (mouse_mode, mouse_proto) = {
                 let pane = match self.active_tab().tree.find_pane(clicked_pane_id) {
                     Some(p) => p,
                     None => return,
                 };
-                (pane.terminal.mouse_mode, pane.terminal.mouse_sgr)
+                (
+                    pane.terminal.mouse_mode,
+                    MouseProtocol {
+                        sgr: pane.terminal.mouse_sgr,
+                        utf8: pane.terminal.mouse_utf8,
+                        pixel: pane.terminal.mouse_pixel,
+                    },
+                )
             };
 
             let btn_code = match button {
@@ -784,7 +918,17 @@ impl WindowState {
                         .find_pane(clicked_pane_id)
                         .map(|p| p.pty_master.clone());
                     if let Some(pty) = pty_master {
-                        send_mouse_report(&pty, mouse_sgr, report_btn, col_idx, row_idx, false);
+                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        send_mouse_report(
+                            &pty,
+                            mouse_proto,
+                            report_btn,
+                            col_idx,
+                            row_idx,
+                            pixel_x,
+                            pixel_y,
+                            false,
+                        );
                     }
                 }
                 return;
@@ -952,12 +1096,19 @@ impl WindowState {
 
             let (col_idx, row_idx) = pane_cell_coords(&pane_rect, self.mouse_x, self.mouse_y);
 
-            let (mouse_mode, mouse_sgr) = {
+            let (mouse_mode, mouse_proto) = {
                 let pane = match self.active_tab().tree.find_pane(target_pane_id) {
                     Some(p) => p,
                     None => return,
                 };
-                (pane.terminal.mouse_mode, pane.terminal.mouse_sgr)
+                (
+                    pane.terminal.mouse_mode,
+                    MouseProtocol {
+                        sgr: pane.terminal.mouse_sgr,
+                        utf8: pane.terminal.mouse_utf8,
+                        pixel: pane.terminal.mouse_pixel,
+                    },
+                )
             };
 
             let btn_code = match button {
@@ -977,7 +1128,17 @@ impl WindowState {
                         .find_pane(target_pane_id)
                         .map(|p| p.pty_master.clone());
                     if let Some(pty) = pty_master {
-                        send_mouse_report(&pty, mouse_sgr, report_btn, col_idx, row_idx, true);
+                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        send_mouse_report(
+                            &pty,
+                            mouse_proto,
+                            report_btn,
+                            col_idx,
+                            row_idx,
+                            pixel_x,
+                            pixel_y,
+                            true,
+                        );
                     }
                 }
                 return;
@@ -1149,5 +1310,45 @@ mod tests {
                 assert!(!pane.terminal.grid.selection.active);
             }
         }
+    }
+
+    #[test]
+    fn test_mouse_reporting_protocols() {
+        let mut buf = [0u8; 64];
+
+        // 1. Legacy X10 mode
+        let proto_x10 = MouseProtocol { sgr: false, utf8: false, pixel: false };
+        let len = format_mouse_report(proto_x10, 0, 5, 10, 50, 100, false, &mut buf);
+        assert_eq!(&buf[..len], &[0x1b, b'[', b'M', 32, 32 + 6, 32 + 11]);
+
+        let len_rel = format_mouse_report(proto_x10, 0, 5, 10, 50, 100, true, &mut buf);
+        assert_eq!(&buf[..len_rel], &[0x1b, b'[', b'M', 32 + 3, 32 + 6, 32 + 11]);
+
+        // 2. SGR 1006 mode
+        let proto_sgr = MouseProtocol { sgr: true, utf8: false, pixel: false };
+        let len_sgr = format_mouse_report(proto_sgr, 0, 5, 10, 50, 100, false, &mut buf);
+        assert_eq!(std::str::from_utf8(&buf[..len_sgr]).unwrap(), "\x1b[<0;6;11M");
+
+        let len_sgr_rel = format_mouse_report(proto_sgr, 0, 5, 10, 50, 100, true, &mut buf);
+        assert_eq!(std::str::from_utf8(&buf[..len_sgr_rel]).unwrap(), "\x1b[<0;6;11m");
+
+        // 3. UTF-8 1005 mode (column > 223 encoding past single ASCII byte)
+        let proto_utf8 = MouseProtocol { sgr: false, utf8: true, pixel: false };
+        let len_utf8 = format_mouse_report(proto_utf8, 0, 250, 10, 2500, 100, false, &mut buf);
+        let s = std::str::from_utf8(&buf[..len_utf8]).unwrap();
+        assert!(s.starts_with("\x1b[M"));
+        let chars: Vec<char> = s[3..].chars().collect();
+        assert_eq!(chars.len(), 3);
+        assert_eq!(chars[0] as u32, 32);
+        assert_eq!(chars[1] as u32, 32 + 250 + 1);
+        assert_eq!(chars[2] as u32, 32 + 10 + 1);
+
+        // 4. SGR pixel 1016 mode
+        let proto_pixel = MouseProtocol { sgr: false, utf8: false, pixel: true };
+        let len_pixel = format_mouse_report(proto_pixel, 0, 5, 10, 120, 340, false, &mut buf);
+        assert_eq!(std::str::from_utf8(&buf[..len_pixel]).unwrap(), "\x1b[<0;121;341M");
+
+        let len_pixel_rel = format_mouse_report(proto_pixel, 0, 5, 10, 120, 340, true, &mut buf);
+        assert_eq!(std::str::from_utf8(&buf[..len_pixel_rel]).unwrap(), "\x1b[<0;121;341m");
     }
 }

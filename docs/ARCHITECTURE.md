@@ -95,11 +95,53 @@ Velox initializes native Linux windows and display surfaces via `create_window_a
 - **`FallbackManager` (`font/fallback.rs`)**: Automatically discovers missing glyphs across system fonts (Nerd Fonts, Powerline, emoji fonts) with an LRU cache bounded by a strict memory budget (`MAX_FALLBACK_BYTES = 64MB`).
 - **`SYSTEM_FONT_DB`**: Process-wide shared `fontdb::Database` initialized once to eliminate redundant font directory parsing across windows and tabs.
 
-### 6. Terminal State & ANSI Parsing (`terminal::`, `ansi::`)
+### 6. Terminal State & ANSI Parsing (`terminal::`, `ansi::`, `input::`)
 
-- **Byte Stream Parser (`ansi/`)**: Zero-allocation state machine decoding ANSI, CSI, OSC, and DCS byte sequences.
-- **`Terminal` (`terminal/terminal.rs`)**: Maintains active and alternate screen grids, cursor positions, graphic rendition attributes (SGR), bracketed paste, synchronized output, focus tracking, and semantic prompt markers (OSC-133).
-- **Hyperlink Engine (`hyperlink/`)**: Detects explicit OSC-8 hyperlinks and implicit HTTP(S) URLs with interactive mouse hover and click-to-open handlers.
+- **Byte Stream Parser (`ansi/`)**: High-performance, zero-allocation state machine decoding ANSI escape codes, CSI parameters/intermediates, OSC commands, and DCS control sequences.
+- **Terminal Modes & State Machine (`terminal/terminal.rs`, `ansi/csi.rs`)**:
+  - **ANSI & DEC Private Modes**:
+    - `CSI ? 1 h/l`: Application Cursor Keys (`DECCKM`)
+    - `CSI ? 5 h/l`: Reverse-Video Mode (`DECSCNM`)
+    - `CSI ? 6 h/l`: Origin Mode (`DECOM`) with `DECSTBM` scroll-margin offset calculations, boundary clamping, and relative DSR reports
+    - `CSI ? 7 h/l`: Auto-wrap Mode (`DECAWM`) with in-place right-margin overwrite protection when disabled
+    - `CSI ? 25 h/l`: Cursor Visibility (`DECTCEM`)
+    - `CSI ? 66 h/l` & `ESC =` / `ESC >`: Application Keypad Mode (`DECKPAM` / `DECKPNM`) emitting standard SS3 sequences
+    - `CSI 4 h/l`: Insert/Overwrite Mode (`IRM`) with dynamic rightward row cell shifting
+    - `CSI ? 1000/1002/1003/1005/1006/1016 h/l`: Complete mouse tracking (X10, button drag, any motion, UTF-8 coordinate encoding, SGR 1006, and SGR 1016 pixel coordinates)
+    - `CSI ? 1004 h/l`: Focus In/Out Event Reporting
+    - `CSI ? 2004 h/l`: Bracketed Paste Mode
+    - `CSI ? 2026 h/l`: Synchronized Output Mode (atomic frame buffering during burst updates)
+    - `CSI ? 47 / 1047 / 1048 / 1049 h/l`: Alternate Screen Buffer lifecycle with automatic screen clearing, homing, and cursor/mode isolation preventing state leakage between primary and alternate sessions
+    - `CSI ? <mode> s` / `CSI ? <mode> r`: Save and Restore DEC Private Modes
+    - `CSI ? <mode> $ p` & `CSI <mode> $ p`: `DECRQM` / `DECRPM` mode status query reports
+  - **Tab Stop Architecture**: Horizontal Tab Set (`ESC H`), Tab Clear (`CSI 0 g`, `CSI 3 g`), Cursor Backward Tab (`CSI Z`), and Forward Tab (`0x09`) respecting custom tab grids.
+  - **Terminal Resets**: Full Terminal Reset (`RIS`, `ESC c`) and Soft Terminal Reset (`DECSTR`, `CSI ! p`) restoring protocol state consistently according to DEC STD 070.
+  - **Dynamic Color Protocols**:
+    - OSC 4: Set and query all 256 indexed palette colors (`rgb:rrrr/gggg/bbbb`)
+    - OSC 104: Selective index reset or complete 256-color palette restoration
+    - OSC 10, 11, 12: Set and query foreground, background, and cursor colors with renderer damage invalidation
+    - OSC 110, 111, 112: Reset dynamic colors back to active theme defaults
+  - **Device & Capability Queries**:
+    - Primary Device Attributes: VT220 response (`\x1b[?62;c`)
+    - Secondary Device Attributes: VT220 DA2 (`\x1b[>0;10;0c`)
+    - Tertiary Device Attributes: DA3 (`\x1bP!|00000000\x1b\`)
+    - Device Status Report: `CSI 5 n` (OK) and `CSI 6 n` (CPR with origin-mode offset)
+    - XTGETTCAP: Advertised capabilities (RGB, TrueColor, 256 colors) with standard clean rejection (`\x1bP0+q\x1b\`) for unsupported queries to prevent application hangs
+  - **Keyboard & Mouse Forwarding (`src/input/keyboard.rs`, `src/app/mouse.rs`)**:
+    - Transparent passthrough for all unbound key combinations to active PTY (modified arrows, Shift+Tab CBT, Ctrl+letter control codes, Alt+printable keys, function keys, Super/Meta combinations)
+    - Kitty Keyboard Protocol support when negotiated
+    - Application Keypad SS3 generation in keypad mode
+    - Reliable mouse reporting honoring active modes (X10, SGR, UTF-8, pixel SGR) while maintaining local text selection and Ctrl+click hyperlinks when tracking is inactive
+  - **Safe Unicode & Grapheme Handling**:
+    - Zero-width character handling at column 0 without cursor drift
+    - Combining character registry encoding composite glyphs
+    - Automatic orphan cleanup: overwriting a wide character or continuation cell resets its partner cell to space
+  - **OSC Notifications & Safety**:
+    - OSC 7: Current working directory notification
+    - OSC 8: Explicit hyperlinks with mouse hover detection
+    - OSC 52: Clipboard access with bounded 10MB payload limit to prevent memory exhaustion
+    - OSC 133: Shell integration semantic prompt markers
+    - OSC 777: Desktop notifications with control character sanitization and rate-limiting
 
 ### 7. Screen Buffers & Infinite Scrollback (`screen::`)
 

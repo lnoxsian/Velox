@@ -1,4 +1,4 @@
-use crate::window::event::{Key, ModifiersState, NamedKey};
+use crate::window::event::{Key, KeypadKey, ModifiersState, NamedKey};
 use std::os::fd::AsRawFd;
 
 /// Key repeat timing configuration sent by compositor.
@@ -558,18 +558,30 @@ pub fn xkb_keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
         0xffff => (Some(Key::Named(NamedKey::Delete)), None),
 
         // Keypad keys
-        0xff8d => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),
-        0xffab => (Some(Key::Character("+".to_string())), Some("+".to_string())),
-        0xffad => (Some(Key::Character("-".to_string())), Some("-".to_string())),
-        0xffaa => (Some(Key::Character("*".to_string())), Some("*".to_string())),
-        0xffaf => (Some(Key::Character("/".to_string())), Some("/".to_string())),
-        0xffae => (Some(Key::Character(".".to_string())), Some(".".to_string())),
-        0xffac => (Some(Key::Character(",".to_string())), Some(",".to_string())),
-        0xffbd => (Some(Key::Character("=".to_string())), Some("=".to_string())),
+        0xff8d => (Some(Key::Keypad(KeypadKey::Enter)), Some("\r".to_string())),
+        0xffab => (Some(Key::Keypad(KeypadKey::Plus)), Some("+".to_string())),
+        0xffad => (Some(Key::Keypad(KeypadKey::Minus)), Some("-".to_string())),
+        0xffaa => (Some(Key::Keypad(KeypadKey::Multiply)), Some("*".to_string())),
+        0xffaf => (Some(Key::Keypad(KeypadKey::Divide)), Some("/".to_string())),
+        0xffae => (Some(Key::Keypad(KeypadKey::Decimal)), Some(".".to_string())),
+        0xffac => (Some(Key::Keypad(KeypadKey::Separator)), Some(",".to_string())),
+        0xffbd => (Some(Key::Keypad(KeypadKey::Equal)), Some("=".to_string())),
         0xffb0..=0xffb9 => {
-            let digit = (b'0' + (keysym - 0xffb0) as u8) as char;
-            let s = digit.to_string();
-            (Some(Key::Character(s.clone())), Some(s))
+            const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+            let idx = (keysym - 0xffb0) as usize;
+            let kp = match idx {
+                0 => KeypadKey::Num0,
+                1 => KeypadKey::Num1,
+                2 => KeypadKey::Num2,
+                3 => KeypadKey::Num3,
+                4 => KeypadKey::Num4,
+                5 => KeypadKey::Num5,
+                6 => KeypadKey::Num6,
+                7 => KeypadKey::Num7,
+                8 => KeypadKey::Num8,
+                _ => KeypadKey::Num9,
+            };
+            (Some(Key::Keypad(kp)), Some(DIGITS[idx].to_string()))
         }
         0xff95 => (Some(Key::Named(NamedKey::Home)), None),
         0xff96 => (Some(Key::Named(NamedKey::ArrowLeft)), None),

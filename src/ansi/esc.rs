@@ -8,33 +8,22 @@ pub fn handle_escape(byte: u8, terminal: &mut Terminal) {
         b'8' => {
             terminal.restore_cursor();
         }
+        b'=' => {
+            // DECKPAM - Application Keypad Mode
+            terminal.keypad_application_mode = true;
+        }
+        b'>' => {
+            // DECKPNM - Normal Keypad Mode
+            terminal.keypad_application_mode = false;
+        }
+        b'H' => {
+            // HTS - Horizontal Tab Set
+            let col = terminal.active_grid().cursor.x;
+            terminal.active_grid_mut().set_tab_stop(col);
+        }
         b'c' => {
             // RIS - Full Reset
-            terminal.reset_attrs();
-            terminal.set_alt_screen(false);
-            terminal.bracketed_paste_mode = false;
-            terminal.set_synchronized_output(false);
-            terminal.focus_tracking = false;
-            terminal.semantic_zone = crate::terminal::terminal::SemanticZone::Output;
-            terminal.prompt_marks.clear();
-            terminal.last_command_exit_code = None;
-            terminal.reset_kitty_keyboard();
-            terminal.title_stack.clear();
-            terminal.last_char = None;
-            terminal.theme.cursor_color = terminal.theme.initial_cursor_color;
-            terminal.theme.cursor_text_color = terminal.theme.initial_cursor_text_color;
-            let fg = terminal.current_fg;
-            let bg = terminal.current_bg;
-            terminal.grid.erase_display(3, fg, bg);
-            terminal.grid.cursor.x = 0;
-            terminal.grid.cursor.y = 0;
-            terminal.grid.cursor.shape = terminal.configured_cursor_shape;
-            terminal.grid.saved_cursor.shape = terminal.configured_cursor_shape;
-            terminal.alt_grid.erase_display(3, fg, bg);
-            terminal.alt_grid.cursor.x = 0;
-            terminal.alt_grid.cursor.y = 0;
-            terminal.alt_grid.cursor.shape = terminal.configured_cursor_shape;
-            terminal.alt_grid.saved_cursor.shape = terminal.configured_cursor_shape;
+            terminal.reset_to_defaults(false);
         }
         b'D' => {
             // Index (IND)

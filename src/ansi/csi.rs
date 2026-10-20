@@ -1,7 +1,32 @@
 use crate::screen::cell::{CellFlags, Color};
 use crate::terminal::terminal::Terminal;
 
-pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut Terminal) {
+#[inline]
+pub(crate) fn format_u32_into(mut n: u32, buf: &mut [u8]) -> usize {
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let mut temp = [0u8; 10];
+    let mut i = 0;
+    while n > 0 {
+        temp[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    for j in 0..i {
+        buf[j] = temp[i - 1 - j];
+    }
+    i
+}
+
+pub fn handle_csi(
+    action: u8,
+    params: &[u16],
+    prefix: Option<u8>,
+    intermediate: Option<u8>,
+    terminal: &mut Terminal,
+) {
     match action {
         b'm' => {
             // Select Graphic Rendition
@@ -137,11 +162,7 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
             let n = params.first().copied().unwrap_or(1).max(1) as usize;
             let active = terminal.active_grid_mut();
             for _ in 0..n {
-                if active.cursor.x > 0 {
-                    active.cursor.x = ((active.cursor.x.saturating_sub(1)) / 8) * 8;
-                } else {
-                    break;
-                }
+                active.cursor.x = active.prev_tab_stop(active.cursor.x);
             }
         }
         b't' => {
@@ -213,14 +234,24 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
         b'A' => {
             // Cursor Up
             let n = params.first().copied().unwrap_or(1) as usize;
+            let min_y = if terminal.origin_mode {
+                terminal.active_grid().scroll_region_top
+            } else {
+                0
+            };
             let active = terminal.active_grid_mut();
-            active.cursor.y = active.cursor.y.saturating_sub(n);
+            active.cursor.y = active.cursor.y.saturating_sub(n).max(min_y);
         }
         b'B' => {
             // Cursor Down
             let n = params.first().copied().unwrap_or(1) as usize;
+            let max_y = if terminal.origin_mode {
+                terminal.active_grid().scroll_region_bottom
+            } else {
+                terminal.active_grid().height.saturating_sub(1)
+            };
             let active = terminal.active_grid_mut();
-            active.cursor.y = (active.cursor.y + n).min(active.height - 1);
+            active.cursor.y = (active.cursor.y + n).min(max_y);
         }
         b'C' => {
             // Cursor Forward
@@ -265,8 +296,13 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
             // Cursor Position
             let r = params.first().copied().unwrap_or(1).saturating_sub(1) as usize;
             let c = params.get(1).copied().unwrap_or(1).saturating_sub(1) as usize;
+            let origin_mode = terminal.origin_mode;
             let active = terminal.active_grid_mut();
-            active.cursor.y = r.min(active.height - 1);
+            if origin_mode {
+                active.cursor.y = (active.scroll_region_top + r).min(active.scroll_region_bottom);
+            } else {
+                active.cursor.y = r.min(active.height - 1);
+            }
             active.cursor.x = c.min(active.width - 1);
         }
         b'J' => {
@@ -283,6 +319,16 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
             let bg = terminal.current_bg;
             terminal.active_grid_mut().erase_line(mode, fg, bg);
         }
+        b'g' => {
+            // Tab Clear (TBC)
+            let op = params.first().copied().unwrap_or(0);
+            if op == 0 {
+                let col = terminal.active_grid().cursor.x;
+                terminal.active_grid_mut().clear_tab_stop(col);
+            } else if op == 3 {
+                terminal.active_grid_mut().clear_all_tab_stops();
+            }
+        }
         b'h' | b'l' => {
             // Modes
             let active = action == b'h';
@@ -292,8 +338,21 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                         1 => {
                             terminal.cursor_keys_mode = active;
                         }
+                        5 => {
+                            terminal.reverse_video = active;
+                            terminal.active_grid_mut().mark_all_dirty();
+                        }
+                        6 => {
+                            terminal.set_origin_mode(active);
+                        }
+                        7 => {
+                            terminal.set_auto_wrap(active);
+                        }
                         25 => {
                             terminal.active_grid_mut().cursor.visible = active;
+                        }
+                        66 => {
+                            terminal.keypad_application_mode = active;
                         }
                         1000 => {
                             terminal.mouse_mode = if active { 1000 } else { 0 };
@@ -304,11 +363,17 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                         1003 => {
                             terminal.mouse_mode = if active { 1003 } else { 0 };
                         }
+                        1004 => {
+                            terminal.focus_tracking = active;
+                        }
+                        1005 => {
+                            terminal.mouse_utf8 = active;
+                        }
                         1006 => {
                             terminal.mouse_sgr = active;
                         }
-                        1004 => {
-                            terminal.focus_tracking = active;
+                        1016 => {
+                            terminal.mouse_pixel = active;
                         }
                         2004 => {
                             terminal.bracketed_paste_mode = active;
@@ -332,11 +397,23 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                                 terminal.set_alt_screen(true);
                                 let fg = terminal.current_fg;
                                 let bg = terminal.current_bg;
-                                terminal.active_grid_mut().erase_display(2, fg, bg);
+                                let active_grid = terminal.active_grid_mut();
+                                active_grid.erase_display(2, fg, bg);
+                                active_grid.cursor.x = 0;
+                                active_grid.cursor.y = 0;
                             } else {
                                 terminal.set_alt_screen(false);
                                 terminal.restore_cursor();
                             }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if prefix.is_none() {
+                for &mode in params {
+                    match mode {
+                        4 => {
+                            terminal.set_insert_mode(active);
                         }
                         _ => {}
                     }
@@ -347,17 +424,76 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
             // Device Status Report (DSR)
             if params.first() == Some(&6) {
                 let active = terminal.active_grid();
-                let response = format!("\x1b[{};{}R", active.cursor.y + 1, active.cursor.x + 1);
-                terminal.send_to_shell(response.as_bytes());
+                let (r, c) = if terminal.origin_mode {
+                    (
+                        active
+                            .cursor
+                            .y
+                            .saturating_sub(active.scroll_region_top)
+                            + 1,
+                        active.cursor.x + 1,
+                    )
+                } else {
+                    (active.cursor.y + 1, active.cursor.x + 1)
+                };
+                let mut buf = [0u8; 32];
+                buf[0] = 0x1b;
+                buf[1] = b'[';
+                let mut len = 2;
+                len += format_u32_into(r as u32, &mut buf[len..]);
+                buf[len] = b';';
+                len += 1;
+                len += format_u32_into(c as u32, &mut buf[len..]);
+                buf[len] = b'R';
+                len += 1;
+                terminal.send_to_shell(&buf[..len]);
             } else if params.first() == Some(&5) {
                 terminal.send_to_shell(b"\x1b[0n");
             }
         }
         b'r' => {
-            // Set Scroll Margins (DECSTBM)
-            let top = params.first().copied().unwrap_or(0) as usize;
-            let bottom = params.get(1).copied().unwrap_or(0) as usize;
-            terminal.active_grid_mut().set_scroll_region(top, bottom);
+            if prefix == Some(b'?') {
+                // Restore DEC Private Mode (CSI ? <mode> r)
+                for &mode in params {
+                    if let Some(val) = terminal.saved_dec_modes.get(&mode) {
+                        match mode {
+                            1 => terminal.cursor_keys_mode = val,
+                            5 => {
+                                terminal.reverse_video = val;
+                                terminal.active_grid_mut().mark_all_dirty();
+                            }
+                            6 => terminal.set_origin_mode(val),
+                            7 => terminal.set_auto_wrap(val),
+                            25 => terminal.active_grid_mut().cursor.visible = val,
+                            66 => terminal.keypad_application_mode = val,
+                            1000 => terminal.mouse_mode = if val { 1000 } else { 0 },
+                            1002 => terminal.mouse_mode = if val { 1002 } else { 0 },
+                            1003 => terminal.mouse_mode = if val { 1003 } else { 0 },
+                            1004 => terminal.focus_tracking = val,
+                            1005 => terminal.mouse_utf8 = val,
+                            1006 => terminal.mouse_sgr = val,
+                            1016 => terminal.mouse_pixel = val,
+                            2004 => terminal.bracketed_paste_mode = val,
+                            2026 => terminal.set_synchronized_output(val),
+                            _ => {}
+                        }
+                    }
+                }
+            } else {
+                // Set Scroll Margins (DECSTBM)
+                let top = params.first().copied().unwrap_or(0) as usize;
+                let bottom = params.get(1).copied().unwrap_or(0) as usize;
+                terminal.active_grid_mut().set_scroll_region(top, bottom);
+                let origin_mode = terminal.origin_mode;
+                let active = terminal.active_grid_mut();
+                if origin_mode {
+                    active.cursor.y = active.scroll_region_top;
+                    active.cursor.x = 0;
+                } else {
+                    active.cursor.y = 0;
+                    active.cursor.x = 0;
+                }
+            }
         }
         b'S' => {
             // Scroll Up (Pan Up)
@@ -381,16 +517,42 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
                 }
                 Some(b'=') => {
                     // Tertiary Device Attributes (DA3): `CSI = c`
+                    terminal.send_to_shell(b"\x1bP!|00000000\x1b\\");
                 }
                 _ => {
-                    // Primary Device Attributes (DA1): `CSI c` or `CSI 0 c`
-                    terminal.send_to_shell(b"\x1b[?6c");
+                    // Primary Device Attributes (DA1): `CSI c` or `CSI 0 c` (VT220 conformance)
+                    terminal.send_to_shell(b"\x1b[?62;c");
                 }
             }
         }
         b's' => {
-            // Save Cursor
-            terminal.save_cursor();
+            if prefix == Some(b'?') {
+                // Save DEC Private Mode (CSI ? <mode> s)
+                for &mode in params {
+                    let val = match mode {
+                        1 => terminal.cursor_keys_mode,
+                        5 => terminal.reverse_video,
+                        6 => terminal.origin_mode,
+                        7 => terminal.auto_wrap,
+                        25 => terminal.active_grid().cursor.visible,
+                        66 => terminal.keypad_application_mode,
+                        1000 => terminal.mouse_mode == 1000,
+                        1002 => terminal.mouse_mode == 1002,
+                        1003 => terminal.mouse_mode == 1003,
+                        1004 => terminal.focus_tracking,
+                        1005 => terminal.mouse_utf8,
+                        1006 => terminal.mouse_sgr,
+                        1016 => terminal.mouse_pixel,
+                        2004 => terminal.bracketed_paste_mode,
+                        2026 => terminal.synchronized_output,
+                        _ => false,
+                    };
+                    terminal.saved_dec_modes.insert(mode, val);
+                }
+            } else {
+                // Save Cursor
+                terminal.save_cursor();
+            }
         }
         b'u' => {
             match prefix {
@@ -434,8 +596,13 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
         b'd' => {
             // Vertical Line Position Absolute (VPA)
             let row = params.first().copied().unwrap_or(1).saturating_sub(1) as usize;
+            let origin_mode = terminal.origin_mode;
             let active = terminal.active_grid_mut();
-            active.cursor.y = row.min(active.height - 1);
+            if origin_mode {
+                active.cursor.y = (active.scroll_region_top + row).min(active.scroll_region_bottom);
+            } else {
+                active.cursor.y = row.min(active.height - 1);
+            }
         }
         b'E' => {
             // Cursor Next Line (CNL)
@@ -517,14 +684,62 @@ pub fn handle_csi(action: u8, params: &[u16], prefix: Option<u8>, terminal: &mut
             }
         }
         b'p' => {
-            if prefix == Some(b'!') {
+            if prefix == Some(b'!') || intermediate == Some(b'!') {
                 // DECSTR - Soft Terminal Reset
-                terminal.reset_kitty_keyboard();
-            } else if prefix == Some(b'?') && params.first() == Some(&2026) {
-                // DECRPM - DEC Private Mode Report
-                let status = if terminal.synchronized_output { 1 } else { 2 };
-                let response = format!("\x1b[?2026;{}$y", status);
-                terminal.send_to_shell(response.as_bytes());
+                terminal.reset_to_defaults(true);
+            } else if intermediate == Some(b'$') {
+                // DECRQM / DECRPM - Mode Query Report
+                let mode = params.first().copied().unwrap_or(0);
+                if prefix == Some(b'?') {
+                    let status = match mode {
+                        1 => if terminal.cursor_keys_mode { 1 } else { 2 },
+                        5 => if terminal.reverse_video { 1 } else { 2 },
+                        6 => if terminal.origin_mode { 1 } else { 2 },
+                        7 => if terminal.auto_wrap { 1 } else { 2 },
+                        25 => if terminal.active_grid().cursor.visible { 1 } else { 2 },
+                        66 => if terminal.keypad_application_mode { 1 } else { 2 },
+                        1000 => if terminal.mouse_mode == 1000 { 1 } else { 2 },
+                        1002 => if terminal.mouse_mode == 1002 { 1 } else { 2 },
+                        1003 => if terminal.mouse_mode == 1003 { 1 } else { 2 },
+                        1004 => if terminal.focus_tracking { 1 } else { 2 },
+                        1005 => if terminal.mouse_utf8 { 1 } else { 2 },
+                        1006 => if terminal.mouse_sgr { 1 } else { 2 },
+                        1016 => if terminal.mouse_pixel { 1 } else { 2 },
+                        2004 => if terminal.bracketed_paste_mode { 1 } else { 2 },
+                        2026 => if terminal.synchronized_output { 1 } else { 2 },
+                        _ => 0,
+                    };
+                    let mut buf = [0u8; 32];
+                    buf[0] = 0x1b;
+                    buf[1] = b'[';
+                    buf[2] = b'?';
+                    let mut len = 3;
+                    len += format_u32_into(mode as u32, &mut buf[len..]);
+                    buf[len] = b';';
+                    len += 1;
+                    len += format_u32_into(status as u32, &mut buf[len..]);
+                    buf[len] = b'$';
+                    buf[len + 1] = b'y';
+                    len += 2;
+                    terminal.send_to_shell(&buf[..len]);
+                } else if prefix.is_none() {
+                    let status = match mode {
+                        4 => if terminal.insert_mode { 1 } else { 2 },
+                        _ => 0,
+                    };
+                    let mut buf = [0u8; 32];
+                    buf[0] = 0x1b;
+                    buf[1] = b'[';
+                    let mut len = 2;
+                    len += format_u32_into(mode as u32, &mut buf[len..]);
+                    buf[len] = b';';
+                    len += 1;
+                    len += format_u32_into(status as u32, &mut buf[len..]);
+                    buf[len] = b'$';
+                    buf[len + 1] = b'y';
+                    len += 2;
+                    terminal.send_to_shell(&buf[..len]);
+                }
             }
         }
         _ => {}

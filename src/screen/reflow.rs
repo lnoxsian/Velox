@@ -333,6 +333,8 @@ impl Grid {
         self.scroll_region_bottom = new_h.saturating_sub(1);
         self.row_offset = 0;
 
+        self.tab_stops.resize(new_w);
+
         self.cursor.x = new_cursor_col.min(new_w.saturating_sub(1));
         self.cursor.y = if new_cursor_row_idx >= grid_start {
             (new_cursor_row_idx - grid_start).min(new_h.saturating_sub(1))
@@ -372,7 +374,7 @@ mod tests {
             term.resize(w, 24);
         }
 
-        assert!(term.grid.scrollback.len() > 0);
+        assert!(!term.grid.scrollback.is_empty());
 
         // Verify that in the visible grid, every line is distinct and non-duplicated
         let mut non_empty_rows: Vec<String> = Vec::new();

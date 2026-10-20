@@ -1,4 +1,5 @@
 use crate::screen::cell::Color;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CursorColorConfig {
@@ -27,6 +28,8 @@ pub struct Theme {
     pub initial_fg: Color,
     pub initial_bg: Color,
     pub initial_ansi_colors: [Color; 16],
+    pub palette_256: Arc<[Color; 256]>,
+    pub initial_palette_256: Arc<[Color; 256]>,
     pub cursor_color: Option<Color>,
     pub cursor_text_color: Option<Color>,
     pub cursor_color_mode: CursorColorConfig,
@@ -48,17 +51,15 @@ impl Theme {
         for c in &mut ansi_colors {
             *c = c.dim(amount);
         }
-        let mut initial_ansi_colors = self.initial_ansi_colors;
-        for c in &mut initial_ansi_colors {
-            *c = c.dim(amount);
-        }
         Self {
             default_fg: self.default_fg.dim(amount),
             default_bg: self.default_bg,
             ansi_colors,
-            initial_fg: self.initial_fg.dim(amount),
+            initial_fg: self.initial_fg,
             initial_bg: self.initial_bg,
-            initial_ansi_colors,
+            initial_ansi_colors: self.initial_ansi_colors,
+            palette_256: Arc::clone(&self.palette_256),
+            initial_palette_256: Arc::clone(&self.initial_palette_256),
             cursor_color: self.cursor_color.map(|c| c.dim(amount)),
             cursor_text_color: self.cursor_text_color.map(|c| c.dim(amount)),
             cursor_color_mode: match self.cursor_color_mode {
@@ -69,8 +70,8 @@ impl Theme {
                 CursorColorConfig::Custom(c) => CursorColorConfig::Custom(c.dim(amount)),
                 other => other,
             },
-            initial_cursor_color: self.initial_cursor_color.map(|c| c.dim(amount)),
-            initial_cursor_text_color: self.initial_cursor_text_color.map(|c| c.dim(amount)),
+            initial_cursor_color: self.initial_cursor_color,
+            initial_cursor_text_color: self.initial_cursor_text_color,
             tab_accent_color: self.tab_accent_color,
             tab_accent_color_mode: self.tab_accent_color_mode,
             initial_tab_accent_color: self.initial_tab_accent_color,
@@ -171,6 +172,7 @@ impl Theme {
                 b: 240,
             }, // Bright White
         ];
+        let palette_256 = Arc::new(Self::generate_default_256_palette(&ansi_colors));
         Self {
             default_fg,
             default_bg,
@@ -178,6 +180,8 @@ impl Theme {
             initial_fg: default_fg,
             initial_bg: default_bg,
             initial_ansi_colors: ansi_colors,
+            palette_256: Arc::clone(&palette_256),
+            initial_palette_256: palette_256,
             cursor_color: None,
             cursor_text_color: None,
             cursor_color_mode: CursorColorConfig::Default,
@@ -294,6 +298,7 @@ impl Theme {
                 }
             }
         }
+        theme.palette_256 = Arc::new(Self::generate_default_256_palette(&theme.ansi_colors));
         theme.save_initial_colors();
         theme
     }
@@ -302,6 +307,7 @@ impl Theme {
         self.initial_fg = self.default_fg;
         self.initial_bg = self.default_bg;
         self.initial_ansi_colors = self.ansi_colors;
+        self.initial_palette_256 = Arc::clone(&self.palette_256);
         self.initial_cursor_color = self.cursor_color;
         self.initial_cursor_text_color = self.cursor_text_color;
         self.initial_tab_accent_color = self.tab_accent_color;
@@ -398,23 +404,30 @@ impl Theme {
         self.ansi_colors[(idx as usize) % 16]
     }
 
-    pub fn get_256_color(&self, idx: u8) -> Color {
-        if idx < 16 {
-            self.ansi_colors[idx as usize]
-        } else if idx < 232 {
-            let val = idx - 16;
+    pub fn generate_default_256_palette(ansi: &[Color; 16]) -> [Color; 256] {
+        let mut palette = [Color { r: 0, g: 0, b: 0 }; 256];
+        palette[..16].copy_from_slice(ansi);
+        for idx in 16..232 {
+            let val = (idx - 16) as u8;
             let r = (val / 36) * 51;
             let g = ((val % 36) / 6) * 51;
             let b = (val % 6) * 51;
-            Color { r, g, b }
-        } else {
-            let gray = 8 + (idx - 232) * 10;
-            Color {
+            palette[idx] = Color { r, g, b };
+        }
+        for idx in 232..256 {
+            let gray = 8 + (idx as u8 - 232) * 10;
+            palette[idx] = Color {
                 r: gray,
                 g: gray,
                 b: gray,
-            }
+            };
         }
+        palette
+    }
+
+    #[inline(always)]
+    pub fn get_256_color(&self, idx: u8) -> Color {
+        self.palette_256[idx as usize]
     }
 }
 

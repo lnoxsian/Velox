@@ -19,6 +19,78 @@ pub struct PromptMark {
     pub exit_code: Option<i32>,
 }
 
+/// Compact zero-allocation bitfield for saving and restoring DEC private modes
+/// (CSI ? <mode> s / CSI ? <mode> r). Occupies only 8 bytes inline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SavedDecModes {
+    pub saved_mask: u32,
+    pub values_mask: u32,
+}
+
+impl SavedDecModes {
+    pub const fn new() -> Self {
+        Self {
+            saved_mask: 0,
+            values_mask: 0,
+        }
+    }
+
+    #[inline]
+    const fn mode_to_bit(mode: u16) -> Option<u8> {
+        match mode {
+            1 => Some(0),
+            5 => Some(1),
+            6 => Some(2),
+            7 => Some(3),
+            25 => Some(4),
+            66 => Some(5),
+            1000 => Some(6),
+            1002 => Some(7),
+            1003 => Some(8),
+            1004 => Some(9),
+            1005 => Some(10),
+            1006 => Some(11),
+            1016 => Some(12),
+            2004 => Some(13),
+            2026 => Some(14),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn insert(&mut self, mode: u16, val: bool) {
+        if let Some(bit) = Self::mode_to_bit(mode) {
+            self.saved_mask |= 1 << bit;
+            if val {
+                self.values_mask |= 1 << bit;
+            } else {
+                self.values_mask &= !(1 << bit);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, mode: &u16) -> Option<bool> {
+        if let Some(bit) = Self::mode_to_bit(*mode) {
+            if (self.saved_mask & (1 << bit)) != 0 {
+                return Some((self.values_mask & (1 << bit)) != 0);
+            }
+        }
+        None
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.saved_mask = 0;
+        self.values_mask = 0;
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.saved_mask == 0
+    }
+}
+
 pub struct Terminal {
     pub grid: Grid,
     pub alt_grid: Grid,
@@ -30,8 +102,16 @@ pub struct Terminal {
     pub current_flags: CellFlags,
     pub outgoing: Vec<u8>,
     pub cursor_keys_mode: bool,
+    pub keypad_application_mode: bool,
+    pub reverse_video: bool,
+    pub origin_mode: bool,
+    pub auto_wrap: bool,
+    pub insert_mode: bool,
     pub mouse_mode: u16,
     pub mouse_sgr: bool,
+    pub mouse_utf8: bool,
+    pub mouse_pixel: bool,
+    pub saved_dec_modes: SavedDecModes,
     pub g0_charset: u8,
     pub g1_charset: u8,
     pub active_charset: u8,
@@ -118,8 +198,16 @@ impl Terminal {
             current_flags: CellFlags::empty(),
             outgoing: Vec::new(),
             cursor_keys_mode: false,
+            keypad_application_mode: false,
+            reverse_video: false,
+            origin_mode: false,
+            auto_wrap: true,
+            insert_mode: false,
             mouse_mode: 0,
             mouse_sgr: false,
+            mouse_utf8: false,
+            mouse_pixel: false,
+            saved_dec_modes: SavedDecModes::new(),
             g0_charset: 0,
             g1_charset: 0,
             active_charset: 0,
@@ -345,6 +433,30 @@ impl Terminal {
         self.current_flags = CellFlags::empty();
     }
 
+    pub fn set_origin_mode(&mut self, active: bool) {
+        self.origin_mode = active;
+        let grid = self.active_grid_mut();
+        if active {
+            grid.cursor.y = grid.scroll_region_top;
+            grid.cursor.x = 0;
+        } else {
+            grid.cursor.y = 0;
+            grid.cursor.x = 0;
+        }
+    }
+
+    pub fn set_auto_wrap(&mut self, active: bool) {
+        self.auto_wrap = active;
+        self.grid.auto_wrap = active;
+        self.alt_grid.auto_wrap = active;
+    }
+
+    pub fn set_insert_mode(&mut self, active: bool) {
+        self.insert_mode = active;
+        self.grid.insert_mode = active;
+        self.alt_grid.insert_mode = active;
+    }
+
     pub fn save_cursor(&mut self) {
         let active_grid = if self.is_alt_screen {
             &mut self.alt_grid
@@ -359,23 +471,112 @@ impl Terminal {
         active_grid.saved_g0_charset = self.g0_charset;
         active_grid.saved_g1_charset = self.g1_charset;
         active_grid.saved_active_charset = self.active_charset;
+        active_grid.saved_origin_mode = self.origin_mode;
+        active_grid.saved_auto_wrap = self.auto_wrap;
     }
 
     pub fn restore_cursor(&mut self) {
-        let active_grid = if self.is_alt_screen {
-            &mut self.alt_grid
-        } else {
-            &mut self.grid
+        let (
+            saved_fg,
+            saved_bg,
+            saved_uc,
+            saved_flags,
+            saved_g0,
+            saved_g1,
+            saved_active,
+            saved_origin,
+            saved_wrap,
+        ) = {
+            let active_grid = if self.is_alt_screen {
+                &mut self.alt_grid
+            } else {
+                &mut self.grid
+            };
+            active_grid.cursor = active_grid.saved_cursor;
+            active_grid.clamp_cursor();
+            (
+                active_grid.saved_fg,
+                active_grid.saved_bg,
+                active_grid.saved_underline_color,
+                active_grid.saved_flags,
+                active_grid.saved_g0_charset,
+                active_grid.saved_g1_charset,
+                active_grid.saved_active_charset,
+                active_grid.saved_origin_mode,
+                active_grid.saved_auto_wrap,
+            )
         };
-        active_grid.cursor = active_grid.saved_cursor;
-        active_grid.clamp_cursor();
-        self.current_fg = active_grid.saved_fg;
-        self.current_bg = active_grid.saved_bg;
-        self.current_underline_color = active_grid.saved_underline_color;
-        self.current_flags = active_grid.saved_flags;
-        self.g0_charset = active_grid.saved_g0_charset;
-        self.g1_charset = active_grid.saved_g1_charset;
-        self.active_charset = active_grid.saved_active_charset;
+        self.current_fg = saved_fg;
+        self.current_bg = saved_bg;
+        self.current_underline_color = saved_uc;
+        self.current_flags = saved_flags;
+        self.g0_charset = saved_g0;
+        self.g1_charset = saved_g1;
+        self.active_charset = saved_active;
+        self.origin_mode = saved_origin;
+        self.set_auto_wrap(saved_wrap);
+    }
+
+    pub fn reset_to_defaults(&mut self, soft: bool) {
+        self.active_grid_mut().cursor.visible = true;
+        self.cursor_keys_mode = false;
+        self.keypad_application_mode = false;
+        self.set_origin_mode(false);
+        self.set_auto_wrap(true);
+        self.set_insert_mode(false);
+        self.reverse_video = false;
+        self.mouse_mode = 0;
+        self.mouse_sgr = false;
+        self.mouse_utf8 = false;
+        self.mouse_pixel = false;
+        self.focus_tracking = false;
+        self.bracketed_paste_mode = false;
+        self.set_synchronized_output(false);
+        let h = self.active_grid().height;
+        self.active_grid_mut().set_scroll_region(0, h.saturating_sub(1));
+        self.reset_attrs();
+        self.g0_charset = 0;
+        self.g1_charset = 0;
+        self.active_charset = 0;
+        self.reset_kitty_keyboard();
+        self.saved_dec_modes.clear();
+
+        if !soft {
+            self.set_alt_screen(false);
+            self.theme.ansi_colors = self.theme.initial_ansi_colors;
+            self.theme.palette_256 = std::sync::Arc::clone(&self.theme.initial_palette_256);
+            self.theme.default_fg = self.theme.initial_fg;
+            self.theme.default_bg = self.theme.initial_bg;
+            self.theme.cursor_color = self.theme.initial_cursor_color;
+            self.theme.cursor_text_color = self.theme.initial_cursor_text_color;
+            self.current_fg = self.theme.initial_fg;
+            self.current_bg = self.theme.initial_bg;
+            self.grid.default_fg = self.theme.initial_fg;
+            self.grid.default_bg = self.theme.initial_bg;
+            self.alt_grid.default_fg = self.theme.initial_fg;
+            self.alt_grid.default_bg = self.theme.initial_bg;
+            self.grid.reset_tab_stops();
+            self.alt_grid.reset_tab_stops();
+            let fg = self.current_fg;
+            let bg = self.current_bg;
+            self.grid.erase_display(3, fg, bg);
+            self.grid.cursor.x = 0;
+            self.grid.cursor.y = 0;
+            self.grid.cursor.shape = self.configured_cursor_shape;
+            self.grid.saved_cursor.shape = self.configured_cursor_shape;
+            self.alt_grid.erase_display(3, fg, bg);
+            self.alt_grid.cursor.x = 0;
+            self.alt_grid.cursor.y = 0;
+            self.alt_grid.cursor.shape = self.configured_cursor_shape;
+            self.alt_grid.saved_cursor.shape = self.configured_cursor_shape;
+            self.title_stack.clear();
+            self.osc_title = None;
+            self.prompt_marks.clear();
+            self.last_command_exit_code = None;
+            self.last_char = None;
+            self.grid.mark_all_dirty();
+            self.alt_grid.mark_all_dirty();
+        }
     }
 
     pub fn push_kitty_keyboard_flags(&mut self, flags: u16) {
@@ -569,9 +770,9 @@ mod tests {
     #[test]
     fn test_device_attributes() {
         let mut term = Terminal::new(80, 24);
-        // Primary Device Attributes (DA1)
+        // Primary Device Attributes (DA1) -> VT220
         term.feed(b"\x1b[c");
-        assert_eq!(term.outgoing, b"\x1b[?6c");
+        assert_eq!(term.outgoing, b"\x1b[?62;c");
 
         // Secondary Device Attributes (DA2) - queried by tmux, vim, etc.
         term.outgoing.clear();
@@ -581,6 +782,11 @@ mod tests {
         term.outgoing.clear();
         term.feed(b"\x1b[>0c");
         assert_eq!(term.outgoing, b"\x1b[>0;10;0c");
+
+        // Tertiary Device Attributes (DA3)
+        term.outgoing.clear();
+        term.feed(b"\x1b[=c");
+        assert_eq!(term.outgoing, b"\x1bP!|00000000\x1b\\");
 
         // XTVERSION query
         term.outgoing.clear();
@@ -1331,6 +1537,7 @@ mod tests {
             Some("x"),
             crate::window::event::ModifiersState::CONTROL,
             false,
+            term.keypad_application_mode,
             term.kitty_keyboard_flags,
         );
         assert_eq!(ctrl_x.unwrap().as_slice(), &[24]); // ASCII 24 = ^X
@@ -1383,8 +1590,8 @@ mod tests {
         // Query unrecognized capabilities (e.g. ble.sh / starship query for "indn" and "query-os-name")
         term.outgoing.clear();
         term.feed(b"\x1bP+q696e646e;71756572792d6f732d6e616d65\x1b\\");
-        // Must be completely silent without leaking raw hex characters to shell stdin
-        assert!(term.outgoing.is_empty());
+        // Must reject cleanly with standard DCS 0 + q ST without leaking raw hex characters to shell stdin
+        assert_eq!(term.outgoing, b"\x1bP0+q\x1b\\");
     }
 
     #[test]
@@ -1397,6 +1604,7 @@ mod tests {
             None,
             ModifiersState::SHIFT,
             false,
+            false,
             0,
         );
         assert_eq!(cbt.as_deref(), Some(&b"\x1b[Z"[..]));
@@ -1406,6 +1614,7 @@ mod tests {
             &Key::Named(NamedKey::ArrowUp),
             None,
             ModifiersState::CONTROL,
+            false,
             false,
             0,
         );
@@ -1417,6 +1626,7 @@ mod tests {
             None,
             ModifiersState::ALT,
             false,
+            false,
             0,
         );
         assert_eq!(alt_left.as_deref(), Some(&b"\x1b[1;3D"[..]));
@@ -1426,6 +1636,7 @@ mod tests {
             &Key::Character("a".into()),
             Some("a"),
             ModifiersState::CONTROL,
+            false,
             false,
             1,
         );
@@ -1437,6 +1648,7 @@ mod tests {
             None,
             ModifiersState::SHIFT,
             false,
+            false,
             1,
         );
         assert_eq!(kitty_shift_enter.as_deref(), Some(&b"\x1b[13;2u"[..]));
@@ -1447,6 +1659,7 @@ mod tests {
             Some("!"),
             ModifiersState::SHIFT,
             false,
+            false,
             1,
         );
         assert_eq!(shift_symbol.as_deref(), Some(&b"!"[..]));
@@ -1456,6 +1669,7 @@ mod tests {
             &Key::Dead(Some('~')),
             None,
             ModifiersState::empty(),
+            false,
             false,
             0,
         );

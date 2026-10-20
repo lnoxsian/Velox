@@ -55,10 +55,33 @@ pub enum CursorIcon {
     RowResize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeypadKey {
+    Num0,
+    Num1,
+    Num2,
+    Num3,
+    Num4,
+    Num5,
+    Num6,
+    Num7,
+    Num8,
+    Num9,
+    Decimal,
+    Plus,
+    Minus,
+    Multiply,
+    Divide,
+    Equal,
+    Separator,
+    Enter,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     Character(String),
     Named(NamedKey),
+    Keypad(KeypadKey),
     Dead(Option<char>),
 }
 
