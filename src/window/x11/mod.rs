@@ -937,8 +937,8 @@ impl X11Window {
         let is_letter = keysym_col0 <= 0x7f
             && ((keysym_col0 as u8).is_ascii_lowercase()
                 || (keysym_col0 as u8).is_ascii_uppercase());
-        let is_keypad = (0xff80..=0xffbd).contains(&keysym_col0)
-            || (0xff95..=0xff9f).contains(&keysym_col0);
+        let is_keypad =
+            (0xff80..=0xffbd).contains(&keysym_col0) || (0xff95..=0xff9f).contains(&keysym_col0);
 
         let col = if is_keypad {
             let keypad_shift = is_shift ^ is_numlock;

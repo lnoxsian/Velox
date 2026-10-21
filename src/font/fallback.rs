@@ -33,6 +33,30 @@ pub struct FallbackFont {
     pub last_used_instant: std::time::Instant,
     pub path: PathBuf,
     pub face_index: u32,
+    pub has_color_png: bool,
+    pub color_png_glyphs: ahash::AHashMap<u16, bool>,
+}
+
+impl FallbackFont {
+    #[inline]
+    pub fn has_color_png_glyph(&mut self, glyph_id: u16) -> bool {
+        if !self.has_color_png || glyph_id == 0 {
+            return false;
+        }
+        if let Some(&has) = self.color_png_glyphs.get(&glyph_id) {
+            return has;
+        }
+        let has = if let Ok(face) =
+            owned_ttf_parser::Face::parse(self.storage.as_bytes(), self.face_index)
+        {
+            face.glyph_raster_image(owned_ttf_parser::GlyphId(glyph_id), 32)
+                .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
+        } else {
+            false
+        };
+        self.color_png_glyphs.insert(glyph_id, has);
+        has
+    }
 }
 
 pub struct FallbackManager {
@@ -50,6 +74,31 @@ impl Default for FallbackManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn font_has_color_bitmap_tables(data: &[u8]) -> bool {
+    if data.len() < 12 {
+        return false;
+    }
+    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let mut offset = 12;
+    for _ in 0..num_tables {
+        if offset + 4 > data.len() {
+            break;
+        }
+        let tag = &data[offset..offset + 4];
+        if tag == b"sbix"
+            || tag == b"CBDT"
+            || tag == b"CBLC"
+            || tag == b"bdat"
+            || tag == b"ebdt"
+            || tag == b"COLR"
+        {
+            return true;
+        }
+        offset += 16;
+    }
+    false
 }
 
 impl FallbackManager {
@@ -189,6 +238,8 @@ impl FallbackManager {
         let byte_size = storage.len();
         self.resident_bytes += byte_size;
 
+        let has_color_png = font_has_color_bitmap_tables(storage.as_bytes());
+
         self.loaded_paths.insert(path.clone());
         self.fallbacks.push(FallbackFont {
             font,
@@ -198,6 +249,8 @@ impl FallbackManager {
             last_used_instant: std::time::Instant::now(),
             path,
             face_index,
+            has_color_png,
+            color_png_glyphs: ahash::AHashMap::new(),
         });
 
         // Enforce bounds and eviction
@@ -216,15 +269,7 @@ impl FallbackManager {
         if emoji {
             for (idx, fallback) in self.fallbacks.iter_mut().enumerate() {
                 let id = fallback.font.glyph_id(c);
-                if id.0 != 0
-                    && let Ok(face) = owned_ttf_parser::Face::parse(
-                        fallback.storage.as_bytes(),
-                        fallback.face_index,
-                    )
-                    && face
-                        .glyph_raster_image(owned_ttf_parser::GlyphId(id.0), 32)
-                        .is_some_and(|img| img.format == owned_ttf_parser::RasterImageFormat::PNG)
-                {
+                if id.0 != 0 && fallback.has_color_png_glyph(id.0) {
                     self.usage_counter = self.usage_counter.wrapping_add(1);
                     fallback.last_used = self.usage_counter;
                     fallback.last_used_instant = std::time::Instant::now();

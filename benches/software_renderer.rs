@@ -71,6 +71,34 @@ fn main() {
         (iterations as f64) / elapsed.as_secs_f64() / 1_000_000.0
     );
 
+    // 1b. Single Dirty Row Update Benchmark (Task 6 & Task 8)
+    let single_row_iters = 500u32;
+    let start = Instant::now();
+    for i in 0..single_row_iters {
+        grid.damage.clear();
+        grid.damage.mark_dirty(5);
+        grid.cells[5 * cols as usize + 10].character = ((33 + i % 94) as u8) as char;
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            1.0,
+            &mut target,
+        );
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "1b. Single Dirty Row 1080p Update: {:?} per frame ({:.2} fps)",
+        elapsed / single_row_iters,
+        (single_row_iters as f64) / elapsed.as_secs_f64()
+    );
+
     // 2. ASCII Full-Screen Redraw Benchmark
     for y in 0..rows as usize {
         for x in 0..cols as usize {
@@ -205,6 +233,53 @@ fn main() {
         "4. Box Drawing & Block Primitives (TUI): {:?} per frame ({:.2} fps)",
         elapsed / iters,
         (iters as f64) / elapsed.as_secs_f64()
+    );
+
+    // 4b. Unicode & Emoji Rendering (Mixed CJK, Nerd Fonts, and Emoji)
+    let unicode_chars = [
+        '你', '好', '世', '界', '🦀', '📦', '🚀', '😀', '\u{e0a0}', '\u{e0b0}', 'A', 'Z',
+    ];
+    for y in 0..rows as usize {
+        for x in 0..cols as usize {
+            grid.cells[y * cols as usize + x] = Cell::new(
+                unicode_chars[(x + y) % unicode_chars.len()],
+                Color {
+                    r: 255,
+                    g: 200,
+                    b: 100,
+                },
+                Color {
+                    r: 20,
+                    g: 20,
+                    b: 30,
+                },
+                CellFlags::empty(),
+            );
+        }
+    }
+    let u_iters = 20u32;
+    let start = Instant::now();
+    for _ in 0..u_iters {
+        grid.damage.mark_all();
+        renderer.render(
+            &grid.cells,
+            &grid,
+            &theme,
+            0.0,
+            0.0,
+            true,
+            velox::screen::cursor::CursorShape::Block,
+            grid.cursor.x,
+            true,
+            1.0,
+            &mut target,
+        );
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "4b. Unicode & Emoji Rendering (CJK, Nerd Font, Color Emoji): {:?} per frame ({:.2} fps)",
+        elapsed / u_iters,
+        (u_iters as f64) / elapsed.as_secs_f64()
     );
 
     // 5. High-Throughput Scrolling Benchmark (1 line scroll + 1 new dirty row)
@@ -583,6 +658,35 @@ fn main() {
         elapsed / scroll_iters,
         (scroll_iters as f64) / elapsed.as_secs_f64()
     );
+
+    // 7b. Transparency Comparison (opacity 1.0 vs 0.8 vs 0.5)
+    for &test_opacity in &[1.0f32, 0.8f32, 0.5f32] {
+        let t_iters = 20u32;
+        let start = Instant::now();
+        for _ in 0..t_iters {
+            cb_grid.damage.mark_all();
+            renderer.render(
+                &cb_grid.cells,
+                &cb_grid,
+                &theme,
+                0.0,
+                0.0,
+                true,
+                velox::screen::cursor::CursorShape::Block,
+                cb_grid.cursor.x,
+                true,
+                test_opacity,
+                &mut target,
+            );
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "7b. Transparency Render (opacity {:.1}): {:?} per frame ({:.2} fps)",
+            test_opacity,
+            elapsed / t_iters,
+            (t_iters as f64) / elapsed.as_secs_f64()
+        );
+    }
 
     // 8. CSD Titlebar Rendering and Hit-Testing Throughput
     let csd_palette = velox::window::csd::CsdPalette::dark();

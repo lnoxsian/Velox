@@ -210,7 +210,9 @@ impl WindowState {
                             b'c' => {
                                 let active_pane = self.active_pane();
                                 let active_grid = active_pane.terminal.active_grid();
-                                let text = if active_grid.selection.active && !active_grid.selection.is_empty() {
+                                let text = if active_grid.selection.active
+                                    && !active_grid.selection.is_empty()
+                                {
                                     active_grid.extract_selection_text()
                                 } else {
                                     let lines: Vec<String> = (0..active_grid.height)
@@ -314,16 +316,14 @@ impl WindowState {
                 if matches!(logical_key, Key::Named(NamedKey::Insert)) {
                     let active_pane = self.active_pane();
                     let active_grid = active_pane.terminal.active_grid();
-                    let text = if active_grid.selection.active && !active_grid.selection.is_empty() {
+                    let text = if active_grid.selection.active && !active_grid.selection.is_empty()
+                    {
                         active_grid.extract_selection_text()
                     } else {
                         let lines: Vec<String> = (0..active_grid.height)
                             .map(|y| {
                                 (0..active_grid.width)
-                                    .map(|x| {
-                                        active_grid.cells[y * active_grid.width + x]
-                                            .character
-                                    })
+                                    .map(|x| active_grid.cells[y * active_grid.width + x].character)
                                     .collect::<String>()
                                     .trim_end()
                                     .to_string()
@@ -365,7 +365,11 @@ impl WindowState {
                             if !text.is_empty() {
                                 crate::clipboard::clipboard::copy(text);
                             }
-                            self.active_pane_mut().terminal.active_grid_mut().selection.clear();
+                            self.active_pane_mut()
+                                .terminal
+                                .active_grid_mut()
+                                .selection
+                                .clear();
                             self.needs_redraw = true;
                             log::debug!("Velox shortcut: copy selection via Ctrl+C");
                             return false;
@@ -576,11 +580,8 @@ mod tests {
         let mut ws = WindowState::create_test_window_state(pty, 80, 24);
 
         // Ctrl+Insert is consumed for copy
-        let handled = ws.handle_keyboard_input(
-            &Key::Named(NamedKey::Insert),
-            None,
-            ModifiersState::CONTROL,
-        );
+        let handled =
+            ws.handle_keyboard_input(&Key::Named(NamedKey::Insert), None, ModifiersState::CONTROL);
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
     }

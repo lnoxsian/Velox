@@ -7,6 +7,10 @@ use ahash::AHashMap;
 use std::sync::{Mutex, OnceLock};
 use unicode_width::UnicodeWidthChar;
 
+thread_local! {
+    static URL_SCRATCH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 pub const MAX_COMBINING_SEQUENCES: usize = 4096;
 
 pub struct CombiningRegistry {
@@ -389,6 +393,24 @@ impl Grid {
         }
     }
 
+    /// Fast-path row slice access for the visible active screen (when not viewing scrollback).
+    /// Avoids closure overhead and branch dispatch.
+    #[inline(always)]
+    pub fn active_display_row_slice(&self, y: usize) -> Option<&[Cell]> {
+        if self.scroll_offset != 0 {
+            return None;
+        }
+        if y < self.height {
+            let physical_y = self.physical_row(y);
+            let start = physical_y * self.width;
+            let end = (start + self.width).min(self.cells.len());
+            if start < self.cells.len() {
+                return Some(&self.cells[start..end]);
+            }
+        }
+        None
+    }
+
     pub fn normalize_row_offset(&mut self) {
         if self.row_offset == 0 || self.height <= 1 {
             return;
@@ -479,14 +501,16 @@ impl Grid {
                 return false;
             }
 
-            let mut text = String::with_capacity(self.width);
-            let _ = self.with_row_cells(abs_row, |cells| {
-                for c in cells {
-                    text.push(c.character);
-                }
+            return URL_SCRATCH.with(|scratch| {
+                let mut text = scratch.borrow_mut();
+                text.clear();
+                let _ = self.with_row_cells(abs_row, |cells| {
+                    for c in cells {
+                        text.push(c.character);
+                    }
+                });
+                crate::hyperlink::detector::is_url_at(&text, col)
             });
-
-            return crate::hyperlink::detector::is_url_at(&text, col);
         }
 
         let mut start_r = abs_row;
@@ -499,20 +523,23 @@ impl Grid {
             end_r += 1;
         }
 
-        let mut logical_text = String::with_capacity((end_r - start_r + 1) * self.width);
-        for r in start_r..=end_r {
-            let _ = self.with_row_cells(r, |cells| {
-                for c in cells {
-                    logical_text.push(c.character);
-                }
-                for _ in cells.len()..self.width {
-                    logical_text.push(' ');
-                }
-            });
-        }
+        URL_SCRATCH.with(|scratch| {
+            let mut logical_text = scratch.borrow_mut();
+            logical_text.clear();
+            for r in start_r..=end_r {
+                let _ = self.with_row_cells(r, |cells| {
+                    for c in cells {
+                        logical_text.push(c.character);
+                    }
+                    for _ in cells.len()..self.width {
+                        logical_text.push(' ');
+                    }
+                });
+            }
 
-        let logical_col = (abs_row - start_r) * self.width + col;
-        crate::hyperlink::detector::is_url_at(&logical_text, logical_col)
+            let logical_col = (abs_row - start_r) * self.width + col;
+            crate::hyperlink::detector::is_url_at(&logical_text, logical_col)
+        })
     }
 
     pub fn hyperlink_url_at(&self, col: usize, abs_row: usize) -> Option<String> {
@@ -758,7 +785,11 @@ impl Grid {
 
             if dest_start < dest_end {
                 // If starting cell is WIDE_CONTINUATION, clear the preceding WIDE cell
-                if self.cells[dest_start].flags.contains(CellFlags::WIDE_CONTINUATION) && self.cursor.x > 0 {
+                if self.cells[dest_start]
+                    .flags
+                    .contains(CellFlags::WIDE_CONTINUATION)
+                    && self.cursor.x > 0
+                {
                     let prev = dest_start - 1;
                     if self.cells[prev].flags.contains(CellFlags::WIDE) {
                         self.cells[prev] = Cell {
@@ -772,9 +803,14 @@ impl Grid {
                 }
                 // If ending cell is WIDE, clear the subsequent WIDE_CONTINUATION cell
                 let last_written = dest_end - 1;
-                if self.cells[last_written].flags.contains(CellFlags::WIDE) && last_written + 1 < self.cells.len() {
+                if self.cells[last_written].flags.contains(CellFlags::WIDE)
+                    && last_written + 1 < self.cells.len()
+                {
                     let next = last_written + 1;
-                    if self.cells[next].flags.contains(CellFlags::WIDE_CONTINUATION) {
+                    if self.cells[next]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                    {
                         self.cells[next] = Cell {
                             character: ' ',
                             foreground: fg,

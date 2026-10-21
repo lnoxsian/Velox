@@ -400,7 +400,11 @@ fn test_wide_character_clearing_and_zero_width() {
     assert_eq!(term.active_grid().cells[0].character, '你');
     assert!(term.active_grid().cells[0].flags.contains(CellFlags::WIDE));
     assert_eq!(term.active_grid().cells[1].character, ' ');
-    assert!(term.active_grid().cells[1].flags.contains(CellFlags::WIDE_CONTINUATION));
+    assert!(
+        term.active_grid().cells[1]
+            .flags
+            .contains(CellFlags::WIDE_CONTINUATION)
+    );
 
     // Overwrite continuation cell at col 1 with 'A'
     term.feed(b"\x1b[1;2HA");
@@ -505,7 +509,8 @@ fn test_osc777_sanitization_and_bounded() {
     let mut term = Terminal::new(80, 24);
 
     // OSC 777 notification with control characters and newlines
-    let evil_notification = b"\x1b]777;notify;Alert\x07Evil\r\nTitle;Malicious\x1b[31mMessage\x1b\\";
+    let evil_notification =
+        b"\x1b]777;notify;Alert\x07Evil\r\nTitle;Malicious\x1b[31mMessage\x1b\\";
     term.feed(evil_notification);
 
     // Terminal must continue operating safely without corruption

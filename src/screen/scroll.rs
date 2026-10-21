@@ -46,6 +46,7 @@ impl Grid {
         // Fast path: Full-screen scroll via circular row offset rotation O(1) with ZERO memory copying
         if top == 0 && bottom == self.height - 1 {
             if u_delta == 1 {
+                self.damage.mark_scrolled(1);
                 let physical_y = self.row_offset;
                 let start = physical_y * self.width;
                 let end = start + self.width;

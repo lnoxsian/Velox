@@ -22,27 +22,37 @@ impl GlyphScratch {
     }
 
     /// Clear scratch buffers and release excessive capacity if overgrown.
+    /// Retains bounded capacities (up to 64 KiB alpha, 128 KiB color, 256 KiB PNG) when max_capacity is 0.
     pub fn clear_and_release(&mut self, max_capacity: usize) {
-        if max_capacity == 0 {
-            self.png_buf = Vec::new();
-            self.color_pixels = Vec::new();
-            self.alpha_pixels = Vec::new();
-            return;
-        }
+        let max_alpha = if max_capacity == 0 {
+            64 * 1024
+        } else {
+            max_capacity
+        };
+        let max_color = if max_capacity == 0 {
+            128 * 1024 / 4
+        } else {
+            max_capacity / 4
+        };
+        let max_png = if max_capacity == 0 {
+            256 * 1024
+        } else {
+            max_capacity * 4
+        };
 
-        if self.png_buf.capacity() > max_capacity {
+        if self.png_buf.capacity() > max_png {
             self.png_buf = Vec::new();
         } else {
             self.png_buf.clear();
         }
 
-        if self.color_pixels.capacity() > max_capacity / 4 {
+        if self.color_pixels.capacity() > max_color {
             self.color_pixels = Vec::new();
         } else {
             self.color_pixels.clear();
         }
 
-        if self.alpha_pixels.capacity() > max_capacity {
+        if self.alpha_pixels.capacity() > max_alpha {
             self.alpha_pixels = Vec::new();
         } else {
             self.alpha_pixels.clear();
@@ -95,10 +105,12 @@ pub struct GlyphCache {
     pub font_scale_multiplier: f32,
     pub atlas: GlyphAtlas,
     pub scratch: GlyphScratch,
-    /// Fast direct lookup table for ASCII 0..127 across 4 styles (regular, bold, italic, bold_italic)
+    /// Direct lookup table for ASCII 0..127 across 4 styles (regular, bold, italic, bold_italic)
     ascii_table: [Option<GlyphRef>; 512],
-    /// Bounded LRU-style cache for Unicode and emoji
+    /// Generational cache for Unicode and emoji: current active generation
     unicode_table: AHashMap<GlyphKey, GlyphRef>,
+    /// Previous generation preserved across eviction cycles to avoid re-rasterizing hot glyphs
+    unicode_previous: AHashMap<GlyphKey, GlyphRef>,
     max_unicode_entries: usize,
 }
 
@@ -157,6 +169,7 @@ impl GlyphCache {
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
             unicode_table: AHashMap::new(),
+            unicode_previous: AHashMap::new(),
             max_unicode_entries: 1024,
         };
 
@@ -215,6 +228,7 @@ impl GlyphCache {
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
             unicode_table: AHashMap::new(),
+            unicode_previous: AHashMap::new(),
             max_unicode_entries: 1024,
         };
         cache.preload_common_glyphs();
@@ -258,6 +272,7 @@ impl GlyphCache {
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
             unicode_table: AHashMap::new(),
+            unicode_previous: AHashMap::new(),
             max_unicode_entries: 1024,
         };
         cache.preload_common_glyphs();
@@ -296,6 +311,7 @@ impl GlyphCache {
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
             unicode_table: AHashMap::new(),
+            unicode_previous: AHashMap::new(),
             max_unicode_entries: 32,
         };
         cache.preload_tab_glyphs();
@@ -345,6 +361,7 @@ impl GlyphCache {
         self.atlas.clear();
         self.ascii_table = [None; 512];
         self.unicode_table.clear();
+        self.unicode_previous.clear();
     }
 
     /// Full memory cleanup: releases oversized atlas buffers, unloads fallback fonts, shrinks tables, and clears scratch memory.
@@ -353,6 +370,8 @@ impl GlyphCache {
         self.ascii_table = [None; 512];
         self.unicode_table.clear();
         self.unicode_table.shrink_to_fit();
+        self.unicode_previous.clear();
+        self.unicode_previous.shrink_to_fit();
         self.fallback_manager.unload_all();
         self.scratch.clear_and_release(0);
         self.preload_common_glyphs();
@@ -364,6 +383,8 @@ impl GlyphCache {
         self.ascii_table = [None; 512];
         self.unicode_table.clear();
         self.unicode_table.shrink_to_fit();
+        self.unicode_previous.clear();
+        self.unicode_previous.shrink_to_fit();
         self.fallback_manager.unload_all();
         self.scratch.clear_and_release(0);
         self.preload_tab_glyphs();
@@ -374,13 +395,24 @@ impl GlyphCache {
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx]
         } else {
-            self.unicode_table.get(&key).copied()
+            self.unicode_table
+                .get(&key)
+                .or_else(|| self.unicode_previous.get(&key))
+                .copied()
         }
     }
 
     /// Get cached glyph or rasterize and store into atlas.
     pub fn get_or_rasterize(&mut self, key: GlyphKey) -> Option<GlyphRef> {
-        if let Some(g_ref) = self.get(key) {
+        if let Some(idx) = key.ascii_index() {
+            if let Some(g_ref) = self.ascii_table[idx] {
+                return Some(g_ref);
+            }
+        } else if let Some(&g_ref) = self.unicode_table.get(&key) {
+            return Some(g_ref);
+        } else if let Some(&g_ref) = self.unicode_previous.get(&key) {
+            // Promote hit from previous generation to current active generation
+            self.unicode_table.insert(key, g_ref);
             return Some(g_ref);
         }
 
@@ -391,13 +423,15 @@ impl GlyphCache {
         } else {
             if self.atlas.is_full() {
                 self.unicode_table.clear();
+                self.unicode_previous.clear();
                 self.atlas.clear();
                 self.ascii_table = [None; 512];
                 self.preload_common_glyphs();
                 // Re-rasterize the requested key if it was flushed
                 return self.get_or_rasterize(key);
             } else if self.unicode_table.len() >= self.max_unicode_entries {
-                self.unicode_table.clear();
+                // Generational eviction: drop previous generation, current generation becomes previous
+                self.unicode_previous = std::mem::take(&mut self.unicode_table);
             }
             self.unicode_table.insert(key, g_ref);
         }
@@ -712,6 +746,9 @@ impl GlyphCache {
             && let Some(idx) = self.fallback_manager.find_fallback_for_char(c)
         {
             let fallback = &self.fallback_manager.fallbacks[idx];
+            if !fallback.has_color_png {
+                return None;
+            }
             let id = fallback.font.glyph_id(c);
             if id.0 != 0
                 && let Ok(face) =
@@ -807,5 +844,57 @@ mod tests {
             glyph_ref.is_some(),
             "Must rasterize glyph using fallback font"
         );
+    }
+
+    #[test]
+    fn test_glyph_cache_generational_unicode_eviction() {
+        let mut cache = GlyphCache::try_from_font_family("Monospace", 14.0, 1.0).unwrap();
+        cache.max_unicode_entries = 4;
+
+        let k1 = GlyphKey::new('α', false, false, false);
+        let k2 = GlyphKey::new('β', false, false, false);
+        let k3 = GlyphKey::new('γ', false, false, false);
+        let k4 = GlyphKey::new('δ', false, false, false);
+
+        assert!(cache.get_or_rasterize(k1).is_some());
+        assert!(cache.get_or_rasterize(k2).is_some());
+        assert!(cache.get_or_rasterize(k3).is_some());
+        assert!(cache.get_or_rasterize(k4).is_some());
+
+        assert_eq!(cache.unicode_table.len(), 4);
+        assert_eq!(cache.unicode_previous.len(), 0);
+
+        // 5th character triggers generational promotion
+        let k5 = GlyphKey::new('ε', false, false, false);
+        assert!(cache.get_or_rasterize(k5).is_some());
+
+        // Previous table holds the first 4
+        assert_eq!(cache.unicode_previous.len(), 4);
+        assert_eq!(cache.unicode_table.len(), 1);
+
+        // Accessing k1 from previous generation promotes it to current generation
+        assert!(cache.get(k1).is_some());
+        assert!(cache.get_or_rasterize(k1).is_some());
+        assert!(cache.unicode_table.contains_key(&k1));
+
+        // ASCII table is completely untouched during Unicode eviction
+        let ascii_a = GlyphKey::new('A', false, false, false);
+        assert!(cache.get(ascii_a).is_some());
+    }
+
+    #[test]
+    fn test_glyph_scratch_bounded_retention() {
+        let mut scratch = GlyphScratch::new();
+        scratch.png_buf = vec![0u8; 500 * 1024]; // 500 KiB > 256 KiB
+        scratch.alpha_pixels = vec![0u8; 100 * 1024]; // 100 KiB > 64 KiB
+        scratch.color_pixels = vec![0u32; 10 * 1024]; // 40 KiB <= 128 KiB
+
+        scratch.clear_and_release(0);
+
+        // Overgrown buffers are shrunk
+        assert_eq!(scratch.png_buf.capacity(), 0);
+        assert_eq!(scratch.alpha_pixels.capacity(), 0);
+        // Retained buffer remains allocated
+        assert!(scratch.color_pixels.capacity() >= 10 * 1024);
     }
 }

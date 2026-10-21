@@ -37,7 +37,10 @@ use decorations::{
     draw_curly_underline, draw_cursor, draw_double_underline, draw_strike, draw_underline,
 };
 use primitives::try_render_primitive;
-use raster::{blit_alpha_glyph, blit_alpha_glyph_clipped, blit_color_glyph_clipped};
+use raster::{
+    blit_alpha_glyph, blit_alpha_glyph_clipped, blit_alpha_glyph_clipped_opaque,
+    blit_color_glyph_clipped, blit_color_glyph_clipped_opaque,
+};
 use std::time::Instant;
 
 use ahash::AHashMap;
@@ -62,6 +65,14 @@ pub struct CpuRowState {
     pub last_selection_range: Option<(usize, usize)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedCell {
+    pub fg: u32,
+    pub bg: u32,
+    pub glyph_key: Option<GlyphKey>,
+    pub flags: CellFlags,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CpuPaneState {
     pub row_states: Vec<CpuRowState>,
@@ -71,6 +82,8 @@ pub struct CpuPaneState {
     pub last_is_focused: bool,
     pub last_dim: f32,
     pub last_font_size: f32,
+    pub last_cursor_info: Option<(usize, CursorShape, usize, bool)>,
+    pub last_selection_bounds: ((usize, usize), (usize, usize)),
 }
 
 /// Pure-Rust, retained CPU software renderer for Velox.
@@ -101,6 +114,25 @@ pub struct CpuRenderer {
     last_target_ptr: usize,
     pub csd_height: u32,
     pub prev_csd_hash: u64,
+    pub scratch_resolved: Vec<ResolvedCell>,
+    pub stats: RenderStats,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderStats {
+    pub frames_attempted: u64,
+    pub frames_rendered: u64,
+    pub idle_frames: u64,
+    pub rows_scanned: u64,
+    pub rows_rendered: u64,
+    pub cells_scanned: u64,
+    pub cells_rendered: u64,
+    pub glyph_cache_hits: u64,
+    pub glyph_cache_misses: u64,
+    pub color_resolutions: u64,
+    pub framebuffer_pixels_written: u64,
+    pub full_present_count: u64,
+    pub damage_present_count: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,16 +150,10 @@ fn resolve_bold_bright_fg(
     fg: crate::screen::cell::Color,
     flags: CellFlags,
     bold_is_bright: bool,
+    palette: &PrecomputedPalette,
     ansi_colors: &[crate::screen::cell::Color; 16],
 ) -> crate::screen::cell::Color {
-    if bold_is_bright && flags.contains(CellFlags::BOLD) {
-        for i in 0..8 {
-            if fg == ansi_colors[i] {
-                return ansi_colors[i + 8];
-            }
-        }
-    }
-    fg
+    palette.bold_bright_fg(fg, flags, bold_is_bright, ansi_colors)
 }
 
 #[inline(always)]
@@ -267,6 +293,8 @@ impl CpuRenderer {
             last_target_ptr: 0,
             csd_height: 0,
             prev_csd_hash: 0,
+            scratch_resolved: Vec::new(),
+            stats: RenderStats::default(),
         })
     }
 
@@ -566,9 +594,11 @@ impl CpuRenderer {
         for pane in panes {
             let state = self.pane_states.entry(pane.pane_id).or_default();
             let grid = pane.grid;
-            let grid_h = grid.height;
-            let history_len = grid.scrollback.len();
-            let selection_bounds = grid.selection.normalized_bounds();
+            let selection_bounds = if grid.selection.active {
+                grid.selection.normalized_bounds()
+            } else {
+                ((usize::MAX, usize::MAX), (usize::MAX, usize::MAX))
+            };
 
             let pane_effective_dim = if !pane.is_active {
                 (effective_dim * 0.5 + 0.15).clamp(0.0, 1.0)
@@ -589,24 +619,22 @@ impl CpuRenderer {
                 return true;
             }
 
-            for y in 0..grid_h {
-                let row_info = Self::get_row_cursor_and_selection(
-                    pane,
-                    y,
-                    is_focused,
-                    history_len,
-                    selection_bounds,
-                );
+            let current_cursor_info =
+                if pane.is_active && pane.cursor_visible && grid.scroll_offset == 0 {
+                    Some((
+                        pane.display_cursor_x,
+                        pane.cursor_shape,
+                        grid.cursor.y,
+                        is_focused,
+                    ))
+                } else {
+                    None
+                };
+            let cursor_changed = state.last_cursor_info != current_cursor_info;
+            let selection_changed = state.last_selection_bounds != selection_bounds;
 
-                let row_state = state.row_states.get(y);
-                let last_cursor = row_state.and_then(|r| r.last_cursor);
-                let last_selection = row_state.and_then(|r| r.last_selection_range);
-
-                if last_cursor != row_info.current_cursor
-                    || last_selection != row_info.current_selection
-                {
-                    return true;
-                }
+            if cursor_changed || selection_changed {
+                return true;
             }
         }
         false
@@ -1263,7 +1291,11 @@ impl CpuRenderer {
         let grid_w = grid.width;
         let grid_h = grid.height;
         let history_len = grid.scrollback.len();
-        let selection_bounds = grid.selection.normalized_bounds();
+        let selection_bounds = if grid.selection.active {
+            grid.selection.normalized_bounds()
+        } else {
+            ((usize::MAX, usize::MAX), (usize::MAX, usize::MAX))
+        };
         let ((sel_min_x, sel_min_abs_y), (sel_max_x, sel_max_abs_y)) = selection_bounds;
 
         let pane_effective_dim = if !pane.is_active {
@@ -1310,13 +1342,199 @@ impl CpuRenderer {
         let mut pane_min_y = u32::MAX;
         let mut pane_max_y = 0u32;
 
-        let mut heap_row_fg: Vec<u32> = if grid_w > 512 {
-            vec![0u32; grid_w]
-        } else {
-            Vec::new()
+        // Task 16: 1-line scroll fast path via copy_within
+        let can_scroll_optimize = !pane_full_redraw
+            && grid.damage.scrolled_lines == 1
+            && grid.scroll_offset == 0
+            && !grid.selection.active
+            && !pane_layout_changed
+            && opacity >= 0.999
+            && (state.last_dim - pane_effective_dim).abs() <= 0.001;
+
+        if can_scroll_optimize {
+            let top_py = py_offset;
+            let bottom_py = (py_offset + (grid_h as u32) * cell_h).min(max_y);
+            if bottom_py > top_py + cell_h {
+                self.framebuffer
+                    .scroll_region_up(top_py, bottom_py, cell_h, default_pane_bg);
+                pane_min_y = pane_min_y.min(top_py);
+                pane_max_y = pane_max_y.max(bottom_py);
+            }
+        }
+
+        // Task 3: Hoist pane glyph cache selection outside the row loop
+        let is_default_font = (self.glyph_cache.font_size - font_size).abs() < 0.01;
+        let font_key = (font_size * 100.0).round() as u32;
+        if !is_default_font && !self.pane_glyph_caches.contains_key(&font_key) {
+            self.pane_glyph_caches
+                .insert(font_key, self.glyph_cache.create_pane_cache(font_size));
+        }
+
+        // Task 1: Reuse renderer-owned scratch storage to avoid heap allocations
+        if grid_w > 512 && self.scratch_resolved.len() < grid_w {
+            self.scratch_resolved.resize(
+                grid_w,
+                ResolvedCell {
+                    fg: 0,
+                    bg: default_pane_bg,
+                    glyph_key: None,
+                    flags: CellFlags::empty(),
+                },
+            );
+        }
+
+        let is_opaque = opacity >= 0.999;
+        let default_cell = Cell {
+            character: ' ',
+            foreground: pane.theme.default_fg,
+            background: pane.theme.default_bg,
+            underline_color: None,
+            flags: CellFlags::empty(),
         };
 
-        for y in 0..grid_h {
+        let current_cursor_info =
+            if pane.is_active && pane.cursor_visible && grid.scroll_offset == 0 {
+                Some((
+                    pane.display_cursor_x,
+                    pane.cursor_shape,
+                    grid.cursor.y,
+                    is_focused,
+                ))
+            } else {
+                None
+            };
+
+        // Task 6 & Task 8: Build list of dirty row indices instead of scanning 0..grid_h
+        let mut dirty_rows: smallvec::SmallVec<[usize; 64]> = smallvec::SmallVec::new();
+        if pane_full_redraw {
+            for y in 0..grid_h {
+                dirty_rows.push(y);
+            }
+        } else {
+            let mut is_dirty = [false; 256];
+            let mut heap_is_dirty = if grid_h > 256 {
+                vec![false; grid_h]
+            } else {
+                Vec::new()
+            };
+            let dirty_map: &mut [bool] = if grid_h <= 256 {
+                &mut is_dirty[..grid_h]
+            } else {
+                &mut heap_is_dirty[..grid_h]
+            };
+
+            if !grid.damage.dirty_indices().is_empty() {
+                for &r in grid.damage.dirty_indices() {
+                    if r < grid_h {
+                        dirty_map[r] = true;
+                    }
+                }
+            } else {
+                for (idx, &is_d) in grid.damage.dirty_rows.iter().enumerate() {
+                    if is_d && idx < grid_h {
+                        dirty_map[idx] = true;
+                    }
+                }
+            }
+            if !self.damage.dirty_indices().is_empty() {
+                for &r in self.damage.dirty_indices() {
+                    if r < grid_h {
+                        dirty_map[r] = true;
+                    }
+                }
+            } else {
+                for (idx, &is_d) in self.damage.dirty_rows.iter().enumerate() {
+                    if is_d && idx < grid_h {
+                        dirty_map[idx] = true;
+                    }
+                }
+            }
+            if can_scroll_optimize {
+                if grid_h > 0 {
+                    dirty_map[grid_h - 1] = true;
+                }
+                if grid.cursor.y < grid_h {
+                    dirty_map[grid.cursor.y] = true;
+                }
+            }
+            if state.last_cursor_info != current_cursor_info {
+                if let Some((_, _, old_y, _)) = state.last_cursor_info {
+                    if old_y < grid_h {
+                        dirty_map[old_y] = true;
+                    }
+                }
+                if let Some((_, _, new_y, _)) = current_cursor_info {
+                    if new_y < grid_h {
+                        dirty_map[new_y] = true;
+                    }
+                }
+            }
+            if state.last_selection_bounds != selection_bounds {
+                let ((_s1_x, s1_y), (_s2_x, s2_y)) = state.last_selection_bounds;
+                let ((_n1_x, n1_y), (_n2_x, n2_y)) = selection_bounds;
+                let vis_min = history_len.saturating_sub(grid.scroll_offset);
+                let vis_max =
+                    (history_len + grid_h.saturating_sub(1)).saturating_sub(grid.scroll_offset);
+
+                let min_abs = s1_y.min(n1_y);
+                let max_abs = if s2_y == usize::MAX {
+                    n2_y
+                } else if n2_y == usize::MAX {
+                    s2_y
+                } else {
+                    s2_y.max(n2_y)
+                };
+                if max_abs != usize::MAX && max_abs >= vis_min && min_abs <= vis_max {
+                    let start_y = min_abs.saturating_sub(vis_min);
+                    let end_y = (max_abs.saturating_sub(vis_min) + 1).min(grid_h);
+                    for y in start_y..end_y {
+                        dirty_map[y] = true;
+                    }
+                }
+            }
+            if blink_changed {
+                for y in 0..grid_h {
+                    if !dirty_map[y] {
+                        let has_blink = grid
+                            .active_display_row_slice(y)
+                            .map(|cells| cells.iter().any(|c| c.flags.contains(CellFlags::BLINK)))
+                            .unwrap_or_else(|| {
+                                grid.with_display_row_slice(y, |cells| {
+                                    cells.iter().any(|c| c.flags.contains(CellFlags::BLINK))
+                                })
+                                .unwrap_or(false)
+                            });
+                        if has_blink {
+                            dirty_map[y] = true;
+                        }
+                    }
+                }
+            }
+
+            for y in 0..grid_h {
+                if dirty_map[y] {
+                    dirty_rows.push(y);
+                }
+            }
+        }
+
+        let fb = &mut self.framebuffer;
+        let palette = &self.palette;
+        let scratch_resolved = &mut self.scratch_resolved;
+        let glyph_cache = if is_default_font {
+            &mut self.glyph_cache
+        } else {
+            self.pane_glyph_caches.get_mut(&font_key).unwrap()
+        };
+
+        let mut stack_resolved = [ResolvedCell {
+            fg: 0,
+            bg: default_pane_bg,
+            glyph_key: None,
+            flags: CellFlags::empty(),
+        }; 512];
+
+        for &y in &dirty_rows {
             let row_info = Self::get_row_cursor_and_selection(
                 pane,
                 y,
@@ -1324,27 +1542,6 @@ impl CpuRenderer {
                 history_len,
                 selection_bounds,
             );
-
-            let row_has_blink = blink_changed && {
-                grid.with_display_row_slice(y, |row_cells| {
-                    row_cells.iter().any(|c| c.flags.contains(CellFlags::BLINK))
-                })
-                .unwrap_or(false)
-            };
-
-            let row_state = &state.row_states[y];
-            let cursor_or_sel_changed = row_state.last_cursor != row_info.current_cursor
-                || row_state.last_selection_range != row_info.current_selection;
-
-            let row_dirty = pane_full_redraw
-                || self.damage.is_dirty(y)
-                || grid.damage.dirty_rows.get(y).copied().unwrap_or(true)
-                || row_has_blink
-                || cursor_or_sel_changed;
-
-            if !row_dirty {
-                continue;
-            }
 
             state.row_states[y].last_cursor = row_info.current_cursor;
             state.row_states[y].last_selection_range = row_info.current_selection;
@@ -1357,102 +1554,138 @@ impl CpuRenderer {
             pane_min_y = pane_min_y.min(py);
             pane_max_y = pane_max_y.max(row_end_y);
 
-            if !pane_full_redraw {
-                self.framebuffer
-                    .fill_span(tile_x, py, tile_w, cell_h, default_pane_bg);
+            if !pane_full_redraw && !can_scroll_optimize {
+                fb.fill_span(tile_x, py, tile_w, cell_h, default_pane_bg);
             }
 
-            let default_cell = Cell {
-                character: ' ',
-                foreground: pane.theme.default_fg,
-                background: pane.theme.default_bg,
-                underline_color: None,
-                flags: CellFlags::empty(),
+            let resolved: &mut [ResolvedCell] = if grid_w <= 512 {
+                &mut stack_resolved[..grid_w]
+            } else {
+                &mut scratch_resolved[..grid_w]
             };
 
-            let mut stack_row_fg = [0u32; 512];
-            let row_fg: &mut [u32] = if grid_w <= 512 {
-                &mut stack_row_fg[..grid_w]
-            } else {
-                &mut heap_row_fg[..grid_w]
-            };
+            let mut has_custom_bg = false;
+            let mut is_blank_row = false;
 
             grid.with_display_row_slice(y, |row_cells| {
-                let has_custom_bg = row_info.is_row_in_selection
-                    || (pane.is_active
-                        && pane.cursor_visible
-                        && row_info.is_active_grid_row
-                        && pane.cursor_shape == CursorShape::Block
-                        && is_focused)
-                    || row_cells.iter().any(|c| {
-                        c.flags.contains(CellFlags::REVERSE)
-                            || c.background != pane.theme.default_bg
-                    });
+                // Task 5: Fast path for completely blank dirty row
+                let is_cursor_row = pane.is_active
+                    && pane.cursor_visible
+                    && row_info.is_active_grid_row
+                    && row_info.grid_y == grid.cursor.y;
 
+                if !row_info.is_row_in_selection && !is_cursor_row {
+                    let all_spaces = row_cells.iter().all(|c| {
+                        c.character == ' '
+                            && c.background == pane.theme.default_bg
+                            && c.underline_color.is_none()
+                            && !c.flags.intersects(
+                                CellFlags::REVERSE
+                                    | CellFlags::BLINK
+                                    | CellFlags::UNDERLINE
+                                    | CellFlags::DOUBLE_UNDERLINE
+                                    | CellFlags::CURLY_UNDERLINE
+                                    | CellFlags::STRIKE
+                                    | CellFlags::HIDDEN,
+                            )
+                    });
+                    if all_spaces {
+                        is_blank_row = true;
+                        return;
+                    }
+                }
+
+                // Task 1: Single pass color resolution into resolved scratch buffer
+                for col in 0..grid_w {
+                    let cell = row_cells.get(col).unwrap_or(&default_cell);
+                    let is_selected = is_column_selected(
+                        row_info.is_row_in_selection,
+                        col,
+                        row_info.abs_row,
+                        sel_min_x,
+                        sel_min_abs_y,
+                        sel_max_x,
+                        sel_max_abs_y,
+                    );
+                    let is_reverse = cell.flags.contains(CellFlags::REVERSE);
+                    let is_inverted = is_selected ^ is_reverse;
+
+                    let (mut fg, mut bg) = palette.resolve_cell_colors_pane(
+                        cell,
+                        is_inverted,
+                        pane.bold_is_bright,
+                        pane_effective_dim,
+                        pane.theme,
+                        default_pane_bg,
+                    );
+
+                    let is_cursor = is_cursor_row && col == pane.display_cursor_x;
+                    let is_block_cursor = is_cursor
+                        && pane.cursor_shape == CursorShape::Block
+                        && pane.is_active
+                        && is_focused;
+
+                    if is_block_cursor {
+                        let cell_fg = resolve_bold_bright_fg(
+                            cell.foreground,
+                            cell.flags,
+                            pane.bold_is_bright,
+                            palette,
+                            &pane.theme.ansi_colors,
+                        );
+                        let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
+                        bg = PackedColor::from_color(
+                            pane.theme
+                                .resolve_cursor_color(cell_fg_dimmed)
+                                .dim(pane_effective_dim),
+                        )
+                        .to_u32();
+                        fg = PackedColor::from_color(
+                            pane.theme
+                                .resolve_cursor_text_color(cell.background)
+                                .dim(pane_effective_dim),
+                        )
+                        .to_u32();
+                    }
+
+                    let glyph_key = if cell.character != ' '
+                        && !cell.flags.contains(CellFlags::WIDE_CONTINUATION)
+                    {
+                        let is_bold = cell.flags.contains(CellFlags::BOLD);
+                        let is_italic = cell.flags.contains(CellFlags::ITALIC);
+                        let is_wide = cell.flags.contains(CellFlags::WIDE);
+                        Some(GlyphKey::new(cell.character, is_bold, is_italic, is_wide))
+                    } else {
+                        None
+                    };
+
+                    resolved[col] = ResolvedCell {
+                        fg,
+                        bg,
+                        glyph_key,
+                        flags: cell.flags,
+                    };
+
+                    if bg != default_pane_bg {
+                        has_custom_bg = true;
+                    }
+                }
+
+                // Pass A: Coalesced Background Spans
                 if has_custom_bg {
-                    // Pass A: Coalesced Background Spans
                     let mut span_start_col = 0usize;
                     let mut span_bg = 0u32;
                     let mut in_span = false;
 
                     for col in 0..grid_w {
                         let cell = row_cells.get(col).unwrap_or(&default_cell);
-                        let is_selected = is_column_selected(
-                            row_info.is_row_in_selection,
-                            col,
-                            row_info.abs_row,
-                            sel_min_x,
-                            sel_min_abs_y,
-                            sel_max_x,
-                            sel_max_abs_y,
-                        );
-                        let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                        let is_inverted = is_selected ^ is_reverse;
-
-                        let (mut fg, mut bg) = self.palette.resolve_cell_colors_pane(
-                            cell,
-                            is_inverted,
-                            pane.bold_is_bright,
-                            pane_effective_dim,
-                            pane.theme,
-                            default_pane_bg,
-                        );
-
-                        let is_cursor = pane.is_active
-                            && pane.cursor_visible
-                            && row_info.is_active_grid_row
-                            && col == pane.display_cursor_x
-                            && row_info.grid_y == grid.cursor.y;
+                        let res = &resolved[col];
+                        let is_cursor = is_cursor_row && col == pane.display_cursor_x;
                         let is_block_cursor = is_cursor
                             && pane.cursor_shape == CursorShape::Block
                             && pane.is_active
                             && is_focused;
-                        if is_block_cursor {
-                            let cell_fg = resolve_bold_bright_fg(
-                                cell.foreground,
-                                cell.flags,
-                                pane.bold_is_bright,
-                                &pane.theme.ansi_colors,
-                            );
-                            let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
-                            bg = PackedColor::from_color(
-                                pane.theme
-                                    .resolve_cursor_color(cell_fg_dimmed)
-                                    .dim(pane_effective_dim),
-                            )
-                            .to_u32();
-                            fg = PackedColor::from_color(
-                                pane.theme
-                                    .resolve_cursor_text_color(cell.background)
-                                    .dim(pane_effective_dim),
-                            )
-                            .to_u32();
-                        }
 
-                        row_fg[col] = fg;
-
-                        // Solid block characters (█) completely cover their cell in Pass B with `fg`.
-                        // Skipping their background write here saves 50% memory bandwidth on colorblocks.
                         let is_solid_block = cell.character == '█'
                             && !is_block_cursor
                             && cell.underline_color.is_none()
@@ -1469,27 +1702,25 @@ impl CpuRenderer {
                                 let span_w = (((col - span_start_col) as u32) * cell_w)
                                     .min(max_x.saturating_sub(span_px));
                                 if span_w > 0 && span_px < max_x {
-                                    self.framebuffer
-                                        .fill_span(span_px, py, span_w, cell_h, span_bg);
+                                    fb.fill_span(span_px, py, span_w, cell_h, span_bg);
                                 }
                             }
                             in_span = false;
                         } else if !in_span {
                             span_start_col = col;
-                            span_bg = bg;
+                            span_bg = res.bg;
                             in_span = true;
-                        } else if bg != span_bg {
+                        } else if res.bg != span_bg {
                             if span_bg != default_pane_bg {
                                 let span_px = px_offset + (span_start_col as u32) * cell_w;
                                 let span_w = (((col - span_start_col) as u32) * cell_w)
                                     .min(max_x.saturating_sub(span_px));
                                 if span_w > 0 && span_px < max_x {
-                                    self.framebuffer
-                                        .fill_span(span_px, py, span_w, cell_h, span_bg);
+                                    fb.fill_span(span_px, py, span_w, cell_h, span_bg);
                                 }
                             }
                             span_start_col = col;
-                            span_bg = bg;
+                            span_bg = res.bg;
                         }
                     }
 
@@ -1498,8 +1729,7 @@ impl CpuRenderer {
                         let span_w = (((grid_w - span_start_col) as u32) * cell_w)
                             .min(max_x.saturating_sub(span_px));
                         if span_w > 0 && span_px < max_x {
-                            self.framebuffer
-                                .fill_span(span_px, py, span_w, cell_h, span_bg);
+                            fb.fill_span(span_px, py, span_w, cell_h, span_bg);
                         }
                     }
                 }
@@ -1508,12 +1738,13 @@ impl CpuRenderer {
                 let mut col = 0usize;
                 while col < row_cells.len() {
                     let cell = &row_cells[col];
-                    if cell.flags.contains(CellFlags::WIDE_CONTINUATION) {
+                    let res = &resolved[col];
+                    if res.flags.contains(CellFlags::WIDE_CONTINUATION) {
                         col += 1;
                         continue;
                     }
                     if cell.character == ' '
-                        && cell.flags.is_empty()
+                        && res.flags.is_empty()
                         && cell.underline_color.is_none()
                     {
                         col += 1;
@@ -1525,55 +1756,11 @@ impl CpuRenderer {
                         break;
                     }
 
-                    let is_cursor = pane.is_active
-                        && pane.cursor_visible
-                        && row_info.is_active_grid_row
-                        && col == pane.display_cursor_x
-                        && row_info.grid_y == grid.cursor.y;
-                    let is_block_cursor = is_cursor
-                        && pane.cursor_shape == CursorShape::Block
-                        && pane.is_active
-                        && is_focused;
+                    let fg = res.fg;
+                    let skip_fg = res.flags.contains(CellFlags::HIDDEN)
+                        || (res.flags.contains(CellFlags::BLINK) && !blink_on);
 
-                    let fg = if has_custom_bg && col < row_fg.len() {
-                        row_fg[col]
-                    } else {
-                        let is_selected = is_column_selected(
-                            row_info.is_row_in_selection,
-                            col,
-                            row_info.abs_row,
-                            sel_min_x,
-                            sel_min_abs_y,
-                            sel_max_x,
-                            sel_max_abs_y,
-                        );
-                        let is_reverse = cell.flags.contains(CellFlags::REVERSE);
-                        let is_inverted = is_selected ^ is_reverse;
-
-                        let (mut f, _) = self.palette.resolve_cell_colors_pane(
-                            cell,
-                            is_inverted,
-                            pane.bold_is_bright,
-                            pane_effective_dim,
-                            pane.theme,
-                            default_pane_bg,
-                        );
-
-                        if is_block_cursor {
-                            f = PackedColor::from_color(
-                                pane.theme
-                                    .resolve_cursor_text_color(cell.background)
-                                    .dim(pane_effective_dim),
-                            )
-                            .to_u32();
-                        }
-                        f
-                    };
-
-                    let skip_fg = cell.flags.contains(CellFlags::HIDDEN)
-                        || (cell.flags.contains(CellFlags::BLINK) && !blink_on);
-
-                    let is_wide = cell.flags.contains(CellFlags::WIDE);
+                    let is_wide = res.flags.contains(CellFlags::WIDE);
                     let target_w = if is_wide { cell_w * 2 } else { cell_w };
                     let clip_w = max_x.saturating_sub(px);
                     let clip_h = max_y.saturating_sub(py);
@@ -1586,6 +1773,8 @@ impl CpuRenderer {
                                     | CellFlags::CURLY_UNDERLINE
                                     | CellFlags::STRIKE,
                             );
+
+                        let is_cursor = is_cursor_row && col == pane.display_cursor_x;
 
                         let is_coalescible_block = !is_wide
                             && !is_cursor
@@ -1604,11 +1793,12 @@ impl CpuRenderer {
                                     break;
                                 }
                                 let next_cell = &row_cells[next_col];
+                                let next_res = &resolved[next_col];
                                 if next_cell.character != cell.character
-                                    || next_cell.flags.contains(CellFlags::WIDE)
-                                    || next_cell.flags.contains(CellFlags::WIDE_CONTINUATION)
+                                    || next_res.flags.contains(CellFlags::WIDE)
+                                    || next_res.flags.contains(CellFlags::WIDE_CONTINUATION)
                                     || next_cell.underline_color.is_some()
-                                    || next_cell.flags.intersects(
+                                    || next_res.flags.intersects(
                                         CellFlags::UNDERLINE
                                             | CellFlags::DOUBLE_UNDERLINE
                                             | CellFlags::CURLY_UNDERLINE
@@ -1618,41 +1808,13 @@ impl CpuRenderer {
                                     break;
                                 }
 
-                                let next_is_cursor = pane.is_active
-                                    && pane.cursor_visible
-                                    && row_info.is_active_grid_row
-                                    && next_col == pane.display_cursor_x
-                                    && row_info.grid_y == grid.cursor.y;
+                                let next_is_cursor =
+                                    is_cursor_row && next_col == pane.display_cursor_x;
                                 if next_is_cursor {
                                     break;
                                 }
 
-                                let next_fg = if has_custom_bg && next_col < row_fg.len() {
-                                    row_fg[next_col]
-                                } else {
-                                    let next_is_sel = is_column_selected(
-                                        row_info.is_row_in_selection,
-                                        next_col,
-                                        row_info.abs_row,
-                                        sel_min_x,
-                                        sel_min_abs_y,
-                                        sel_max_x,
-                                        sel_max_abs_y,
-                                    );
-                                    let next_inv =
-                                        next_is_sel ^ next_cell.flags.contains(CellFlags::REVERSE);
-                                    let (f, _) = self.palette.resolve_cell_colors_pane(
-                                        next_cell,
-                                        next_inv,
-                                        pane.bold_is_bright,
-                                        pane_effective_dim,
-                                        pane.theme,
-                                        default_pane_bg,
-                                    );
-                                    f
-                                };
-
-                                if next_fg != fg {
+                                if next_res.fg != fg {
                                     break;
                                 }
                                 span_count += 1;
@@ -1661,28 +1823,22 @@ impl CpuRenderer {
                             let span_w = ((span_count as u32) * cell_w).min(clip_w);
                             match cell.character {
                                 '█' => {
-                                    self.framebuffer.fill_span(
-                                        px,
-                                        py,
-                                        span_w,
-                                        cell_h.min(clip_h),
-                                        fg,
-                                    );
+                                    fb.fill_span(px, py, span_w, cell_h.min(clip_h), fg);
                                 }
                                 '▀' => {
                                     let h = (cell_h / 2).min(clip_h);
-                                    self.framebuffer.fill_span(px, py, span_w, h, fg);
+                                    fb.fill_span(px, py, span_w, h, fg);
                                 }
                                 '\u{2581}'..='\u{2587}' => {
                                     let frac = (cell.character as u32 - 0x2580) as f32 / 8.0;
                                     let h = ((cell_h as f32 * frac).round() as u32).max(1);
                                     let y = py + cell_h.saturating_sub(h);
                                     let h_clip = max_y.saturating_sub(y);
-                                    self.framebuffer.fill_span(px, y, span_w, h.min(h_clip), fg);
+                                    fb.fill_span(px, y, span_w, h.min(h_clip), fg);
                                 }
                                 '▔' => {
                                     let h = (cell_h / 8).max(1).min(clip_h);
-                                    self.framebuffer.fill_span(px, py, span_w, h, fg);
+                                    fb.fill_span(px, py, span_w, h, fg);
                                 }
                                 _ => unreachable!(),
                             }
@@ -1699,47 +1855,63 @@ impl CpuRenderer {
                             prim_w,
                             cell_h.min(clip_h),
                             fg,
-                            &mut self.framebuffer,
+                            fb,
                         ) {
-                            let is_bold = cell.flags.contains(CellFlags::BOLD);
-                            let is_italic = cell.flags.contains(CellFlags::ITALIC);
-                            let glyph_key =
-                                GlyphKey::new(cell.character, is_bold, is_italic, is_wide);
-
-                            let glyph_cache =
-                                if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
-                                    &mut self.glyph_cache
-                                } else {
-                                    let key = (font_size * 100.0).round() as u32;
-                                    self.pane_glyph_caches.get_mut(&key).unwrap()
-                                };
-
-                            if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
-                                if glyph_ref.is_color {
-                                    let pixels = glyph_cache.atlas.get_color(&glyph_ref);
-                                    blit_color_glyph_clipped(
-                                        &mut self.framebuffer,
-                                        px,
-                                        py,
-                                        pixels,
-                                        glyph_ref.width,
-                                        glyph_ref.height,
-                                        clip_w,
-                                        clip_h,
-                                    );
-                                } else {
-                                    let mask = glyph_cache.atlas.get_alpha(&glyph_ref);
-                                    blit_alpha_glyph_clipped(
-                                        &mut self.framebuffer,
-                                        px,
-                                        py,
-                                        mask,
-                                        glyph_ref.width,
-                                        glyph_ref.height,
-                                        fg,
-                                        clip_w,
-                                        clip_h,
-                                    );
+                            if let Some(glyph_key) = res.glyph_key {
+                                if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
+                                    if glyph_ref.is_color {
+                                        let pixels = glyph_cache.atlas.get_color(&glyph_ref);
+                                        if is_opaque {
+                                            blit_color_glyph_clipped_opaque(
+                                                fb,
+                                                px,
+                                                py,
+                                                pixels,
+                                                glyph_ref.width,
+                                                glyph_ref.height,
+                                                clip_w,
+                                                clip_h,
+                                            );
+                                        } else {
+                                            blit_color_glyph_clipped(
+                                                fb,
+                                                px,
+                                                py,
+                                                pixels,
+                                                glyph_ref.width,
+                                                glyph_ref.height,
+                                                clip_w,
+                                                clip_h,
+                                            );
+                                        }
+                                    } else {
+                                        let mask = glyph_cache.atlas.get_alpha(&glyph_ref);
+                                        if is_opaque {
+                                            blit_alpha_glyph_clipped_opaque(
+                                                fb,
+                                                px,
+                                                py,
+                                                mask,
+                                                glyph_ref.width,
+                                                glyph_ref.height,
+                                                fg,
+                                                clip_w,
+                                                clip_h,
+                                            );
+                                        } else {
+                                            blit_alpha_glyph_clipped(
+                                                fb,
+                                                px,
+                                                py,
+                                                mask,
+                                                glyph_ref.width,
+                                                glyph_ref.height,
+                                                fg,
+                                                clip_w,
+                                                clip_h,
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1754,37 +1926,27 @@ impl CpuRenderer {
 
                     let deco_w = target_w.min(clip_w);
                     if deco_w > 0 {
-                        if cell.flags.contains(CellFlags::UNDERLINE) {
-                            draw_underline(&mut self.framebuffer, px, py, deco_w, cell_h, ul_color);
+                        if res.flags.contains(CellFlags::UNDERLINE) {
+                            draw_underline(fb, px, py, deco_w, cell_h, ul_color);
                         }
-                        if cell.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
-                            draw_double_underline(
-                                &mut self.framebuffer,
-                                px,
-                                py,
-                                deco_w,
-                                cell_h,
-                                ul_color,
-                            );
+                        if res.flags.contains(CellFlags::DOUBLE_UNDERLINE) {
+                            draw_double_underline(fb, px, py, deco_w, cell_h, ul_color);
                         }
-                        if cell.flags.contains(CellFlags::CURLY_UNDERLINE) {
-                            draw_curly_underline(
-                                &mut self.framebuffer,
-                                px,
-                                py,
-                                deco_w,
-                                cell_h,
-                                ul_color,
-                            );
+                        if res.flags.contains(CellFlags::CURLY_UNDERLINE) {
+                            draw_curly_underline(fb, px, py, deco_w, cell_h, ul_color);
                         }
-                        if cell.flags.contains(CellFlags::STRIKE) {
-                            draw_strike(&mut self.framebuffer, px, py, deco_w, cell_h, ul_color);
+                        if res.flags.contains(CellFlags::STRIKE) {
+                            draw_strike(fb, px, py, deco_w, cell_h, ul_color);
                         }
                     }
 
                     col += 1;
                 }
             });
+
+            if is_blank_row {
+                continue;
+            }
 
             // Render Cursor for this row (non-block or unfocused cursor)
             if let Some((cursor_x, cursor_shape, _)) = row_info.current_cursor
@@ -1793,31 +1955,15 @@ impl CpuRenderer {
                 let cursor_px = px_offset + (cursor_x as u32) * cell_w;
                 let cursor_py = py_offset + (y as u32) * cell_h;
 
-                let cursor_color = grid
-                    .with_display_row_slice(y, |row_cells| {
-                        if let Some(cell) = row_cells.get(cursor_x) {
-                            let cell_fg = resolve_bold_bright_fg(
-                                cell.foreground,
-                                cell.flags,
-                                pane.bold_is_bright,
-                                &pane.theme.ansi_colors,
-                            );
-                            let cell_fg_dimmed = cell_fg.dim(pane_effective_dim);
-                            PackedColor::from_color(
-                                pane.theme
-                                    .resolve_cursor_color(cell_fg_dimmed)
-                                    .dim(pane_effective_dim),
-                            )
-                            .to_u32()
-                        } else {
-                            self.palette.default_fg
-                        }
-                    })
-                    .unwrap_or(self.palette.default_fg);
+                let cursor_color = if cursor_x < grid_w {
+                    resolved[cursor_x].fg
+                } else {
+                    palette.default_fg
+                };
 
                 if cursor_px + cell_w <= max_x && cursor_py + cell_h <= max_y {
                     draw_cursor(
-                        &mut self.framebuffer,
+                        fb,
                         cursor_px,
                         cursor_py,
                         cell_w,
@@ -1836,9 +1982,11 @@ impl CpuRenderer {
         state.last_is_focused = is_focused;
         state.last_dim = pane_effective_dim;
         state.last_font_size = font_size;
+        state.last_cursor_info = current_cursor_info;
+        state.last_selection_bounds = selection_bounds;
 
         if pane_full_redraw {
-            Some((tile_y, (tile_y + tile_h).min(self.framebuffer.height)))
+            Some((tile_y, (tile_y + tile_h).min(fb.height)))
         } else if pane_min_y < pane_max_y {
             Some((pane_min_y, pane_max_y))
         } else {

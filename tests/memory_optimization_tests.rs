@@ -274,31 +274,29 @@ fn test_emoji_renders_color_even_when_outline_font_loaded_first() {
         stretch: fontdb::Stretch::Normal,
         style: fontdb::Style::Normal,
     };
-    if let Some(id) = db.query(&query) {
-        if let Some(face) = db.face(id) {
-            if let fontdb::Source::File(path) = &face.source {
-                let storage = std::sync::Arc::new(
-                    velox::font::storage::FontStorage::from_file(path).unwrap(),
-                );
-                let font = velox::font::storage::create_font_arc(
-                    std::sync::Arc::clone(&storage),
-                    face.index,
-                )
+    if let Some(id) = db.query(&query)
+        && let Some(face) = db.face(id)
+        && let fontdb::Source::File(path) = &face.source
+    {
+        let storage =
+            std::sync::Arc::new(velox::font::storage::FontStorage::from_file(path).unwrap());
+        let font =
+            velox::font::storage::create_font_arc(std::sync::Arc::clone(&storage), face.index)
                 .unwrap();
-                cache
-                    .fallback_manager
-                    .fallbacks
-                    .push(velox::font::fallback::FallbackFont {
-                        font,
-                        storage,
-                        byte_size: 1000,
-                        last_used: 1,
-                        last_used_instant: std::time::Instant::now(),
-                        path: path.clone(),
-                        face_index: face.index,
-                    });
-            }
-        }
+        cache
+            .fallback_manager
+            .fallbacks
+            .push(velox::font::fallback::FallbackFont {
+                font,
+                storage,
+                byte_size: 1000,
+                last_used: 1,
+                last_used_instant: std::time::Instant::now(),
+                path: path.clone(),
+                face_index: face.index,
+                has_color_png: true,
+                color_png_glyphs: ahash::AHashMap::new(),
+            });
     }
 
     for emoji in ['😀', '📦', '🦀', '🚀'] {

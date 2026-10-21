@@ -101,6 +101,73 @@ pub fn blit_alpha_glyph_clipped(
     }
 }
 
+/// Optimized opaque blit: assumes destination and source are full alpha (0xFF).
+/// Skips destination alpha reading and alpha channel blending.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub fn blit_alpha_glyph_clipped_opaque(
+    fb: &mut Framebuffer,
+    px: u32,
+    py: u32,
+    mask: &[u8],
+    glyph_w: u16,
+    glyph_h: u16,
+    fg: u32,
+    clip_w: u32,
+    clip_h: u32,
+) {
+    let gw = glyph_w as usize;
+    let gh = glyph_h as usize;
+    let fb_w = fb.width as usize;
+    let fb_h = fb.height as usize;
+    let stride = fb.stride;
+
+    if (px as usize) >= fb_w || (py as usize) >= fb_h {
+        return;
+    }
+
+    let max_y = (gh)
+        .min(fb_h.saturating_sub(py as usize))
+        .min(clip_h as usize);
+    let max_x = (gw)
+        .min(fb_w.saturating_sub(px as usize))
+        .min(clip_w as usize);
+    if max_x == 0 || max_y == 0 {
+        return;
+    }
+
+    let pixels = fb.as_mut_slice();
+
+    let fg_rb = fg & 0x00FF00FF;
+    let fg_g = fg & 0x0000FF00;
+
+    for y in 0..max_y {
+        let src_row = y * gw;
+        let dst_row = ((py as usize) + y) * stride + (px as usize);
+
+        let src_slice = &mask[src_row..src_row + max_x];
+        let dst_slice = &mut pixels[dst_row..dst_row + max_x];
+
+        for (dst_pix, &alpha) in dst_slice.iter_mut().zip(src_slice.iter()) {
+            if alpha == 0 {
+                continue;
+            }
+            if alpha == 255 {
+                *dst_pix = fg;
+            } else {
+                let a = alpha as u32;
+                let inv_a = 255 - a;
+                let dst = *dst_pix;
+                let dst_rb = dst & 0x00FF00FF;
+                let res_rb = ((fg_rb * a + dst_rb * inv_a) >> 8) & 0x00FF00FF;
+                let dst_g = dst & 0x0000FF00;
+                let res_g = ((fg_g * a + dst_g * inv_a) >> 8) & 0x0000FF00;
+                *dst_pix = 0xFF000000 | res_rb | res_g;
+            }
+        }
+    }
+}
+
 /// Blit an 8-bit alpha mask onto the framebuffer tinted by `fg` color.
 #[inline(always)]
 pub fn blit_alpha_glyph(
@@ -171,6 +238,71 @@ pub fn blit_color_glyph_clipped(
     }
 }
 
+/// Blit a 32-bit ARGB color bitmap (emoji) onto an opaque framebuffer, clipped to `clip_w` and `clip_h`.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+pub fn blit_color_glyph_clipped_opaque(
+    fb: &mut Framebuffer,
+    px: u32,
+    py: u32,
+    color_pixels: &[u32],
+    glyph_w: u16,
+    glyph_h: u16,
+    clip_w: u32,
+    clip_h: u32,
+) {
+    let gw = glyph_w as usize;
+    let gh = glyph_h as usize;
+    let fb_w = fb.width as usize;
+    let fb_h = fb.height as usize;
+    let stride = fb.stride;
+
+    if (px as usize) >= fb_w || (py as usize) >= fb_h {
+        return;
+    }
+
+    let max_y = (gh)
+        .min(fb_h.saturating_sub(py as usize))
+        .min(clip_h as usize);
+    let max_x = (gw)
+        .min(fb_w.saturating_sub(px as usize))
+        .min(clip_w as usize);
+    if max_x == 0 || max_y == 0 {
+        return;
+    }
+
+    let pixels = fb.as_mut_slice();
+
+    for y in 0..max_y {
+        let src_row = y * gw;
+        let dst_row = ((py as usize) + y) * stride + (px as usize);
+
+        let src_slice = &color_pixels[src_row..src_row + max_x];
+        let dst_slice = &mut pixels[dst_row..dst_row + max_x];
+
+        for (dst_pix, &src_px) in dst_slice.iter_mut().zip(src_slice.iter()) {
+            let alpha = (src_px >> 24) as u8;
+            if alpha == 0 {
+                continue;
+            }
+            if alpha == 255 {
+                *dst_pix = src_px;
+            } else {
+                let a = alpha as u32;
+                let inv_a = 255 - a;
+                let dst = *dst_pix;
+                let dst_rb = dst & 0x00FF00FF;
+                let src_rb = src_px & 0x00FF00FF;
+                let res_rb = ((src_rb * a + dst_rb * inv_a) >> 8) & 0x00FF00FF;
+                let dst_g = dst & 0x0000FF00;
+                let src_g = src_px & 0x0000FF00;
+                let res_g = ((src_g * a + dst_g * inv_a) >> 8) & 0x0000FF00;
+                *dst_pix = 0xFF000000 | res_rb | res_g;
+            }
+        }
+    }
+}
+
 /// Blit a 32-bit ARGB color bitmap (emoji) onto the framebuffer.
 #[inline(always)]
 pub fn blit_color_glyph(
@@ -214,5 +346,33 @@ mod tests {
         assert!((127..=128).contains(&r));
         assert!((127..=128).contains(&g));
         assert!((127..=128).contains(&b));
+    }
+
+    #[test]
+    fn test_blit_alpha_glyph_opaque() {
+        let mut fb = Framebuffer::new(4, 4);
+        fb.clear(0xFF102030);
+        let mask = [0, 255, 128, 0];
+        blit_alpha_glyph_clipped_opaque(&mut fb, 0, 0, &mask, 2, 2, 0xFFFFFFFF, 4, 4);
+        // (0,0) mask 0 -> unchanged
+        assert_eq!(fb.pixels[0], 0xFF102030);
+        // (1,0) mask 255 -> 0xFFFFFFFF
+        assert_eq!(fb.pixels[1], 0xFFFFFFFF);
+        // (0,1) mask 128 -> blended with full alpha
+        assert_eq!((fb.pixels[4] >> 24) & 0xFF, 0xFF);
+        // (1,1) mask 0 -> unchanged
+        assert_eq!(fb.pixels[5], 0xFF102030);
+    }
+
+    #[test]
+    fn test_blit_color_glyph_opaque() {
+        let mut fb = Framebuffer::new(2, 2);
+        fb.clear(0xFF000000);
+        let colors = [0x00000000, 0xFF112233, 0x80FF0000, 0x00000000];
+        blit_color_glyph_clipped_opaque(&mut fb, 0, 0, &colors, 2, 2, 2, 2);
+        assert_eq!(fb.pixels[0], 0xFF000000);
+        assert_eq!(fb.pixels[1], 0xFF112233);
+        assert_eq!((fb.pixels[2] >> 24) & 0xFF, 0xFF);
+        assert_eq!(fb.pixels[3], 0xFF000000);
     }
 }

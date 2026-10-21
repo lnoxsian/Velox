@@ -41,13 +41,23 @@ impl PackedColor {
     }
 }
 
+/// Fast integer luminance approximation: `(77 * r + 150 * g + 29 * b) >> 8`.
+#[inline(always)]
+pub const fn calc_luminance(c: Color) -> u16 {
+    ((77 * (c.r as u32) + 150 * (c.g as u32) + 29 * (c.b as u32)) >> 8) as u16
+}
+
 /// Precomputed lookup tables for terminal theme colors to avoid runtime conversions.
 #[derive(Debug, Clone)]
 pub struct PrecomputedPalette {
     pub ansi_colors: [u32; 16],
     pub ansi_colors_raw: [Color; 16],
+    pub ansi_luminance: [u16; 16],
+    pub bold_bright_map: [u8; 16],
     pub default_fg: u32,
     pub default_bg: u32,
+    pub default_fg_luminance: u16,
+    pub default_bg_luminance: u16,
     pub raw_default_fg: Color,
     pub raw_default_bg: Color,
     pub tab_accent: u32,
@@ -64,9 +74,13 @@ impl PrecomputedPalette {
         let alpha = (opacity * 255.0).round() as u8;
         let mut ansi_colors = [0u32; 16];
         let mut ansi_colors_raw = [Color { r: 0, g: 0, b: 0 }; 16];
+        let mut ansi_luminance = [0u16; 16];
+        let mut bold_bright_map = [0u8; 16];
         for i in 0..16 {
             ansi_colors[i] = PackedColor::from_color(theme.ansi_colors[i]).to_u32();
             ansi_colors_raw[i] = theme.ansi_colors[i];
+            ansi_luminance[i] = calc_luminance(theme.ansi_colors[i]);
+            bold_bright_map[i] = if i < 8 { (i + 8) as u8 } else { i as u8 };
         }
 
         let tab_bar_bg_raw = Color {
@@ -98,8 +112,12 @@ impl PrecomputedPalette {
         Self {
             ansi_colors,
             ansi_colors_raw,
+            ansi_luminance,
+            bold_bright_map,
             default_fg: PackedColor::from_color(theme.default_fg).to_u32(),
             default_bg: PackedColor::from_premultiplied(theme.default_bg, alpha).to_u32(),
+            default_fg_luminance: calc_luminance(theme.default_fg),
+            default_bg_luminance: calc_luminance(theme.default_bg),
             raw_default_fg: theme.default_fg,
             raw_default_bg: theme.default_bg,
             tab_accent: PackedColor::from_color(theme.resolve_tab_accent_color()).to_u32(),
@@ -111,26 +129,29 @@ impl PrecomputedPalette {
         }
     }
 
-    /// Internal implementation of cell color resolution.
+    /// Internal implementation of cell color resolution using integer luminance and fast paths.
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn resolve_cell_colors_internal(
         cell: &Cell,
         is_inverted: bool,
         bold_is_bright: bool,
         dim: f32,
         ansi_colors: &[Color; 16],
+        bold_bright_map: &[u8; 16],
         theme_default_fg: Color,
         theme_default_bg: Color,
+        theme_default_bg_lum: u16,
         default_pane_bg: u32,
     ) -> (u32, u32) {
         let cell_fg_color = cell.foreground;
         let mut cell_fg_raw = cell_fg_color;
 
-        // Bold-bright: remap base 8 ANSI colors to bright variants (8..15)
+        // Bold-bright: remap base 8 ANSI colors to bright variants (8..15) using bold_bright_map
         if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
             for i in 0..8 {
                 if cell_fg_color == ansi_colors[i] {
-                    cell_fg_raw = ansi_colors[i + 8];
+                    cell_fg_raw = ansi_colors[bold_bright_map[i] as usize];
                     break;
                 }
             }
@@ -142,29 +163,20 @@ impl PrecomputedPalette {
             let mut inv_fg_raw = cell_bg_raw;
             let mut inv_bg_raw = cell_fg_raw;
 
-            let lum_fg = 0.299 * inv_fg_raw.r as f32
-                + 0.587 * inv_fg_raw.g as f32
-                + 0.114 * inv_fg_raw.b as f32;
-            let lum_bg = 0.299 * inv_bg_raw.r as f32
-                + 0.587 * inv_bg_raw.g as f32
-                + 0.114 * inv_bg_raw.b as f32;
-
-            let lum_theme_bg = 0.299 * theme_default_bg.r as f32
-                + 0.587 * theme_default_bg.g as f32
-                + 0.114 * theme_default_bg.b as f32;
+            let lum_fg = calc_luminance(inv_fg_raw) as i32;
+            let lum_bg = calc_luminance(inv_bg_raw) as i32;
+            let lum_theme_bg = theme_default_bg_lum as i32;
 
             // When both colors are dark, both are light, or contrast is too low
-            if (lum_fg < 128.0 && lum_bg < 128.0)
-                || (lum_fg >= 128.0 && lum_bg >= 128.0)
-                || (lum_fg - lum_bg).abs() < 30.0
+            if (lum_fg < 128 && lum_bg < 128)
+                || (lum_fg >= 128 && lum_bg >= 128)
+                || (lum_fg - lum_bg).abs() < 30
             {
-                if lum_theme_bg < 128.0 {
+                if lum_theme_bg < 128 {
                     // Dark theme: invert to light background
                     inv_bg_raw = theme_default_fg;
-                    let lum_orig_fg = 0.299 * cell_fg_raw.r as f32
-                        + 0.587 * cell_fg_raw.g as f32
-                        + 0.114 * cell_fg_raw.b as f32;
-                    inv_fg_raw = if lum_orig_fg < 120.0 {
+                    let lum_orig_fg = calc_luminance(cell_fg_raw) as i32;
+                    inv_fg_raw = if lum_orig_fg < 120 {
                         cell_fg_raw
                     } else {
                         theme_default_bg
@@ -172,10 +184,8 @@ impl PrecomputedPalette {
                 } else {
                     // Light theme: invert to dark background
                     inv_bg_raw = theme_default_fg;
-                    let lum_orig_fg = 0.299 * cell_fg_raw.r as f32
-                        + 0.587 * cell_fg_raw.g as f32
-                        + 0.114 * cell_fg_raw.b as f32;
-                    inv_fg_raw = if lum_orig_fg >= 135.0 {
+                    let lum_orig_fg = calc_luminance(cell_fg_raw) as i32;
+                    inv_fg_raw = if lum_orig_fg >= 135 {
                         cell_fg_raw
                     } else {
                         theme_default_bg
@@ -204,6 +214,25 @@ impl PrecomputedPalette {
         (fg, bg)
     }
 
+    /// Helper for bold-bright color remapping using the precomputed map.
+    #[inline(always)]
+    pub fn bold_bright_fg(
+        &self,
+        fg: Color,
+        flags: CellFlags,
+        bold_is_bright: bool,
+        ansi_colors: &[Color; 16],
+    ) -> Color {
+        if bold_is_bright && flags.contains(CellFlags::BOLD) {
+            for i in 0..8 {
+                if fg == ansi_colors[i] {
+                    return ansi_colors[self.bold_bright_map[i] as usize];
+                }
+            }
+        }
+        fg
+    }
+
     /// Resolve the effective foreground and background `u32` pixel colors for a cell using the pane's theme and default background.
     #[inline(always)]
     pub fn resolve_cell_colors_pane(
@@ -215,14 +244,21 @@ impl PrecomputedPalette {
         pane_theme: &Theme,
         default_pane_bg: u32,
     ) -> (u32, u32) {
+        let lum_bg = if pane_theme.default_bg == self.raw_default_bg {
+            self.default_bg_luminance
+        } else {
+            calc_luminance(pane_theme.default_bg)
+        };
         Self::resolve_cell_colors_internal(
             cell,
             is_inverted,
             bold_is_bright,
             dim,
             &pane_theme.ansi_colors,
+            &self.bold_bright_map,
             pane_theme.default_fg,
             pane_theme.default_bg,
+            lum_bg,
             default_pane_bg,
         )
     }
@@ -242,8 +278,10 @@ impl PrecomputedPalette {
             bold_is_bright,
             dim,
             &self.ansi_colors_raw,
+            &self.bold_bright_map,
             self.raw_default_fg,
             self.raw_default_bg,
+            self.default_bg_luminance,
             self.default_bg,
         )
     }

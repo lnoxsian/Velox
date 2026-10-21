@@ -13,11 +13,49 @@ pub fn try_render_primitive(
     fb: &mut Framebuffer,
 ) -> bool {
     let cp = c as u32;
-    if cp != 0x7c && !(0x2500..=0x259f).contains(&cp) {
+    // Fast-exit for common ASCII: ordinary ASCII (< 0x7c or 0x7d..0x2500 or > 0x259f) exit immediately
+    if (cp < 0x2500 || cp > 0x259f) && cp != 0x7c {
         return false;
     }
+
+    // Direct fast-path dispatch for the most frequent block primitives
     match c {
         // Full block
+        '█' => {
+            fb.fill_span(px, py, cell_w, cell_h, fg);
+            return true;
+        }
+        // Upper half block
+        '▀' => {
+            let h = cell_h / 2;
+            fb.fill_span(px, py, cell_w, h, fg);
+            return true;
+        }
+        // Lower half block
+        '▄' => {
+            let h = cell_h / 2;
+            let y = py + cell_h.saturating_sub(h);
+            fb.fill_span(px, y, cell_w, h, fg);
+            return true;
+        }
+        // Left half block
+        '▌' => {
+            let w = cell_w / 2;
+            fb.fill_span(px, py, w, cell_h, fg);
+            return true;
+        }
+        // Right half block
+        '▐' => {
+            let w = cell_w / 2;
+            let x = px + cell_w.saturating_sub(w);
+            fb.fill_span(x, py, w, cell_h, fg);
+            return true;
+        }
+        _ => {}
+    }
+
+    match c {
+        // Full block (fallback match for completeness)
         '█' => {
             fb.fill_span(px, py, cell_w, cell_h, fg);
             true

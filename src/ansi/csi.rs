@@ -426,11 +426,7 @@ pub fn handle_csi(
                 let active = terminal.active_grid();
                 let (r, c) = if terminal.origin_mode {
                     (
-                        active
-                            .cursor
-                            .y
-                            .saturating_sub(active.scroll_region_top)
-                            + 1,
+                        active.cursor.y.saturating_sub(active.scroll_region_top) + 1,
                         active.cursor.x + 1,
                     )
                 } else {
@@ -692,21 +688,111 @@ pub fn handle_csi(
                 let mode = params.first().copied().unwrap_or(0);
                 if prefix == Some(b'?') {
                     let status = match mode {
-                        1 => if terminal.cursor_keys_mode { 1 } else { 2 },
-                        5 => if terminal.reverse_video { 1 } else { 2 },
-                        6 => if terminal.origin_mode { 1 } else { 2 },
-                        7 => if terminal.auto_wrap { 1 } else { 2 },
-                        25 => if terminal.active_grid().cursor.visible { 1 } else { 2 },
-                        66 => if terminal.keypad_application_mode { 1 } else { 2 },
-                        1000 => if terminal.mouse_mode == 1000 { 1 } else { 2 },
-                        1002 => if terminal.mouse_mode == 1002 { 1 } else { 2 },
-                        1003 => if terminal.mouse_mode == 1003 { 1 } else { 2 },
-                        1004 => if terminal.focus_tracking { 1 } else { 2 },
-                        1005 => if terminal.mouse_utf8 { 1 } else { 2 },
-                        1006 => if terminal.mouse_sgr { 1 } else { 2 },
-                        1016 => if terminal.mouse_pixel { 1 } else { 2 },
-                        2004 => if terminal.bracketed_paste_mode { 1 } else { 2 },
-                        2026 => if terminal.synchronized_output { 1 } else { 2 },
+                        1 => {
+                            if terminal.cursor_keys_mode {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        5 => {
+                            if terminal.reverse_video {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        6 => {
+                            if terminal.origin_mode {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        7 => {
+                            if terminal.auto_wrap {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        25 => {
+                            if terminal.active_grid().cursor.visible {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        66 => {
+                            if terminal.keypad_application_mode {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1000 => {
+                            if terminal.mouse_mode == 1000 {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1002 => {
+                            if terminal.mouse_mode == 1002 {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1003 => {
+                            if terminal.mouse_mode == 1003 {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1004 => {
+                            if terminal.focus_tracking {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1005 => {
+                            if terminal.mouse_utf8 {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1006 => {
+                            if terminal.mouse_sgr {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        1016 => {
+                            if terminal.mouse_pixel {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        2004 => {
+                            if terminal.bracketed_paste_mode {
+                                1
+                            } else {
+                                2
+                            }
+                        }
+                        2026 => {
+                            if terminal.synchronized_output {
+                                1
+                            } else {
+                                2
+                            }
+                        }
                         _ => 0,
                     };
                     let mut buf = [0u8; 32];
@@ -724,7 +810,13 @@ pub fn handle_csi(
                     terminal.send_to_shell(&buf[..len]);
                 } else if prefix.is_none() {
                     let status = match mode {
-                        4 => if terminal.insert_mode { 1 } else { 2 },
+                        4 => {
+                            if terminal.insert_mode {
+                                1
+                            } else {
+                                2
+                            }
+                        }
                         _ => 0,
                     };
                     let mut buf = [0u8; 32];

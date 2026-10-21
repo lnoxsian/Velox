@@ -24,10 +24,16 @@ pub fn keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
         0xff8d => (Some(Key::Keypad(KeypadKey::Enter)), Some("\r".to_string())),
         0xffab => (Some(Key::Keypad(KeypadKey::Plus)), Some("+".to_string())),
         0xffad => (Some(Key::Keypad(KeypadKey::Minus)), Some("-".to_string())),
-        0xffaa => (Some(Key::Keypad(KeypadKey::Multiply)), Some("*".to_string())),
+        0xffaa => (
+            Some(Key::Keypad(KeypadKey::Multiply)),
+            Some("*".to_string()),
+        ),
         0xffaf => (Some(Key::Keypad(KeypadKey::Divide)), Some("/".to_string())),
         0xffae => (Some(Key::Keypad(KeypadKey::Decimal)), Some(".".to_string())),
-        0xffac => (Some(Key::Keypad(KeypadKey::Separator)), Some(",".to_string())),
+        0xffac => (
+            Some(Key::Keypad(KeypadKey::Separator)),
+            Some(",".to_string()),
+        ),
         0xffbd => (Some(Key::Keypad(KeypadKey::Equal)), Some("=".to_string())),
         0xffb0..=0xffb9 => {
             const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];

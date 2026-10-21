@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::os::fd::FromRawFd;
-use std::sync::mpsc::channel;
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use std::thread;
 use std::time::{Duration, Instant};
 use velox::app::app::EventLoopProxy;
@@ -21,7 +21,11 @@ fn test_large_selection_extract_performance_and_accuracy() {
 
     // Generate 30,000 lines of diverse text
     for i in 0..30_000 {
-        let line = format!("Row {:05}: Velox Terminal Performance Validation {:08x}\r\n", i, i * 7919);
+        let line = format!(
+            "Row {:05}: Velox Terminal Performance Validation {:08x}\r\n",
+            i,
+            i * 7919
+        );
         term.feed(line.as_bytes());
     }
 
@@ -30,7 +34,9 @@ fn test_large_selection_extract_performance_and_accuracy() {
 
     // Select all lines from row 0 to the bottom of the screen
     term.grid.selection.start_selection(0, 0);
-    term.grid.selection.update_selection(width - 1, history_len + height - 1);
+    term.grid
+        .selection
+        .update_selection(width - 1, history_len + height - 1);
 
     let t0 = Instant::now();
     let text = term.grid.extract_selection_text();
@@ -57,7 +63,11 @@ fn test_large_selection_extract_performance_and_accuracy() {
     let t0 = Instant::now();
     let formatted = term.format_paste(&text);
     let format_elapsed = t0.elapsed();
-    println!("format_paste ({} bytes) took: {:?}", formatted.len(), format_elapsed);
+    println!(
+        "format_paste ({} bytes) took: {:?}",
+        formatted.len(),
+        format_elapsed
+    );
     assert!(
         format_elapsed < Duration::from_millis(150),
         "format_paste took too long: {:?}",
@@ -80,7 +90,7 @@ fn test_reactor_large_paste_async_write_queue() {
     let handle = reactor.handle();
 
     let mut fds = [0; 2];
-    let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    let res = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     assert_eq!(res, 0);
 
     let pty = Arc::new(PtyMaster::new(fds[1], None));
@@ -127,12 +137,21 @@ fn test_damage_map_large_selection_clamping_efficiency() {
     // Selection across 500,000 lines
     let t0 = Instant::now();
     for _ in 0..10_000 {
-        dm.update_selection(true, ((0, 0), (100, 500_000)), history_len, scroll_offset, grid_h);
+        dm.update_selection(
+            true,
+            ((0, 0), (100, 500_000)),
+            history_len,
+            scroll_offset,
+            grid_h,
+        );
     }
     let elapsed = t0.elapsed();
 
     // 10,000 selection updates over a 500k-line range must take < 50ms total due to O(1) clamping!
-    println!("10,000 selection updates over 500k range took: {:?}", elapsed);
+    println!(
+        "10,000 selection updates over 500k range took: {:?}",
+        elapsed
+    );
     assert!(
         elapsed < Duration::from_millis(100),
         "update_selection clamping must be O(1) per update"

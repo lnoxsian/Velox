@@ -196,14 +196,7 @@ fn send_mouse_report(
 ) {
     let mut buf = [0u8; 64];
     let written = format_mouse_report(
-        proto,
-        btn_code,
-        col_idx,
-        row_idx,
-        pixel_x,
-        pixel_y,
-        is_release,
-        &mut buf,
+        proto, btn_code, col_idx, row_idx, pixel_x, pixel_y, is_release, &mut buf,
     );
     if written > 0 {
         let _ = pty.write(&buf[..written]);
@@ -307,7 +300,8 @@ impl WindowState {
                     if let Some(pty_master) = pty_master {
                         let btn_code =
                             apply_mouse_modifiers(32 + self.last_mouse_button, modifiers);
-                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        let (pixel_x, pixel_y) =
+                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
                             &pty_master,
                             mouse_proto,
@@ -567,7 +561,8 @@ impl WindowState {
                     let should_report_motion = mouse_mode == 1003 && !modifiers.shift_key();
 
                     if should_report_motion {
-                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        let (pixel_x, pixel_y) =
+                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
                             &pty_master,
                             mouse_proto,
@@ -631,7 +626,8 @@ impl WindowState {
                             utf8: pane.terminal.mouse_utf8,
                             pixel: pane.terminal.mouse_pixel,
                         };
-                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        let (pixel_x, pixel_y) =
+                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         for _ in 0..lines.abs() {
                             send_mouse_report(
                                 &pane.pty_master,
@@ -918,7 +914,8 @@ impl WindowState {
                         .find_pane(clicked_pane_id)
                         .map(|p| p.pty_master.clone());
                     if let Some(pty) = pty_master {
-                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        let (pixel_x, pixel_y) =
+                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
                             &pty,
                             mouse_proto,
@@ -1135,7 +1132,8 @@ impl WindowState {
                         .find_pane(target_pane_id)
                         .map(|p| p.pty_master.clone());
                     if let Some(pty) = pty_master {
-                        let (pixel_x, pixel_y) = pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                        let (pixel_x, pixel_y) =
+                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
                             &pty,
                             mouse_proto,
@@ -1324,23 +1322,44 @@ mod tests {
         let mut buf = [0u8; 64];
 
         // 1. Legacy X10 mode
-        let proto_x10 = MouseProtocol { sgr: false, utf8: false, pixel: false };
+        let proto_x10 = MouseProtocol {
+            sgr: false,
+            utf8: false,
+            pixel: false,
+        };
         let len = format_mouse_report(proto_x10, 0, 5, 10, 50, 100, false, &mut buf);
         assert_eq!(&buf[..len], &[0x1b, b'[', b'M', 32, 32 + 6, 32 + 11]);
 
         let len_rel = format_mouse_report(proto_x10, 0, 5, 10, 50, 100, true, &mut buf);
-        assert_eq!(&buf[..len_rel], &[0x1b, b'[', b'M', 32 + 3, 32 + 6, 32 + 11]);
+        assert_eq!(
+            &buf[..len_rel],
+            &[0x1b, b'[', b'M', 32 + 3, 32 + 6, 32 + 11]
+        );
 
         // 2. SGR 1006 mode
-        let proto_sgr = MouseProtocol { sgr: true, utf8: false, pixel: false };
+        let proto_sgr = MouseProtocol {
+            sgr: true,
+            utf8: false,
+            pixel: false,
+        };
         let len_sgr = format_mouse_report(proto_sgr, 0, 5, 10, 50, 100, false, &mut buf);
-        assert_eq!(std::str::from_utf8(&buf[..len_sgr]).unwrap(), "\x1b[<0;6;11M");
+        assert_eq!(
+            std::str::from_utf8(&buf[..len_sgr]).unwrap(),
+            "\x1b[<0;6;11M"
+        );
 
         let len_sgr_rel = format_mouse_report(proto_sgr, 0, 5, 10, 50, 100, true, &mut buf);
-        assert_eq!(std::str::from_utf8(&buf[..len_sgr_rel]).unwrap(), "\x1b[<0;6;11m");
+        assert_eq!(
+            std::str::from_utf8(&buf[..len_sgr_rel]).unwrap(),
+            "\x1b[<0;6;11m"
+        );
 
         // 3. UTF-8 1005 mode (column > 223 encoding past single ASCII byte)
-        let proto_utf8 = MouseProtocol { sgr: false, utf8: true, pixel: false };
+        let proto_utf8 = MouseProtocol {
+            sgr: false,
+            utf8: true,
+            pixel: false,
+        };
         let len_utf8 = format_mouse_report(proto_utf8, 0, 250, 10, 2500, 100, false, &mut buf);
         let s = std::str::from_utf8(&buf[..len_utf8]).unwrap();
         assert!(s.starts_with("\x1b[M"));
@@ -1351,11 +1370,21 @@ mod tests {
         assert_eq!(chars[2] as u32, 32 + 10 + 1);
 
         // 4. SGR pixel 1016 mode
-        let proto_pixel = MouseProtocol { sgr: false, utf8: false, pixel: true };
+        let proto_pixel = MouseProtocol {
+            sgr: false,
+            utf8: false,
+            pixel: true,
+        };
         let len_pixel = format_mouse_report(proto_pixel, 0, 5, 10, 120, 340, false, &mut buf);
-        assert_eq!(std::str::from_utf8(&buf[..len_pixel]).unwrap(), "\x1b[<0;121;341M");
+        assert_eq!(
+            std::str::from_utf8(&buf[..len_pixel]).unwrap(),
+            "\x1b[<0;121;341M"
+        );
 
         let len_pixel_rel = format_mouse_report(proto_pixel, 0, 5, 10, 120, 340, true, &mut buf);
-        assert_eq!(std::str::from_utf8(&buf[..len_pixel_rel]).unwrap(), "\x1b[<0;121;341m");
+        assert_eq!(
+            std::str::from_utf8(&buf[..len_pixel_rel]).unwrap(),
+            "\x1b[<0;121;341m"
+        );
     }
 }

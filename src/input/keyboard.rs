@@ -774,7 +774,14 @@ mod tests {
         assert_eq!(dead.as_deref(), Some(&b"~"[..]));
 
         // Alt+dead circumflex
-        let alt_dead = translate_key(&Key::Dead(Some('^')), None, ModifiersState::ALT, false, false, 0);
+        let alt_dead = translate_key(
+            &Key::Dead(Some('^')),
+            None,
+            ModifiersState::ALT,
+            false,
+            false,
+            0,
+        );
         assert_eq!(alt_dead.as_deref(), Some(&b"\x1b^"[..]));
 
         // Resolved text from AltGr or composed key (e.g. '@' or '€')
@@ -876,27 +883,76 @@ mod tests {
     #[test]
     fn test_keypad_mode() {
         // Numeric mode (keypad_application_mode = false)
-        let kp0 = translate_key(&Key::Keypad(KeypadKey::Num0), None, ModifiersState::empty(), false, false, 0);
+        let kp0 = translate_key(
+            &Key::Keypad(KeypadKey::Num0),
+            None,
+            ModifiersState::empty(),
+            false,
+            false,
+            0,
+        );
         assert_eq!(kp0.as_deref(), Some(&b"0"[..]));
 
-        let kp_enter = translate_key(&Key::Keypad(KeypadKey::Enter), None, ModifiersState::empty(), false, false, 0);
+        let kp_enter = translate_key(
+            &Key::Keypad(KeypadKey::Enter),
+            None,
+            ModifiersState::empty(),
+            false,
+            false,
+            0,
+        );
         assert_eq!(kp_enter.as_deref(), Some(&[13][..]));
 
         // Application mode (keypad_application_mode = true)
-        let app_kp0 = translate_key(&Key::Keypad(KeypadKey::Num0), None, ModifiersState::empty(), false, true, 0);
+        let app_kp0 = translate_key(
+            &Key::Keypad(KeypadKey::Num0),
+            None,
+            ModifiersState::empty(),
+            false,
+            true,
+            0,
+        );
         assert_eq!(app_kp0.as_deref(), Some(&b"\x1bOp"[..]));
 
-        let app_kp9 = translate_key(&Key::Keypad(KeypadKey::Num9), None, ModifiersState::empty(), false, true, 0);
+        let app_kp9 = translate_key(
+            &Key::Keypad(KeypadKey::Num9),
+            None,
+            ModifiersState::empty(),
+            false,
+            true,
+            0,
+        );
         assert_eq!(app_kp9.as_deref(), Some(&b"\x1bOy"[..]));
 
-        let app_kp_enter = translate_key(&Key::Keypad(KeypadKey::Enter), None, ModifiersState::empty(), false, true, 0);
+        let app_kp_enter = translate_key(
+            &Key::Keypad(KeypadKey::Enter),
+            None,
+            ModifiersState::empty(),
+            false,
+            true,
+            0,
+        );
         assert_eq!(app_kp_enter.as_deref(), Some(&b"\x1bOM"[..]));
 
-        let app_kp_plus = translate_key(&Key::Keypad(KeypadKey::Plus), None, ModifiersState::empty(), false, true, 0);
+        let app_kp_plus = translate_key(
+            &Key::Keypad(KeypadKey::Plus),
+            None,
+            ModifiersState::empty(),
+            false,
+            true,
+            0,
+        );
         assert_eq!(app_kp_plus.as_deref(), Some(&b"\x1bOk"[..]));
 
         // In application mode with Ctrl modifier, falls back to control code
-        let ctrl_kp_enter = translate_key(&Key::Keypad(KeypadKey::Enter), None, ModifiersState::CONTROL, false, true, 0);
+        let ctrl_kp_enter = translate_key(
+            &Key::Keypad(KeypadKey::Enter),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            true,
+            0,
+        );
         assert_eq!(ctrl_kp_enter.as_deref(), Some(&[10][..]));
     }
 }

@@ -506,7 +506,10 @@ fn run_reactor_loop(
                     }
                 }
 
-                let (key, exit_detected) = {
+                let (key, exit_detected) = if (ev.events
+                    & (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32)
+                    != 0
+                {
                     let reg = fds.get(&fd).unwrap();
                     let key = reg.key;
                     let pty = &reg.pty;
@@ -584,6 +587,9 @@ fn run_reactor_loop(
                     }
 
                     (key, exit_detected)
+                } else {
+                    let key = fds.get(&fd).unwrap().key;
+                    (key, false)
                 };
 
                 if exit_detected {
@@ -629,7 +635,8 @@ mod tests {
 
     fn create_test_pipe() -> (Arc<PtyMaster>, File) {
         let mut fds = [0; 2];
-        let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let res =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         assert_eq!(res, 0);
 
         let pty = Arc::new(PtyMaster::new(fds[0], None));
@@ -846,7 +853,8 @@ mod tests {
         let handle = reactor.handle();
 
         let mut fds = [0; 2];
-        let res = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        let res =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         assert_eq!(res, 0);
 
         // fds[1] is write end, wrapped in PtyMaster

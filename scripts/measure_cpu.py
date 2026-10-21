@@ -266,36 +266,39 @@ def get_workload_command(workload_type: str, duration: Optional[float] = None) -
     elif workload_type == "stream-ascii":
         # High-throughput ASCII streaming
         script = (
-            "import sys, time; "
-            "line = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=~[]{}|;:<>?,./\\n' * 5; "
-            "chunk = line * 50; "
-            f"t_end = time.time() + {dur}; "
-            "while time.time() < t_end: "
-            "    sys.stdout.write(chunk); sys.stdout.flush()"
+            "import sys, time\n"
+            "line = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=~[]{}|;:<>?,./\\n' * 5\n"
+            "chunk = line * 50\n"
+            f"t_end = time.time() + {dur}\n"
+            "while time.time() < t_end:\n"
+            "    sys.stdout.write(chunk)\n"
+            "    sys.stdout.flush()\n"
         )
         return ["python3", "-c", script]
 
     elif workload_type == "stream-ansi":
         # High-throughput 24-bit TrueColor ANSI sequence streaming
         script = (
-            "import sys, time; "
-            "colors = ''.join(f'\\x1b[38;2;{(i*17)%256};{(i*31)%256};{(i*47)%256}m[Velox Benchmark Token {i:04d}]\\x1b[0m ' for i in range(20)) + '\\n'; "
-            "chunk = colors * 30; "
-            f"t_end = time.time() + {dur}; "
-            "while time.time() < t_end: "
-            "    sys.stdout.write(chunk); sys.stdout.flush()"
+            "import sys, time\n"
+            "colors = ''.join(f'\\x1b[38;2;{(i*17)%256};{(i*31)%256};{(i*47)%256}m[Velox Benchmark Token {i:04d}]\\x1b[0m ' for i in range(20)) + '\\n'\n"
+            "chunk = colors * 30\n"
+            f"t_end = time.time() + {dur}\n"
+            "while time.time() < t_end:\n"
+            "    sys.stdout.write(chunk)\n"
+            "    sys.stdout.flush()\n"
         )
         return ["python3", "-c", script]
 
     elif workload_type == "scroll":
         # Rapid multiline scrollback generator
         script = (
-            "import sys, time; "
-            "line = 'Velox Terminal Scrollback Throughput Profiler Line Buffer Fill Test\\n'; "
-            "chunk = line * 100; "
-            f"t_end = time.time() + {dur}; "
-            "while time.time() < t_end: "
-            "    sys.stdout.write(chunk); sys.stdout.flush()"
+            "import sys, time\n"
+            "line = 'Velox Terminal Scrollback Throughput Profiler Line Buffer Fill Test\\n'\n"
+            "chunk = line * 100\n"
+            f"t_end = time.time() + {dur}\n"
+            "while time.time() < t_end:\n"
+            "    sys.stdout.write(chunk)\n"
+            "    sys.stdout.flush()\n"
         )
         return ["python3", "-c", script]
 
@@ -344,10 +347,17 @@ def run_single_profile(
     print(colorize("  Sampling Rate  : Every {:.0f}ms".format(interval * 1000), COLOR_DIM))
     print(colorize("  Press Ctrl+C to conclude measurement early.\n", COLOR_DIM))
 
+    env = os.environ.copy()
+    # Isolate IPC socket directory to prevent attaching to existing desktop instances
+    iso_rt = f"/tmp/velox-bench-rt-{os.getpid()}"
+    os.makedirs(iso_rt, exist_ok=True)
+    env["XDG_RUNTIME_DIR"] = iso_rt
+
     start_wall = time.time()
     try:
         proc = subprocess.Popen(
             exec_cmd,
+            env=env,
             preexec_fn=preexec_affinity if not taskset_bin else None,
         )
     except Exception as e:

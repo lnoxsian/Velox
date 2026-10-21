@@ -347,24 +347,28 @@ impl WindowState {
             // non-blocking write to avoid reactor wake/channel latency.
             if data.len() <= 4096 {
                 match pane.pty_master.write(&data) {
-                    Ok(n) if n == data.len() => return,
+                    Ok(n) if n == data.len() => (),
                     Ok(n) => {
                         let remainder = data[n..].to_vec();
-                        let _ = self.pty_reactor.write(self.window_id, tab.id, pane_id, remainder);
-                        return;
+                        let _ = self
+                            .pty_reactor
+                            .write(self.window_id, tab.id, pane_id, remainder);
                     }
                     Err(e)
                         if e.raw_os_error() == Some(libc::EAGAIN)
                             || e.raw_os_error() == Some(libc::EWOULDBLOCK) =>
                     {
-                        let _ = self.pty_reactor.write(self.window_id, tab.id, pane_id, data);
-                        return;
+                        let _ = self
+                            .pty_reactor
+                            .write(self.window_id, tab.id, pane_id, data);
                     }
                     Err(_) => {}
                 }
             } else {
                 // Large burst (e.g. paste of large text/corpus): queue asynchronously through the reactor
-                let _ = self.pty_reactor.write(self.window_id, tab.id, pane_id, data);
+                let _ = self
+                    .pty_reactor
+                    .write(self.window_id, tab.id, pane_id, data);
             }
         }
     }
@@ -1383,6 +1387,90 @@ impl App {
         Ok(())
     }
 
+    /// Drain pending custom events with bounded coalescing for PTY data batches.
+    /// Reduces terminal state machine re-entry, avoids intermediate redraws, and bounds latency to 256 KiB.
+    pub fn drain_custom_events(&mut self) {
+        self.drain_custom_events_with_first(None);
+    }
+
+    pub fn drain_custom_events_with_first(&mut self, mut first_event: Option<CustomEvent>) {
+        let mut last_affected_pane: Option<(WindowId, u64, PaneId)> = None;
+        let mut coalesced_bytes = 0usize;
+
+        loop {
+            let event = match first_event.take() {
+                Some(ev) => ev,
+                None => match self.event_receiver.try_recv() {
+                    Ok(ev) => ev,
+                    Err(_) => break,
+                },
+            };
+
+            match event {
+                CustomEvent::PtyData {
+                    window_id,
+                    tab_id,
+                    pane_id,
+                    data,
+                } => {
+                    let key = (window_id, tab_id, pane_id);
+                    if let Some(prev) = last_affected_pane {
+                        if prev != key || coalesced_bytes >= 256 * 1024 {
+                            self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
+                            last_affected_pane = Some(key);
+                            coalesced_bytes = 0;
+                        }
+                    } else {
+                        last_affected_pane = Some(key);
+                    }
+
+                    if let Some(ws) = self.windows.get_mut(&window_id)
+                        && let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id)
+                        && let Some(pane) = tab.tree.find_pane_mut(pane_id)
+                    {
+                        pane.terminal.feed(&data);
+                        coalesced_bytes += data.len();
+                    }
+                    crate::pty::recycle_pty_buffer(data);
+                }
+                other => {
+                    if let Some(prev) = last_affected_pane.take() {
+                        self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
+                        coalesced_bytes = 0;
+                    }
+                    self.handle_custom_event(other);
+                }
+            }
+        }
+
+        if let Some(prev) = last_affected_pane {
+            self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
+        }
+    }
+
+    fn flush_pane_output_and_redraw(&mut self, window_id: WindowId, tab_id: u64, pane_id: PaneId) {
+        if let Some(ws) = self.windows.get_mut(&window_id)
+            && let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id)
+            && let Some(pane) = tab.tree.find_pane_mut(pane_id)
+        {
+            let now = std::time::Instant::now();
+            pane.last_activity = now;
+            tab.last_activity = now;
+            if !pane.terminal.outgoing.is_empty() {
+                let _ = pane.pty_master.write(&pane.terminal.outgoing);
+                pane.terminal.outgoing.clear();
+                if pane.terminal.outgoing.capacity() > 4096 {
+                    pane.terminal.outgoing.shrink_to_fit();
+                }
+            }
+            if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
+                ws.mark_interaction();
+                ws.needs_redraw = true;
+                ws.content_dirty = true;
+            }
+        }
+    }
+
     pub fn handle_custom_event(&mut self, event: CustomEvent) {
         match event {
             CustomEvent::PtyData {
@@ -1579,9 +1667,7 @@ impl App {
                 break;
             }
 
-            while let Ok(event) = self.event_receiver.try_recv() {
-                self.handle_custom_event(event);
-            }
+            self.drain_custom_events();
 
             if had_keyboard_input {
                 // If keyboard input was just dispatched to PTY, give the shell up to 1.5ms to return its echo.
@@ -1591,10 +1677,7 @@ impl App {
                     .event_receiver
                     .recv_timeout(std::time::Duration::from_micros(1500))
                 {
-                    self.handle_custom_event(event);
-                    while let Ok(event) = self.event_receiver.try_recv() {
-                        self.handle_custom_event(event);
-                    }
+                    self.drain_custom_events_with_first(Some(event));
                 }
             }
 
@@ -1722,7 +1805,7 @@ impl App {
                     .wake_pending
                     .store(false, std::sync::atomic::Ordering::Release);
 
-                let mut poll_fds: Vec<libc::pollfd> = Vec::with_capacity(self.windows.len() + 1);
+                let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
                 poll_fds.push(libc::pollfd {
                     fd: self.wake_fd,
                     events: libc::POLLIN,

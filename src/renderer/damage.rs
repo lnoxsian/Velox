@@ -2,6 +2,7 @@
 #[derive(Debug, Clone)]
 pub struct DamageMap {
     pub dirty_rows: Vec<bool>,
+    dirty_indices: Vec<usize>,
     pub full_redraw: bool,
     pub prev_cursor_pos: Option<(usize, usize)>,
     pub prev_selection: Option<((usize, usize), (usize, usize))>,
@@ -9,8 +10,10 @@ pub struct DamageMap {
 
 impl DamageMap {
     pub fn new(rows: usize) -> Self {
+        let r = rows.max(1);
         Self {
-            dirty_rows: vec![true; rows.max(1)],
+            dirty_rows: vec![true; r],
+            dirty_indices: Vec::new(),
             full_redraw: true,
             prev_cursor_pos: None,
             prev_selection: None,
@@ -20,13 +23,17 @@ impl DamageMap {
     pub fn resize(&mut self, rows: usize) {
         let r = rows.max(1);
         self.dirty_rows.resize(r, true);
+        self.dirty_indices.clear();
         self.full_redraw = true;
     }
 
     #[inline(always)]
     pub fn mark_row(&mut self, row: usize) {
         if row < self.dirty_rows.len() {
-            self.dirty_rows[row] = true;
+            if !self.dirty_rows[row] {
+                self.dirty_rows[row] = true;
+                self.dirty_indices.push(row);
+            }
         }
     }
 
@@ -34,12 +41,14 @@ impl DamageMap {
     pub fn mark_all(&mut self) {
         self.full_redraw = true;
         self.dirty_rows.fill(true);
+        self.dirty_indices.clear();
     }
 
     #[inline(always)]
     pub fn clear(&mut self) {
         self.full_redraw = false;
         self.dirty_rows.fill(false);
+        self.dirty_indices.clear();
     }
 
     #[inline(always)]
@@ -48,8 +57,13 @@ impl DamageMap {
     }
 
     #[inline(always)]
+    pub fn dirty_indices(&self) -> &[usize] {
+        &self.dirty_indices
+    }
+
+    #[inline(always)]
     pub fn has_damage(&self) -> bool {
-        if self.full_redraw {
+        if self.full_redraw || !self.dirty_indices.is_empty() {
             return true;
         }
         let slice = self.dirty_rows.as_slice();
@@ -63,10 +77,19 @@ impl DamageMap {
         if grid_full_redraw {
             self.full_redraw = true;
             self.dirty_rows.fill(true);
+            self.dirty_indices.clear();
         } else {
-            for (dst, &src) in self.dirty_rows.iter_mut().zip(grid_dirty.iter()) {
+            for (idx, (dst, &src)) in self
+                .dirty_rows
+                .iter_mut()
+                .zip(grid_dirty.iter())
+                .enumerate()
+            {
                 if src {
-                    *dst = true;
+                    if !*dst {
+                        *dst = true;
+                        self.dirty_indices.push(idx);
+                    }
                 }
             }
         }
@@ -110,7 +133,8 @@ impl DamageMap {
                     return;
                 }
                 let vis_min = history_len.saturating_sub(scroll_offset);
-                let vis_max = (history_len + grid_h.saturating_sub(1)).saturating_sub(scroll_offset);
+                let vis_max =
+                    (history_len + grid_h.saturating_sub(1)).saturating_sub(scroll_offset);
                 let start_y = min_abs_y.max(vis_min);
                 let end_y = max_abs_y.min(vis_max);
 

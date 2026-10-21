@@ -120,7 +120,8 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
         "104" => {
             if params.len() <= 1 || params[1].is_empty() {
                 terminal.theme.ansi_colors = terminal.theme.initial_ansi_colors;
-                terminal.theme.palette_256 = std::sync::Arc::clone(&terminal.theme.initial_palette_256);
+                terminal.theme.palette_256 =
+                    std::sync::Arc::clone(&terminal.theme.initial_palette_256);
             } else {
                 for param in &params[1..] {
                     if let Ok(idx_str) = std::str::from_utf8(param)
@@ -130,7 +131,8 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                         std::sync::Arc::make_mut(&mut terminal.theme.palette_256)[idx] =
                             terminal.theme.initial_palette_256[idx];
                         if idx < 16 {
-                            terminal.theme.ansi_colors[idx] = terminal.theme.initial_ansi_colors[idx];
+                            terminal.theme.ansi_colors[idx] =
+                                terminal.theme.initial_ansi_colors[idx];
                         }
                     }
                 }

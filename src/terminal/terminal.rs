@@ -578,7 +578,8 @@ impl Terminal {
         self.bracketed_paste_mode = false;
         self.set_synchronized_output(false);
         let h = self.active_grid().height;
-        self.active_grid_mut().set_scroll_region(0, h.saturating_sub(1));
+        self.active_grid_mut()
+            .set_scroll_region(0, h.saturating_sub(1));
         self.reset_attrs();
         self.g0_charset = 0;
         self.g1_charset = 0;
