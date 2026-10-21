@@ -303,28 +303,6 @@ pub fn blit_color_glyph_clipped_opaque(
     }
 }
 
-/// Blit a 32-bit ARGB color bitmap (emoji) onto the framebuffer.
-#[inline(always)]
-pub fn blit_color_glyph(
-    fb: &mut Framebuffer,
-    px: u32,
-    py: u32,
-    color_pixels: &[u32],
-    glyph_w: u16,
-    glyph_h: u16,
-) {
-    blit_color_glyph_clipped(
-        fb,
-        px,
-        py,
-        color_pixels,
-        glyph_w,
-        glyph_h,
-        u32::MAX,
-        u32::MAX,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

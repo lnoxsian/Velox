@@ -122,20 +122,20 @@ impl CliOptions {
 
     pub fn print_banner() {
         println!(
-            "┌─────────────────────────────────────┐
-| VELOX               VELOX           |
-| VELOX               VELOX           |
-| VELOX               VELOX           |
-|      VELOX     VELOX     VELOX      |
-|      VELOX     VELOX     VELOX      |
-|      VELOX     VELOX     VELOX      |
-|      VELOX     VELOX     VELOX      |
-|      VELOX     VELOX     VELOX      |
-|      VELOX     VELOX     VELOX      |
-|           VELOX               VELOX |
-|           VELOX               VELOX |
-|           VELOX               VELOX |
-└─────────────────────────────────────┘"
+            "┌──────────────────────────────────────────┐
+| VELOX               VELOX                |
+| VELOX               VELOX                |
+| VELOX               VELOX                |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|           VELOX               VELOXVELOX |
+|           VELOX               VELOXVELOX |
+|           VELOX               VELOXVELOX |
+└──────────────────────────────────────────┘"
         );
     }
 

@@ -18,46 +18,36 @@ pub fn try_render_primitive(
         return false;
     }
 
-    // Direct fast-path dispatch for the most frequent block primitives
     match c {
         // Full block
         '█' => {
             fb.fill_span(px, py, cell_w, cell_h, fg);
-            return true;
+            true
         }
         // Upper half block
         '▀' => {
             let h = cell_h / 2;
             fb.fill_span(px, py, cell_w, h, fg);
-            return true;
+            true
         }
         // Lower half block
         '▄' => {
             let h = cell_h / 2;
             let y = py + cell_h.saturating_sub(h);
             fb.fill_span(px, y, cell_w, h, fg);
-            return true;
+            true
         }
         // Left half block
         '▌' => {
             let w = cell_w / 2;
             fb.fill_span(px, py, w, cell_h, fg);
-            return true;
+            true
         }
         // Right half block
         '▐' => {
             let w = cell_w / 2;
             let x = px + cell_w.saturating_sub(w);
             fb.fill_span(x, py, w, cell_h, fg);
-            return true;
-        }
-        _ => {}
-    }
-
-    match c {
-        // Full block (fallback match for completeness)
-        '█' => {
-            fb.fill_span(px, py, cell_w, cell_h, fg);
             true
         }
 
@@ -67,13 +57,6 @@ pub fn try_render_primitive(
             let h = ((cell_h as f32 * frac).round() as u32).max(1);
             let y = py + cell_h.saturating_sub(h);
             fb.fill_span(px, y, cell_w, h, fg);
-            true
-        }
-
-        // Upper half block
-        '▀' => {
-            let h = cell_h / 2;
-            fb.fill_span(px, py, cell_w, h, fg);
             true
         }
 
@@ -89,14 +72,6 @@ pub fn try_render_primitive(
             let eighths = 8 - (c as u32 - 0x2588);
             let w = ((cell_w as f32 * (eighths as f32 / 8.0)).round() as u32).max(1);
             fb.fill_span(px, py, w, cell_h, fg);
-            true
-        }
-
-        // Right half block
-        '▐' => {
-            let w = cell_w / 2;
-            let x = px + cell_w.saturating_sub(w);
-            fb.fill_span(x, py, w, cell_h, fg);
             true
         }
 

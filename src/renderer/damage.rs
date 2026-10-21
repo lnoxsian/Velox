@@ -71,30 +71,6 @@ impl DamageMap {
         prefix.iter().any(|&d| d) || words.iter().any(|&w| w != 0) || suffix.iter().any(|&d| d)
     }
 
-    /// Ingest damage flags from the active terminal grid.
-    #[inline(always)]
-    pub fn sync_from_grid(&mut self, grid_dirty: &[bool], grid_full_redraw: bool) {
-        if grid_full_redraw {
-            self.full_redraw = true;
-            self.dirty_rows.fill(true);
-            self.dirty_indices.clear();
-        } else {
-            for (idx, (dst, &src)) in self
-                .dirty_rows
-                .iter_mut()
-                .zip(grid_dirty.iter())
-                .enumerate()
-            {
-                if src {
-                    if !*dst {
-                        *dst = true;
-                        self.dirty_indices.push(idx);
-                    }
-                }
-            }
-        }
-    }
-
     /// Mark old and new cursor rows dirty if cursor position moved.
     pub fn update_cursor(&mut self, cursor_x: usize, cursor_y: usize, visible: bool) {
         if !visible {

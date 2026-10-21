@@ -9,12 +9,6 @@ pub use event::{
 pub use wayland::WaylandWindow;
 pub use x11::X11Window;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowBackendKind {
-    X11,
-    Wayland,
-}
-
 #[allow(clippy::large_enum_variant)]
 pub enum PlatformWindow {
     X11(X11Window),
@@ -107,15 +101,6 @@ impl PlatformWindow {
 
                 Err("No graphical display found. Ensure WAYLAND_DISPLAY or DISPLAY is set in your environment.".into())
             }
-        }
-    }
-
-    #[inline]
-    pub fn backend_kind(&self) -> WindowBackendKind {
-        match self {
-            Self::X11(_) => WindowBackendKind::X11,
-            Self::Wayland(_) => WindowBackendKind::Wayland,
-            Self::Dummy { .. } => WindowBackendKind::X11,
         }
     }
 

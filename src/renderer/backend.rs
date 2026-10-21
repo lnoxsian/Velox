@@ -7,7 +7,6 @@ use crate::window::PlatformWindow;
 #[derive(Debug)]
 pub enum RendererInitError {
     WindowCreation(String),
-    SoftwareInit(String),
     Font(crate::font::resolved::FontError),
 }
 
@@ -15,9 +14,6 @@ impl std::fmt::Display for RendererInitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::WindowCreation(e) => write!(f, "Failed to create OS window: {}", e),
-            Self::SoftwareInit(e) => {
-                write!(f, "Failed to initialize software renderer: {}", e)
-            }
             Self::Font(e) => write!(f, "{}", e),
         }
     }
