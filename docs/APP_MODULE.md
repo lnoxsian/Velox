@@ -126,7 +126,7 @@ pub enum CustomEvent {
 | `Alt + 1` .. `Alt + 9` | Switch directly to tab 1 through 9 |
 | `Ctrl + Shift + C` | Copy current selection to clipboard |
 | `Ctrl + Shift + V` | Paste from system clipboard |
-| `Ctrl + Plus` / `Ctrl + =` | Zoom in font size (isolated to active tab) |
+| `Ctrl + Plus` | Zoom in font size (isolated to active tab) |
 | `Ctrl + Minus` | Zoom out font size (isolated to active tab) |
 | `Ctrl + 0` | Reset font size to default (isolated to active tab) |
 | `Shift + PageUp` / `PageDown` | Scroll terminal history up / down |

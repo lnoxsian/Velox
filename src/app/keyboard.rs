@@ -1,6 +1,6 @@
 use crate::app::app::WindowState;
 use crate::app::split::FocusDirection;
-use crate::window::event::{Key, ModifiersState, NamedKey};
+use crate::window::event::{Key, KeypadKey, ModifiersState, NamedKey};
 
 impl WindowState {
     pub fn handle_keyboard_input(
@@ -258,18 +258,11 @@ impl WindowState {
                                 }
                                 return false;
                             }
-                            b'+' | b'=' => {
+                            b'+' => {
                                 let active_size = self.active_pane().font_size;
                                 let new_size = active_size + 1.0;
                                 self.set_font_size(new_size);
                                 log::debug!("Velox shortcut: zoom in");
-                                return false;
-                            }
-                            b'_' | b'-' => {
-                                let active_size = self.active_pane().font_size;
-                                let new_size = (active_size - 1.0).max(4.0);
-                                self.set_font_size(new_size);
-                                log::debug!("Velox shortcut: zoom out");
                                 return false;
                             }
                             b']' | b'}' => {
@@ -291,6 +284,13 @@ impl WindowState {
                     Key::Named(NamedKey::Tab) => {
                         self.prev_tab();
                         log::debug!("Velox shortcut: prev tab (Ctrl+Shift+Tab)");
+                        return false;
+                    }
+                    Key::Keypad(KeypadKey::Plus) => {
+                        let active_size = self.active_pane().font_size;
+                        let new_size = active_size + 1.0;
+                        self.set_font_size(new_size);
+                        log::debug!("Velox shortcut: zoom in");
                         return false;
                     }
                     Key::Named(NamedKey::ArrowLeft) => {
@@ -353,6 +353,26 @@ impl WindowState {
                         log::debug!("Velox shortcut: prev tab (Ctrl+PageUp)");
                         return false;
                     }
+                    Key::Keypad(KeypadKey::Plus) => {
+                        let active_size = self.active_pane().font_size;
+                        let new_size = active_size + 1.0;
+                        self.set_font_size(new_size);
+                        log::debug!("Velox shortcut: zoom in");
+                        return false;
+                    }
+                    Key::Keypad(KeypadKey::Minus) => {
+                        let active_size = self.active_pane().font_size;
+                        let new_size = (active_size - 1.0).max(4.0);
+                        self.set_font_size(new_size);
+                        log::debug!("Velox shortcut: zoom out");
+                        return false;
+                    }
+                    Key::Keypad(KeypadKey::Num0) => {
+                        let new_size = self.default_font_size;
+                        self.set_font_size(new_size);
+                        log::debug!("Velox shortcut: reset zoom");
+                        return false;
+                    }
                     _ => {}
                 }
 
@@ -377,11 +397,18 @@ impl WindowState {
                     }
 
                     match s.as_str() {
-                        "+" | "=" => {
+                        "+" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size + 1.0;
                             self.set_font_size(new_size);
                             log::debug!("Velox shortcut: zoom in");
+                            return false;
+                        }
+                        "-" => {
+                            let active_size = self.active_pane().font_size;
+                            let new_size = (active_size - 1.0).max(4.0);
+                            self.set_font_size(new_size);
+                            log::debug!("Velox shortcut: zoom out");
                             return false;
                         }
                         "0" => {
@@ -642,14 +669,100 @@ mod tests {
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), b"\x1bx");
 
-        // Ctrl+- passes through to PTY as 0x1f (readline Undo)
+        // Ctrl+k passes through to PTY as 0x0b (^K)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("k".to_string()),
+            Some("k"),
+            ModifiersState::CONTROL,
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[11]);
+    }
+
+    #[test]
+    fn test_zoom_shortcuts() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+        let base_size = ws.active_pane().font_size;
+
+        // Ctrl + + (zoom in)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("+".to_string()),
+            Some("+"),
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+
+        // Ctrl + Shift + + (zoom in with Shift modifier)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("+".to_string()),
+            Some("+"),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert_eq!(ws.active_pane().font_size, base_size + 2.0);
+
+        // Ctrl + = must NOT zoom in and passes through to PTY
+        let _handled = ws.handle_keyboard_input(
+            &Key::Character("=".to_string()),
+            Some("="),
+            ModifiersState::CONTROL,
+        );
+        assert_eq!(ws.active_pane().font_size, base_size + 2.0);
+        let _ = read_pty_output(&read_end);
+
+        // Ctrl + - (zoom out without Shift modifier)
         let handled = ws.handle_keyboard_input(
             &Key::Character("-".to_string()),
             Some("-"),
             ModifiersState::CONTROL,
         );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+
+        // Ctrl + _ (e.g. Ctrl + Shift + -) must NOT zoom out and passes through to PTY as 0x1f
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("_".to_string()),
+            Some("_"),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), &[31]);
+        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+
+        // Keypad Ctrl + - (zoom out)
+        let handled = ws.handle_keyboard_input(
+            &Key::Keypad(KeypadKey::Minus),
+            Some("-"),
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert_eq!(ws.active_pane().font_size, base_size);
+
+        // Keypad Ctrl + + (zoom in)
+        let handled = ws.handle_keyboard_input(
+            &Key::Keypad(KeypadKey::Plus),
+            Some("+"),
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+
+        // Ctrl + 0 (reset zoom)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("0".to_string()),
+            Some("0"),
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled);
+        assert_eq!(read_pty_output(&read_end), b"");
+        assert_eq!(ws.active_pane().font_size, ws.default_font_size);
     }
 
     #[test]
