@@ -319,9 +319,7 @@ impl WindowState {
                     if let Some(pane) = tab.tree.find_pane_mut(drag_pane_id) {
                         let active_grid = pane.terminal.active_grid_mut();
                         if active_grid.selection.active {
-                            let offset = active_grid.scroll_offset;
-                            let history_len = active_grid.scrollback.len();
-                            let abs_y = (history_len + row_idx).saturating_sub(offset);
+                            let abs_y = active_grid.display_row_to_abs(row_idx);
                             active_grid.selection.update_selection(col_idx, abs_y);
                             self.needs_redraw = true;
                         }
@@ -376,17 +374,11 @@ impl WindowState {
                 self.needs_redraw = true;
             }
 
-            let old_hovered_tab = self.tab_bar.hovered_tab;
-            let old_hovered_close = self.tab_bar.hovered_close;
-            let old_hovered_new = self.tab_bar.hovered_new_tab;
-            self.tab_bar.hovered_tab = None;
-            self.tab_bar.hovered_close = None;
-            self.tab_bar.hovered_new_tab = false;
-            self.set_cursor_cached(crate::window::event::CursorIcon::Default);
-            if old_hovered_tab.is_some() || old_hovered_close.is_some() || old_hovered_new {
+            if self.tab_bar.clear_hover() {
                 self.tab_bar_dirty = true;
                 self.needs_redraw = true;
             }
+            self.set_cursor_cached(crate::window::event::CursorIcon::Default);
             if self.hovered_separator.is_some() {
                 self.hovered_separator = None;
                 self.needs_redraw = true;
@@ -410,52 +402,40 @@ impl WindowState {
                 self.tabs.len(),
             );
 
-            let old_hovered_tab = self.tab_bar.hovered_tab;
-            let old_hovered_close = self.tab_bar.hovered_close;
-            let old_hovered_new = self.tab_bar.hovered_new_tab;
+            let (hover_tab, hover_close, hover_new, cursor) = match hit {
+                TabBarHitResult::Tab(idx) => (
+                    Some(idx),
+                    None,
+                    false,
+                    crate::window::event::CursorIcon::Pointer,
+                ),
+                TabBarHitResult::CloseTab(idx) => (
+                    Some(idx),
+                    Some(idx),
+                    false,
+                    crate::window::event::CursorIcon::Pointer,
+                ),
+                TabBarHitResult::NewTab => (
+                    None,
+                    None,
+                    true,
+                    crate::window::event::CursorIcon::Pointer,
+                ),
+                _ => (
+                    None,
+                    None,
+                    false,
+                    crate::window::event::CursorIcon::Default,
+                ),
+            };
 
-            match hit {
-                TabBarHitResult::Tab(idx) => {
-                    self.tab_bar.hovered_tab = Some(idx);
-                    self.tab_bar.hovered_close = None;
-                    self.tab_bar.hovered_new_tab = false;
-                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
-                }
-                TabBarHitResult::CloseTab(idx) => {
-                    self.tab_bar.hovered_tab = Some(idx);
-                    self.tab_bar.hovered_close = Some(idx);
-                    self.tab_bar.hovered_new_tab = false;
-                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
-                }
-                TabBarHitResult::NewTab => {
-                    self.tab_bar.hovered_tab = None;
-                    self.tab_bar.hovered_close = None;
-                    self.tab_bar.hovered_new_tab = true;
-                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
-                }
-                _ => {
-                    self.tab_bar.hovered_tab = None;
-                    self.tab_bar.hovered_close = None;
-                    self.tab_bar.hovered_new_tab = false;
-                    self.set_cursor_cached(crate::window::event::CursorIcon::Default);
-                }
-            }
-
-            if old_hovered_tab != self.tab_bar.hovered_tab
-                || old_hovered_close != self.tab_bar.hovered_close
-                || old_hovered_new != self.tab_bar.hovered_new_tab
-            {
+            if self.tab_bar.set_hover(hover_tab, hover_close, hover_new) {
                 self.tab_bar_dirty = true;
                 self.needs_redraw = true;
             }
+            self.set_cursor_cached(cursor);
             return;
-        } else if self.tab_bar.hovered_tab.is_some()
-            || self.tab_bar.hovered_close.is_some()
-            || self.tab_bar.hovered_new_tab
-        {
-            self.tab_bar.hovered_tab = None;
-            self.tab_bar.hovered_close = None;
-            self.tab_bar.hovered_new_tab = false;
+        } else if self.tab_bar.clear_hover() {
             self.tab_bar_dirty = true;
             self.needs_redraw = true;
         }
@@ -522,14 +502,8 @@ impl WindowState {
                             || modifiers.shift_key()
                             || modifiers.control_key()
                         {
-                            let active_grid = if pane.terminal.is_alt_screen {
-                                &pane.terminal.alt_grid
-                            } else {
-                                &pane.terminal.grid
-                            };
-                            let offset = active_grid.scroll_offset;
-                            let history_len = active_grid.scrollback.len();
-                            let y_offset = (row_idx + history_len).saturating_sub(offset);
+                            let active_grid = pane.terminal.active_grid();
+                            let y_offset = active_grid.display_row_to_abs(row_idx);
                             active_grid.has_url_at(col_idx, y_offset)
                         } else {
                             false
@@ -660,11 +634,7 @@ impl WindowState {
                     } else {
                         let tab_mut = self.active_tab_mut();
                         if let Some(pane_mut) = tab_mut.tree.find_pane_mut(pane_rect.pane_id) {
-                            let active_grid = if pane_mut.terminal.is_alt_screen {
-                                &mut pane_mut.terminal.alt_grid
-                            } else {
-                                &mut pane_mut.terminal.grid
-                            };
+                            let active_grid = pane_mut.terminal.active_grid_mut();
                             let history_len = active_grid.scrollback.len();
                             if lines > 0 {
                                 active_grid.scroll_offset =
@@ -847,8 +817,9 @@ impl WindowState {
             self.mouse_down_pane_id = Some(clicked_pane_id);
 
             // Switch active pane to clicked pane if different
-            if self.active_tab().active_pane_id != clicked_pane_id {
-                self.active_tab_mut().set_active_pane(clicked_pane_id);
+            let tab = self.active_tab_mut();
+            if tab.active_pane_id != clicked_pane_id {
+                tab.set_active_pane(clicked_pane_id);
                 self.sync_active_pane_font_size();
                 self.needs_redraw = true;
                 self.content_dirty = true;
@@ -868,9 +839,7 @@ impl WindowState {
                 let tab = self.active_tab_mut();
                 if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
                     let active_grid = pane.terminal.active_grid_mut();
-                    let offset = active_grid.scroll_offset;
-                    let history_len = active_grid.scrollback.len();
-                    let y_offset = (row_idx + history_len).saturating_sub(offset);
+                    let y_offset = active_grid.display_row_to_abs(row_idx);
 
                     if let Some(url) = active_grid.hyperlink_url_at(col_idx, y_offset) {
                         let _ = crate::hyperlink::detector::open(&url);
@@ -879,7 +848,7 @@ impl WindowState {
                 }
             }
 
-            let (mouse_mode, mouse_proto) = {
+            let (mouse_mode, mouse_proto, pty_master) = {
                 let pane = match self.active_tab().tree.find_pane(clicked_pane_id) {
                     Some(p) => p,
                     None => return,
@@ -891,6 +860,7 @@ impl WindowState {
                         utf8: pane.terminal.mouse_utf8,
                         pixel: pane.terminal.mouse_pixel,
                     },
+                    pane.pty_master.clone(),
                 )
             };
 
@@ -908,25 +878,18 @@ impl WindowState {
                     self.last_mouse_button = btn;
 
                     let report_btn = apply_mouse_modifiers(btn, modifiers);
-                    let pty_master = self
-                        .active_tab()
-                        .tree
-                        .find_pane(clicked_pane_id)
-                        .map(|p| p.pty_master.clone());
-                    if let Some(pty) = pty_master {
-                        let (pixel_x, pixel_y) =
-                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
-                        send_mouse_report(
-                            &pty,
-                            mouse_proto,
-                            report_btn,
-                            col_idx,
-                            row_idx,
-                            pixel_x,
-                            pixel_y,
-                            false,
-                        );
-                    }
+                    let (pixel_x, pixel_y) =
+                        pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                    send_mouse_report(
+                        &pty_master,
+                        mouse_proto,
+                        report_btn,
+                        col_idx,
+                        row_idx,
+                        pixel_x,
+                        pixel_y,
+                        false,
+                    );
                 }
                 return;
             }
@@ -958,9 +921,7 @@ impl WindowState {
                         let tab = self.active_tab_mut();
                         if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
                             let active_grid = pane.terminal.active_grid_mut();
-                            let offset = active_grid.scroll_offset;
-                            let history_len = active_grid.scrollback.len();
-                            let y_offset = (row_idx + history_len).saturating_sub(offset);
+                            let y_offset = active_grid.display_row_to_abs(row_idx);
 
                             match click_count {
                                 1 => {

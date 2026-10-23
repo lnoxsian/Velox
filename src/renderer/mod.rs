@@ -689,6 +689,36 @@ impl CpuRenderer {
         }
     }
 
+    fn blit_truncated_text(
+        &mut self,
+        text: &str,
+        start_x: u32,
+        y: u32,
+        max_chars: usize,
+        tab_cw: u32,
+        fg: u32,
+    ) {
+        let char_count = text.chars().count();
+        if char_count <= max_chars {
+            for (idx, ch) in text.chars().enumerate() {
+                let px = start_x + (idx as u32) * tab_cw;
+                self.blit_tab_char(ch, px, y, fg);
+            }
+        } else if max_chars > 1 {
+            let take_count = max_chars.saturating_sub(1);
+            for (idx, ch) in text.chars().take(take_count).enumerate() {
+                let px = start_x + (idx as u32) * tab_cw;
+                self.blit_tab_char(ch, px, y, fg);
+            }
+            let px = start_x + (take_count as u32) * tab_cw;
+            self.blit_tab_char('…', px, y, fg);
+        } else if max_chars == 1
+            && let Some(ch) = text.chars().next()
+        {
+            self.blit_tab_char(ch, start_x, y, fg);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn render_csd_title_bar(
         &mut self,
@@ -813,12 +843,7 @@ impl CpuRenderer {
 
         if safe_width > tab_cw as f32 && !title.is_empty() {
             let max_chars = (safe_width / tab_cw as f32).floor() as usize;
-            let total_chars = title.chars().count();
-            let (display_len, needs_truncation) = if total_chars > max_chars {
-                (max_chars, true)
-            } else {
-                (total_chars, false)
-            };
+            let display_len = title.chars().count().min(max_chars);
 
             let title_pixel_width = display_len as u32 * tab_cw;
             let ideal_x = (w.saturating_sub(title_pixel_width)) / 2;
@@ -834,22 +859,7 @@ impl CpuRenderer {
                 csd_palette.inactive_fg
             };
 
-            if needs_truncation {
-                let take_count = max_chars.saturating_sub(1);
-                let mut i = 0;
-                for ch in title.chars().take(take_count) {
-                    let x = text_x + (i as u32) * tab_cw;
-                    self.blit_tab_char(ch, x, text_y, text_fg);
-                    i += 1;
-                }
-                let x = text_x + (i as u32) * tab_cw;
-                self.blit_tab_char('…', x, text_y, text_fg);
-            } else {
-                for (i, ch) in title.chars().enumerate() {
-                    let x = text_x + (i as u32) * tab_cw;
-                    self.blit_tab_char(ch, x, text_y, text_fg);
-                }
-            }
+            self.blit_truncated_text(title, text_x, text_y, max_chars, tab_cw, text_fg);
         }
         true
     }
@@ -1081,6 +1091,7 @@ impl CpuRenderer {
         let tab_w = tab_bar.compute_tab_width(self.viewport_width as f32);
         let tab_cw = self.tab_glyph_cache.cell_width;
         let tab_ch = self.tab_glyph_cache.cell_height;
+        let char_baseline_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
 
         self.framebuffer.fill_span(
             0,
@@ -1124,39 +1135,19 @@ impl CpuRenderer {
             let close_space = if tab_bar.show_close_button { 24.0 } else { 8.0 };
             let max_text_w = (actual_w as f32 - 16.0 - close_space).max(0.0);
             let max_chars = (max_text_w / (tab_cw as f32)).floor() as usize;
-
             let text_start_x = tab_x + 8;
-            let text_start_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
 
-            let char_count = tab.title.chars().count();
-            if char_count <= max_chars {
-                for (c_idx, ch) in tab.title.chars().enumerate() {
-                    let char_px = text_start_x + (c_idx as u32) * tab_cw;
-                    self.blit_tab_char(ch, char_px, text_start_y, text_fg);
-                }
-            } else if max_chars > 1 {
-                for (c_idx, ch) in tab.title.chars().take(max_chars - 1).enumerate() {
-                    let char_px = text_start_x + (c_idx as u32) * tab_cw;
-                    self.blit_tab_char(ch, char_px, text_start_y, text_fg);
-                }
-                let char_px = text_start_x + ((max_chars - 1) as u32) * tab_cw;
-                self.blit_tab_char('…', char_px, text_start_y, text_fg);
-            } else if max_chars == 1
-                && let Some(ch) = tab.title.chars().next()
-            {
-                self.blit_tab_char(ch, text_start_x, text_start_y, text_fg);
-            }
+            self.blit_truncated_text(&tab.title, text_start_x, char_baseline_y, max_chars, tab_cw, text_fg);
 
             // Close button
             if tab_bar.show_close_button {
                 let close_x = tab_x + actual_w.saturating_sub(20);
-                let close_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
                 let close_fg = if tab.is_close_hovered {
                     self.palette.ansi_colors[1]
                 } else {
                     self.palette.tab_close_fg
                 };
-                self.blit_tab_char('×', close_x, close_y, close_fg);
+                self.blit_tab_char('×', close_x, char_baseline_y, close_fg);
             }
         }
 
@@ -1173,13 +1164,12 @@ impl CpuRenderer {
             }
 
             let plus_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;
-            let plus_y = csd_y_offset + bar_h.saturating_sub(tab_ch) / 2;
             let plus_fg = if tab_bar.is_new_tab_hovered {
                 self.palette.default_fg
             } else {
                 self.palette.tab_inactive_fg
             };
-            self.blit_tab_char('+', plus_x, plus_y, plus_fg);
+            self.blit_tab_char('+', plus_x, char_baseline_y, plus_fg);
         }
     }
 
@@ -1423,32 +1413,23 @@ impl CpuRenderer {
                 &mut heap_is_dirty[..grid_h]
             };
 
-            if !grid.damage.dirty_indices().is_empty() {
-                for &r in grid.damage.dirty_indices() {
-                    if r < grid_h {
-                        dirty_map[r] = true;
+            let mut mark_damage = |dirty_indices: &[usize], dirty_rows: &[bool]| {
+                if !dirty_indices.is_empty() {
+                    for &r in dirty_indices {
+                        if r < grid_h {
+                            dirty_map[r] = true;
+                        }
+                    }
+                } else {
+                    for (idx, &is_d) in dirty_rows.iter().enumerate() {
+                        if is_d && idx < grid_h {
+                            dirty_map[idx] = true;
+                        }
                     }
                 }
-            } else {
-                for (idx, &is_d) in grid.damage.dirty_rows.iter().enumerate() {
-                    if is_d && idx < grid_h {
-                        dirty_map[idx] = true;
-                    }
-                }
-            }
-            if !self.damage.dirty_indices().is_empty() {
-                for &r in self.damage.dirty_indices() {
-                    if r < grid_h {
-                        dirty_map[r] = true;
-                    }
-                }
-            } else {
-                for (idx, &is_d) in self.damage.dirty_rows.iter().enumerate() {
-                    if is_d && idx < grid_h {
-                        dirty_map[idx] = true;
-                    }
-                }
-            }
+            };
+            mark_damage(grid.damage.dirty_indices(), &grid.damage.dirty_rows);
+            mark_damage(self.damage.dirty_indices(), &self.damage.dirty_rows);
             if can_scroll_optimize {
                 if grid_h > 0 {
                     dirty_map[grid_h - 1] = true;
@@ -1677,6 +1658,17 @@ impl CpuRenderer {
                     let mut span_bg = 0u32;
                     let mut in_span = false;
 
+                    let flush_span = |start_col: usize, end_col: usize, bg: u32, fb: &mut Framebuffer| {
+                        if bg != default_pane_bg {
+                            let span_px = px_offset + (start_col as u32) * cell_w;
+                            let span_w = (((end_col - start_col) as u32) * cell_w)
+                                .min(max_x.saturating_sub(span_px));
+                            if span_w > 0 && span_px < max_x {
+                                fb.fill_span(span_px, py, span_w, cell_h, bg);
+                            }
+                        }
+                    };
+
                     for col in 0..grid_w {
                         let cell = row_cells.get(col).unwrap_or(&default_cell);
                         let res = &resolved[col];
@@ -1697,13 +1689,8 @@ impl CpuRenderer {
                             );
 
                         if is_solid_block {
-                            if in_span && span_bg != default_pane_bg {
-                                let span_px = px_offset + (span_start_col as u32) * cell_w;
-                                let span_w = (((col - span_start_col) as u32) * cell_w)
-                                    .min(max_x.saturating_sub(span_px));
-                                if span_w > 0 && span_px < max_x {
-                                    fb.fill_span(span_px, py, span_w, cell_h, span_bg);
-                                }
+                            if in_span {
+                                flush_span(span_start_col, col, span_bg, fb);
                             }
                             in_span = false;
                         } else if !in_span {
@@ -1711,26 +1698,14 @@ impl CpuRenderer {
                             span_bg = res.bg;
                             in_span = true;
                         } else if res.bg != span_bg {
-                            if span_bg != default_pane_bg {
-                                let span_px = px_offset + (span_start_col as u32) * cell_w;
-                                let span_w = (((col - span_start_col) as u32) * cell_w)
-                                    .min(max_x.saturating_sub(span_px));
-                                if span_w > 0 && span_px < max_x {
-                                    fb.fill_span(span_px, py, span_w, cell_h, span_bg);
-                                }
-                            }
+                            flush_span(span_start_col, col, span_bg, fb);
                             span_start_col = col;
                             span_bg = res.bg;
                         }
                     }
 
-                    if in_span && span_bg != default_pane_bg {
-                        let span_px = px_offset + (span_start_col as u32) * cell_w;
-                        let span_w = (((grid_w - span_start_col) as u32) * cell_w)
-                            .min(max_x.saturating_sub(span_px));
-                        if span_w > 0 && span_px < max_x {
-                            fb.fill_span(span_px, py, span_w, cell_h, span_bg);
-                        }
+                    if in_span {
+                        flush_span(span_start_col, grid_w, span_bg, fb);
                     }
                 }
 

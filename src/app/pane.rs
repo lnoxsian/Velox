@@ -136,4 +136,17 @@ impl Pane {
         }
         None
     }
+
+    /// Flushes any pending terminal response bytes directly to the PTY master process.
+    /// Trims excessive vector capacity if needed.
+    #[inline]
+    pub fn flush_outgoing(&mut self) {
+        if !self.terminal.outgoing.is_empty() {
+            let _ = self.pty_master.write(&self.terminal.outgoing);
+            self.terminal.outgoing.clear();
+            if self.terminal.outgoing.capacity() > 4096 {
+                self.terminal.outgoing.shrink_to_fit();
+            }
+        }
+    }
 }

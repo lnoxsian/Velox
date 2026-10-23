@@ -388,21 +388,13 @@ impl Terminal {
                         if let Some(&last_b) = ascii_slice.last() {
                             self.last_char = Some(last_b as char);
                         }
-                        let grid = if self.is_alt_screen {
-                            &mut self.alt_grid
-                        } else {
-                            &mut self.grid
-                        };
+                        let grid = self.active_grid_mut();
                         grid.put_ascii_slice(ascii_slice, fg, bg, uc, flags);
                         continue;
                     }
                 } else if byte == b'\r' {
                     let bg = self.current_bg;
-                    let grid = if self.is_alt_screen {
-                        &mut self.alt_grid
-                    } else {
-                        &mut self.grid
-                    };
+                    let grid = self.active_grid_mut();
                     grid.cursor.x = 0;
                     if i + 1 < len && data[i + 1] == b'\n' {
                         grid.scroll_or_move_down(bg);
@@ -413,11 +405,7 @@ impl Terminal {
                     continue;
                 } else if byte == b'\n' {
                     let bg = self.current_bg;
-                    let grid = if self.is_alt_screen {
-                        &mut self.alt_grid
-                    } else {
-                        &mut self.grid
-                    };
+                    let grid = self.active_grid_mut();
                     if grid.cursor.x == grid.width {
                         grid.cursor.x = 0;
                         grid.scroll_or_move_down(bg);
@@ -503,21 +491,27 @@ impl Terminal {
     }
 
     pub fn save_cursor(&mut self) {
-        let active_grid = if self.is_alt_screen {
-            &mut self.alt_grid
-        } else {
-            &mut self.grid
-        };
+        let saved_fg = self.current_fg;
+        let saved_bg = self.current_bg;
+        let saved_uc = self.current_underline_color;
+        let saved_flags = self.current_flags;
+        let saved_g0 = self.g0_charset;
+        let saved_g1 = self.g1_charset;
+        let saved_active = self.active_charset;
+        let saved_origin = self.origin_mode;
+        let saved_wrap = self.auto_wrap;
+
+        let active_grid = self.active_grid_mut();
         active_grid.saved_cursor = active_grid.cursor;
-        active_grid.saved_fg = self.current_fg;
-        active_grid.saved_bg = self.current_bg;
-        active_grid.saved_underline_color = self.current_underline_color;
-        active_grid.saved_flags = self.current_flags;
-        active_grid.saved_g0_charset = self.g0_charset;
-        active_grid.saved_g1_charset = self.g1_charset;
-        active_grid.saved_active_charset = self.active_charset;
-        active_grid.saved_origin_mode = self.origin_mode;
-        active_grid.saved_auto_wrap = self.auto_wrap;
+        active_grid.saved_fg = saved_fg;
+        active_grid.saved_bg = saved_bg;
+        active_grid.saved_underline_color = saved_uc;
+        active_grid.saved_flags = saved_flags;
+        active_grid.saved_g0_charset = saved_g0;
+        active_grid.saved_g1_charset = saved_g1;
+        active_grid.saved_active_charset = saved_active;
+        active_grid.saved_origin_mode = saved_origin;
+        active_grid.saved_auto_wrap = saved_wrap;
     }
 
     pub fn restore_cursor(&mut self) {
@@ -532,11 +526,7 @@ impl Terminal {
             saved_origin,
             saved_wrap,
         ) = {
-            let active_grid = if self.is_alt_screen {
-                &mut self.alt_grid
-            } else {
-                &mut self.grid
-            };
+            let active_grid = self.active_grid_mut();
             active_grid.cursor = active_grid.saved_cursor;
             active_grid.clamp_cursor();
             (

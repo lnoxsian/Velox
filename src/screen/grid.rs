@@ -336,6 +336,13 @@ impl Grid {
         }
     }
 
+    /// Maps a screen display row coordinate (0..height) to its absolute row coordinate
+    /// across scrollback and active grid, accounting for the current `scroll_offset`.
+    #[inline(always)]
+    pub fn display_row_to_abs(&self, row_idx: usize) -> usize {
+        (self.scrollback.len() + row_idx).saturating_sub(self.scroll_offset)
+    }
+
     #[inline]
     pub fn set_tab_stop(&mut self, col: usize) {
         self.tab_stops.set(col);
@@ -473,6 +480,34 @@ impl Grid {
         }
     }
 
+    /// Determines the start and end row indices `(start_r, end_r)` for a logical wrapped line.
+    #[inline]
+    pub fn logical_line_range(&self, abs_row: usize, total_lines: usize) -> (usize, usize) {
+        let mut start_r = abs_row;
+        while start_r > 0 && self.is_row_wrapped(start_r - 1) {
+            start_r -= 1;
+        }
+        let mut end_r = abs_row;
+        while end_r + 1 < total_lines && self.is_row_wrapped(end_r) {
+            end_r += 1;
+        }
+        (start_r, end_r)
+    }
+
+    fn fill_logical_line_scratch(&self, start_r: usize, end_r: usize, out: &mut String) {
+        out.clear();
+        for r in start_r..=end_r {
+            let _ = self.with_row_cells(r, |cells| {
+                for c in cells {
+                    out.push(c.character);
+                }
+                for _ in cells.len()..self.width {
+                    out.push(' ');
+                }
+            });
+        }
+    }
+
     /// Checks if a cell at `(col, abs_row)` has an explicit OSC-8 hyperlink or detected URL.
     /// Highly optimized for mouse hover: avoids string allocations for unwrapped rows without triggers.
     pub fn has_url_at(&self, col: usize, abs_row: usize) -> bool {
@@ -513,30 +548,11 @@ impl Grid {
             });
         }
 
-        let mut start_r = abs_row;
-        while start_r > 0 && self.is_row_wrapped(start_r - 1) {
-            start_r -= 1;
-        }
-
-        let mut end_r = abs_row;
-        while end_r + 1 < total_lines && self.is_row_wrapped(end_r) {
-            end_r += 1;
-        }
+        let (start_r, end_r) = self.logical_line_range(abs_row, total_lines);
 
         URL_SCRATCH.with(|scratch| {
             let mut logical_text = scratch.borrow_mut();
-            logical_text.clear();
-            for r in start_r..=end_r {
-                let _ = self.with_row_cells(r, |cells| {
-                    for c in cells {
-                        logical_text.push(c.character);
-                    }
-                    for _ in cells.len()..self.width {
-                        logical_text.push(' ');
-                    }
-                });
-            }
-
+            self.fill_logical_line_scratch(start_r, end_r, &mut logical_text);
             let logical_col = (abs_row - start_r) * self.width + col;
             crate::hyperlink::detector::is_url_at(&logical_text, logical_col)
         })
@@ -584,27 +600,9 @@ impl Grid {
             return None;
         }
 
-        let mut start_r = abs_row;
-        while start_r > 0 && self.is_row_wrapped(start_r - 1) {
-            start_r -= 1;
-        }
-
-        let mut end_r = abs_row;
-        while end_r + 1 < total_lines && self.is_row_wrapped(end_r) {
-            end_r += 1;
-        }
-
+        let (start_r, end_r) = self.logical_line_range(abs_row, total_lines);
         let mut logical_text = String::with_capacity((end_r - start_r + 1) * self.width);
-        for r in start_r..=end_r {
-            let _ = self.with_row_cells(r, |cells| {
-                for c in cells {
-                    logical_text.push(c.character);
-                }
-                for _ in cells.len()..self.width {
-                    logical_text.push(' ');
-                }
-            });
-        }
+        self.fill_logical_line_scratch(start_r, end_r, &mut logical_text);
 
         let logical_col = (abs_row - start_r) * self.width + col;
         let urls = crate::hyperlink::detector::detect(&logical_text);
@@ -1337,21 +1335,7 @@ impl Grid {
             Some((start_col, end_col))
         };
 
-        let bounds = if abs_y < history_len {
-            self.scrollback
-                .with_row_slice(abs_y, |cells, _| find_bounds(cells))
-                .flatten()
-        } else {
-            let grid_y = abs_y - history_len;
-            if grid_y < self.height {
-                let physical_y = self.physical_row(grid_y);
-                let row_start = physical_y * self.width;
-                let row_end = (row_start + self.width).min(self.cells.len());
-                find_bounds(&self.cells[row_start..row_end])
-            } else {
-                None
-            }
-        };
+        let bounds = self.with_row_cells(abs_y, find_bounds).flatten();
 
         if let Some((start_col, end_col)) = bounds {
             self.selection.start_x = start_col;

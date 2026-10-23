@@ -1011,7 +1011,8 @@ impl WindowState {
 
         // 4. Compute layouts & active pane
         let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
-        let active_pane_id = self.active_tab().active_pane_id;
+        let active_tab = &self.tabs[self.active_tab_index];
+        let active_pane_id = active_tab.active_pane_id;
         let active_pane_rect = pane_rects
             .iter()
             .find(|r| r.pane_id == active_pane_id)
@@ -1025,7 +1026,6 @@ impl WindowState {
             self.hovered_separator,
         );
 
-        let active_tab = &self.tabs[self.active_tab_index];
         let active_theme = if let Some(active_pane) = active_tab.tree.find_pane(active_pane_id) {
             &active_pane.terminal.theme
         } else {
@@ -1456,13 +1456,7 @@ impl App {
             let now = std::time::Instant::now();
             pane.last_activity = now;
             tab.last_activity = now;
-            if !pane.terminal.outgoing.is_empty() {
-                let _ = pane.pty_master.write(&pane.terminal.outgoing);
-                pane.terminal.outgoing.clear();
-                if pane.terminal.outgoing.capacity() > 4096 {
-                    pane.terminal.outgoing.shrink_to_fit();
-                }
-            }
+            pane.flush_outgoing();
             if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
                 ws.mark_interaction();
                 ws.needs_redraw = true;
@@ -1486,13 +1480,7 @@ impl App {
                     pane.last_activity = std::time::Instant::now();
                     tab.last_activity = pane.last_activity;
                     pane.terminal.feed(&data);
-                    if !pane.terminal.outgoing.is_empty() {
-                        let _ = pane.pty_master.write(&pane.terminal.outgoing);
-                        pane.terminal.outgoing.clear();
-                        if pane.terminal.outgoing.capacity() > 4096 {
-                            pane.terminal.outgoing.shrink_to_fit();
-                        }
-                    }
+                    pane.flush_outgoing();
                     if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
                         ws.mark_interaction();
                         ws.needs_redraw = true;

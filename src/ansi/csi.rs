@@ -50,35 +50,18 @@ pub fn handle_csi(
                         2 => terminal.current_flags.insert(CellFlags::DIM),
                         3 => terminal.current_flags.insert(CellFlags::ITALIC),
                         4 => {
+                            terminal.current_flags.remove(CellFlags::ALL_UNDERLINES);
                             if i + 1 < params.len() && (params[i + 1] & 0x8000) != 0 {
                                 let sub = params[i + 1] & 0x7fff;
                                 match sub {
-                                    0 => {
-                                        terminal.current_flags.remove(CellFlags::UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
-                                    }
-                                    2 => {
-                                        terminal.current_flags.remove(CellFlags::UNDERLINE);
-                                        terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
-                                    }
-                                    3..=5 => {
-                                        terminal.current_flags.remove(CellFlags::UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
-                                        terminal.current_flags.insert(CellFlags::CURLY_UNDERLINE);
-                                    }
-                                    _ => {
-                                        terminal.current_flags.insert(CellFlags::UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
-                                        terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
-                                    }
+                                    0 => {}
+                                    2 => terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE),
+                                    3..=5 => terminal.current_flags.insert(CellFlags::CURLY_UNDERLINE),
+                                    _ => terminal.current_flags.insert(CellFlags::UNDERLINE),
                                 }
                                 i += 1;
                             } else {
                                 terminal.current_flags.insert(CellFlags::UNDERLINE);
-                                terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
-                                terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
                             }
                         }
                         5 => terminal.current_flags.insert(CellFlags::BLINK),
@@ -86,19 +69,15 @@ pub fn handle_csi(
                         8 => terminal.current_flags.insert(CellFlags::HIDDEN),
                         9 => terminal.current_flags.insert(CellFlags::STRIKE),
                         21 => {
-                            terminal.current_flags.remove(CellFlags::UNDERLINE);
+                            terminal.current_flags.remove(CellFlags::ALL_UNDERLINES);
                             terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE);
-                            terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
                         }
                         22 => {
-                            terminal.current_flags.remove(CellFlags::BOLD);
-                            terminal.current_flags.remove(CellFlags::DIM);
+                            terminal.current_flags.remove(CellFlags::BOLD | CellFlags::DIM);
                         }
                         23 => terminal.current_flags.remove(CellFlags::ITALIC),
                         24 => {
-                            terminal.current_flags.remove(CellFlags::UNDERLINE);
-                            terminal.current_flags.remove(CellFlags::DOUBLE_UNDERLINE);
-                            terminal.current_flags.remove(CellFlags::CURLY_UNDERLINE);
+                            terminal.current_flags.remove(CellFlags::ALL_UNDERLINES);
                         }
                         25 => terminal.current_flags.remove(CellFlags::BLINK),
                         27 => terminal.current_flags.remove(CellFlags::REVERSE),

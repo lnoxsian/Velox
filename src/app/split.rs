@@ -161,6 +161,18 @@ pub enum SplitNode {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SplitLayoutContext {
+    pub sep_size: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
+    pub base_cw_f: f32,
+    pub base_ch_f: f32,
+    pub base_font_size: f32,
+    pub min_cols: usize,
+    pub min_rows: usize,
+}
+
 impl SplitNode {
     #[inline]
     pub fn find_pane(&self, id: PaneId) -> Option<&Pane> {
@@ -388,39 +400,28 @@ impl SplitNode {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn calculate_layout(
         &self,
         x: f32,
         y: f32,
         w: f32,
         h: f32,
-        sep_size: f32,
-        padding_x: f32,
-        padding_y: f32,
-        base_cw: u32,
-        base_ch: u32,
-        base_font_size: f32,
-        min_cols: usize,
-        min_rows: usize,
+        ctx: &SplitLayoutContext,
         pane_rects: &mut Vec<PaneRect>,
         sep_rects: &mut Vec<SeparatorRect>,
     ) {
-        let base_cw_f = base_cw.max(1) as f32;
-        let base_ch_f = base_ch.max(1) as f32;
-
         match self {
             Self::Pane(pane) => {
-                let scale = if base_font_size > 0.0 {
-                    (pane.font_size / base_font_size)
+                let scale = if ctx.base_font_size > 0.0 {
+                    (pane.font_size / ctx.base_font_size)
                         .clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
                 } else {
                     1.0
                 };
-                let pane_cw = (base_cw_f * scale).round().max(1.0);
-                let pane_ch = (base_ch_f * scale).round().max(1.0);
-                let text_w = (w - padding_x * 2.0).max(pane_cw);
-                let text_h = (h - padding_y * 2.0).max(pane_ch);
+                let pane_cw = (ctx.base_cw_f * scale).round().max(1.0);
+                let pane_ch = (ctx.base_ch_f * scale).round().max(1.0);
+                let text_w = (w - ctx.padding_x * 2.0).max(pane_cw);
+                let text_h = (h - ctx.padding_y * 2.0).max(pane_ch);
                 let cols = ((text_w / pane_cw).floor() as usize).max(1);
                 let rows = ((text_h / pane_ch).floor() as usize).max(1);
                 pane_rects.push(PaneRect {
@@ -429,8 +430,8 @@ impl SplitNode {
                     y,
                     width: w,
                     height: h,
-                    padding_x,
-                    padding_y,
+                    padding_x: ctx.padding_x,
+                    padding_y: ctx.padding_y,
                     cols,
                     rows,
                     cell_width: pane_cw,
@@ -447,9 +448,9 @@ impl SplitNode {
                 let ratio = ratio.clamp(0.05, 0.95);
                 match direction {
                     SplitDirection::Vertical => {
-                        let avail_w = (w - sep_size).max(0.0);
+                        let avail_w = (w - ctx.sep_size).max(0.0);
                         let min_w =
-                            ((min_cols as f32 * base_cw_f) + padding_x * 2.0).min(avail_w * 0.45);
+                            ((ctx.min_cols as f32 * ctx.base_cw_f) + ctx.padding_x * 2.0).min(avail_w * 0.45);
                         let mut w1 = (avail_w * ratio).floor();
                         w1 = w1.clamp(min_w, (avail_w - min_w).max(min_w));
                         let w2 = (avail_w - w1).max(0.0);
@@ -460,7 +461,7 @@ impl SplitNode {
                             direction: *direction,
                             x: sep_x,
                             y,
-                            width: sep_size,
+                            width: ctx.sep_size,
                             height: h,
                             bounds_x: x,
                             bounds_y: y,
@@ -468,43 +469,13 @@ impl SplitNode {
                             bounds_h: h,
                         });
 
-                        first.calculate_layout(
-                            x,
-                            y,
-                            w1,
-                            h,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
-                            pane_rects,
-                            sep_rects,
-                        );
-                        second.calculate_layout(
-                            sep_x + sep_size,
-                            y,
-                            w2,
-                            h,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
-                            pane_rects,
-                            sep_rects,
-                        );
+                        first.calculate_layout(x, y, w1, h, ctx, pane_rects, sep_rects);
+                        second.calculate_layout(sep_x + ctx.sep_size, y, w2, h, ctx, pane_rects, sep_rects);
                     }
                     SplitDirection::Horizontal => {
-                        let avail_h = (h - sep_size).max(0.0);
+                        let avail_h = (h - ctx.sep_size).max(0.0);
                         let min_h =
-                            ((min_rows as f32 * base_ch_f) + padding_y * 2.0).min(avail_h * 0.45);
+                            ((ctx.min_rows as f32 * ctx.base_ch_f) + ctx.padding_y * 2.0).min(avail_h * 0.45);
                         let mut h1 = (avail_h * ratio).floor();
                         h1 = h1.clamp(min_h, (avail_h - min_h).max(min_h));
                         let h2 = (avail_h - h1).max(0.0);
@@ -516,45 +487,15 @@ impl SplitNode {
                             x,
                             y: sep_y,
                             width: w,
-                            height: sep_size,
+                            height: ctx.sep_size,
                             bounds_x: x,
                             bounds_y: y,
                             bounds_w: w,
                             bounds_h: h,
                         });
 
-                        first.calculate_layout(
-                            x,
-                            y,
-                            w,
-                            h1,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
-                            pane_rects,
-                            sep_rects,
-                        );
-                        second.calculate_layout(
-                            x,
-                            sep_y + sep_size,
-                            w,
-                            h2,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
-                            pane_rects,
-                            sep_rects,
-                        );
+                        first.calculate_layout(x, y, w, h1, ctx, pane_rects, sep_rects);
+                        second.calculate_layout(x, sep_y + ctx.sep_size, w, h2, ctx, pane_rects, sep_rects);
                     }
                 }
             }
@@ -745,22 +686,18 @@ impl SplitTree {
     ) -> (Vec<PaneRect>, Vec<SeparatorRect>) {
         let mut pane_rects = Vec::with_capacity(8);
         let mut sep_rects = Vec::with_capacity(8);
-        self.root.calculate_layout(
-            x,
-            y,
-            width,
-            height,
-            separator_size,
+        let ctx = SplitLayoutContext {
+            sep_size: separator_size,
             padding_x,
             padding_y,
-            base_cw,
-            base_ch,
+            base_cw_f: base_cw.max(1) as f32,
+            base_ch_f: base_ch.max(1) as f32,
             base_font_size,
             min_cols,
             min_rows,
-            &mut pane_rects,
-            &mut sep_rects,
-        );
+        };
+        self.root
+            .calculate_layout(x, y, width, height, &ctx, &mut pane_rects, &mut sep_rects);
         (pane_rects, sep_rects)
     }
 

@@ -517,3 +517,77 @@ fn test_osc777_sanitization_and_bounded() {
     term.feed(b"\x1b[1;1HHealthy");
     assert_eq!(term.active_grid().cells[0].character, 'H');
 }
+
+#[test]
+fn test_detected_urls_and_osc8_have_no_automatic_underline() {
+    let mut term = Terminal::new(80, 24);
+
+    // 1. Output a plain detected URL
+    term.feed(b"Visit https://example.com/velox for details\r\n");
+
+    // Verify URL detection works for mouse hover & Ctrl-click
+    let grid = term.active_grid();
+    assert!(grid.has_url_at(6, 0));
+    assert!(grid.has_url_at(20, 0));
+    assert_eq!(
+        grid.hyperlink_url_at(6, 0).as_deref(),
+        Some("https://example.com/velox")
+    );
+
+    // Verify NO cells in row 0 have automatic underline flags
+    for col in 0..80 {
+        let cell = &grid.cells[col];
+        assert!(
+            !cell.flags.intersects(
+                CellFlags::UNDERLINE | CellFlags::DOUBLE_UNDERLINE | CellFlags::CURLY_UNDERLINE
+            ),
+            "Detected URL cell at col {} must NOT have automatic underline",
+            col
+        );
+    }
+
+    // 2. Output an explicit OSC 8 hyperlink
+    term.feed(b"\x1b]8;;https://example.com/osc8\x1b\\Click Here\x1b]8;;\x1b\\\r\n");
+
+    let grid = term.active_grid();
+    let row1_start = 80;
+    assert!(grid.has_url_at(0, 1));
+    assert_eq!(
+        grid.hyperlink_url_at(0, 1).as_deref(),
+        Some("https://example.com/osc8")
+    );
+
+    // Verify explicit OSC 8 hyperlink cells also have NO automatic underline
+    for col in 0..10 {
+        let cell = &grid.cells[row1_start + col];
+        assert!(
+            !cell.flags.intersects(
+                CellFlags::UNDERLINE | CellFlags::DOUBLE_UNDERLINE | CellFlags::CURLY_UNDERLINE
+            ),
+            "OSC 8 hyperlink cell at col {} must NOT have automatic underline",
+            col
+        );
+    }
+
+    // 3. Verify explicit SGR 4m underline STILL works for intentional underlines
+    term.feed(b"\x1b[4mUnderlined Text\x1b[24m Normal Text\r\n");
+    let grid = term.active_grid();
+    let row2_start = 2 * 80;
+    for col in 0..15 {
+        let cell = &grid.cells[row2_start + col];
+        assert!(
+            cell.flags.contains(CellFlags::UNDERLINE),
+            "Explicit SGR 4m cell at col {} must have CellFlags::UNDERLINE",
+            col
+        );
+    }
+    for col in 16..27 {
+        let cell = &grid.cells[row2_start + col];
+        assert!(
+            !cell.flags.contains(CellFlags::UNDERLINE),
+            "Reset SGR 24m cell at col {} must NOT have CellFlags::UNDERLINE",
+            col
+        );
+    }
+}
+

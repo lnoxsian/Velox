@@ -295,6 +295,32 @@ impl TabBar {
         }
     }
 
+    /// Clears any hovered tab, close button, or new tab button.
+    /// Returns `true` if any hover state was cleared (i.e. changed).
+    #[inline]
+    pub fn clear_hover(&mut self) -> bool {
+        let changed = self.hovered_tab.is_some() || self.hovered_close.is_some() || self.hovered_new_tab;
+        self.hovered_tab = None;
+        self.hovered_close = None;
+        self.hovered_new_tab = false;
+        changed
+    }
+
+    /// Sets the hover states and returns `true` if the state changed.
+    #[inline]
+    pub fn set_hover(&mut self, tab: Option<usize>, close: Option<usize>, new_tab: bool) -> bool {
+        let old = (self.hovered_tab, self.hovered_close, self.hovered_new_tab);
+        let new = (tab, close, new_tab);
+        if old != new {
+            self.hovered_tab = tab;
+            self.hovered_close = close;
+            self.hovered_new_tab = new_tab;
+            true
+        } else {
+            false
+        }
+    }
+
     #[inline]
     pub fn height(&self, cell_height: u32) -> f32 {
         self.configured_height

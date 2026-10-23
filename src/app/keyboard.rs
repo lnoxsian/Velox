@@ -27,61 +27,37 @@ impl WindowState {
         if !has_ctrl && !has_alt {
             if has_shift {
                 match logical_key {
-                    Key::Named(NamedKey::PageUp) => {
-                        let active_pane = self.active_pane_mut();
-                        let active_grid = if active_pane.terminal.is_alt_screen {
-                            &mut active_pane.terminal.alt_grid
-                        } else {
-                            &mut active_pane.terminal.grid
-                        };
-                        let history_len = active_grid.scrollback.len();
-                        active_grid.scroll_offset =
-                            (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                    Key::Named(NamedKey::PageUp)
+                    | Key::Named(NamedKey::PageDown)
+                    | Key::Named(NamedKey::Home)
+                    | Key::Named(NamedKey::End) => {
+                        let active_grid = self.active_pane_mut().terminal.active_grid_mut();
+                        match logical_key {
+                            Key::Named(NamedKey::PageUp) => {
+                                let history_len = active_grid.scrollback.len();
+                                active_grid.scroll_offset =
+                                    (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                                log::debug!("Velox shortcut: scroll half page up");
+                            }
+                            Key::Named(NamedKey::PageDown) => {
+                                active_grid.scroll_offset = active_grid
+                                    .scroll_offset
+                                    .saturating_sub(active_grid.height / 2);
+                                log::debug!("Velox shortcut: scroll half page down");
+                            }
+                            Key::Named(NamedKey::Home) => {
+                                let history_len = active_grid.scrollback.len();
+                                active_grid.scroll_offset = history_len;
+                                log::debug!("Velox shortcut: scroll to top of history");
+                            }
+                            Key::Named(NamedKey::End) => {
+                                active_grid.scroll_offset = 0;
+                                log::debug!("Velox shortcut: scroll to bottom of history");
+                            }
+                            _ => {}
+                        }
                         active_grid.damage.mark_all();
                         self.needs_redraw = true;
-                        log::debug!("Velox shortcut: scroll half page up");
-                        return false;
-                    }
-                    Key::Named(NamedKey::PageDown) => {
-                        let active_pane = self.active_pane_mut();
-                        let active_grid = if active_pane.terminal.is_alt_screen {
-                            &mut active_pane.terminal.alt_grid
-                        } else {
-                            &mut active_pane.terminal.grid
-                        };
-                        active_grid.scroll_offset = active_grid
-                            .scroll_offset
-                            .saturating_sub(active_grid.height / 2);
-                        active_grid.damage.mark_all();
-                        self.needs_redraw = true;
-                        log::debug!("Velox shortcut: scroll half page down");
-                        return false;
-                    }
-                    Key::Named(NamedKey::Home) => {
-                        let active_pane = self.active_pane_mut();
-                        let active_grid = if active_pane.terminal.is_alt_screen {
-                            &mut active_pane.terminal.alt_grid
-                        } else {
-                            &mut active_pane.terminal.grid
-                        };
-                        let history_len = active_grid.scrollback.len();
-                        active_grid.scroll_offset = history_len;
-                        active_grid.damage.mark_all();
-                        self.needs_redraw = true;
-                        log::debug!("Velox shortcut: scroll to top of history");
-                        return false;
-                    }
-                    Key::Named(NamedKey::End) => {
-                        let active_pane = self.active_pane_mut();
-                        let active_grid = if active_pane.terminal.is_alt_screen {
-                            &mut active_pane.terminal.alt_grid
-                        } else {
-                            &mut active_pane.terminal.grid
-                        };
-                        active_grid.scroll_offset = 0;
-                        active_grid.damage.mark_all();
-                        self.needs_redraw = true;
-                        log::debug!("Velox shortcut: scroll to bottom of history");
                         return false;
                     }
                     Key::Named(NamedKey::Insert) => {

@@ -41,6 +41,8 @@ bitflags! {
         const DIM = 1 << 9;
         const DOUBLE_UNDERLINE = 1 << 10;
         const CURLY_UNDERLINE = 1 << 11;
+
+        const ALL_UNDERLINES = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits() | Self::CURLY_UNDERLINE.bits();
     }
 }
 
