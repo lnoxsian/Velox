@@ -1137,7 +1137,14 @@ impl CpuRenderer {
             let max_chars = (max_text_w / (tab_cw as f32)).floor() as usize;
             let text_start_x = tab_x + 8;
 
-            self.blit_truncated_text(&tab.title, text_start_x, char_baseline_y, max_chars, tab_cw, text_fg);
+            self.blit_truncated_text(
+                &tab.title,
+                text_start_x,
+                char_baseline_y,
+                max_chars,
+                tab_cw,
+                text_fg,
+            );
 
             // Close button
             if tab_bar.show_close_button {
@@ -1339,7 +1346,8 @@ impl CpuRenderer {
             && !grid.selection.active
             && !pane_layout_changed
             && opacity >= 0.999
-            && (state.last_dim - pane_effective_dim).abs() <= 0.001;
+            && (state.last_dim - pane_effective_dim).abs() <= 0.001
+            && grid.damage.dirty_indices().len() <= 3;
 
         if can_scroll_optimize {
             let top_py = py_offset;
@@ -1538,7 +1546,7 @@ impl CpuRenderer {
             pane_min_y = pane_min_y.min(py);
             pane_max_y = pane_max_y.max(row_end_y);
 
-            if !pane_full_redraw && !can_scroll_optimize {
+            if !pane_full_redraw {
                 fb.fill_span(tile_x, py, tile_w, cell_h, default_pane_bg);
             }
 
@@ -1661,16 +1669,17 @@ impl CpuRenderer {
                     let mut span_bg = 0u32;
                     let mut in_span = false;
 
-                    let flush_span = |start_col: usize, end_col: usize, bg: u32, fb: &mut Framebuffer| {
-                        if bg != default_pane_bg {
-                            let span_px = px_offset + (start_col as u32) * cell_w;
-                            let span_w = (((end_col - start_col) as u32) * cell_w)
-                                .min(max_x.saturating_sub(span_px));
-                            if span_w > 0 && span_px < max_x {
-                                fb.fill_span(span_px, py, span_w, cell_h, bg);
+                    let flush_span =
+                        |start_col: usize, end_col: usize, bg: u32, fb: &mut Framebuffer| {
+                            if bg != default_pane_bg {
+                                let span_px = px_offset + (start_col as u32) * cell_w;
+                                let span_w = (((end_col - start_col) as u32) * cell_w)
+                                    .min(max_x.saturating_sub(span_px));
+                                if span_w > 0 && span_px < max_x {
+                                    fb.fill_span(span_px, py, span_w, cell_h, bg);
+                                }
                             }
-                        }
-                    };
+                        };
 
                     for col in 0..grid_w {
                         let cell = row_cells.get(col).unwrap_or(&default_cell);

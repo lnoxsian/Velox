@@ -46,10 +46,20 @@ pub fn spawn_process(
                 libc::close(master_fd);
                 libc::close(slave_fd);
 
-                if let Some(dir) = working_directory
-                    && let Ok(c_dir) = CString::new(dir)
-                {
-                    libc::chdir(c_dir.as_ptr());
+                if let Some(dir) = working_directory {
+                    if let Ok(c_dir) = CString::new(dir) {
+                        if libc::chdir(c_dir.as_ptr()) != 0 {
+                            let home = libc::getenv(c"HOME".as_ptr());
+                            if !home.is_null() {
+                                libc::chdir(home);
+                            }
+                        }
+                    }
+                } else {
+                    let home = libc::getenv(c"HOME".as_ptr());
+                    if !home.is_null() {
+                        libc::chdir(home);
+                    }
                 }
             }
 
@@ -92,4 +102,21 @@ pub fn spawn_process(
         }
         Err(e) => Err(PtyError::Fork(e.to_string())),
     }
+}
+
+/// Spawns a terminal shell process with layered fallbacks:
+/// 1. Requested shell + requested working directory
+/// 2. Requested shell + $HOME directory
+/// 3. Standard /bin/sh + $HOME directory
+pub fn spawn_terminal_pty(
+    shell_path: &str,
+    command: Option<&[String]>,
+    working_directory: Option<&str>,
+) -> Result<PtyMaster, PtyError> {
+    let home = std::env::var("HOME").ok();
+    let effective_dir = working_directory.or(home.as_deref());
+
+    spawn_process(shell_path, command, effective_dir)
+        .or_else(|_| spawn_process(shell_path, command, home.as_deref()))
+        .or_else(|_| spawn_process("/bin/sh", command, home.as_deref()))
 }

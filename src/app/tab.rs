@@ -298,7 +298,8 @@ impl TabBar {
     /// Returns `true` if any hover state was cleared (i.e. changed).
     #[inline]
     pub fn clear_hover(&mut self) -> bool {
-        let changed = self.hovered_tab.is_some() || self.hovered_close.is_some() || self.hovered_new_tab;
+        let changed =
+            self.hovered_tab.is_some() || self.hovered_close.is_some() || self.hovered_new_tab;
         self.hovered_tab = None;
         self.hovered_close = None;
         self.hovered_new_tab = false;

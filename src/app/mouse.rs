@@ -415,18 +415,10 @@ impl WindowState {
                     false,
                     crate::window::event::CursorIcon::Pointer,
                 ),
-                TabBarHitResult::NewTab => (
-                    None,
-                    None,
-                    true,
-                    crate::window::event::CursorIcon::Pointer,
-                ),
-                _ => (
-                    None,
-                    None,
-                    false,
-                    crate::window::event::CursorIcon::Default,
-                ),
+                TabBarHitResult::NewTab => {
+                    (None, None, true, crate::window::event::CursorIcon::Pointer)
+                }
+                _ => (None, None, false, crate::window::event::CursorIcon::Default),
             };
 
             if self.tab_bar.set_hover(hover_tab, hover_close, hover_new) {

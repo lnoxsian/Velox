@@ -56,7 +56,9 @@ pub fn handle_csi(
                                 match sub {
                                     0 => {}
                                     2 => terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE),
-                                    3..=5 => terminal.current_flags.insert(CellFlags::CURLY_UNDERLINE),
+                                    3..=5 => {
+                                        terminal.current_flags.insert(CellFlags::CURLY_UNDERLINE)
+                                    }
                                     _ => terminal.current_flags.insert(CellFlags::UNDERLINE),
                                 }
                                 i += 1;
@@ -73,7 +75,9 @@ pub fn handle_csi(
                             terminal.current_flags.insert(CellFlags::DOUBLE_UNDERLINE);
                         }
                         22 => {
-                            terminal.current_flags.remove(CellFlags::BOLD | CellFlags::DIM);
+                            terminal
+                                .current_flags
+                                .remove(CellFlags::BOLD | CellFlags::DIM);
                         }
                         23 => terminal.current_flags.remove(CellFlags::ITALIC),
                         24 => {
@@ -238,7 +242,10 @@ pub fn handle_csi(
             let active = terminal.active_grid_mut();
             while n > 0 {
                 if active.cursor.x + 1 < active.width {
-                    let available = active.width.saturating_sub(1).saturating_sub(active.cursor.x);
+                    let available = active
+                        .width
+                        .saturating_sub(1)
+                        .saturating_sub(active.cursor.x);
                     let step = n.min(available);
                     active.cursor.x += step;
                     n -= step;
@@ -269,7 +276,12 @@ pub fn handle_csi(
                     n -= step;
                 } else if active.cursor.y > 0 {
                     let prev_phys_y = active.physical_row(active.cursor.y - 1);
-                    if active.row_wrapped.get(prev_phys_y).copied().unwrap_or(false) {
+                    if active
+                        .row_wrapped
+                        .get(prev_phys_y)
+                        .copied()
+                        .unwrap_or(false)
+                    {
                         active.cursor.y -= 1;
                         active.cursor.x = active.width.saturating_sub(1);
                         n -= 1;

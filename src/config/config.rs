@@ -64,6 +64,8 @@ pub struct WindowConfig {
     #[serde(default)]
     pub window_dim: Option<f32>,
     #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
     pub hide_mouse_on_typing: Option<bool>,
     #[serde(default)]
     pub csd_theme: Option<String>,
@@ -296,6 +298,8 @@ pub struct Config {
     pub app_title: Option<String>,
     #[serde(default)]
     pub single_instance: Option<bool>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
 
     // Top-level fallback fields for legacy flat TOML files
     #[serde(
@@ -507,6 +511,13 @@ impl Config {
 
     pub fn fps_limit(&self) -> Option<u32> {
         self.window.fps_limit.or(self.fps_limit_legacy)
+    }
+
+    pub fn working_directory(&self) -> Option<String> {
+        self.working_directory
+            .clone()
+            .or_else(|| self.window.working_directory.clone())
+            .filter(|p| !p.trim().is_empty())
     }
 
     pub fn padding_x(&self) -> Option<f32> {

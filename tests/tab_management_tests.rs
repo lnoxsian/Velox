@@ -753,3 +753,62 @@ fn test_close_tab_before_active_index_shifts_active_index() {
     // Active tab index must now be 1 (pointing to the same tab)
     assert_eq!(ws.active_tab_index, 1);
 }
+
+#[test]
+fn test_spawn_process_defaults_to_home_dir() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    if let Ok(home) = std::env::var("HOME") {
+        let expected = std::path::Path::new(&home);
+        let mut matched = false;
+        for _ in 0..50 {
+            if let Some(ref cwd) = pty.get_foreground_process_cwd()
+                && std::path::Path::new(cwd) == expected
+            {
+                matched = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            matched,
+            "When working_directory is None, spawn_process must default to $HOME"
+        );
+    }
+}
+
+#[test]
+fn test_create_tab_inherits_parent_pane_cwd() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, Some("/tmp")).unwrap());
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    ws.active_pane_mut().terminal.current_dir = Some("/tmp".to_string());
+
+    // Spawning a new tab with None must inherit parent pane's CWD
+    ws.create_tab(None, None, None, None);
+    assert_eq!(ws.tabs.len(), 2);
+    let new_tab = &ws.tabs[ws.active_tab_index];
+    let new_cwd = new_tab.active_pane().current_working_directory();
+    assert!(new_cwd.is_some());
+    let cwd_path = std::path::PathBuf::from(new_cwd.unwrap());
+    assert!(
+        cwd_path.ends_with("tmp") || cwd_path == std::path::Path::new("/tmp"),
+        "Newly created tab must inherit parent pane's working directory"
+    );
+}
+
+#[test]
+fn test_split_pane_inherits_parent_pane_cwd() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, Some("/tmp")).unwrap());
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    ws.active_pane_mut().terminal.current_dir = Some("/tmp".to_string());
+
+    let split_id = ws.split_active_pane(velox::app::split::SplitDirection::Horizontal);
+    assert!(split_id.is_some());
+    let active_pane = ws.active_pane();
+    let new_cwd = active_pane.current_working_directory();
+    assert!(new_cwd.is_some());
+    let cwd_path = std::path::PathBuf::from(new_cwd.unwrap());
+    assert!(
+        cwd_path.ends_with("tmp") || cwd_path == std::path::Path::new("/tmp"),
+        "Newly split pane must inherit parent pane's working directory"
+    );
+}

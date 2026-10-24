@@ -104,6 +104,10 @@ impl CliOptions {
                     if arg.starts_with('-') {
                         eprintln!("Unknown flag: {}", arg);
                         options.help = true;
+                    } else if options.working_directory.is_none()
+                        && std::path::Path::new(arg).is_dir()
+                    {
+                        options.working_directory = Some(arg.clone());
                     }
                 }
             }
@@ -221,6 +225,13 @@ mod tests {
         ];
         let opts = CliOptions::parse_args(&args);
         assert!(opts.hold);
+        assert_eq!(opts.working_directory, Some("/tmp".to_string()));
+    }
+
+    #[test]
+    fn test_cli_positional_directory() {
+        let args = vec!["velox".to_string(), "/tmp".to_string()];
+        let opts = CliOptions::parse_args(&args);
         assert_eq!(opts.working_directory, Some("/tmp".to_string()));
     }
 

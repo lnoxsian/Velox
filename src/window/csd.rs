@@ -149,29 +149,29 @@ impl CsdButtonLayout {
         Self::default()
     }
 
-#[inline(always)]
-fn left_button_slot(i: usize) -> (f32, f32, f32) {
-    let slot = i as f32;
-    let center_x = 22.0 + slot * 32.0;
-    let (hit_x, hit_w) = if i == 0 {
-        (0.0, 38.0)
-    } else {
-        (6.0 + slot * 32.0, 32.0)
-    };
-    (center_x, hit_x, hit_w)
-}
+    #[inline(always)]
+    fn left_button_slot(i: usize) -> (f32, f32, f32) {
+        let slot = i as f32;
+        let center_x = 22.0 + slot * 32.0;
+        let (hit_x, hit_w) = if i == 0 {
+            (0.0, 38.0)
+        } else {
+            (6.0 + slot * 32.0, 32.0)
+        };
+        (center_x, hit_x, hit_w)
+    }
 
-#[inline(always)]
-fn right_button_slot(i: usize, n: usize, win_w: f32) -> (f32, f32, f32) {
-    let slot = (n - 1 - i) as f32;
-    let center_x = win_w - 22.0 - slot * 32.0;
-    let (hit_x, hit_w) = if i == n - 1 {
-        (win_w - 38.0, 38.0)
-    } else {
-        (win_w - 38.0 - slot * 32.0, 32.0)
-    };
-    (center_x, hit_x, hit_w)
-}
+    #[inline(always)]
+    fn right_button_slot(i: usize, n: usize, win_w: f32) -> (f32, f32, f32) {
+        let slot = (n - 1 - i) as f32;
+        let center_x = win_w - 22.0 - slot * 32.0;
+        let (hit_x, hit_w) = if i == n - 1 {
+            (win_w - 38.0, 38.0)
+        } else {
+            (win_w - 38.0 - slot * 32.0, 32.0)
+        };
+        (center_x, hit_x, hit_w)
+    }
 
     /// Computes precise visual and hitbox bounding geometry for every button in the layout.
     #[inline]

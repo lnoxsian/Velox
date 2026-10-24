@@ -1151,6 +1151,14 @@ impl Grid {
             0 => {
                 // Cursor to end of line
                 let start_idx = row_start + cur_x;
+                if cur_x > 0
+                    && start_idx < self.cells.len()
+                    && self.cells[start_idx]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[start_idx - 1] = default_cell;
+                }
                 let end_idx = (row_start + self.width).min(self.cells.len());
                 if start_idx < end_idx {
                     self.cells[start_idx..end_idx].fill(default_cell);
@@ -1160,6 +1168,15 @@ impl Grid {
                 // Start of line to cursor
                 let start_idx = row_start;
                 let end_idx = (row_start + cur_x + 1).min(self.cells.len());
+                if cur_x + 1 < self.width
+                    && end_idx < self.cells.len()
+                    && self.cells[end_idx - 1].flags.contains(CellFlags::WIDE)
+                    && self.cells[end_idx]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[end_idx] = default_cell;
+                }
                 if start_idx < end_idx {
                     self.cells[start_idx..end_idx].fill(default_cell);
                 }
@@ -1182,35 +1199,76 @@ impl Grid {
 
     pub fn erase_display(&mut self, mode: u8, fg: Color, bg: Color) {
         self.clamp_cursor();
+        if self.height == 0 || self.width == 0 {
+            return;
+        }
         let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         let cur_y = self.cursor.y.min(self.height.saturating_sub(1));
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         match mode {
             0 => {
-                // Cursor to end of display: normalize first if wrapped
-                self.normalize_row_offset();
-                let start = (cur_y * self.width + cur_x).min(self.cells.len());
-                self.cells[start..].fill(default_cell);
-                for y in cur_y..self.height {
+                // Cursor to end of display
+                let phys_cur_y = self.physical_row(cur_y);
+                let start = phys_cur_y * self.width + cur_x;
+                if cur_x > 0
+                    && start < self.cells.len()
+                    && self.cells[start]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[start - 1] = default_cell;
+                }
+                let end = (phys_cur_y + 1) * self.width;
+                if start < end && end <= self.cells.len() {
+                    self.cells[start..end].fill(default_cell);
+                }
+                self.damage.mark_dirty(cur_y);
+                if phys_cur_y < self.row_wrapped.len() {
+                    self.row_wrapped[phys_cur_y] = false;
+                }
+                for y in (cur_y + 1)..self.height {
+                    let phys_y = self.physical_row(y);
+                    let row_start = phys_y * self.width;
+                    let row_end = row_start + self.width;
+                    if row_end <= self.cells.len() {
+                        self.cells[row_start..row_end].fill(default_cell);
+                    }
                     self.damage.mark_dirty(y);
-                    if y < self.row_wrapped.len() {
-                        self.row_wrapped[y] = false;
+                    if phys_y < self.row_wrapped.len() {
+                        self.row_wrapped[phys_y] = false;
                     }
                 }
             }
             1 => {
                 // Start of display to cursor
-                self.normalize_row_offset();
-                let len = self.cells.len();
-                if len > 0 {
-                    let end = (cur_y * self.width + cur_x).min(len - 1);
-                    self.cells[0..=end].fill(default_cell);
-                    for y in 0..=cur_y {
-                        self.damage.mark_dirty(y);
-                        if y < self.row_wrapped.len() {
-                            self.row_wrapped[y] = false;
-                        }
+                for y in 0..cur_y {
+                    let phys_y = self.physical_row(y);
+                    let row_start = phys_y * self.width;
+                    let row_end = row_start + self.width;
+                    if row_end <= self.cells.len() {
+                        self.cells[row_start..row_end].fill(default_cell);
                     }
+                    self.damage.mark_dirty(y);
+                    if phys_y < self.row_wrapped.len() {
+                        self.row_wrapped[phys_y] = false;
+                    }
+                }
+                let phys_cur_y = self.physical_row(cur_y);
+                let start = phys_cur_y * self.width;
+                let end = (start + cur_x + 1).min(self.cells.len());
+                if cur_x + 1 < self.width
+                    && end < self.cells.len()
+                    && self.cells[end - 1].flags.contains(CellFlags::WIDE)
+                    && self.cells[end].flags.contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[end] = default_cell;
+                }
+                if start < end {
+                    self.cells[start..end].fill(default_cell);
+                }
+                self.damage.mark_dirty(cur_y);
+                if phys_cur_y < self.row_wrapped.len() {
+                    self.row_wrapped[phys_cur_y] = false;
                 }
             }
             2 | 3 => {
@@ -1753,7 +1811,10 @@ mod tests {
 
         // Verify line 1 in scrollback has len 0
         grid.scrollback.with_row_slice(1, |cells, _| {
-            assert!(cells.is_empty(), "Blank line should have trimmed cells to empty slice");
+            assert!(
+                cells.is_empty(),
+                "Blank line should have trimmed cells to empty slice"
+            );
         });
 
         // Test 1: Selecting the empty row directly
@@ -1798,7 +1859,11 @@ mod tests {
 
     #[test]
     fn test_physical_row_zero_height() {
-        let fg = Color { r: 255, g: 255, b: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
         let bg = Color { r: 0, g: 0, b: 0 };
         let grid = Grid::new(80, 0, fg, bg, 100, false);
         // Must not panic on % 0
@@ -1808,7 +1873,11 @@ mod tests {
 
     #[test]
     fn test_grid_output_zero_dimensions_no_hang() {
-        let fg = Color { r: 255, g: 255, b: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
         let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(0, 0, fg, bg, 100, false);
         grid.put_ascii('a', fg, bg, None, CellFlags::empty());
@@ -1818,7 +1887,11 @@ mod tests {
 
     #[test]
     fn test_wide_char_on_one_column_grid() {
-        let fg = Color { r: 255, g: 255, b: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
         let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(1, 2, fg, bg, 100, false);
         // Writing emoji on 1-column grid should not corrupt next row

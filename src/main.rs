@@ -48,8 +48,12 @@ fn main() {
     let single_instance = cli_opts.single_instance || config.single_instance.unwrap_or(true);
 
     if single_instance || cli_opts.is_msg_create_window {
+        let cwd = cli_opts
+            .working_directory
+            .clone()
+            .or_else(|| config.working_directory());
         let ipc_msg = ipc::IpcMessage::CreateWindow {
-            working_directory: cli_opts.working_directory.clone(),
+            working_directory: cwd,
             command: cli_opts.command.clone(),
             title: cli_opts.title.clone(),
             hold: Some(cli_opts.hold),

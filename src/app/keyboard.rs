@@ -35,8 +35,9 @@ impl WindowState {
                         match logical_key {
                             Key::Named(NamedKey::PageUp) => {
                                 let history_len = active_grid.scrollback.len();
-                                active_grid.scroll_offset =
-                                    (active_grid.scroll_offset + active_grid.height / 2).min(history_len);
+                                active_grid.scroll_offset = (active_grid.scroll_offset
+                                    + active_grid.height / 2)
+                                    .min(history_len);
                                 log::debug!("Velox shortcut: scroll half page up");
                             }
                             Key::Named(NamedKey::PageDown) => {

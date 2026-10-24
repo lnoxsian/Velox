@@ -449,8 +449,8 @@ impl SplitNode {
                 match direction {
                     SplitDirection::Vertical => {
                         let avail_w = (w - ctx.sep_size).max(0.0);
-                        let min_w =
-                            ((ctx.min_cols as f32 * ctx.base_cw_f) + ctx.padding_x * 2.0).min(avail_w * 0.45);
+                        let min_w = ((ctx.min_cols as f32 * ctx.base_cw_f) + ctx.padding_x * 2.0)
+                            .min(avail_w * 0.45);
                         let mut w1 = (avail_w * ratio).floor();
                         w1 = w1.clamp(min_w, (avail_w - min_w).max(min_w));
                         let w2 = (avail_w - w1).max(0.0);
@@ -470,12 +470,20 @@ impl SplitNode {
                         });
 
                         first.calculate_layout(x, y, w1, h, ctx, pane_rects, sep_rects);
-                        second.calculate_layout(sep_x + ctx.sep_size, y, w2, h, ctx, pane_rects, sep_rects);
+                        second.calculate_layout(
+                            sep_x + ctx.sep_size,
+                            y,
+                            w2,
+                            h,
+                            ctx,
+                            pane_rects,
+                            sep_rects,
+                        );
                     }
                     SplitDirection::Horizontal => {
                         let avail_h = (h - ctx.sep_size).max(0.0);
-                        let min_h =
-                            ((ctx.min_rows as f32 * ctx.base_ch_f) + ctx.padding_y * 2.0).min(avail_h * 0.45);
+                        let min_h = ((ctx.min_rows as f32 * ctx.base_ch_f) + ctx.padding_y * 2.0)
+                            .min(avail_h * 0.45);
                         let mut h1 = (avail_h * ratio).floor();
                         h1 = h1.clamp(min_h, (avail_h - min_h).max(min_h));
                         let h2 = (avail_h - h1).max(0.0);
@@ -495,7 +503,15 @@ impl SplitNode {
                         });
 
                         first.calculate_layout(x, y, w, h1, ctx, pane_rects, sep_rects);
-                        second.calculate_layout(x, sep_y + ctx.sep_size, w, h2, ctx, pane_rects, sep_rects);
+                        second.calculate_layout(
+                            x,
+                            sep_y + ctx.sep_size,
+                            w,
+                            h2,
+                            ctx,
+                            pane_rects,
+                            sep_rects,
+                        );
                     }
                 }
             }

@@ -4,7 +4,7 @@ use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
 use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
-use crate::pty::process::spawn_process;
+use crate::pty::process::spawn_terminal_pty;
 use crate::renderer::{CpuPaneRenderData, CpuRenderer, SeparatorRenderData};
 use crate::terminal::terminal::Terminal;
 use crate::window::PlatformWindow;
@@ -561,7 +561,8 @@ impl WindowState {
         let rows = ((avail_h as u32) / self.base_cell_height.max(1)).max(1);
 
         let cwd = self.active_pane().current_working_directory();
-        let pty_master = Arc::new(spawn_process(&self.shell_path, None, cwd.as_deref()).ok()?);
+        let pty_spawn = spawn_terminal_pty(&self.shell_path, None, cwd.as_deref());
+        let pty_master = Arc::new(pty_spawn.ok()?);
         let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::new(cols as usize, rows as usize);
@@ -723,33 +724,21 @@ impl WindowState {
 
         let was_visible = self.tab_bar.is_visible(self.tabs.len());
 
-        let pty_spawn = spawn_process(
+        let pty_spawn = spawn_terminal_pty(
             &self.shell_path,
             command.as_deref(),
             working_directory.as_deref(),
-        )
-        .or_else(|e| {
-            log::warn!(
-                "Failed to spawn process with cwd {:?}: {}, falling back to home dir",
-                working_directory,
-                e
-            );
-            spawn_process(&self.shell_path, command.as_deref(), None)
-        })
-        .or_else(|e| {
-            log::warn!(
-                "Failed to spawn shell {}: {}, falling back to /bin/sh",
-                self.shell_path,
-                e
-            );
-            spawn_process("/bin/sh", command.as_deref(), None)
-        });
+        );
 
         let pty_master = match pty_spawn {
             Ok(pty) => Arc::new(pty),
             Err(e) => {
                 log::error!("Critical failure spawning terminal shell process: {}", e);
-                return self.tabs.get(self.active_tab_index).map(|t| t.id).unwrap_or(0);
+                return self
+                    .tabs
+                    .get(self.active_tab_index)
+                    .map(|t| t.id)
+                    .unwrap_or(0);
             }
         };
 
@@ -1258,27 +1247,13 @@ impl App {
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".to_string());
 
-        let pty_spawn = spawn_process(
+        let working_directory = working_directory.or_else(|| config.working_directory());
+
+        let pty_spawn = spawn_terminal_pty(
             &shell_path,
             command.as_deref(),
             working_directory.as_deref(),
-        )
-        .or_else(|e| {
-            log::warn!(
-                "Failed to spawn initial shell process with cwd {:?}: {}, falling back to home dir",
-                working_directory,
-                e
-            );
-            spawn_process(&shell_path, command.as_deref(), None)
-        })
-        .or_else(|e| {
-            log::warn!(
-                "Failed to spawn shell {:?} in home dir: {}, falling back to /bin/sh",
-                shell_path,
-                e
-            );
-            spawn_process("/bin/sh", None, None)
-        });
+        );
 
         let pty_master = Arc::new(
             pty_spawn
@@ -1421,12 +1396,11 @@ impl App {
         if let Some(opts) = self.initial_options.take()
             && !opts.daemon
         {
-            self.create_window(
-                opts.working_directory,
-                opts.command,
-                opts.title,
-                Some(opts.hold),
-            )?;
+            let working_dir = opts
+                .working_directory
+                .or_else(|| config.working_directory())
+                .or_else(|| std::env::var("HOME").ok());
+            self.create_window(working_dir, opts.command, opts.title, Some(opts.hold))?;
         }
 
         Ok(())
@@ -1434,13 +1408,14 @@ impl App {
 
     /// Drain pending custom events with bounded coalescing for PTY data batches.
     /// Reduces terminal state machine re-entry, avoids intermediate redraws, and bounds latency to 256 KiB.
-    pub fn drain_custom_events(&mut self) {
-        self.drain_custom_events_with_first(None);
+    pub fn drain_custom_events(&mut self) -> bool {
+        self.drain_custom_events_with_first(None)
     }
 
-    pub fn drain_custom_events_with_first(&mut self, mut first_event: Option<CustomEvent>) {
+    pub fn drain_custom_events_with_first(&mut self, mut first_event: Option<CustomEvent>) -> bool {
         let mut last_affected_pane: Option<(WindowId, u64, PaneId)> = None;
         let mut coalesced_bytes = 0usize;
+        let mut had_pty_data = false;
 
         loop {
             let event = match first_event.take() {
@@ -1458,6 +1433,7 @@ impl App {
                     pane_id,
                     data,
                 } => {
+                    had_pty_data = true;
                     let key = (window_id, tab_id, pane_id);
                     if let Some(prev) = last_affected_pane {
                         if prev != key || coalesced_bytes >= 256 * 1024 {
@@ -1491,6 +1467,8 @@ impl App {
         if let Some(prev) = last_affected_pane {
             self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
         }
+
+        had_pty_data
     }
 
     fn flush_pane_output_and_redraw(&mut self, window_id: WindowId, tab_id: u64, pane_id: PaneId) {
@@ -1577,15 +1555,6 @@ impl App {
                 title,
                 hold,
             } => {
-                let working_directory = working_directory.or_else(|| {
-                    self.windows.values().next().and_then(|ws| {
-                        if !ws.tabs.is_empty() {
-                            ws.active_pane().current_working_directory()
-                        } else {
-                            None
-                        }
-                    })
-                });
                 let _ = self.create_window(working_directory, command, title, hold);
             }
             CustomEvent::IpcCreateTab {
@@ -1700,17 +1669,26 @@ impl App {
                 break;
             }
 
-            self.drain_custom_events();
+            let had_pty_data = self.drain_custom_events();
 
-            if had_keyboard_input {
-                // If keyboard input was just dispatched to PTY, give the shell up to 1.5ms to return its echo.
-                // Typical shell latency is 100-300µs; as soon as the echo arrives, recv_timeout returns
-                // immediately and renders in the exact same frame with zero delay!
-                if let Ok(event) = self
-                    .event_receiver
-                    .recv_timeout(std::time::Duration::from_micros(1500))
-                {
-                    self.drain_custom_events_with_first(Some(event));
+            if had_keyboard_input || had_pty_data {
+                // If keyboard input was just dispatched or PTY events arrived, give trailing burst packets
+                // a brief window to arrive (e.g. 1ms). Typical shell echo / CPR response latency is 50-300µs.
+                // Coalescing trailing packets ensures atomic updates (e.g. erase-line followed by text, or CPR queries)
+                // render together in a single frame without partial-frame screen flicker!
+                let coalesce_timeout = if had_keyboard_input {
+                    std::time::Duration::from_micros(1500)
+                } else {
+                    std::time::Duration::from_micros(1000)
+                };
+                let burst_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(4);
+                while std::time::Instant::now() < burst_deadline {
+                    if let Ok(event) = self.event_receiver.recv_timeout(coalesce_timeout) {
+                        self.drain_custom_events_with_first(Some(event));
+                    } else {
+                        break;
+                    }
                 }
             }
 

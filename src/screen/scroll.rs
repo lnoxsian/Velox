@@ -130,8 +130,7 @@ impl Grid {
                 let last_valid = bottom.min(self.row_wrapped.len() - 1);
                 let start_idx = top + u_delta;
                 if start_idx <= last_valid {
-                    self.row_wrapped
-                        .copy_within(start_idx..=last_valid, top);
+                    self.row_wrapped.copy_within(start_idx..=last_valid, top);
                 }
             }
         }
@@ -292,8 +291,7 @@ impl Grid {
                     let last_valid = bottom.min(self.row_wrapped.len() - 1);
                     let start_idx = top + u_delta;
                     if start_idx <= last_valid {
-                        self.row_wrapped
-                            .copy_within(start_idx..=last_valid, top);
+                        self.row_wrapped.copy_within(start_idx..=last_valid, top);
                     }
                 }
             }
@@ -322,7 +320,11 @@ mod tests {
 
     #[test]
     fn test_set_scroll_region_zero_height() {
-        let fg = Color { r: 255, g: 255, b: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
         let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 0, fg, bg, 100, false);
         // Must not underflow usize::MAX or panic
@@ -332,7 +334,11 @@ mod tests {
 
     #[test]
     fn test_scroll_subregion_inverted_ranges_safe() {
-        let fg = Color { r: 255, g: 255, b: 255 };
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
         let bg = Color { r: 0, g: 0, b: 0 };
         let mut grid = Grid::new(80, 5, fg, bg, 100, false);
         grid.scroll_region_top = 3;

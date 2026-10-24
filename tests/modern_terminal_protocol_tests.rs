@@ -591,3 +591,45 @@ fn test_detected_urls_and_osc8_have_no_automatic_underline() {
     }
 }
 
+#[test]
+fn test_erase_display_with_scrolled_circular_buffer_preserves_rows() {
+    let mut term = Terminal::new(80, 24);
+
+    // Write 30 lines to trigger scrolling and non-zero circular row offset
+    for i in 0..30 {
+        term.feed(format!("Line {:02}\r\n", i).as_bytes());
+    }
+
+    // Grid row offset should now be non-zero
+    assert!(term.active_grid().row_offset > 0);
+
+    // Position cursor at row 10, col 1 and erase display to bottom: CSI 0 J
+    term.feed(b"\x1b[10;1H\x1b[0J");
+
+    let grid = term.active_grid();
+    // Verify rows 0..9 still contain the expected content and are not scrambled
+    for y in 0..9 {
+        let row_slice = grid.active_display_row_slice(y).expect("row slice exists");
+        let line_text: String = row_slice[..7].iter().map(|c| c.character).collect();
+        // Since 30 lines were printed, the visible screen has lines 7..29 initially.
+        // After erase from row 10, rows 0..9 still have their respective lines (lines 7..15).
+        assert!(
+            line_text.starts_with("Line "),
+            "Row {} should start with 'Line ', got '{}'",
+            y,
+            line_text
+        );
+    }
+
+    // Verify rows 10..23 are erased to spaces
+    for y in 10..24 {
+        let row_slice = grid.active_display_row_slice(y).expect("row slice exists");
+        for (x, cell) in row_slice.iter().enumerate() {
+            assert_eq!(
+                cell.character, ' ',
+                "Cell at ({}, {}) in erased region must be space",
+                x, y
+            );
+        }
+    }
+}

@@ -25,6 +25,7 @@ pub fn default_config() -> Config {
             scroll_on_keystroke: Some(true),
             opacity: Some(1.0),
             window_dim: Some(0.0),
+            working_directory: None,
             hide_mouse_on_typing: Some(true),
             csd_theme: None,
             decorations: None,
