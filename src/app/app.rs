@@ -463,8 +463,8 @@ impl WindowState {
         let tab_bar_h = self.tab_bar_height();
         let avail_w = (width as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h = (height as f32 - csd_h - tab_bar_h - self.padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / self.cell_width()).max(1);
-        let rows = ((avail_h as u32) / self.cell_height()).max(1);
+        let cols = ((avail_w as u32) / self.cell_width().max(1)).max(1);
+        let rows = ((avail_h as u32) / self.cell_height().max(1)).max(1);
         (cols, rows)
     }
 
@@ -723,14 +723,35 @@ impl WindowState {
 
         let was_visible = self.tab_bar.is_visible(self.tabs.len());
 
-        let pty_master = Arc::new(
-            spawn_process(
-                &self.shell_path,
-                command.as_deref(),
-                working_directory.as_deref(),
-            )
-            .unwrap(),
-        );
+        let pty_spawn = spawn_process(
+            &self.shell_path,
+            command.as_deref(),
+            working_directory.as_deref(),
+        )
+        .or_else(|e| {
+            log::warn!(
+                "Failed to spawn process with cwd {:?}: {}, falling back to home dir",
+                working_directory,
+                e
+            );
+            spawn_process(&self.shell_path, command.as_deref(), None)
+        })
+        .or_else(|e| {
+            log::warn!(
+                "Failed to spawn shell {}: {}, falling back to /bin/sh",
+                self.shell_path,
+                e
+            );
+            spawn_process("/bin/sh", command.as_deref(), None)
+        });
+
+        let pty_master = match pty_spawn {
+            Ok(pty) => Arc::new(pty),
+            Err(e) => {
+                log::error!("Critical failure spawning terminal shell process: {}", e);
+                return self.tabs.get(self.active_tab_index).map(|t| t.id).unwrap_or(0);
+            }
+        };
 
         let tab_font_size = self.default_font_size;
         if (self.current_font_size - tab_font_size).abs() > 0.01 {
@@ -800,8 +821,10 @@ impl WindowState {
             return true;
         }
 
-        if self.active_tab_index >= self.tabs.len() {
-            self.active_tab_index = self.tabs.len() - 1;
+        if index < self.active_tab_index {
+            self.active_tab_index -= 1;
+        } else if self.active_tab_index >= self.tabs.len() {
+            self.active_tab_index = self.tabs.len().saturating_sub(1);
         }
 
         let active_font_size = self.tabs[self.active_tab_index].active_pane().font_size;
@@ -1026,10 +1049,14 @@ impl WindowState {
             self.hovered_separator,
         );
 
+        let fallback_theme;
         let active_theme = if let Some(active_pane) = active_tab.tree.find_pane(active_pane_id) {
             &active_pane.terminal.theme
+        } else if let Some(first_pane) = active_tab.tree.panes().first() {
+            &first_pane.terminal.theme
         } else {
-            &active_tab.tree.panes().first().unwrap().terminal.theme
+            fallback_theme = crate::theme::theme::Theme::default();
+            &fallback_theme
         };
 
         let effective_separator_color = self
@@ -1220,8 +1247,8 @@ impl App {
 
         let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
         let avail_h = (win_height as f32 - csd_h - tab_bar_h - padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / base_cell_width).max(1);
-        let rows = ((avail_h as u32) / base_cell_height).max(1);
+        let cols = ((avail_w as u32) / base_cell_width.max(1)).max(1);
+        let rows = ((avail_h as u32) / base_cell_height.max(1)).max(1);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
 
@@ -1231,13 +1258,31 @@ impl App {
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".to_string());
 
+        let pty_spawn = spawn_process(
+            &shell_path,
+            command.as_deref(),
+            working_directory.as_deref(),
+        )
+        .or_else(|e| {
+            log::warn!(
+                "Failed to spawn initial shell process with cwd {:?}: {}, falling back to home dir",
+                working_directory,
+                e
+            );
+            spawn_process(&shell_path, command.as_deref(), None)
+        })
+        .or_else(|e| {
+            log::warn!(
+                "Failed to spawn shell {:?} in home dir: {}, falling back to /bin/sh",
+                shell_path,
+                e
+            );
+            spawn_process("/bin/sh", None, None)
+        });
+
         let pty_master = Arc::new(
-            spawn_process(
-                &shell_path,
-                command.as_deref(),
-                working_directory.as_deref(),
-            )
-            .map_err(|e| format!("Failed to spawn shell process: {}", e))?,
+            pty_spawn
+                .map_err(|e| format!("Failed to spawn shell process after fallbacks: {}", e))?,
         );
         pty_master
             .resize(cols as u16, rows as u16)

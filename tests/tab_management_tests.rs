@@ -736,3 +736,20 @@ fn test_csd_title_bar_tab_hit_test_separation() {
     let hit = tab_bar.hit_test(100.0, relative_tab_y, win_w, 20, tab_count);
     assert_eq!(hit, TabBarHitResult::Tab(0));
 }
+
+#[test]
+fn test_close_tab_before_active_index_shifts_active_index() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    // ws starts with 1 tab (tab 0).
+    ws.create_tab(None, None, None, None); // tab 1
+    ws.create_tab(None, None, None, None); // tab 2
+    assert_eq!(ws.tabs.len(), 3);
+    assert_eq!(ws.active_tab_index, 2); // newly created tab is active
+
+    // Close tab 0
+    ws.close_tab(0);
+    assert_eq!(ws.tabs.len(), 2);
+    // Active tab index must now be 1 (pointing to the same tab)
+    assert_eq!(ws.active_tab_index, 1);
+}

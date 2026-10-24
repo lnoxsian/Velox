@@ -238,17 +238,22 @@ pub fn handle_csi(
             let active = terminal.active_grid_mut();
             while n > 0 {
                 if active.cursor.x + 1 < active.width {
-                    let available = (active.width - 1) - active.cursor.x;
+                    let available = active.width.saturating_sub(1).saturating_sub(active.cursor.x);
                     let step = n.min(available);
                     active.cursor.x += step;
                     n -= step;
-                } else if active.cursor.y + 1 < active.height && active.row_wrapped[active.cursor.y]
-                {
-                    active.cursor.y += 1;
-                    active.cursor.x = 0;
-                    n -= 1;
+                } else if active.cursor.y + 1 < active.height {
+                    let phys_y = active.physical_row(active.cursor.y);
+                    if active.row_wrapped.get(phys_y).copied().unwrap_or(false) {
+                        active.cursor.y += 1;
+                        active.cursor.x = 0;
+                        n -= 1;
+                    } else {
+                        active.cursor.x = (active.cursor.x + n).min(active.width.saturating_sub(1));
+                        break;
+                    }
                 } else {
-                    active.cursor.x = (active.cursor.x + n).min(active.width - 1);
+                    active.cursor.x = (active.cursor.x + n).min(active.width.saturating_sub(1));
                     break;
                 }
             }
@@ -262,10 +267,15 @@ pub fn handle_csi(
                     let step = n.min(active.cursor.x);
                     active.cursor.x -= step;
                     n -= step;
-                } else if active.cursor.y > 0 && active.row_wrapped[active.cursor.y - 1] {
-                    active.cursor.y -= 1;
-                    active.cursor.x = active.width.saturating_sub(1);
-                    n -= 1;
+                } else if active.cursor.y > 0 {
+                    let prev_phys_y = active.physical_row(active.cursor.y - 1);
+                    if active.row_wrapped.get(prev_phys_y).copied().unwrap_or(false) {
+                        active.cursor.y -= 1;
+                        active.cursor.x = active.width.saturating_sub(1);
+                        n -= 1;
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
@@ -280,9 +290,9 @@ pub fn handle_csi(
             if origin_mode {
                 active.cursor.y = (active.scroll_region_top + r).min(active.scroll_region_bottom);
             } else {
-                active.cursor.y = r.min(active.height - 1);
+                active.cursor.y = r.min(active.height.saturating_sub(1));
             }
-            active.cursor.x = c.min(active.width - 1);
+            active.cursor.x = c.min(active.width.saturating_sub(1));
         }
         b'J' => {
             // Erase Display
@@ -566,7 +576,7 @@ pub fn handle_csi(
             // Cursor Horizontal Absolute (CHA)
             let col = params.first().copied().unwrap_or(1).saturating_sub(1) as usize;
             let active = terminal.active_grid_mut();
-            active.cursor.x = col.min(active.width - 1);
+            active.cursor.x = col.min(active.width.saturating_sub(1));
         }
         b'd' => {
             // Vertical Line Position Absolute (VPA)
@@ -576,14 +586,14 @@ pub fn handle_csi(
             if origin_mode {
                 active.cursor.y = (active.scroll_region_top + row).min(active.scroll_region_bottom);
             } else {
-                active.cursor.y = row.min(active.height - 1);
+                active.cursor.y = row.min(active.height.saturating_sub(1));
             }
         }
         b'E' => {
             // Cursor Next Line (CNL)
             let n = params.first().copied().unwrap_or(1) as usize;
             let active = terminal.active_grid_mut();
-            active.cursor.y = (active.cursor.y + n).min(active.height - 1);
+            active.cursor.y = (active.cursor.y + n).min(active.height.saturating_sub(1));
             active.cursor.x = 0;
         }
         b'F' => {
@@ -883,5 +893,74 @@ fn parse_sgr_color(
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_csi_zero_dimensions_safe() {
+        let mut term = Terminal::new(80, 24);
+        term.grid.width = 0;
+        term.grid.height = 0;
+
+        // Cursor forward: \x1b[5C
+        handle_csi(b'C', &[5], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 0);
+
+        // Cursor position: \x1b[10;10H
+        handle_csi(b'H', &[10, 10], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 0);
+        assert_eq!(term.grid.cursor.y, 0);
+
+        // CHA: \x1b[5G
+        handle_csi(b'G', &[5], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 0);
+
+        // VPA: \x1b[5d
+        handle_csi(b'd', &[5], None, None, &mut term);
+        assert_eq!(term.grid.cursor.y, 0);
+
+        // CNL: \x1b[5E
+        handle_csi(b'E', &[5], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 0);
+        assert_eq!(term.grid.cursor.y, 0);
+    }
+
+    #[test]
+    fn test_csi_cursor_forward_backward_with_wrapped_rows_and_offset() {
+        let mut term = Terminal::new(10, 4);
+        term.grid.cursor.x = 9;
+        term.grid.cursor.y = 0;
+        let phys_0 = term.grid.physical_row(0);
+        term.grid.row_wrapped[phys_0] = true;
+
+        // Forward 1 should wrap to row 1, col 0
+        handle_csi(b'C', &[1], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 0);
+        assert_eq!(term.grid.cursor.y, 1);
+
+        // Backward 1 should wrap back to row 0, col 9
+        handle_csi(b'D', &[1], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 9);
+        assert_eq!(term.grid.cursor.y, 0);
+
+        // Now test with non-zero row_offset (circular buffer)
+        term.grid.row_offset = 2;
+        let phys_0 = term.grid.physical_row(0);
+        term.grid.row_wrapped.fill(false);
+        term.grid.row_wrapped[phys_0] = true;
+        term.grid.cursor.x = 9;
+        term.grid.cursor.y = 0;
+
+        handle_csi(b'C', &[1], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 0);
+        assert_eq!(term.grid.cursor.y, 1);
+
+        handle_csi(b'D', &[1], None, None, &mut term);
+        assert_eq!(term.grid.cursor.x, 9);
+        assert_eq!(term.grid.cursor.y, 0);
     }
 }

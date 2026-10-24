@@ -599,6 +599,17 @@ impl GlyphCache {
     fn blit_color_glyph(&mut self, w: u32, h: u32, target_width: u32, width_mult: u8) -> GlyphRef {
         let tw = target_width;
         let th = self.cell_height;
+        if w == 0 || h == 0 || tw == 0 || th == 0 {
+            return GlyphRef {
+                offset: 0,
+                width: 0,
+                height: 0,
+                bearing_x: 0,
+                bearing_y: 0,
+                is_color: true,
+                width_mult,
+            };
+        }
         let needed_u32 = (tw * th) as usize;
         self.scratch.color_pixels.clear();
         self.scratch.color_pixels.resize(needed_u32, 0);

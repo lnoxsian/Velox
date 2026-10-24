@@ -411,7 +411,11 @@ impl Terminal {
                         grid.scroll_or_move_down(bg);
                     } else if grid.cursor.x == 0
                         && grid.cursor.y > 0
-                        && grid.row_wrapped[grid.physical_row(grid.cursor.y - 1)]
+                        && grid
+                            .row_wrapped
+                            .get(grid.physical_row(grid.cursor.y - 1))
+                            .copied()
+                            .unwrap_or(false)
                     {
                         let physical_y = grid.physical_row(grid.cursor.y);
                         let row_start = physical_y * grid.width;
@@ -432,7 +436,9 @@ impl Terminal {
                             });
                         if is_empty {
                             let prev_physical_y = grid.physical_row(grid.cursor.y - 1);
-                            grid.row_wrapped[prev_physical_y] = false;
+                            if prev_physical_y < grid.row_wrapped.len() {
+                                grid.row_wrapped[prev_physical_y] = false;
+                            }
                         } else {
                             grid.scroll_or_move_down(bg);
                         }

@@ -71,7 +71,10 @@ pub fn spawn_process(
                 .env("COLORTERM", "truecolor");
 
             let err = cmd.exec();
-            panic!("exec failed: {}", err);
+            eprintln!("exec failed: {}", err);
+            unsafe {
+                libc::_exit(127);
+            }
         }
         Ok(nix::unistd::ForkResult::Parent { child }) => {
             unsafe {

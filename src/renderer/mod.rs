@@ -1505,7 +1505,10 @@ impl CpuRenderer {
         let glyph_cache = if is_default_font {
             &mut self.glyph_cache
         } else {
-            self.pane_glyph_caches.get_mut(&font_key).unwrap()
+            let base = &self.glyph_cache;
+            self.pane_glyph_caches
+                .entry(font_key)
+                .or_insert_with(|| base.create_pane_cache(font_size))
         };
 
         let mut stack_resolved = [ResolvedCell {
@@ -1710,8 +1713,9 @@ impl CpuRenderer {
                 }
 
                 // Pass B: Glyphs, Primitives, Decorations
+                let max_col = row_cells.len().min(grid_w);
                 let mut col = 0usize;
-                while col < row_cells.len() {
+                while col < max_col {
                     let cell = &row_cells[col];
                     let res = &resolved[col];
                     if res.flags.contains(CellFlags::WIDE_CONTINUATION) {
@@ -1761,7 +1765,7 @@ impl CpuRenderer {
 
                         if is_coalescible_block {
                             let mut span_count = 1usize;
-                            while col + span_count < row_cells.len() {
+                            while col + span_count < max_col {
                                 let next_col = col + span_count;
                                 let next_px = px_offset + (next_col as u32) * cell_w;
                                 if next_px + cell_w > max_x {

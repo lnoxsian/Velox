@@ -2130,3 +2130,68 @@ fn test_software_renderer_damage_rect_bounding_box() {
         "DamageRect height should match dirty row height"
     );
 }
+
+#[test]
+fn test_renderer_scrollback_row_wider_than_pane() {
+    let theme = Theme::default();
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &theme, 800, 600, true, 1.0);
+    let fg = theme.default_fg;
+    let bg = theme.default_bg;
+
+    // Grid was originally 80 columns wide
+    let mut grid = Grid::new(80, 24, fg, bg, 100, false);
+    for c in "This is a long line that was stored in scrollback when window was wide".chars() {
+        grid.put_char(c, fg, bg, None, CellFlags::empty());
+    }
+    grid.scroll(1, bg);
+    assert_eq!(grid.scrollback.len(), 1);
+
+    // Scrollback row has 70 chars. Now pane is narrowed to 40 columns.
+    grid.width = 40;
+    grid.scroll_offset = 1;
+    grid.damage.mark_all();
+
+    let cell_w = renderer.glyph_cache.cell_width;
+    let cell_h = renderer.glyph_cache.cell_height;
+    let pane_rect = velox::app::split::PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: 40.0 * cell_w as f32,
+        height: 24.0 * cell_h as f32,
+        padding_x: 0.0,
+        padding_y: 0.0,
+        cols: 40,
+        rows: 24,
+        cell_width: cell_w as f32,
+        cell_height: cell_h as f32,
+    };
+
+    let pane_data = velox::renderer::CpuPaneRenderData {
+        pane_id: 1,
+        rect: pane_rect,
+        cells: &grid.cells,
+        grid: &grid,
+        font_size: 14.0,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: true,
+        cursor_shape: velox::screen::cursor::CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+
+    let mut target = vec![0u32; 800 * 600];
+    // Must render without panicking even though scrollback row (70 cells) is wider than pane (40 cells)
+    let _ = renderer.render_splits(
+        &[pane_data],
+        &[],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target),
+        None,
+        None,
+        None,
+    );
+}

@@ -212,6 +212,28 @@ impl Grid {
                 let is_wide = cell.flags.contains(CellFlags::WIDE);
 
                 if is_wide && chunk.len() + 2 > new_w {
+                    if new_w < 2 {
+                        if !new_cursor_found
+                            && log_idx == cursor_logical_line_idx
+                            && i == cursor_logical_cell_idx
+                        {
+                            new_cursor_row_idx = reflowed_rows.len();
+                            new_cursor_col = 0;
+                            new_cursor_found = true;
+                        }
+                        reflowed_rows.push(ReflowedRow {
+                            cells: vec![cell; new_w],
+                            wrapped: true,
+                        });
+                        if i + 1 < cells.len()
+                            && cells[i + 1].flags.contains(CellFlags::WIDE_CONTINUATION)
+                        {
+                            i += 1;
+                        }
+                        i += 1;
+                        chunk = Vec::with_capacity(new_w);
+                        continue;
+                    }
                     if chunk.len() < new_w {
                         chunk.push(default_cell);
                     }
@@ -395,5 +417,15 @@ mod tests {
                 non_empty_rows[i]
             );
         }
+    }
+
+    #[test]
+    fn test_reflow_width_one_with_wide_characters() {
+        let mut term = Terminal::new(80, 24);
+        term.feed("🌟 Hello 世界 🚀\r\n".as_bytes());
+        // Resize down to width 1: must complete immediately without infinite hang
+        term.resize(1, 10);
+        assert_eq!(term.grid.width, 1);
+        assert_eq!(term.grid.height, 10);
     }
 }

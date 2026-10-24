@@ -41,7 +41,17 @@ fn scan_raw_matches(text: &str) -> smallvec::SmallVec<[(usize, usize); 4]> {
 
     for scheme in &schemes {
         let mut start_search = 0;
-        while let Some(start_idx) = text[start_search..].find(scheme) {
+        while start_search < bytes.len() {
+            while start_search < bytes.len() && !text.is_char_boundary(start_search) {
+                start_search += 1;
+            }
+            if start_search >= bytes.len() {
+                break;
+            }
+
+            let Some(start_idx) = text[start_search..].find(scheme) else {
+                break;
+            };
             let abs_start = start_search + start_idx;
 
             // Find the end bound of the URL
@@ -86,6 +96,11 @@ fn scan_raw_matches(text: &str) -> smallvec::SmallVec<[(usize, usize); 4]> {
                 }
             }
 
+            // Ensure end_idx is on a valid char boundary
+            while end_idx > abs_start && !text.is_char_boundary(end_idx) {
+                end_idx -= 1;
+            }
+
             if end_idx > abs_start + scheme.len() {
                 // Ensure this range does not overlap with an already discovered URL
                 let overlaps = raw_matches
@@ -121,15 +136,24 @@ pub fn detect(text: &str) -> Vec<(usize, usize, &str)> {
     let mut current_char = 0;
 
     for (b_start, b_end) in raw_matches {
-        let char_start = current_char + text[current_byte..b_start].chars().count();
-        let char_len = text[b_start..b_end].chars().count();
+        let char_start = current_char
+            + text
+                .get(current_byte..b_start)
+                .map(|s| s.chars().count())
+                .unwrap_or(0);
+        let char_len = text
+            .get(b_start..b_end)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
         let char_end = char_start + char_len;
 
         current_byte = b_end;
         current_char = char_end;
 
-        if let Ok(url) = std::str::from_utf8(&text.as_bytes()[b_start..b_end]) {
-            results.push((char_start, char_end, url));
+        if let Some(slice) = text.as_bytes().get(b_start..b_end) {
+            if let Ok(url) = std::str::from_utf8(slice) {
+                results.push((char_start, char_end, url));
+            }
         }
     }
 
@@ -150,8 +174,15 @@ pub fn for_each_url(text: &str, mut f: impl FnMut(usize, usize)) {
     let mut current_char = 0;
 
     for (b_start, b_end) in raw_matches {
-        let char_start = current_char + text[current_byte..b_start].chars().count();
-        let char_len = text[b_start..b_end].chars().count();
+        let char_start = current_char
+            + text
+                .get(current_byte..b_start)
+                .map(|s| s.chars().count())
+                .unwrap_or(0);
+        let char_len = text
+            .get(b_start..b_end)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
         let char_end = char_start + char_len;
 
         current_byte = b_end;
@@ -174,11 +205,18 @@ pub fn is_url_at(text: &str, char_col: usize) -> bool {
     let mut current_char = 0;
 
     for (b_start, b_end) in raw_matches {
-        let char_start = current_char + text[current_byte..b_start].chars().count();
+        let char_start = current_char
+            + text
+                .get(current_byte..b_start)
+                .map(|s| s.chars().count())
+                .unwrap_or(0);
         if char_col < char_start {
             return false;
         }
-        let char_len = text[b_start..b_end].chars().count();
+        let char_len = text
+            .get(b_start..b_end)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
         let char_end = char_start + char_len;
         if char_col < char_end {
             return true;
@@ -269,5 +307,20 @@ mod tests {
         let mut ranges = Vec::new();
         for_each_url(text, |s, e| ranges.push((s, e)));
         assert_eq!(ranges, vec![(7, 31)]);
+    }
+
+    #[test]
+    fn test_multibyte_non_ascii_url_boundary_safety() {
+        // Multi-byte chars before, inside, and immediately after URL
+        let text = "🦀 网址: https://example.com/🚀/🎉 结尾。";
+        let urls = detect(text);
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].2, "https://example.com/🚀/🎉");
+
+        // Verify is_url_at and for_each_url don't panic on character boundaries
+        for col in 0..text.chars().count() {
+            let _ = is_url_at(text, col);
+        }
+        for_each_url(text, |_, _| {});
     }
 }

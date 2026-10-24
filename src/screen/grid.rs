@@ -647,6 +647,10 @@ impl Grid {
         underline_color: Option<Color>,
         flags: CellFlags,
     ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+
         if self.auto_wrap {
             if self.cursor.x >= self.width {
                 let physical_y = self.physical_row(self.cursor.y);
@@ -741,6 +745,10 @@ impl Grid {
         underline_color: Option<Color>,
         flags: CellFlags,
     ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+
         if self.insert_mode || !self.auto_wrap {
             for &b in text {
                 self.put_ascii(b as char, fg, bg, underline_color, flags);
@@ -922,7 +930,10 @@ impl Grid {
             return;
         }
 
-        let w = UnicodeWidthChar::width(c).unwrap_or(1).max(1);
+        let mut w = UnicodeWidthChar::width(c).unwrap_or(1).max(1);
+        if self.width < 2 {
+            w = 1;
+        }
 
         if self.auto_wrap {
             if self.cursor.x + w > self.width {
@@ -957,7 +968,7 @@ impl Grid {
         let physical_y = self.physical_row(self.cursor.y);
         let row_start = physical_y * self.width;
 
-        if w == 2 {
+        if w == 2 && self.width >= 2 {
             flags.insert(CellFlags::WIDE);
             if let Some(ref link) = self.current_hyperlink {
                 let abs_row = self.scrollback.len() + self.cursor.y;
@@ -1218,7 +1229,7 @@ impl Grid {
     }
 
     pub fn extract_selection_text(&self) -> String {
-        if !self.selection.active {
+        if !self.selection.active || self.width == 0 || self.height == 0 {
             return String::new();
         }
 
@@ -1256,7 +1267,10 @@ impl Grid {
 
             if y < history_len {
                 self.scrollback.with_row_slice(y, |cells, _| {
-                    let upper = end_col.min(cells.len().saturating_sub(1));
+                    if cells.is_empty() {
+                        return;
+                    }
+                    let upper = end_col.min(cells.len() - 1);
                     let mut last_col = None;
                     if upper >= start_col {
                         for x in (start_col..=upper).rev() {
@@ -1279,19 +1293,21 @@ impl Grid {
                     let row_start = physical_y * self.width;
                     if row_start + self.width <= self.cells.len() {
                         let row_cells = &self.cells[row_start..row_start + self.width];
-                        let upper = end_col.min(row_cells.len().saturating_sub(1));
-                        let mut last_col = None;
-                        if upper >= start_col {
-                            for x in (start_col..=upper).rev() {
-                                if row_cells[x].character != ' ' {
-                                    last_col = Some(x);
-                                    break;
+                        if !row_cells.is_empty() {
+                            let upper = end_col.min(row_cells.len() - 1);
+                            let mut last_col = None;
+                            if upper >= start_col {
+                                for x in (start_col..=upper).rev() {
+                                    if row_cells[x].character != ' ' {
+                                        last_col = Some(x);
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        if let Some(last) = last_col {
-                            for x in start_col..=last {
-                                result.push(row_cells[x].character);
+                            if let Some(last) = last_col {
+                                for x in start_col..=last {
+                                    result.push(row_cells[x].character);
+                                }
                             }
                         }
                     }
@@ -1303,6 +1319,9 @@ impl Grid {
     }
 
     pub fn select_word_at(&mut self, col: usize, abs_y: usize) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
         if abs_y >= total_lines || col >= self.width {
@@ -1349,6 +1368,9 @@ impl Grid {
     }
 
     pub fn select_line_at(&mut self, abs_y: usize) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
         if abs_y >= total_lines {
@@ -1699,5 +1721,109 @@ mod tests {
             ch, '\u{2764}',
             "Base emoji codepoint must be preserved, not converted to PUA"
         );
+    }
+
+    #[test]
+    fn test_extract_selection_text_empty_scrollback_row() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+
+        // Put line 0: "hello"
+        for c in "hello".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+        grid.scroll(1, bg);
+
+        // Line 1: blank line (all spaces, trimmed to empty slice in scrollback)
+        grid.scroll(1, bg);
+
+        // Line 2: "world"
+        grid.cursor.x = 0;
+        for c in "world".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+        grid.scroll(1, bg);
+
+        assert_eq!(grid.scrollback.len(), 3);
+
+        // Verify line 1 in scrollback has len 0
+        grid.scrollback.with_row_slice(1, |cells, _| {
+            assert!(cells.is_empty(), "Blank line should have trimmed cells to empty slice");
+        });
+
+        // Test 1: Selecting the empty row directly
+        grid.selection.start_selection(0, 1);
+        grid.selection.update_selection(10, 1);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        // Test 2: Double-click / select_word_at on empty row
+        grid.select_word_at(0, 1);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        // Test 3: Triple-click / select_line_at on empty row
+        grid.select_line_at(1);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        // Test 4: Multi-line selection spanning the empty row (rows 0..=2)
+        grid.selection.start_selection(0, 0);
+        grid.selection.update_selection(5, 2);
+        assert_eq!(grid.extract_selection_text(), "hello\n\nworld");
+    }
+
+    #[test]
+    fn test_extract_selection_zero_dimensions() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(0, 0, fg, bg, 100, false);
+
+        grid.selection.start_selection(0, 0);
+        grid.selection.update_selection(5, 0);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        grid.select_word_at(0, 0);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        grid.select_line_at(0);
+        assert_eq!(grid.extract_selection_text(), "");
+    }
+
+    #[test]
+    fn test_physical_row_zero_height() {
+        let fg = Color { r: 255, g: 255, b: 255 };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let grid = Grid::new(80, 0, fg, bg, 100, false);
+        // Must not panic on % 0
+        assert_eq!(grid.physical_row(0), 0);
+        assert_eq!(grid.physical_row(5), 0);
+    }
+
+    #[test]
+    fn test_grid_output_zero_dimensions_no_hang() {
+        let fg = Color { r: 255, g: 255, b: 255 };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(0, 0, fg, bg, 100, false);
+        grid.put_ascii('a', fg, bg, None, CellFlags::empty());
+        grid.put_ascii_slice(b"hello world", fg, bg, None, CellFlags::empty());
+        grid.put_char('🚀', fg, bg, None, CellFlags::empty());
+    }
+
+    #[test]
+    fn test_wide_char_on_one_column_grid() {
+        let fg = Color { r: 255, g: 255, b: 255 };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(1, 2, fg, bg, 100, false);
+        // Writing emoji on 1-column grid should not corrupt next row
+        grid.put_char('🚀', fg, bg, None, CellFlags::empty());
+        assert_eq!(grid.cells[0].character, '🚀');
+        assert!(!grid.cells[1].flags.contains(CellFlags::WIDE_CONTINUATION));
     }
 }

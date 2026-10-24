@@ -178,30 +178,29 @@ impl Tab {
     #[inline]
     pub fn active_pane_mut(&mut self) -> &mut Pane {
         let active_id = self.active_pane_id;
-        if self.tree.find_pane(active_id).is_some() {
-            return self.tree.find_pane_mut(active_id).expect("pane exists");
-        }
-        if let Some(&prev_id) = self
+        let id_to_find = if self.tree.find_pane(active_id).is_some() {
+            active_id
+        } else if let Some(&prev_id) = self
             .focus_history
             .iter()
             .rev()
             .find(|&&id| self.tree.find_pane(id).is_some())
         {
             self.active_pane_id = prev_id;
-            return self.tree.find_pane_mut(prev_id).expect("prev pane exists");
-        }
-        if let Some(last_id) = self.tree.last_pane_id() {
+            prev_id
+        } else if let Some(last_id) = self.tree.last_pane_id() {
             self.active_pane_id = last_id;
-            return self.tree.find_pane_mut(last_id).expect("last pane exists");
-        }
-        if let Some(first_id) = self.tree.first_pane_id() {
+            last_id
+        } else if let Some(first_id) = self.tree.first_pane_id() {
             self.active_pane_id = first_id;
-            return self
-                .tree
-                .find_pane_mut(first_id)
-                .expect("first pane exists");
-        }
-        panic!("tab must have at least one pane");
+            first_id
+        } else {
+            panic!("tab must have at least one pane");
+        };
+
+        self.tree
+            .find_pane_mut(id_to_find)
+            .expect("tab must have at least one pane")
     }
 
     #[inline]

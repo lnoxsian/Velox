@@ -126,10 +126,13 @@ impl Grid {
             let count = (height_of_region - u_delta) * self.width;
             self.cells.copy_within(src..src + count, dst);
 
-            if top + u_delta < self.row_wrapped.len() {
+            if top + u_delta < self.row_wrapped.len() && !self.row_wrapped.is_empty() {
                 let last_valid = bottom.min(self.row_wrapped.len() - 1);
-                self.row_wrapped
-                    .copy_within((top + u_delta)..=last_valid, top);
+                let start_idx = top + u_delta;
+                if start_idx <= last_valid {
+                    self.row_wrapped
+                        .copy_within(start_idx..=last_valid, top);
+                }
             }
         }
 
@@ -183,10 +186,12 @@ impl Grid {
             let count = (height_of_region - u_delta) * self.width;
             self.cells.copy_within(src..src + count, dst);
 
-            if top < self.row_wrapped.len() {
+            if top < self.row_wrapped.len() && !self.row_wrapped.is_empty() {
                 let last_valid = (bottom - u_delta).min(self.row_wrapped.len() - 1);
-                self.row_wrapped
-                    .copy_within(top..=last_valid, top + u_delta);
+                if top <= last_valid {
+                    self.row_wrapped
+                        .copy_within(top..=last_valid, top + u_delta);
+                }
             }
         }
 
@@ -206,6 +211,9 @@ impl Grid {
     }
 
     pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        if self.height == 0 {
+            return;
+        }
         self.normalize_row_offset();
         let top_idx = if top == 0 {
             0
@@ -241,10 +249,12 @@ impl Grid {
                 let count = (height_of_region - u_delta) * self.width;
                 self.cells.copy_within(src..src + count, dst);
 
-                if top < self.row_wrapped.len() {
+                if top < self.row_wrapped.len() && !self.row_wrapped.is_empty() {
                     let last_valid = (bottom - u_delta).min(self.row_wrapped.len() - 1);
-                    self.row_wrapped
-                        .copy_within(top..=last_valid, top + u_delta);
+                    if top <= last_valid {
+                        self.row_wrapped
+                            .copy_within(top..=last_valid, top + u_delta);
+                    }
                 }
             }
             let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
@@ -278,10 +288,13 @@ impl Grid {
                 let count = (height_of_region - u_delta) * self.width;
                 self.cells.copy_within(src..src + count, dst);
 
-                if top + u_delta < self.row_wrapped.len() {
+                if top + u_delta < self.row_wrapped.len() && !self.row_wrapped.is_empty() {
                     let last_valid = bottom.min(self.row_wrapped.len() - 1);
-                    self.row_wrapped
-                        .copy_within((top + u_delta)..=last_valid, top);
+                    let start_idx = top + u_delta;
+                    if start_idx <= last_valid {
+                        self.row_wrapped
+                            .copy_within(start_idx..=last_valid, top);
+                    }
                 }
             }
             let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
@@ -300,5 +313,35 @@ impl Grid {
                 self.damage.mark_dirty(y);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_scroll_region_zero_height() {
+        let fg = Color { r: 255, g: 255, b: 255 };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(80, 0, fg, bg, 100, false);
+        // Must not underflow usize::MAX or panic
+        grid.set_scroll_region(0, 0);
+        assert_eq!(grid.scroll_region_bottom, 0);
+    }
+
+    #[test]
+    fn test_scroll_subregion_inverted_ranges_safe() {
+        let fg = Color { r: 255, g: 255, b: 255 };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+        grid.scroll_region_top = 3;
+        grid.scroll_region_bottom = 4;
+        // Scroll subregion with delta larger than region
+        grid.scroll(10, bg);
+        grid.scroll_down(10, bg);
+        grid.cursor.y = 3;
+        grid.insert_lines(10, fg, bg);
+        grid.delete_lines(10, fg, bg);
     }
 }

@@ -477,6 +477,11 @@ fn run_reactor_loop(
                 }
             } else if fds.contains_key(&fd) {
                 // 1. Flush pending write queue if writable
+                let Some(reg) = fds.get(&fd) else {
+                    continue;
+                };
+                let key = reg.key;
+
                 if (ev.events & libc::EPOLLOUT as u32) != 0 {
                     if let Some(queue) = write_buffers.get_mut(&fd) {
                         while !queue.is_empty() {
@@ -510,8 +515,6 @@ fn run_reactor_loop(
                     & (libc::EPOLLIN | libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR) as u32)
                     != 0
                 {
-                    let reg = fds.get(&fd).unwrap();
-                    let key = reg.key;
                     let pty = &reg.pty;
 
                     // Batch read repeatedly until EAGAIN / EWOULDBLOCK.
@@ -588,7 +591,6 @@ fn run_reactor_loop(
 
                     (key, exit_detected)
                 } else {
-                    let key = fds.get(&fd).unwrap().key;
                     (key, false)
                 };
 

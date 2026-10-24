@@ -598,16 +598,19 @@ impl SplitTree {
             match node {
                 SplitNode::Pane(p) => {
                     if p.id == target_id {
-                        let new_p = pane_holder.take().unwrap();
-                        let old_p = std::mem::replace(p, Pane::dummy());
-                        *node = SplitNode::Split {
-                            id: split_id,
-                            direction,
-                            ratio: ratio.clamp(0.05, 0.95),
-                            first: Box::new(SplitNode::Pane(old_p)),
-                            second: Box::new(SplitNode::Pane(new_p)),
-                        };
-                        (true, None)
+                        if let Some(new_p) = pane_holder.take() {
+                            let old_p = std::mem::replace(p, Pane::dummy());
+                            *node = SplitNode::Split {
+                                id: split_id,
+                                direction,
+                                ratio: ratio.clamp(0.05, 0.95),
+                                first: Box::new(SplitNode::Pane(old_p)),
+                                second: Box::new(SplitNode::Pane(new_p)),
+                            };
+                            (true, None)
+                        } else {
+                            (false, None)
+                        }
                     } else {
                         (false, pane_holder)
                     }

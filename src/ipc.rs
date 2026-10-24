@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+pub const MAX_IPC_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum IpcMessage {
     CreateWindow {
@@ -86,6 +88,12 @@ pub fn send_ipc_message(msg: &IpcMessage) -> Result<IpcResponse, String> {
         .read_exact(&mut len_bytes)
         .map_err(|e| e.to_string())?;
     let resp_len = u32::from_be_bytes(len_bytes) as usize;
+    if resp_len > MAX_IPC_PAYLOAD_SIZE {
+        return Err(format!(
+            "IPC response exceeded max allowed size: {} bytes",
+            resp_len
+        ));
+    }
 
     let mut resp_payload = vec![0u8; resp_len];
     stream
@@ -189,6 +197,12 @@ fn handle_client_stream(stream: &mut UnixStream, proxy: &EventLoopProxy) -> Resu
         .read_exact(&mut len_bytes)
         .map_err(|e| e.to_string())?;
     let payload_len = u32::from_be_bytes(len_bytes) as usize;
+    if payload_len > MAX_IPC_PAYLOAD_SIZE {
+        return Err(format!(
+            "IPC payload exceeded max allowed size: {} bytes",
+            payload_len
+        ));
+    }
 
     let mut payload = vec![0u8; payload_len];
     stream.read_exact(&mut payload).map_err(|e| e.to_string())?;
@@ -276,5 +290,20 @@ mod tests {
             }
             _ => panic!("Expected CreateWindow variant"),
         }
+    }
+
+    #[test]
+    fn test_ipc_max_payload_rejection() {
+        // Test that receiving a payload_len exceeding MAX_IPC_PAYLOAD_SIZE returns an error without allocating
+        let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
+        // Write a 4-byte big-endian length that exceeds MAX_IPC_PAYLOAD_SIZE
+        let excessive_len = (MAX_IPC_PAYLOAD_SIZE + 1) as u32;
+        client.write_all(&excessive_len.to_be_bytes()).unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let proxy = EventLoopProxy::new(tx, -1);
+        let res = handle_client_stream(&mut server, &proxy);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("exceeded max allowed size"));
     }
 }
