@@ -354,33 +354,7 @@ impl WindowState {
                 }
 
                 if let Key::Character(s) = logical_key {
-                    if s.eq_ignore_ascii_case("c") {
-                        let active_pane = self.active_pane();
-                        let active_grid = active_pane.terminal.active_grid();
-                        if active_grid.selection.active && !active_grid.selection.is_empty() {
-                            let text = active_grid.extract_selection_text();
-                            if !text.is_empty() {
-                                crate::clipboard::clipboard::copy(text);
-                            }
-                            self.active_pane_mut()
-                                .terminal
-                                .active_grid_mut()
-                                .selection
-                                .clear();
-                            self.needs_redraw = true;
-                            log::debug!("Velox shortcut: copy selection via Ctrl+C");
-                            return false;
-                        }
-                    }
-
                     match s.as_str() {
-                        "+" => {
-                            let active_size = self.active_pane().font_size;
-                            let new_size = active_size + 1.0;
-                            self.set_font_size(new_size);
-                            log::debug!("Velox shortcut: zoom in");
-                            return false;
-                        }
                         "-" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = (active_size - 1.0).max(4.0);
@@ -562,7 +536,7 @@ mod tests {
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), &[3]);
 
-        // When selection IS active and non-empty, Ctrl+C copies selection without sending 0x03
+        // When selection IS active and non-empty, Ctrl+C still sends SIGINT (0x03) and clears selection
         {
             let grid = ws.active_pane_mut().terminal.active_grid_mut();
             grid.selection.start_selection(0, 0);
@@ -573,8 +547,8 @@ mod tests {
             Some("c"),
             ModifiersState::CONTROL,
         );
-        assert!(!handled);
-        assert_eq!(read_pty_output(&read_end), b"");
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[3]);
         assert!(!ws.active_pane().terminal.active_grid().selection.active);
     }
 
@@ -662,15 +636,14 @@ mod tests {
         let mut ws = WindowState::create_test_window_state(pty, 80, 24);
         let base_size = ws.active_pane().font_size;
 
-        // Ctrl + + (zoom in)
-        let handled = ws.handle_keyboard_input(
+        // Ctrl + + (does NOT zoom in, passes through to PTY)
+        let _handled = ws.handle_keyboard_input(
             &Key::Character("+".to_string()),
             Some("+"),
             ModifiersState::CONTROL,
         );
-        assert!(!handled);
-        assert_eq!(read_pty_output(&read_end), b"");
-        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+        assert_eq!(ws.active_pane().font_size, base_size);
+        let _ = read_pty_output(&read_end);
 
         // Ctrl + Shift + + (zoom in with Shift modifier)
         let handled = ws.handle_keyboard_input(
@@ -680,7 +653,7 @@ mod tests {
         );
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
-        assert_eq!(ws.active_pane().font_size, base_size + 2.0);
+        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
 
         // Ctrl + = must NOT zoom in and passes through to PTY
         let _handled = ws.handle_keyboard_input(
@@ -688,7 +661,7 @@ mod tests {
             Some("="),
             ModifiersState::CONTROL,
         );
-        assert_eq!(ws.active_pane().font_size, base_size + 2.0);
+        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
         let _ = read_pty_output(&read_end);
 
         // Ctrl + - (zoom out without Shift modifier)
@@ -699,7 +672,7 @@ mod tests {
         );
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
-        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+        assert_eq!(ws.active_pane().font_size, base_size);
 
         // Ctrl + _ (e.g. Ctrl + Shift + -) must NOT zoom out and passes through to PTY as 0x1f
         let handled = ws.handle_keyboard_input(
@@ -709,7 +682,7 @@ mod tests {
         );
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), &[31]);
-        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+        assert_eq!(ws.active_pane().font_size, base_size);
 
         // Keypad Ctrl + - (zoom out)
         let handled = ws.handle_keyboard_input(
@@ -719,7 +692,7 @@ mod tests {
         );
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
-        assert_eq!(ws.active_pane().font_size, base_size);
+        assert_eq!(ws.active_pane().font_size, base_size - 1.0);
 
         // Keypad Ctrl + + (zoom in)
         let handled = ws.handle_keyboard_input(
@@ -729,7 +702,7 @@ mod tests {
         );
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
-        assert_eq!(ws.active_pane().font_size, base_size + 1.0);
+        assert_eq!(ws.active_pane().font_size, base_size);
 
         // Ctrl + 0 (reset zoom)
         let handled = ws.handle_keyboard_input(
