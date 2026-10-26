@@ -648,6 +648,10 @@ impl X11Window {
             return;
         }
 
+        if self.fb.width != self.width || self.fb.height != self.height {
+            self.fb.resize(&self.conn, self.width, self.height);
+        }
+
         let damaged_y = rect.y.min(self.height);
         let damaged_h = rect.height.min(self.height.saturating_sub(damaged_y));
         if damaged_h == 0 {
@@ -686,12 +690,9 @@ impl X11Window {
 
         while let Ok(Some(raw_event)) = self.conn.poll_for_event() {
             self.handle_raw_event(raw_event);
-            if let Some(event) = self.events.pop_front() {
-                return Some(event);
-            }
         }
 
-        None
+        self.events.pop_front()
     }
 
     fn handle_raw_event(&mut self, raw_event: x11rb::protocol::Event) {
@@ -702,11 +703,15 @@ impl X11Window {
                 if w != self.width || h != self.height {
                     self.width = w;
                     self.height = h;
-                    self.fb.resize(&self.conn, w, h);
-                    self.events.push_back(PlatformEvent::Resized {
-                        width: w,
-                        height: h,
-                    });
+                    if let Some(PlatformEvent::Resized { width, height }) = self.events.back_mut() {
+                        *width = w;
+                        *height = h;
+                    } else {
+                        self.events.push_back(PlatformEvent::Resized {
+                            width: w,
+                            height: h,
+                        });
+                    }
                 }
             }
             x11rb::protocol::Event::Expose(ev) => {
@@ -765,10 +770,15 @@ impl X11Window {
                     self.events
                         .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
-                self.events.push_back(PlatformEvent::CursorMoved {
-                    x: ev.event_x as f64,
-                    y: ev.event_y as f64,
-                });
+                if let Some(PlatformEvent::CursorMoved { x, y }) = self.events.back_mut() {
+                    *x = ev.event_x as f64;
+                    *y = ev.event_y as f64;
+                } else {
+                    self.events.push_back(PlatformEvent::CursorMoved {
+                        x: ev.event_x as f64,
+                        y: ev.event_y as f64,
+                    });
+                }
             }
             x11rb::protocol::Event::ButtonPress(ev) => {
                 let old_mods = self.modifiers;

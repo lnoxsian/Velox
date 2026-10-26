@@ -327,7 +327,6 @@ impl CpuRenderer {
         self.viewport_height = height;
         self.last_target_ptr = 0;
         self.prev_csd_hash = 0;
-        self.pane_states.clear();
         if self.framebuffer.resize(width, height) {
             let rows = (height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
             self.damage.resize(rows);

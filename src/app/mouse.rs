@@ -227,11 +227,12 @@ impl WindowState {
                     let now = std::time::Instant::now();
                     let should_sync = match self.last_separator_drag_sync {
                         Some(last) => {
-                            now.duration_since(last) >= std::time::Duration::from_millis(60)
+                            now.duration_since(last) >= std::time::Duration::from_millis(8)
                         }
                         None => true,
                     };
                     if should_sync {
+                        self.last_resize_instant = now;
                         self.sync_active_tab_layout();
                         self.last_separator_drag_sync = Some(now);
                     }
@@ -1018,6 +1019,7 @@ impl WindowState {
             }
 
             if self.dragging_separator.take().is_some() {
+                self.last_resize_instant = std::time::Instant::now();
                 self.last_separator_drag_sync = None;
                 self.sync_active_tab_layout();
                 self.needs_redraw = true;

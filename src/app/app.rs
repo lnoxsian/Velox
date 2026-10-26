@@ -108,6 +108,7 @@ pub struct WindowState {
     pub last_frame_instant: std::time::Instant,
     pub last_input_instant: std::time::Instant,
     pub last_key_instant: std::time::Instant,
+    pub last_resize_instant: std::time::Instant,
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
@@ -197,6 +198,7 @@ impl WindowState {
             last_frame_instant: now,
             last_input_instant: now,
             last_key_instant: now,
+            last_resize_instant: now,
             current_title: "test".to_string(),
             default_font_size: 14.0,
             current_font_size: 14.0,
@@ -522,6 +524,7 @@ impl WindowState {
         if width == 0 || height == 0 {
             return;
         }
+        self.last_resize_instant = std::time::Instant::now();
         self.renderer.resize(width, height);
         self.resize_active_tab();
         self.needs_redraw = true;
@@ -1308,6 +1311,9 @@ impl App {
             last_key_instant: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or_else(std::time::Instant::now),
+            last_resize_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now),
             current_title: initial_title,
             default_font_size: font_size,
             current_font_size: font_size,
@@ -1582,6 +1588,7 @@ impl App {
             let mut had_keyboard_input = false;
 
             for (&window_id, ws) in &mut self.windows {
+                let mut pending_resize: Option<(u32, u32)> = None;
                 while let Some(event) = ws.window.poll_event() {
                     match event {
                         PlatformEvent::CloseRequested => {
@@ -1621,7 +1628,7 @@ impl App {
                         }
                         PlatformEvent::Resized { width, height } => {
                             if width > 0 && height > 0 {
-                                ws.resize_renderer(width, height);
+                                pending_resize = Some((width, height));
                             }
                         }
                         PlatformEvent::KeyPressed {
@@ -1652,6 +1659,10 @@ impl App {
                         }
                     }
                 }
+
+                if let Some((width, height)) = pending_resize {
+                    ws.resize_renderer(width, height);
+                }
             }
 
             for wid in closed_windows {
@@ -1671,7 +1682,13 @@ impl App {
 
             let had_pty_data = self.drain_custom_events();
 
-            if had_keyboard_input || had_pty_data {
+            let now = std::time::Instant::now();
+            let is_any_resizing = self
+                .windows
+                .values()
+                .any(|ws| now.duration_since(ws.last_resize_instant) < std::time::Duration::from_millis(150));
+
+            if (had_keyboard_input || had_pty_data) && !is_any_resizing {
                 // If keyboard input was just dispatched or PTY events arrived, give trailing burst packets
                 // a brief window to arrive (e.g. 1ms). Typical shell echo / CPR response latency is 50-300µs.
                 // Coalescing trailing packets ensures atomic updates (e.g. erase-line followed by text, or CPR queries)
@@ -1696,7 +1713,6 @@ impl App {
                 break;
             }
 
-            let now = std::time::Instant::now();
             let mut min_next_wake: Option<std::time::Instant> = None;
 
             for ws in self.windows.values_mut() {
@@ -1751,14 +1767,16 @@ impl App {
                         .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
                         .unwrap_or(std::time::Duration::from_millis(8));
 
-                    // Zero-latency rendering for keyboard typing: if the user typed recently
-                    // (within last 150ms), bypass frame-rate throttling and redraw immediately!
+                    // Zero-latency rendering for keyboard typing and active window resizing:
+                    // bypass frame-rate throttling and redraw immediately!
                     let is_typing = now.duration_since(ws.last_key_instant)
+                        < std::time::Duration::from_millis(150);
+                    let is_resizing = now.duration_since(ws.last_resize_instant)
                         < std::time::Duration::from_millis(150);
 
                     let next_frame = ws.last_frame_instant + frame_duration;
 
-                    if is_typing || now >= next_frame {
+                    if is_typing || is_resizing || now >= next_frame {
                         ws.draw();
                         ws.needs_redraw = false;
                         ws.last_frame_instant = now;

@@ -163,7 +163,6 @@ impl X11Framebuffer {
     fn cleanup_shm(&mut self, conn: &RustConnection) {
         if let Some(seg) = self.shm_seg.take() {
             let _ = conn.shm_detach(seg);
-            let _ = conn.flush();
         }
         if !self.shm_addr.is_null() {
             unsafe {

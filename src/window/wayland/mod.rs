@@ -297,8 +297,23 @@ impl WaylandWindow {
         let Some(rect) = damage else {
             return;
         };
-        if rect.width == 0 || rect.height == 0 {
+        if rect.width == 0 || rect.height == 0 || self.state.width == 0 || self.state.height == 0 {
             return;
+        }
+
+        let width = self.state.width;
+        let height = self.state.height;
+
+        let needs_new_buf = match &self.state.buffer {
+            Some(buf) => buf.width != width || buf.height != height,
+            None => true,
+        };
+        if needs_new_buf {
+            if let Some(shm) = &self.state.shm
+                && let Ok(buf) = WaylandShmBuffer::new(shm, &self.qh, width, height)
+            {
+                self.state.buffer = Some(buf);
+            }
         }
 
         if let Some(buf) = &mut self.state.buffer {
@@ -517,7 +532,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
         event: xdg_toplevel::Event,
         _: &(),
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
     ) {
         match event {
             xdg_toplevel::Event::Configure {
@@ -538,15 +553,15 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
                 if w != state.width || h != state.height {
                     state.width = w;
                     state.height = h;
-                    if let Some(shm) = &state.shm
-                        && let Ok(buf) = WaylandShmBuffer::new(shm, qh, w, h)
-                    {
-                        state.buffer = Some(buf);
+                    if let Some(PlatformEvent::Resized { width, height }) = state.events.back_mut() {
+                        *width = w;
+                        *height = h;
+                    } else {
+                        state.events.push_back(PlatformEvent::Resized {
+                            width: w,
+                            height: h,
+                        });
                     }
-                    state.events.push_back(PlatformEvent::Resized {
-                        width: w,
-                        height: h,
-                    });
                 }
             }
             xdg_toplevel::Event::Close => {
