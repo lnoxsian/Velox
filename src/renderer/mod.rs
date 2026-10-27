@@ -86,6 +86,14 @@ pub struct CpuPaneState {
     pub last_selection_bounds: ((usize, usize), (usize, usize)),
 }
 
+impl CpuPaneState {
+    #[inline]
+    pub fn mark_full_redraw(&mut self) {
+        self.last_rect = None;
+        crate::diagnostics::ResizeStats::record_pane_state_invalidation();
+    }
+}
+
 /// Pure-Rust, retained CPU software renderer for Velox.
 pub struct CpuRenderer {
     pub framebuffer: Framebuffer,
@@ -323,6 +331,11 @@ impl CpuRenderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.viewport_width == width && self.viewport_height == height {
+            return;
+        }
         self.viewport_width = width;
         self.viewport_height = height;
         self.last_target_ptr = 0;
@@ -331,6 +344,9 @@ impl CpuRenderer {
             let rows = (height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
             self.damage.resize(rows);
             self.damage.mark_all();
+            for state in self.pane_states.values_mut() {
+                state.mark_full_redraw();
+            }
         }
     }
 
@@ -343,6 +359,7 @@ impl CpuRenderer {
         let rows = (self.viewport_height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
         self.damage.resize(rows);
         self.damage.mark_all();
+        crate::diagnostics::ResizeStats::record_pane_state_clear();
         self.pane_states.clear();
         self.last_target_ptr = 0;
     }
@@ -357,11 +374,10 @@ impl CpuRenderer {
         self.tab_glyph_cache.release_tab_memory();
         self.pane_glyph_caches.clear();
         self.pane_glyph_caches.shrink_to_fit();
+        crate::diagnostics::ResizeStats::record_pane_state_clear();
         self.pane_states.clear();
         self.pane_states.shrink_to_fit();
-        if self.framebuffer.pixels.capacity() > self.framebuffer.pixels.len() {
-            self.framebuffer.pixels.shrink_to_fit();
-        }
+        self.framebuffer.release_memory();
         self.prev_csd_hash = 0;
         self.last_target_ptr = 0;
     }

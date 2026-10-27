@@ -146,3 +146,160 @@ fn check_hicolor_status() -> String {
         "Not installed (run 'make install-icons' or 'make install' to install)".to_string()
     }
 }
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Lightweight instrumentation counters for tracking interactive resize performance.
+pub struct ResizeStats;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResizeStatsSnapshot {
+    pub pixel_resize_events: usize,
+    pub applied_viewport_resizes: usize,
+    pub terminal_resize_calls: usize,
+    pub normal_grid_reflows: usize,
+    pub alternate_grid_reflows: usize,
+    pub pty_resize_calls: usize,
+    pub framebuffer_resize_calls: usize,
+    pub framebuffer_growth_events: usize,
+    pub framebuffer_shrink_events: usize,
+    pub pane_state_clears: usize,
+    pub pane_state_invalidations: usize,
+    pub full_redraws: usize,
+    pub frames_rendered: usize,
+}
+
+static PIXEL_RESIZE_EVENTS: AtomicUsize = AtomicUsize::new(0);
+static APPLIED_VIEWPORT_RESIZES: AtomicUsize = AtomicUsize::new(0);
+static TERMINAL_RESIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static NORMAL_GRID_REFLOWS: AtomicUsize = AtomicUsize::new(0);
+static ALTERNATE_GRID_REFLOWS: AtomicUsize = AtomicUsize::new(0);
+static PTY_RESIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static FRAMEBUFFER_RESIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static FRAMEBUFFER_GROWTH_EVENTS: AtomicUsize = AtomicUsize::new(0);
+static FRAMEBUFFER_SHRINK_EVENTS: AtomicUsize = AtomicUsize::new(0);
+static PANE_STATE_CLEARS: AtomicUsize = AtomicUsize::new(0);
+static PANE_STATE_INVALIDATIONS: AtomicUsize = AtomicUsize::new(0);
+static FULL_REDRAWS: AtomicUsize = AtomicUsize::new(0);
+static FRAMES_RENDERED: AtomicUsize = AtomicUsize::new(0);
+
+impl ResizeStats {
+    #[inline(always)]
+    pub fn record_pixel_resize() {
+        PIXEL_RESIZE_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_applied_viewport_resize() {
+        APPLIED_VIEWPORT_RESIZES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_terminal_resize() {
+        TERMINAL_RESIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_normal_grid_reflow() {
+        NORMAL_GRID_REFLOWS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_alternate_grid_reflow() {
+        ALTERNATE_GRID_REFLOWS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_pty_resize() {
+        PTY_RESIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_framebuffer_resize() {
+        FRAMEBUFFER_RESIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_framebuffer_growth() {
+        FRAMEBUFFER_GROWTH_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_framebuffer_shrink() {
+        FRAMEBUFFER_SHRINK_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_pane_state_clear() {
+        PANE_STATE_CLEARS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_pane_state_invalidation() {
+        PANE_STATE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_full_redraw() {
+        FULL_REDRAWS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_frame_rendered() {
+        FRAMES_RENDERED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn reset() {
+        PIXEL_RESIZE_EVENTS.store(0, Ordering::Relaxed);
+        APPLIED_VIEWPORT_RESIZES.store(0, Ordering::Relaxed);
+        TERMINAL_RESIZE_CALLS.store(0, Ordering::Relaxed);
+        NORMAL_GRID_REFLOWS.store(0, Ordering::Relaxed);
+        ALTERNATE_GRID_REFLOWS.store(0, Ordering::Relaxed);
+        PTY_RESIZE_CALLS.store(0, Ordering::Relaxed);
+        FRAMEBUFFER_RESIZE_CALLS.store(0, Ordering::Relaxed);
+        FRAMEBUFFER_GROWTH_EVENTS.store(0, Ordering::Relaxed);
+        FRAMEBUFFER_SHRINK_EVENTS.store(0, Ordering::Relaxed);
+        PANE_STATE_CLEARS.store(0, Ordering::Relaxed);
+        PANE_STATE_INVALIDATIONS.store(0, Ordering::Relaxed);
+        FULL_REDRAWS.store(0, Ordering::Relaxed);
+        FRAMES_RENDERED.store(0, Ordering::Relaxed);
+    }
+
+    pub fn get() -> ResizeStatsSnapshot {
+        ResizeStatsSnapshot {
+            pixel_resize_events: PIXEL_RESIZE_EVENTS.load(Ordering::Relaxed),
+            applied_viewport_resizes: APPLIED_VIEWPORT_RESIZES.load(Ordering::Relaxed),
+            terminal_resize_calls: TERMINAL_RESIZE_CALLS.load(Ordering::Relaxed),
+            normal_grid_reflows: NORMAL_GRID_REFLOWS.load(Ordering::Relaxed),
+            alternate_grid_reflows: ALTERNATE_GRID_REFLOWS.load(Ordering::Relaxed),
+            pty_resize_calls: PTY_RESIZE_CALLS.load(Ordering::Relaxed),
+            framebuffer_resize_calls: FRAMEBUFFER_RESIZE_CALLS.load(Ordering::Relaxed),
+            framebuffer_growth_events: FRAMEBUFFER_GROWTH_EVENTS.load(Ordering::Relaxed),
+            framebuffer_shrink_events: FRAMEBUFFER_SHRINK_EVENTS.load(Ordering::Relaxed),
+            pane_state_clears: PANE_STATE_CLEARS.load(Ordering::Relaxed),
+            pane_state_invalidations: PANE_STATE_INVALIDATIONS.load(Ordering::Relaxed),
+            full_redraws: FULL_REDRAWS.load(Ordering::Relaxed),
+            frames_rendered: FRAMES_RENDERED.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn summary() -> String {
+        let s = Self::get();
+        format!(
+            "resize stats:\n  pixel events: {}\n  viewport resizes: {}\n  terminal resizes: {}\n  normal reflows: {}\n  alternate reflows: {}\n  pty resizes: {}\n  framebuffer resize calls: {}\n  framebuffer growth events: {}\n  framebuffer shrink events: {}\n  pane-state clears: {}\n  pane-state invalidations: {}\n  full redraws: {}\n  frames rendered: {}",
+            s.pixel_resize_events,
+            s.applied_viewport_resizes,
+            s.terminal_resize_calls,
+            s.normal_grid_reflows,
+            s.alternate_grid_reflows,
+            s.pty_resize_calls,
+            s.framebuffer_resize_calls,
+            s.framebuffer_growth_events,
+            s.framebuffer_shrink_events,
+            s.pane_state_clears,
+            s.pane_state_invalidations,
+            s.full_redraws,
+            s.frames_rendered,
+        )
+    }
+}

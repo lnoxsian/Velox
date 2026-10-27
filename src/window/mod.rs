@@ -203,6 +203,14 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn resize_dummy(&mut self, new_w: u32, new_h: u32) {
+        if let Self::Dummy { width, height } = self {
+            *width = new_w;
+            *height = new_h;
+        }
+    }
+
+    #[inline]
     pub fn set_visible(&mut self, visible: bool) {
         match self {
             Self::X11(w) => w.set_visible(visible),

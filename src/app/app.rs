@@ -97,6 +97,17 @@ impl EventLoopProxy {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResizeState {
+    pub pending_width: u32,
+    pub pending_height: u32,
+    pub last_applied_width: u32,
+    pub last_applied_height: u32,
+    pub last_cols: usize,
+    pub last_rows: usize,
+    pub is_pending: bool,
+}
+
 pub struct WindowState {
     pub window_id: WindowId,
     pub renderer: CpuRenderer,
@@ -158,6 +169,7 @@ pub struct WindowState {
     pub csd_palette: crate::window::csd::CsdPalette,
     pub hovered_csd_button: Option<crate::window::csd::CsdButtonType>,
     pub pressed_csd_button: Option<crate::window::csd::CsdButtonType>,
+    pub resize_state: ResizeState,
 }
 
 impl Drop for WindowState {
@@ -248,6 +260,13 @@ impl WindowState {
             csd_palette,
             hovered_csd_button: None,
             pressed_csd_button: None,
+            resize_state: ResizeState {
+                last_applied_width: 800,
+                last_applied_height: 600,
+                last_cols: cols,
+                last_rows: rows,
+                ..Default::default()
+            },
         }
     }
 
@@ -445,10 +464,19 @@ impl WindowState {
                         || pane.terminal.grid.height != rect.rows
                     {
                         pane.terminal.resize(rect.cols as u32, rect.rows as u32);
+                        crate::diagnostics::ResizeStats::record_pty_resize();
                         let _ = pane.pty_master.resize(rect.cols as u16, rect.rows as u16);
                         pane.terminal.active_grid_mut().mark_all_dirty();
                     }
                 }
+            }
+        }
+
+        if tab_index == self.active_tab_index {
+            if let Some(tab) = self.tabs.get(self.active_tab_index) {
+                let active_pane = tab.active_pane();
+                self.resize_state.last_cols = active_pane.terminal.grid.width;
+                self.resize_state.last_rows = active_pane.terminal.grid.height;
             }
         }
     }
@@ -520,16 +548,59 @@ impl WindowState {
         self.resize_active_tab();
     }
 
-    pub fn resize_renderer(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+    pub fn request_resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if self.resize_state.last_applied_width == width
+            && self.resize_state.last_applied_height == height
+            && !self.resize_state.is_pending
+        {
             return;
         }
+
+        self.resize_state.pending_width = width;
+        self.resize_state.pending_height = height;
+        self.resize_state.is_pending = true;
+        self.needs_redraw = true;
+    }
+
+    pub fn apply_pending_resize(&mut self) {
+        if !self.resize_state.is_pending {
+            return;
+        }
+        self.resize_state.is_pending = false;
+        let width = self.resize_state.pending_width;
+        let height = self.resize_state.pending_height;
+        self.apply_viewport_resize(width, height);
+    }
+
+    pub fn apply_viewport_resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if self.resize_state.last_applied_width == width
+            && self.resize_state.last_applied_height == height
+        {
+            return;
+        }
+
+        crate::diagnostics::ResizeStats::record_applied_viewport_resize();
+
+        self.resize_state.last_applied_width = width;
+        self.resize_state.last_applied_height = height;
         self.last_resize_instant = std::time::Instant::now();
+
+        self.window.resize_dummy(width, height);
         self.renderer.resize(width, height);
         self.resize_active_tab();
         self.needs_redraw = true;
         self.content_dirty = true;
         self.window.request_redraw();
+    }
+
+    pub fn resize_renderer(&mut self, width: u32, height: u32) {
+        self.apply_viewport_resize(width, height);
     }
 
     pub fn split_horizontal(&mut self) -> Option<PaneId> {
@@ -1013,6 +1084,11 @@ impl WindowState {
             return;
         }
 
+        crate::diagnostics::ResizeStats::record_frame_rendered();
+        if self.renderer.damage.full_redraw {
+            crate::diagnostics::ResizeStats::record_full_redraw();
+        }
+
         self.last_frame_instant = std::time::Instant::now();
 
         // 1. Ensure renderer font size matches the active pane's isolated font size
@@ -1367,6 +1443,13 @@ impl App {
             csd_palette,
             hovered_csd_button: None,
             pressed_csd_button: None,
+            resize_state: ResizeState {
+                last_applied_width: win_width,
+                last_applied_height: win_height,
+                last_cols: cols as usize,
+                last_rows: rows as usize,
+                ..Default::default()
+            },
         };
 
         window_state.window.set_opacity(window_state.opacity);
@@ -1627,7 +1710,9 @@ impl App {
                             ws.needs_redraw = true;
                         }
                         PlatformEvent::Resized { width, height } => {
+                            crate::diagnostics::ResizeStats::record_pixel_resize();
                             if width > 0 && height > 0 {
+                                ws.request_resize(width, height);
                                 pending_resize = Some((width, height));
                             }
                         }
@@ -1660,8 +1745,8 @@ impl App {
                     }
                 }
 
-                if let Some((width, height)) = pending_resize {
-                    ws.resize_renderer(width, height);
+                if pending_resize.is_some() {
+                    ws.apply_pending_resize();
                 }
             }
 
@@ -1683,10 +1768,9 @@ impl App {
             let had_pty_data = self.drain_custom_events();
 
             let now = std::time::Instant::now();
-            let is_any_resizing = self
-                .windows
-                .values()
-                .any(|ws| now.duration_since(ws.last_resize_instant) < std::time::Duration::from_millis(150));
+            let is_any_resizing = self.windows.values().any(|ws| {
+                now.duration_since(ws.last_resize_instant) < std::time::Duration::from_millis(150)
+            });
 
             if (had_keyboard_input || had_pty_data) && !is_any_resizing {
                 // If keyboard input was just dispatched or PTY events arrived, give trailing burst packets

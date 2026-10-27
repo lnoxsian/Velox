@@ -553,7 +553,8 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
                 if w != state.width || h != state.height {
                     state.width = w;
                     state.height = h;
-                    if let Some(PlatformEvent::Resized { width, height }) = state.events.back_mut() {
+                    if let Some(PlatformEvent::Resized { width, height }) = state.events.back_mut()
+                    {
                         *width = w;
                         *height = h;
                     } else {

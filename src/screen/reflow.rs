@@ -3,11 +3,8 @@ use crate::screen::grid::Grid;
 
 impl Grid {
     pub fn resize(&mut self, cols: u32, rows: u32) {
-        let new_w = cols as usize;
-        let new_h = rows as usize;
-        if new_w == 0 || new_h == 0 {
-            return;
-        }
+        let new_w = (cols as usize).max(1);
+        let new_h = (rows as usize).max(1);
 
         if new_w == self.width && new_h == self.height {
             return;
@@ -331,7 +328,8 @@ impl Grid {
         for y in 0..new_h {
             let row_idx = grid_start + y;
             if row_idx < total_rows {
-                new_grid_cells.extend_from_slice(&reflowed_cells[row_idx * new_w..(row_idx + 1) * new_w]);
+                new_grid_cells
+                    .extend_from_slice(&reflowed_cells[row_idx * new_w..(row_idx + 1) * new_w]);
                 new_row_wrapped.push(reflowed_wrapped[row_idx]);
             } else {
                 new_grid_cells.extend(std::iter::repeat_n(default_cell, new_w));
@@ -360,6 +358,9 @@ impl Grid {
         for y in 0..new_h {
             self.damage.mark_dirty(y);
         }
+
+        debug_assert_eq!(self.cells.len(), self.width.saturating_mul(self.height));
+        debug_assert_eq!(self.row_wrapped.len(), self.height);
     }
 }
 

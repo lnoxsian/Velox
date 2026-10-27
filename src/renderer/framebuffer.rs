@@ -11,7 +11,9 @@ impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
         let w = width.max(1);
         let h = height.max(1);
-        let len = (w * h) as usize;
+        let len = (w as usize)
+            .checked_mul(h as usize)
+            .expect("framebuffer dimensions too large");
         Self {
             pixels: vec![0; len],
             width: w,
@@ -28,12 +30,31 @@ impl Framebuffer {
             return false;
         }
 
+        crate::diagnostics::ResizeStats::record_framebuffer_resize();
+
+        let pixel_count = (w as usize)
+            .checked_mul(h as usize)
+            .expect("framebuffer dimensions are too large");
+
+        if self.pixels.len() < pixel_count {
+            crate::diagnostics::ResizeStats::record_framebuffer_growth();
+            self.pixels.resize(pixel_count, 0);
+        } else {
+            self.pixels.truncate(pixel_count);
+        }
+
         self.width = w;
         self.height = h;
         self.stride = w as usize;
-        let len = (w * h) as usize;
-        self.pixels.resize(len, 0);
         true
+    }
+
+    /// Explicitly release excess capacity during idle memory compaction.
+    pub fn release_memory(&mut self) {
+        if self.pixels.capacity() > self.pixels.len() {
+            crate::diagnostics::ResizeStats::record_framebuffer_shrink();
+            self.pixels.shrink_to_fit();
+        }
     }
 
     #[inline(always)]

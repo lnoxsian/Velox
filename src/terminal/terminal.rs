@@ -716,28 +716,47 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, cols: u32, rows: u32) {
-        let history_len = self.grid.scrollback.len();
-        let old_cursor_y = self.grid.cursor.y;
-        let mut old_start_r = history_len + old_cursor_y;
-        while old_start_r > history_len && self.grid.is_row_wrapped(old_start_r - 1) {
-            old_start_r -= 1;
-        }
-        let pre_v_offset = (history_len + old_cursor_y).saturating_sub(old_start_r);
+        let new_w = (cols as usize).max(1);
+        let new_h = (rows as usize).max(1);
 
-        self.grid.resize(cols, rows);
-        self.alt_grid.resize(cols, rows);
+        let normal_changed = self.grid.width != new_w || self.grid.height != new_h;
+        let alternate_changed = self.alt_grid.width != new_w || self.alt_grid.height != new_h;
 
-        let new_history_len = self.grid.scrollback.len();
-        let new_cursor_y = self.grid.cursor.y;
-        let mut new_start_r = new_history_len + new_cursor_y;
-        while new_start_r > new_history_len && self.grid.is_row_wrapped(new_start_r - 1) {
-            new_start_r -= 1;
+        if !normal_changed && !alternate_changed {
+            return;
         }
-        let prompt_start_y = new_start_r.saturating_sub(new_history_len);
-        let expected_cursor_y = prompt_start_y + pre_v_offset;
-        if new_cursor_y > expected_cursor_y && expected_cursor_y < self.grid.height {
-            self.grid.cursor.y = expected_cursor_y;
-            self.grid.cursor.x = self.grid.cursor.x.min(cols.saturating_sub(1) as usize);
+
+        crate::diagnostics::ResizeStats::record_terminal_resize();
+
+        if normal_changed {
+            crate::diagnostics::ResizeStats::record_normal_grid_reflow();
+            let history_len = self.grid.scrollback.len();
+            let old_cursor_y = self.grid.cursor.y;
+            let mut old_start_r = history_len + old_cursor_y;
+            while old_start_r > history_len && self.grid.is_row_wrapped(old_start_r - 1) {
+                old_start_r -= 1;
+            }
+            let pre_v_offset = (history_len + old_cursor_y).saturating_sub(old_start_r);
+
+            self.grid.resize(new_w as u32, new_h as u32);
+
+            let new_history_len = self.grid.scrollback.len();
+            let new_cursor_y = self.grid.cursor.y;
+            let mut new_start_r = new_history_len + new_cursor_y;
+            while new_start_r > new_history_len && self.grid.is_row_wrapped(new_start_r - 1) {
+                new_start_r -= 1;
+            }
+            let prompt_start_y = new_start_r.saturating_sub(new_history_len);
+            let expected_cursor_y = prompt_start_y + pre_v_offset;
+            if new_cursor_y > expected_cursor_y && expected_cursor_y < self.grid.height {
+                self.grid.cursor.y = expected_cursor_y;
+                self.grid.cursor.x = self.grid.cursor.x.min(new_w.saturating_sub(1));
+            }
+        }
+
+        if alternate_changed {
+            crate::diagnostics::ResizeStats::record_alternate_grid_reflow();
+            self.alt_grid.resize(new_w as u32, new_h as u32);
         }
     }
 }
