@@ -112,6 +112,8 @@ pub struct Terminal {
     pub mouse_utf8: bool,
     pub mouse_pixel: bool,
     pub saved_dec_modes: SavedDecModes,
+    pub main_saved_dec_modes: SavedDecModes,
+    pub alt_saved_dec_modes: SavedDecModes,
     pub g0_charset: u8,
     pub g1_charset: u8,
     pub active_charset: u8,
@@ -208,6 +210,8 @@ impl Terminal {
             mouse_utf8: false,
             mouse_pixel: false,
             saved_dec_modes: SavedDecModes::new(),
+            main_saved_dec_modes: SavedDecModes::new(),
+            alt_saved_dec_modes: SavedDecModes::new(),
             g0_charset: 0,
             g1_charset: 0,
             active_charset: 0,
@@ -533,7 +537,9 @@ impl Terminal {
             saved_wrap,
         ) = {
             let active_grid = self.active_grid_mut();
+            let current_visible = active_grid.cursor.visible;
             active_grid.cursor = active_grid.saved_cursor;
+            active_grid.cursor.visible = current_visible;
             active_grid.clamp_cursor();
             (
                 active_grid.saved_fg,
@@ -582,6 +588,8 @@ impl Terminal {
         self.active_charset = 0;
         self.reset_kitty_keyboard();
         self.saved_dec_modes.clear();
+        self.main_saved_dec_modes.clear();
+        self.alt_saved_dec_modes.clear();
 
         if !soft {
             self.set_alt_screen(false);
@@ -689,10 +697,15 @@ impl Terminal {
                 self.alt_kitty_keyboard_flags = 0;
                 self.alt_kitty_keyboard_stack.clear();
                 self.kitty_keyboard_flags = 0;
+                self.main_saved_dec_modes = self.saved_dec_modes;
+                self.saved_dec_modes = self.alt_saved_dec_modes;
+                self.alt_grid.cursor.visible = self.grid.cursor.visible;
             } else {
                 self.alt_kitty_keyboard_flags = 0;
                 self.alt_kitty_keyboard_stack.clear();
                 self.kitty_keyboard_flags = self.main_kitty_keyboard_flags;
+                self.alt_saved_dec_modes = self.saved_dec_modes;
+                self.saved_dec_modes = self.main_saved_dec_modes;
             }
             self.is_alt_screen = active;
             self.active_grid_mut().mark_all_dirty();

@@ -1024,6 +1024,20 @@ impl WindowState {
             .collect()
     }
 
+    #[inline(always)]
+    pub(crate) fn compute_cursor_visibility(
+        is_active: bool,
+        scroll_offset: usize,
+        grid_cursor_visible: bool,
+        cursor_blink_enabled: bool,
+        cursor_blink_on: bool,
+    ) -> bool {
+        is_active
+            && scroll_offset == 0
+            && grid_cursor_visible
+            && (!cursor_blink_enabled || cursor_blink_on)
+    }
+
     fn prepare_pane_render_data<'a>(
         pane_rects: &[crate::app::split::PaneRect],
         active_tab: &'a Tab,
@@ -1041,13 +1055,13 @@ impl WindowState {
                 let offset = active_grid.scroll_offset;
                 let is_active = pane.id == active_pane_id;
 
-                let cursor_visible = if !is_active || offset > 0 {
-                    false
-                } else if cursor_blink_enabled {
-                    active_grid.cursor.visible && cursor_blink_on
-                } else {
-                    active_grid.cursor.visible
-                };
+                let cursor_visible = Self::compute_cursor_visibility(
+                    is_active,
+                    offset,
+                    active_grid.cursor.visible,
+                    cursor_blink_enabled,
+                    cursor_blink_on,
+                );
 
                 let cursor_shape = if !is_focused
                     && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
@@ -1953,5 +1967,59 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_cursor_visibility() {
+        // Active pane, at screen bottom (offset 0), cursor visible, blinking disabled -> true
+        assert!(WindowState::compute_cursor_visibility(
+            true, 0, true, false, false
+        ));
+        assert!(WindowState::compute_cursor_visibility(
+            true, 0, true, false, true
+        ));
+
+        // Active pane, at screen bottom, cursor visible, blinking enabled: follows blink phase
+        assert!(WindowState::compute_cursor_visibility(
+            true, 0, true, true, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, true, true, false
+        ));
+
+        // Explicit DECTCEM hidden: blinking must NEVER override explicit hidden state
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, false, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, false, false
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, true, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, true, false
+        ));
+
+        // Inactive pane: always hidden
+        assert!(!WindowState::compute_cursor_visibility(
+            false, 0, true, false, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            false, 0, true, true, true
+        ));
+
+        // Scrolled back into history (offset > 0): always hidden
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 5, true, false, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 1, true, true, true
+        ));
     }
 }

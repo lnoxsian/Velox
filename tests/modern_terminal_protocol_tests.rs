@@ -633,3 +633,183 @@ fn test_erase_display_with_scrolled_circular_buffer_preserves_rows() {
         }
     }
 }
+
+#[test]
+fn test_decscusr_does_not_override_dectcem_hidden() {
+    let mut term = Terminal::new(80, 24);
+    use velox::screen::cursor::CursorShape;
+
+    // Initially cursor is visible
+    assert!(term.active_grid().cursor.visible);
+
+    // Hide cursor via CSI ? 25 l (DECTCEM reset)
+    term.feed(b"\x1b[?25l");
+    assert!(!term.active_grid().cursor.visible);
+
+    // DECSCUSR 2: steady block
+    term.feed(b"\x1b[2 q");
+    assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "CSI 2 q must NOT force hidden cursor visible"
+    );
+
+    // DECSCUSR 2 without space prefix
+    term.feed(b"\x1b[2q");
+    assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "CSI 2q must NOT force hidden cursor visible"
+    );
+
+    // DECSCUSR 3: blinking underline
+    term.feed(b"\x1b[3 q");
+    assert_eq!(term.active_grid().cursor.shape, CursorShape::Underline);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "CSI 3 q must NOT force hidden cursor visible"
+    );
+
+    // DECSCUSR 5: blinking bar/beam
+    term.feed(b"\x1b[5 q");
+    assert_eq!(term.active_grid().cursor.shape, CursorShape::Beam);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "CSI 5 q must NOT force hidden cursor visible"
+    );
+
+    // DECSCUSR 0: default shape
+    term.feed(b"\x1b[0 q");
+    assert_eq!(
+        term.active_grid().cursor.shape,
+        term.configured_cursor_shape
+    );
+    assert!(
+        !term.active_grid().cursor.visible,
+        "CSI 0 q must NOT force hidden cursor visible"
+    );
+
+    // Explicit DECTCEM set: CSI ? 25 h
+    term.feed(b"\x1b[?25h");
+    assert!(term.active_grid().cursor.visible);
+
+    // While visible, DECSCUSR preserves visible state
+    term.feed(b"\x1b[2 q");
+    assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+    assert!(term.active_grid().cursor.visible);
+}
+
+#[test]
+fn test_alternate_screen_transitions_cursor_visibility_ordering() {
+    let mut term = Terminal::new(80, 24);
+
+    // Ordering Case A: CSI ? 1049 h followed by CSI ? 25 l
+    // Main screen has visible cursor
+    assert!(term.active_grid().cursor.visible);
+
+    // Enter alt screen
+    term.feed(b"\x1b[?1049h");
+    assert!(term.is_alt_screen);
+
+    // In alt screen, hide cursor (typical for gh cs ssh, fzf, gum)
+    term.feed(b"\x1b[?25l");
+    assert!(!term.active_grid().cursor.visible);
+
+    // Simulate menu render with DECSCUSR
+    term.feed(b"\x1b[2 q");
+    assert!(!term.active_grid().cursor.visible);
+
+    // Exit alt screen: CSI ? 1049 l
+    term.feed(b"\x1b[?1049l");
+    assert!(!term.is_alt_screen);
+    // Main screen cursor must remain visible
+    assert!(
+        term.active_grid().cursor.visible,
+        "Main screen cursor must remain visible after leaving alt screen where cursor was hidden"
+    );
+
+    // Ordering Case B: CSI ? 25 l followed by CSI ? 1049 h
+    // Hide cursor in main screen
+    term.feed(b"\x1b[?25l");
+    assert!(!term.active_grid().cursor.visible);
+
+    // Enter alt screen: entering alt screen must NOT unintentionally force cursor visible!
+    term.feed(b"\x1b[?1049h");
+    assert!(term.is_alt_screen);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "Alt screen cursor must not be forced visible when cursor was hidden before entering"
+    );
+
+    // In alt screen, app may explicitly show cursor: CSI ? 25 h
+    term.feed(b"\x1b[?25h");
+    assert!(term.active_grid().cursor.visible);
+
+    // Exit alt screen
+    term.feed(b"\x1b[?1049l");
+    assert!(!term.is_alt_screen);
+    // Main screen cursor MUST NOT be unintentionally forced visible!
+    assert!(
+        !term.active_grid().cursor.visible,
+        "Main screen cursor must remain hidden after exiting alt screen when it was hidden before entering"
+    );
+
+    // Verify same independence with CSI ? 47 h/l
+    term.feed(b"\x1b[?47h");
+    assert!(term.is_alt_screen);
+    assert!(!term.active_grid().cursor.visible);
+    term.feed(b"\x1b[?47l");
+    assert!(!term.is_alt_screen);
+    assert!(!term.active_grid().cursor.visible);
+
+    // Restore main screen cursor
+    term.feed(b"\x1b[?25h");
+    assert!(term.active_grid().cursor.visible);
+}
+
+#[test]
+fn test_dec_mode_25_save_restore_per_screen_isolation() {
+    let mut term = Terminal::new(80, 24);
+
+    // 1. In main screen: cursor visible, save mode 25
+    assert!(term.active_grid().cursor.visible);
+    term.feed(b"\x1b[?25s");
+
+    // 2. Hide cursor in main screen
+    term.feed(b"\x1b[?25l");
+    assert!(!term.active_grid().cursor.visible);
+
+    // 3. Enter alt screen
+    term.feed(b"\x1b[?1049h");
+    assert!(term.is_alt_screen);
+    assert!(!term.active_grid().cursor.visible);
+
+    // 4. In alt screen: show cursor and save mode 25
+    term.feed(b"\x1b[?25h");
+    assert!(term.active_grid().cursor.visible);
+    term.feed(b"\x1b[?25s");
+
+    // 5. In alt screen: hide cursor, then restore mode 25
+    term.feed(b"\x1b[?25l");
+    assert!(!term.active_grid().cursor.visible);
+    term.feed(b"\x1b[?25r");
+    assert!(
+        term.active_grid().cursor.visible,
+        "Alt screen restored saved visible mode 25"
+    );
+
+    // 6. Exit alt screen back to main screen
+    term.feed(b"\x1b[?1049l");
+    assert!(!term.is_alt_screen);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "Main screen cursor remains hidden"
+    );
+
+    // 7. Restore main screen mode 25: should restore 'visible = true' saved in step 1
+    term.feed(b"\x1b[?25r");
+    assert!(
+        term.active_grid().cursor.visible,
+        "Main screen restored saved visible mode 25"
+    );
+}

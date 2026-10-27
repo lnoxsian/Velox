@@ -350,7 +350,10 @@ pub fn handle_csi(
                             terminal.set_auto_wrap(active);
                         }
                         25 => {
-                            terminal.active_grid_mut().cursor.visible = active;
+                            let y = terminal.active_grid().cursor.y;
+                            let active_grid = terminal.active_grid_mut();
+                            active_grid.cursor.visible = active;
+                            active_grid.damage.mark_dirty(y);
                         }
                         66 => {
                             terminal.keypad_application_mode = active;
@@ -461,7 +464,12 @@ pub fn handle_csi(
                             }
                             6 => terminal.set_origin_mode(val),
                             7 => terminal.set_auto_wrap(val),
-                            25 => terminal.active_grid_mut().cursor.visible = val,
+                            25 => {
+                                let y = terminal.active_grid().cursor.y;
+                                let active_grid = terminal.active_grid_mut();
+                                active_grid.cursor.visible = val;
+                                active_grid.damage.mark_dirty(y);
+                            }
                             66 => terminal.keypad_application_mode = val,
                             1000 => terminal.mouse_mode = if val { 1000 } else { 0 },
                             1002 => terminal.mouse_mode = if val { 1002 } else { 0 },
@@ -654,7 +662,7 @@ pub fn handle_csi(
             if prefix == Some(b'>') {
                 // XTVERSION - Query Terminal Name and Version (`\x1b[>q` or `\x1b[>0q`)
                 terminal.send_to_shell(b"\x1bP>|Velox(0.1.9)\x1b\\");
-            } else if prefix.is_none() || prefix == Some(b' ') {
+            } else if prefix.is_none() || prefix == Some(b' ') || intermediate == Some(b' ') {
                 // Set Cursor Style (DECSCUSR)
                 let param = params.first().copied().unwrap_or(0);
                 let default_shape = terminal.configured_cursor_shape;
@@ -662,22 +670,20 @@ pub fn handle_csi(
                 match param {
                     0 => {
                         active.cursor.shape = default_shape;
-                        active.cursor.visible = true;
                     }
                     1 | 2 => {
                         active.cursor.shape = crate::screen::cursor::CursorShape::Block;
-                        active.cursor.visible = true;
                     }
                     3 | 4 => {
                         active.cursor.shape = crate::screen::cursor::CursorShape::Underline;
-                        active.cursor.visible = true;
                     }
                     5 | 6 => {
                         active.cursor.shape = crate::screen::cursor::CursorShape::Beam;
-                        active.cursor.visible = true;
                     }
                     _ => {}
                 }
+                let y = active.cursor.y;
+                active.damage.mark_dirty(y);
             }
         }
         b'p' => {
@@ -974,5 +980,44 @@ mod tests {
         handle_csi(b'D', &[1], None, None, &mut term);
         assert_eq!(term.grid.cursor.x, 9);
         assert_eq!(term.grid.cursor.y, 0);
+    }
+
+    #[test]
+    fn test_decscusr_preserves_cursor_visibility() {
+        let mut term = Terminal::new(80, 24);
+        use crate::screen::cursor::CursorShape;
+
+        // When visible: CSI 2 q changes shape to Block, visibility remains true
+        assert!(term.active_grid().cursor.visible);
+        handle_csi(b'q', &[2], None, Some(b' '), &mut term);
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+        assert!(term.active_grid().cursor.visible);
+
+        // Hide cursor via CSI ? 25 l
+        handle_csi(b'l', &[25], Some(b'?'), None, &mut term);
+        assert!(!term.active_grid().cursor.visible);
+
+        // Underline shape via CSI 3 q: visibility must remain false
+        handle_csi(b'q', &[3], None, Some(b' '), &mut term);
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Underline);
+        assert!(!term.active_grid().cursor.visible);
+
+        // Beam shape via CSI 5 q: visibility must remain false
+        handle_csi(b'q', &[5], None, Some(b' '), &mut term);
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Beam);
+        assert!(!term.active_grid().cursor.visible);
+
+        // Steady block via CSI 2 q: visibility must remain false
+        handle_csi(b'q', &[2], None, Some(b' '), &mut term);
+        assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+        assert!(!term.active_grid().cursor.visible);
+
+        // Reset via CSI 0 q: visibility must remain false
+        handle_csi(b'q', &[0], None, Some(b' '), &mut term);
+        assert_eq!(
+            term.active_grid().cursor.shape,
+            term.configured_cursor_shape
+        );
+        assert!(!term.active_grid().cursor.visible);
     }
 }

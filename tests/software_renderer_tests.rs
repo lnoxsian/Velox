@@ -2195,3 +2195,107 @@ fn test_renderer_scrollback_row_wider_than_pane() {
         None,
     );
 }
+
+#[test]
+fn test_software_renderer_hidden_cursor_with_decscusr_menu_navigation() {
+    use velox::renderer::CpuRenderer;
+    use velox::screen::cursor::CursorShape;
+    use velox::terminal::terminal::Terminal;
+
+    let mut term = Terminal::new(80, 24);
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.5, &term.theme, 800, 600, true, 1.0);
+    let mut target = vec![0u32; 800 * 600];
+    let cell_w = renderer.glyph_cache.cell_width;
+    let cell_h = renderer.glyph_cache.cell_height;
+
+    // Simulate gh cs ssh / fzf startup: enter alternate screen, hide cursor, set block shape
+    term.feed(b"\x1b[?1049h\x1b[?25l\x1b[2 q");
+    assert!(term.is_alt_screen);
+    assert_eq!(term.active_grid().cursor.shape, CursorShape::Block);
+    assert!(!term.active_grid().cursor.visible);
+
+    // Write a menu item
+    term.feed(b"> Item 1: codespace-alpha\r\n  Item 2: codespace-beta");
+
+    // Calculate cursor visibility as in App::prepare_pane_render_data
+    let is_active = true;
+    let offset = term.active_grid().scroll_offset;
+    let cursor_blink_enabled = true;
+    let cursor_blink_on = true;
+    let cursor_visible = is_active
+        && offset == 0
+        && term.active_grid().cursor.visible
+        && (!cursor_blink_enabled || cursor_blink_on);
+    assert!(
+        !cursor_visible,
+        "Cursor must not be visible when DECTCEM is reset"
+    );
+
+    renderer.render(
+        &term.active_grid().cells,
+        term.active_grid(),
+        &term.theme,
+        0.0,
+        0.0,
+        cursor_visible,
+        term.active_grid().cursor.shape,
+        term.active_grid().cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    term.active_grid_mut().clear_damage();
+
+    // Verify cursor color is NOT drawn at cursor position (x=24, y=1)
+    let cur_x = term.active_grid().cursor.x as u32;
+    let cur_y = term.active_grid().cursor.y as u32;
+    let cur_px = cur_x * cell_w + cell_w / 2;
+    let cur_py = cur_y * cell_h + cell_h / 2;
+    let pixel = target[(cur_py as usize) * 800 + (cur_px as usize)];
+    let cursor_color = velox::renderer::color::PackedColor::from_color(
+        term.theme.resolve_cursor_color(term.theme.default_fg),
+    )
+    .to_u32();
+    assert_ne!(
+        pixel, cursor_color,
+        "Cursor color must NOT be rendered when cursor is hidden"
+    );
+
+    // Simulate arrow down to move selection: cursor moves to row 1, col 0 and re-emits CSI 2 q
+    term.feed(b"\x1b[2;1H\x1b[2 q");
+    assert_eq!(term.active_grid().cursor.y, 1);
+    assert_eq!(term.active_grid().cursor.x, 0);
+    assert!(
+        !term.active_grid().cursor.visible,
+        "DECSCUSR must not show cursor"
+    );
+
+    let cursor_visible = is_active
+        && offset == 0
+        && term.active_grid().cursor.visible
+        && (!cursor_blink_enabled || cursor_blink_on);
+
+    renderer.render(
+        &term.active_grid().cells,
+        term.active_grid(),
+        &term.theme,
+        0.0,
+        0.0,
+        cursor_visible,
+        term.active_grid().cursor.shape,
+        term.active_grid().cursor.x,
+        true,
+        1.0,
+        &mut target,
+    );
+    term.active_grid_mut().clear_damage();
+
+    // Sample at new cursor position (0, 1): text is ' ' or default_bg, NOT cursor color
+    let new_px = 2;
+    let new_py = cell_h + 2;
+    let new_pixel = target[(new_py as usize) * 800 + (new_px as usize)];
+    assert_ne!(
+        new_pixel, cursor_color,
+        "Cursor color must NOT be rendered at new cursor position when cursor is hidden"
+    );
+}
