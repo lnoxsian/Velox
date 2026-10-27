@@ -1294,7 +1294,8 @@ impl App {
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
         let hide_mouse_on_typing = config.hide_mouse_on_typing().unwrap_or(true);
-        let fps_limit = config.fps_limit().or(Some(60));
+        let detected_refresh_rate = window.detect_refresh_rate();
+        let fps_limit = config.fps_limit().or(detected_refresh_rate).or(Some(120));
 
         let font_size = config.font_size();
         let padding_x = config.pane_padding_x().unwrap_or(8.0);
@@ -1895,7 +1896,7 @@ impl App {
                 }
                 None => {
                     if self.windows.iter().any(|(_, w)| w.needs_redraw) {
-                        8
+                        0
                     } else {
                         -1
                     }

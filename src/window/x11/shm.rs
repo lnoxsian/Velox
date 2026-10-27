@@ -11,11 +11,12 @@ pub struct X11Framebuffer {
     pub width: u32,
     pub height: u32,
     pub depth: u8,
-    shm_seg: Option<shm::Seg>,
-    shm_id: i32,
-    shm_addr: *mut u32,
+    pub(crate) shm_seg: Option<shm::Seg>,
+    pub(crate) shm_id: i32,
+    pub(crate) shm_addr: *mut u32,
+    pub(crate) shm_capacity_bytes: usize,
     pub buffer: Vec<u32>,
-    has_shm: bool,
+    pub(crate) has_shm: bool,
 }
 
 impl X11Framebuffer {
@@ -33,6 +34,7 @@ impl X11Framebuffer {
             shm_seg: None,
             shm_id: -1,
             shm_addr: ptr::null_mut(),
+            shm_capacity_bytes: 0,
             buffer: Vec::new(),
             has_shm,
         };
@@ -47,15 +49,27 @@ impl X11Framebuffer {
             return;
         }
 
+        let num_pixels = (w as usize)
+            .checked_mul(h as usize)
+            .expect("X11 dimensions too large");
+        let num_bytes = num_pixels * 4;
+
+        // If existing SHM segment is large enough, retain it! Zero SysV calls, zero X11 roundtrips!
+        if self.has_shm && self.shm_seg.is_some() && num_bytes <= self.shm_capacity_bytes {
+            self.width = w;
+            self.height = h;
+            return;
+        }
+
         self.cleanup_shm(conn);
         self.width = w;
         self.height = h;
-        let num_pixels = (w * h) as usize;
-        let num_bytes = num_pixels * 4;
 
         if self.has_shm {
+            // Allocate with 25% extra headroom to avoid reallocating on small growths during drag
+            let alloc_bytes = (num_bytes * 5 / 4).max(num_bytes);
             unsafe {
-                let shm_id = libc::shmget(libc::IPC_PRIVATE, num_bytes, libc::IPC_CREAT | 0o600);
+                let shm_id = libc::shmget(libc::IPC_PRIVATE, alloc_bytes, libc::IPC_CREAT | 0o600);
                 if shm_id >= 0 {
                     let addr = libc::shmat(shm_id, ptr::null(), 0);
                     if addr != (-1isize as *mut libc::c_void) {
@@ -65,6 +79,7 @@ impl X11Framebuffer {
                             self.shm_seg = Some(seg);
                             self.shm_id = shm_id;
                             self.shm_addr = addr as *mut u32;
+                            self.shm_capacity_bytes = alloc_bytes;
                             return;
                         }
                         libc::shmdt(addr);
@@ -75,6 +90,7 @@ impl X11Framebuffer {
         }
 
         // Fallback to heap buffer
+        self.shm_capacity_bytes = 0;
         self.buffer.resize(num_pixels, 0);
     }
 
@@ -176,6 +192,7 @@ impl X11Framebuffer {
             }
             self.shm_id = -1;
         }
+        self.shm_capacity_bytes = 0;
     }
 }
 

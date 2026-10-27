@@ -123,6 +123,14 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn detect_refresh_rate(&self) -> Option<u32> {
+        match self {
+            Self::X11(w) => w.detect_display_refresh_rate(),
+            Self::Wayland(_) | Self::Dummy { .. } => None,
+        }
+    }
+
+    #[inline]
     pub fn set_title(&self, title: &str) {
         match self {
             Self::X11(w) => w.set_title(title),

@@ -676,6 +676,31 @@ impl X11Window {
             damaged_y,
             damaged_h,
         );
+        let _ = self.conn.flush();
+    }
+
+    #[inline]
+    pub fn detect_display_refresh_rate(&self) -> Option<u32> {
+        use x11rb::protocol::randr::ConnectionExt as _;
+        let screen = self.conn.setup().roots.first()?;
+        let cookie = self
+            .conn
+            .randr_get_screen_resources_current(screen.root)
+            .ok()?;
+        let reply = cookie.reply().ok()?;
+        for mode in &reply.modes {
+            if mode.width == screen.width_in_pixels && mode.height == screen.height_in_pixels {
+                let htotal = mode.htotal;
+                let vtotal = mode.vtotal;
+                if htotal > 0 && vtotal > 0 {
+                    let rate = (mode.dot_clock as f64) / ((htotal as f64) * (vtotal as f64));
+                    if rate > 30.0 && rate < 1000.0 {
+                        return Some(rate.round() as u32);
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[inline]
@@ -1012,6 +1037,36 @@ impl Drop for X11Window {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_x11_framebuffer_capacity_retention_across_resizes() {
+        if let Ok(mut win) = X11Window::new("Velox SHM Retention Test", 400, 300, None) {
+            let initial_seg = win.fb.shm_seg;
+            let initial_cap = win.fb.shm_capacity_bytes;
+            assert!(initial_cap >= 400 * 300 * 4);
+
+            // Downward resize should NOT deallocate or re-create SHM segment!
+            win.fb.resize(&win.conn, 350, 250);
+            assert_eq!(win.fb.shm_seg, initial_seg);
+            assert_eq!(win.fb.shm_capacity_bytes, initial_cap);
+
+            // Upward resize within the 25% headroom should ALSO retain SHM segment!
+            win.fb.resize(&win.conn, 410, 310);
+            assert_eq!(win.fb.shm_seg, initial_seg);
+            assert_eq!(win.fb.shm_capacity_bytes, initial_cap);
+        }
+    }
+
+    #[test]
+    fn test_x11_detect_display_refresh_rate() {
+        if let Ok(win) = X11Window::new("Velox Refresh Test", 300, 200, None) {
+            let rate = win.detect_display_refresh_rate();
+            println!("Detected display refresh rate: {:?}", rate);
+            if let Some(r) = rate {
+                assert!(r >= 30 && r <= 360);
+            }
+        }
+    }
 
     #[test]
     fn test_x11_32bit_visual_detection() {
