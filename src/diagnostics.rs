@@ -3,7 +3,7 @@ use crate::platform::{self, CANONICAL_APP_ID};
 use std::path::PathBuf;
 
 /// Diagnostic information about the host environment, display, and rendering setup.
-pub fn run_diagnostics(config: &Config) {
+pub fn run_diagnostics(_config: &Config) {
     println!("================================================================================");
     println!("                           Velox System Diagnostics                             ");
     println!("================================================================================");
@@ -36,43 +36,20 @@ pub fn run_diagnostics(config: &Config) {
     let env_backend = platform::detect_backend_from_env();
     println!("  Environment Hint:   {}", env_backend);
 
-    println!("\n[Renderer Configuration]");
-    let requested_backend = config.renderer_backend();
-    let legacy_gpu = config.gpu_acceleration();
+    println!("\n[Renderer Architecture]");
+    println!("  Rendering Pipeline: Pure CPU Software Renderer");
+    println!("  Framebuffer:        CPU-owned 32-bit linear memory buffer (0x00RRGGBB)");
     println!(
-        "  Requested Backend:  {:?} (gpu_acceleration = {:?})",
-        requested_backend, legacy_gpu
+        "  Presentation:       Pure-Rust Native Shared Memory Display (X11 MIT-SHM / Wayland wl_shm)"
     );
-    println!("  Target GL Profile:  OpenGL 3.3 Core (EGL preferred)");
 
-    // Test OpenGL availability via headless event loop / probe
-    print!("  OpenGL Probe:       ");
-    match crate::renderer::backend::probe_opengl() {
-        Ok(gl_info) => {
-            if gl_info.is_software_rasterizer() {
-                println!("Available (Software Rasterizer - CPU fallback)");
-            } else {
-                println!("Available (Hardware Accelerated)");
-            }
-            println!("  GL Vendor:          {}", gl_info.vendor);
-            println!("  GL Renderer:        {}", gl_info.renderer);
-            println!("  GL Version:         {}", gl_info.version);
-            println!("  GLSL Version:       {}", gl_info.glsl_version);
-            if requested_backend == crate::config::config::RendererBackendConfig::Auto
-                && gl_info.is_software_rasterizer()
-            {
-                println!(
-                    "  Effective Backend:  Software (auto-selected: native CPU softbuffer renderer avoids software rasterizer overhead)"
-                );
-            }
-        }
-        Err(err) => {
-            println!("Failed ({})", err);
-            println!(
-                "  Softbuffer Fallback:Ready (CPU Software renderer will be used in auto mode)"
-            );
-        }
-    }
+    println!("\n[PTY & Thread Architecture]");
+    println!("  PTY I/O Architecture: Shared Epoll Reactor (1 persistent thread for all panes)");
+    println!(
+        "  Persistent Threads:   2 (main event/render thread + shared PTY reactor; 3 with IPC enabled)"
+    );
+
+    println!("\n{}", format_terminal_diagnostics().trim_end());
 
     println!("\n[Desktop & Icon Integration]");
     println!("  Canonical App ID:   {}", CANONICAL_APP_ID);
@@ -109,6 +86,21 @@ pub fn run_diagnostics(config: &Config) {
 
     let ipc_socket = crate::ipc::socket_path();
     println!("  IPC Socket Path:    {}", ipc_socket.display());
+
+    println!("\n[Font System]");
+    println!("  Configured Family:  {}", _config.font_family());
+    println!("  Configured Size:    {} pt", _config.font_size());
+    let db = crate::font::fallback::get_system_font_db();
+    let total_faces = db.faces().count();
+    println!("  System Font Faces:  {}", total_faces);
+    match crate::font::resolved::resolve_regular_font(db, _config.font_family()) {
+        Ok((_, _, resolved_family)) => {
+            println!("  Resolved Face:      {}", resolved_family);
+        }
+        Err(e) => {
+            println!("  Resolved Face:      Failed ({})", e);
+        }
+    }
 
     println!("================================================================================");
 }
@@ -154,5 +146,243 @@ fn check_hicolor_status() -> String {
         )
     } else {
         "Not installed (run 'make install-icons' or 'make install' to install)".to_string()
+    }
+}
+
+/// Collects and formats non-invasive diagnostic information about the terminal environment and TTY state.
+///
+/// This reports only standard terminal and capability variables without logging secrets or
+/// dumping the complete process environment.
+pub fn format_terminal_diagnostics() -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "[Terminal Environment & TTY]");
+
+    let term = std::env::var("TERM").unwrap_or_else(|_| "not set".to_string());
+    let colorterm = std::env::var("COLORTERM").unwrap_or_else(|_| "not set".to_string());
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "not set".to_string());
+    let path = std::env::var("PATH").unwrap_or_else(|_| "not set".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "not set".to_string());
+    let lang = std::env::var("LANG").unwrap_or_else(|_| "not set".to_string());
+    let lc_all = std::env::var("LC_ALL").unwrap_or_else(|_| "not set".to_string());
+    let lc_ctype = std::env::var("LC_CTYPE").unwrap_or_else(|_| "not set".to_string());
+
+    let stdin_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
+    let stdout_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 };
+    let tty_status = format!(
+        "stdin: {}, stdout: {}",
+        if stdin_tty { "tty" } else { "not a tty" },
+        if stdout_tty { "tty" } else { "not a tty" }
+    );
+
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let stty_size = if unsafe {
+        libc::ioctl(
+            libc::STDOUT_FILENO,
+            libc::TIOCGWINSZ,
+            &mut ws as *mut libc::winsize,
+        )
+    } == 0
+        && ws.ws_col > 0
+        && ws.ws_row > 0
+    {
+        format!("{} rows, {} cols", ws.ws_row, ws.ws_col)
+    } else {
+        "unknown (not a tty or window size unavailable)".to_string()
+    };
+
+    let _ = writeln!(out, "  TERM:               {}", term);
+    let _ = writeln!(out, "  COLORTERM:          {}", colorterm);
+    let _ = writeln!(out, "  SHELL:              {}", shell);
+    let _ = writeln!(out, "  PATH:               {}", path);
+    let _ = writeln!(out, "  HOME:               {}", home);
+    let _ = writeln!(out, "  LANG:               {}", lang);
+    let _ = writeln!(out, "  LC_ALL:             {}", lc_all);
+    let _ = writeln!(out, "  LC_CTYPE:           {}", lc_ctype);
+    let _ = writeln!(out, "  tty status:         {}", tty_status);
+    let _ = writeln!(out, "  stty size:          {}", stty_size);
+
+    out
+}
+
+pub fn print_terminal_diagnostics() {
+    print!("{}", format_terminal_diagnostics());
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Lightweight instrumentation counters for tracking interactive resize performance.
+pub struct ResizeStats;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResizeStatsSnapshot {
+    pub pixel_resize_events: usize,
+    pub applied_viewport_resizes: usize,
+    pub terminal_resize_calls: usize,
+    pub normal_grid_reflows: usize,
+    pub alternate_grid_reflows: usize,
+    pub pty_resize_calls: usize,
+    pub framebuffer_resize_calls: usize,
+    pub framebuffer_growth_events: usize,
+    pub framebuffer_shrink_events: usize,
+    pub pane_state_clears: usize,
+    pub pane_state_invalidations: usize,
+    pub full_redraws: usize,
+    pub frames_rendered: usize,
+}
+
+static PIXEL_RESIZE_EVENTS: AtomicUsize = AtomicUsize::new(0);
+static APPLIED_VIEWPORT_RESIZES: AtomicUsize = AtomicUsize::new(0);
+static TERMINAL_RESIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static NORMAL_GRID_REFLOWS: AtomicUsize = AtomicUsize::new(0);
+static ALTERNATE_GRID_REFLOWS: AtomicUsize = AtomicUsize::new(0);
+static PTY_RESIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static FRAMEBUFFER_RESIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static FRAMEBUFFER_GROWTH_EVENTS: AtomicUsize = AtomicUsize::new(0);
+static FRAMEBUFFER_SHRINK_EVENTS: AtomicUsize = AtomicUsize::new(0);
+static PANE_STATE_CLEARS: AtomicUsize = AtomicUsize::new(0);
+static PANE_STATE_INVALIDATIONS: AtomicUsize = AtomicUsize::new(0);
+static FULL_REDRAWS: AtomicUsize = AtomicUsize::new(0);
+static FRAMES_RENDERED: AtomicUsize = AtomicUsize::new(0);
+
+impl ResizeStats {
+    #[inline(always)]
+    pub fn record_pixel_resize() {
+        PIXEL_RESIZE_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_applied_viewport_resize() {
+        APPLIED_VIEWPORT_RESIZES.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_terminal_resize() {
+        TERMINAL_RESIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_normal_grid_reflow() {
+        NORMAL_GRID_REFLOWS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_alternate_grid_reflow() {
+        ALTERNATE_GRID_REFLOWS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_pty_resize() {
+        PTY_RESIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_framebuffer_resize() {
+        FRAMEBUFFER_RESIZE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_framebuffer_growth() {
+        FRAMEBUFFER_GROWTH_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_framebuffer_shrink() {
+        FRAMEBUFFER_SHRINK_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_pane_state_clear() {
+        PANE_STATE_CLEARS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_pane_state_invalidation() {
+        PANE_STATE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_full_redraw() {
+        FULL_REDRAWS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline(always)]
+    pub fn record_frame_rendered() {
+        FRAMES_RENDERED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn reset() {
+        PIXEL_RESIZE_EVENTS.store(0, Ordering::Relaxed);
+        APPLIED_VIEWPORT_RESIZES.store(0, Ordering::Relaxed);
+        TERMINAL_RESIZE_CALLS.store(0, Ordering::Relaxed);
+        NORMAL_GRID_REFLOWS.store(0, Ordering::Relaxed);
+        ALTERNATE_GRID_REFLOWS.store(0, Ordering::Relaxed);
+        PTY_RESIZE_CALLS.store(0, Ordering::Relaxed);
+        FRAMEBUFFER_RESIZE_CALLS.store(0, Ordering::Relaxed);
+        FRAMEBUFFER_GROWTH_EVENTS.store(0, Ordering::Relaxed);
+        FRAMEBUFFER_SHRINK_EVENTS.store(0, Ordering::Relaxed);
+        PANE_STATE_CLEARS.store(0, Ordering::Relaxed);
+        PANE_STATE_INVALIDATIONS.store(0, Ordering::Relaxed);
+        FULL_REDRAWS.store(0, Ordering::Relaxed);
+        FRAMES_RENDERED.store(0, Ordering::Relaxed);
+    }
+
+    pub fn get() -> ResizeStatsSnapshot {
+        ResizeStatsSnapshot {
+            pixel_resize_events: PIXEL_RESIZE_EVENTS.load(Ordering::Relaxed),
+            applied_viewport_resizes: APPLIED_VIEWPORT_RESIZES.load(Ordering::Relaxed),
+            terminal_resize_calls: TERMINAL_RESIZE_CALLS.load(Ordering::Relaxed),
+            normal_grid_reflows: NORMAL_GRID_REFLOWS.load(Ordering::Relaxed),
+            alternate_grid_reflows: ALTERNATE_GRID_REFLOWS.load(Ordering::Relaxed),
+            pty_resize_calls: PTY_RESIZE_CALLS.load(Ordering::Relaxed),
+            framebuffer_resize_calls: FRAMEBUFFER_RESIZE_CALLS.load(Ordering::Relaxed),
+            framebuffer_growth_events: FRAMEBUFFER_GROWTH_EVENTS.load(Ordering::Relaxed),
+            framebuffer_shrink_events: FRAMEBUFFER_SHRINK_EVENTS.load(Ordering::Relaxed),
+            pane_state_clears: PANE_STATE_CLEARS.load(Ordering::Relaxed),
+            pane_state_invalidations: PANE_STATE_INVALIDATIONS.load(Ordering::Relaxed),
+            full_redraws: FULL_REDRAWS.load(Ordering::Relaxed),
+            frames_rendered: FRAMES_RENDERED.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn summary() -> String {
+        let s = Self::get();
+        format!(
+            "resize stats:\n  pixel events: {}\n  viewport resizes: {}\n  terminal resizes: {}\n  normal reflows: {}\n  alternate reflows: {}\n  pty resizes: {}\n  framebuffer resize calls: {}\n  framebuffer growth events: {}\n  framebuffer shrink events: {}\n  pane-state clears: {}\n  pane-state invalidations: {}\n  full redraws: {}\n  frames rendered: {}",
+            s.pixel_resize_events,
+            s.applied_viewport_resizes,
+            s.terminal_resize_calls,
+            s.normal_grid_reflows,
+            s.alternate_grid_reflows,
+            s.pty_resize_calls,
+            s.framebuffer_resize_calls,
+            s.framebuffer_growth_events,
+            s.framebuffer_shrink_events,
+            s.pane_state_clears,
+            s.pane_state_invalidations,
+            s.full_redraws,
+            s.frames_rendered,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_terminal_diagnostics() {
+        let diag = format_terminal_diagnostics();
+        assert!(diag.contains("[Terminal Environment & TTY]"));
+        assert!(diag.contains("TERM:"));
+        assert!(diag.contains("COLORTERM:"));
+        assert!(diag.contains("SHELL:"));
+        assert!(diag.contains("PATH:"));
+        assert!(diag.contains("HOME:"));
+        assert!(diag.contains("LANG:"));
+        assert!(diag.contains("LC_ALL:"));
+        assert!(diag.contains("LC_CTYPE:"));
+        assert!(diag.contains("tty status:"));
+        assert!(diag.contains("stty size:"));
     }
 }

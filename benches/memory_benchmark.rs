@@ -1,7 +1,7 @@
 use std::fs;
 use std::time::Instant;
 use velox::font::fallback::FallbackManager;
-use velox::renderer::software::glyph::{GlyphCache, GlyphKey};
+use velox::renderer::glyph::{GlyphCache, GlyphKey};
 use velox::screen::cell::{Cell, Color};
 use velox::screen::grid::Grid;
 use velox::screen::scrollback::{Chunk, Row, Scrollback};

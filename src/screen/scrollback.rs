@@ -164,7 +164,7 @@ impl GlobalScrollbackCache {
                 .enumerate()
                 .min_by_key(|(_, c)| c.access_tick)
         {
-            self.chunks.remove(oldest_idx);
+            self.chunks.swap_remove(oldest_idx);
         }
         self.chunks.push(GlobalCachedChunk {
             storage_id,
@@ -181,6 +181,11 @@ impl GlobalScrollbackCache {
     pub fn current_cached_chunks(&self) -> usize {
         self.chunks.len()
     }
+
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.chunks.shrink_to_fit();
+    }
 }
 
 static GLOBAL_SCROLLBACK_CACHE: OnceLock<Mutex<GlobalScrollbackCache>> = OnceLock::new();
@@ -191,6 +196,14 @@ pub fn get_global_scrollback_cache() -> &'static Mutex<GlobalScrollbackCache> {
             GLOBAL_SCROLLBACK_CACHE_MAX_CHUNKS,
         ))
     })
+}
+
+pub fn clear_global_scrollback_cache() {
+    if let Some(mutex) = GLOBAL_SCROLLBACK_CACHE.get()
+        && let Ok(mut cache) = mutex.lock()
+    {
+        cache.clear();
+    }
 }
 
 pub struct ScrollbackStorage {
@@ -227,6 +240,21 @@ impl ScrollbackStorage {
             read_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
             total_disk_lines: 0,
         })
+    }
+
+    pub fn trim_memory(&self) {
+        if let Ok(mut cache) = self.local_cache.try_borrow_mut() {
+            cache.clear();
+            cache.shrink_to_fit();
+        }
+        if let Ok(mut buf) = self.serialize_buf.try_borrow_mut() {
+            buf.clear();
+            buf.shrink_to_fit();
+        }
+        if let Ok(mut buf) = self.read_buf.try_borrow_mut() {
+            buf.clear();
+            buf.shrink_to_fit();
+        }
     }
 
     fn flush_pending_chunk(&mut self) {
@@ -296,7 +324,7 @@ impl ScrollbackStorage {
                 && let Some((oldest_idx, _)) =
                     cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
             {
-                cache.remove(oldest_idx);
+                cache.swap_remove(oldest_idx);
             }
             cache.push(CachedChunk {
                 chunk_id: chunk_idx,
@@ -333,7 +361,7 @@ impl ScrollbackStorage {
             && let Some((oldest_idx, _)) =
                 cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
         {
-            cache.remove(oldest_idx);
+            cache.swap_remove(oldest_idx);
         }
         cache.push(CachedChunk {
             chunk_id: chunk_idx,
@@ -352,22 +380,21 @@ impl ScrollbackStorage {
 
 #[inline(always)]
 pub fn trim_trailing_blank_cells(cells: &[Cell], default_bg: Option<Color>) -> &[Cell] {
-    let pos = match default_bg {
-        Some(bg) => cells.iter().rposition(|c| {
-            c.character != ' '
-                || !c.flags.is_empty()
-                || c.underline_color.is_some()
-                || c.background != bg
-        }),
-        None => cells.iter().rposition(|c| {
-            c.character != ' ' || !c.flags.is_empty() || c.underline_color.is_some()
-        }),
-    };
-    if let Some(pos) = pos {
-        &cells[..pos + 1]
+    let mut len = cells.len();
+    if let Some(bg) = default_bg {
+        while len > 0 && cells[len - 1].is_blank_with_bg(bg) {
+            len -= 1;
+        }
     } else {
-        &[]
+        while len > 0
+            && cells[len - 1].character == ' '
+            && cells[len - 1].flags.is_empty()
+            && cells[len - 1].underline_color.is_none()
+        {
+            len -= 1;
+        }
     }
+    &cells[..len]
 }
 
 pub struct Scrollback {
@@ -391,6 +418,14 @@ impl Scrollback {
                 None
             },
         }
+    }
+
+    /// Releases local cache entries and shrinks memory capacity.
+    pub fn trim_memory(&mut self) {
+        if let Some(storage) = self.storage.as_mut() {
+            storage.trim_memory();
+        }
+        self.hot_rows.shrink_to_fit();
     }
 
     pub fn push_line(&mut self, cells: &[Cell], wrapped: bool) {

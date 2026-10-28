@@ -1,13 +1,24 @@
-use velox::app::app::{App, CustomEvent};
+use velox::app::app::App;
 use velox::cli::CliOptions;
 use velox::config;
 use velox::ipc;
-use winit::event_loop::EventLoop;
 
 fn main() {
     env_logger::init();
 
     let mut cli_opts = CliOptions::parse();
+
+    if let Some(ref b) = cli_opts.backend {
+        // SAFETY: Single-threaded process start before any threads or event loops are spawned.
+        unsafe {
+            std::env::set_var("VELOX_BACKEND", b);
+        }
+    }
+
+    if cli_opts.banner {
+        CliOptions::print_banner();
+        return;
+    }
 
     if cli_opts.help {
         CliOptions::print_help();
@@ -20,7 +31,14 @@ fn main() {
     }
 
     // Load user configuration
-    let config = config::loader::load().unwrap_or_else(|_| config::defaults::default_config());
+    let config = match config::loader::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Warning: Failed to load configuration file: {}", e);
+            eprintln!("Falling back to default configuration.\n");
+            config::defaults::default_config()
+        }
+    };
 
     if cli_opts.diagnostics {
         velox::diagnostics::run_diagnostics(&config);
@@ -30,8 +48,12 @@ fn main() {
     let single_instance = cli_opts.single_instance || config.single_instance.unwrap_or(true);
 
     if single_instance || cli_opts.is_msg_create_window {
+        let cwd = cli_opts
+            .working_directory
+            .clone()
+            .or_else(|| config.working_directory());
         let ipc_msg = ipc::IpcMessage::CreateWindow {
-            working_directory: cli_opts.working_directory.clone(),
+            working_directory: cwd,
             command: cli_opts.command.clone(),
             title: cli_opts.title.clone(),
             hold: Some(cli_opts.hold),
@@ -50,12 +72,22 @@ fn main() {
 
     cli_opts.single_instance = single_instance;
 
-    if !config.gpu_acceleration().unwrap_or(true) {
-        log::info!("GPU acceleration disabled. Using native CPU software renderer via softbuffer.");
-    }
+    log::info!(
+        "Initialized Velox with native pure-Rust zero-C-libraries display backend and CPU software renderer."
+    );
 
-    let event_loop = EventLoop::<CustomEvent>::with_user_event().build().unwrap();
-    let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy, cli_opts);
-    event_loop.run_app(&mut app).unwrap();
+    let mut app = match App::new(cli_opts) {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("Error: Failed to initialize display backend: {}", e);
+            eprintln!(
+                "Note: Velox requires a running graphical session (Wayland or X11).\nEnsure WAYLAND_DISPLAY or DISPLAY is set in your environment."
+            );
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = app.run() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
 }

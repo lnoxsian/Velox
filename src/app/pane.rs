@@ -1,5 +1,4 @@
 use crate::pty::master::PtyMaster;
-use crate::renderer::state::PaneRenderState;
 use crate::terminal::terminal::Terminal;
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,7 +10,6 @@ pub struct Pane {
     pub pty_master: Arc<PtyMaster>,
     pub terminal: Terminal,
     pub font_size: f32,
-    pub render_state: PaneRenderState,
     pub custom_title: Option<String>,
     pub current_title: String,
     pub last_title_check: Instant,
@@ -34,7 +32,6 @@ impl Pane {
             pty_master,
             terminal,
             font_size,
-            render_state: PaneRenderState::new(),
             custom_title: None,
             current_title: "velox".to_string(),
             last_title_check: now,
@@ -59,7 +56,6 @@ impl Pane {
             pty_master,
             terminal,
             font_size,
-            render_state: PaneRenderState::new(),
             custom_title,
             current_title: initial_title,
             last_title_check: now,
@@ -76,7 +72,6 @@ impl Pane {
             pty_master: Arc::new(PtyMaster::dummy()),
             terminal: Terminal::new(1, 1),
             font_size: 14.0,
-            render_state: PaneRenderState::new(),
             custom_title: None,
             current_title: String::new(),
             last_title_check: now,
@@ -126,5 +121,32 @@ impl Pane {
         }
 
         false
+    }
+
+    /// Returns the current working directory of the process running in this pane.
+    /// Checks OS /proc status first, falling back to OSC 7 shell integration.
+    pub fn current_working_directory(&self) -> Option<String> {
+        if let Some(cwd) = self.pty_master.get_foreground_process_cwd() {
+            return Some(cwd);
+        }
+        if let Some(ref cwd) = self.terminal.current_dir {
+            if std::path::Path::new(cwd).is_dir() {
+                return Some(cwd.clone());
+            }
+        }
+        None
+    }
+
+    /// Flushes any pending terminal response bytes directly to the PTY master process.
+    /// Trims excessive vector capacity if needed.
+    #[inline]
+    pub fn flush_outgoing(&mut self) {
+        if !self.terminal.outgoing.is_empty() {
+            let _ = self.pty_master.write(&self.terminal.outgoing);
+            self.terminal.outgoing.clear();
+            if self.terminal.outgoing.capacity() > 4096 {
+                self.terminal.outgoing.shrink_to_fit();
+            }
+        }
     }
 }

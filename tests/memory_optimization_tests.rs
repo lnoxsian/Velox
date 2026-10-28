@@ -1,6 +1,6 @@
 use velox::font::fallback::{FallbackManager, MAX_FALLBACK_BYTES, MAX_FALLBACK_FONTS};
-use velox::renderer::software::atlas::DEFAULT_ALPHA_CAPACITY;
-use velox::renderer::software::glyph::{GlyphCache, GlyphKey, GlyphScratch};
+use velox::renderer::atlas::DEFAULT_ALPHA_CAPACITY;
+use velox::renderer::glyph::{GlyphCache, GlyphKey, GlyphScratch};
 use velox::screen::cell::{Cell, CellFlags, Color};
 use velox::screen::scrollback::Chunk;
 
@@ -168,8 +168,7 @@ fn test_multicycle_unicode_memory_stability() {
     assert_eq!(cycle_atlas_capacities[1], cycle_atlas_capacities[2]);
     assert!(
         cycle_atlas_capacities[2]
-            <= DEFAULT_ALPHA_CAPACITY
-                + (velox::renderer::software::atlas::DEFAULT_COLOR_CAPACITY * 4)
+            <= DEFAULT_ALPHA_CAPACITY + (velox::renderer::atlas::DEFAULT_COLOR_CAPACITY * 4)
     );
 }
 
@@ -186,30 +185,6 @@ fn test_combining_registry_bounded_capacity() {
     let registry = velox::screen::grid::get_combining_registry();
     assert!(registry.lock().is_ok());
     assert_eq!(velox::screen::grid::MAX_COMBINING_SEQUENCES, 4096);
-}
-
-#[test]
-fn test_pane_render_state_damage_and_caching() {
-    let mut state = velox::renderer::state::PaneRenderState::new();
-    assert!(state.dirty);
-    assert!(state.full_redraw);
-
-    state.ensure_rows(24);
-    assert_eq!(state.row_cache.len(), 24);
-
-    state.clear_damage();
-    assert!(!state.dirty);
-    assert!(!state.full_redraw);
-    assert!(!state.dirty_rows.any_dirty());
-
-    state.mark_row_dirty(5);
-    assert!(state.dirty);
-    assert!(state.dirty_rows.is_dirty(5));
-    assert!(!state.dirty_rows.is_dirty(6));
-    assert!(!state.row_cache[5].valid);
-
-    state.release_memory();
-    assert!(state.full_redraw);
 }
 
 #[test]
@@ -245,4 +220,93 @@ fn test_global_scrollback_cache_lru_eviction() {
     assert!(lock.get(storage_id, 0).is_some());
     lock.invalidate_storage(storage_id);
     assert!(lock.get(storage_id, 0).is_none());
+}
+
+#[test]
+fn test_fallback_unload_all_and_prune_idle() {
+    let mut manager = FallbackManager::new();
+    let _ = manager.find_fallback_for_char('\u{1f600}'); // emoji
+    let _ = manager.find_fallback_for_char('中'); // CJK
+
+    // Verify fallbacks were found or queried
+    assert!(manager.fallbacks.len() <= MAX_FALLBACK_FONTS);
+
+    // prune_idle with 0 duration should evict everything
+    let _evicted = manager.prune_idle(std::time::Duration::from_secs(0));
+    assert!(manager.fallbacks.is_empty());
+    assert_eq!(manager.resident_bytes, 0);
+
+    // Now re-query a character to reload
+    let _ = manager.find_fallback_for_char('\u{1f600}');
+    manager.unload_all();
+    assert!(manager.fallbacks.is_empty());
+    assert_eq!(manager.resident_bytes, 0);
+}
+
+#[test]
+fn test_global_scrollback_cache_clear() {
+    let global_cache = velox::screen::scrollback::get_global_scrollback_cache();
+    {
+        let mut lock = global_cache.lock().unwrap();
+        let chunk = Chunk::new();
+        lock.insert(1001, 0, chunk.clone());
+        lock.insert(1002, 0, chunk);
+        assert!(lock.get(1001, 0).is_some());
+    }
+
+    velox::screen::scrollback::clear_global_scrollback_cache();
+
+    {
+        let mut lock = global_cache.lock().unwrap();
+        assert!(lock.get(1001, 0).is_none());
+        assert!(lock.get(1002, 0).is_none());
+    }
+}
+
+#[test]
+fn test_emoji_renders_color_even_when_outline_font_loaded_first() {
+    let mut cache = GlyphCache::from_font_family("ComicShannsMono Nerd Font", 11.0, 1.5);
+    // Explicitly pre-load DejaVu Sans into fallbacks (which contains monochrome emoji outlines)
+    let db = velox::font::fallback::get_system_font_db();
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Name("DejaVu Sans")],
+        weight: fontdb::Weight::NORMAL,
+        stretch: fontdb::Stretch::Normal,
+        style: fontdb::Style::Normal,
+    };
+    if let Some(id) = db.query(&query)
+        && let Some(face) = db.face(id)
+        && let fontdb::Source::File(path) = &face.source
+    {
+        let storage =
+            std::sync::Arc::new(velox::font::storage::FontStorage::from_file(path).unwrap());
+        let font =
+            velox::font::storage::create_font_arc(std::sync::Arc::clone(&storage), face.index)
+                .unwrap();
+        cache
+            .fallback_manager
+            .fallbacks
+            .push(velox::font::fallback::FallbackFont {
+                font,
+                storage,
+                byte_size: 1000,
+                last_used: 1,
+                last_used_instant: std::time::Instant::now(),
+                path: path.clone(),
+                face_index: face.index,
+                has_color_png: true,
+                color_png_glyphs: ahash::AHashMap::new(),
+            });
+    }
+
+    for emoji in ['😀', '📦', '🦀', '🚀'] {
+        let g_ref = cache
+            .get_or_rasterize(GlyphKey::new(emoji, false, false, true))
+            .unwrap();
+        assert!(
+            g_ref.is_color,
+            "Emoji {} must be color bitmap, but was wireframe outline!",
+            emoji
+        );
+    }
 }

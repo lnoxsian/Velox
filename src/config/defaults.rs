@@ -1,6 +1,5 @@
 use crate::config::config::{
-    Config, ConfigColors, FontConfig, RendererBackendConfig, TabBarVisibility, TabsConfig,
-    WindowConfig,
+    Config, ConfigColors, FontConfig, TabBarVisibility, TabsConfig, WindowConfig,
 };
 
 pub fn default_config() -> Config {
@@ -14,10 +13,8 @@ pub fn default_config() -> Config {
         window: WindowConfig {
             scrollback_limit: Some(2000),
             infinite_scrollback: Some(true),
-            gpu_acceleration: Some(true),
-            renderer_backend: Some(RendererBackendConfig::Auto),
             scroll_multiplier: Some(5.0),
-            fps_limit: Some(120),
+            fps_limit: None,
             padding_x: Some(8.0),
             padding_y: Some(4.0),
             cursor_shape: Some("beam".to_string()),
@@ -28,7 +25,10 @@ pub fn default_config() -> Config {
             scroll_on_keystroke: Some(true),
             opacity: Some(1.0),
             window_dim: Some(0.0),
+            working_directory: None,
             hide_mouse_on_typing: Some(true),
+            csd_theme: None,
+            decorations: None,
         },
         tabs: TabsConfig {
             show_tab_bar: TabBarVisibility::Auto,

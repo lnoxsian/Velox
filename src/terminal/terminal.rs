@@ -19,6 +19,78 @@ pub struct PromptMark {
     pub exit_code: Option<i32>,
 }
 
+/// Compact zero-allocation bitfield for saving and restoring DEC private modes
+/// (CSI ? <mode> s / CSI ? <mode> r). Occupies only 8 bytes inline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SavedDecModes {
+    pub saved_mask: u32,
+    pub values_mask: u32,
+}
+
+impl SavedDecModes {
+    pub const fn new() -> Self {
+        Self {
+            saved_mask: 0,
+            values_mask: 0,
+        }
+    }
+
+    #[inline]
+    const fn mode_to_bit(mode: u16) -> Option<u8> {
+        match mode {
+            1 => Some(0),
+            5 => Some(1),
+            6 => Some(2),
+            7 => Some(3),
+            25 => Some(4),
+            66 => Some(5),
+            1000 => Some(6),
+            1002 => Some(7),
+            1003 => Some(8),
+            1004 => Some(9),
+            1005 => Some(10),
+            1006 => Some(11),
+            1016 => Some(12),
+            2004 => Some(13),
+            2026 => Some(14),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn insert(&mut self, mode: u16, val: bool) {
+        if let Some(bit) = Self::mode_to_bit(mode) {
+            self.saved_mask |= 1 << bit;
+            if val {
+                self.values_mask |= 1 << bit;
+            } else {
+                self.values_mask &= !(1 << bit);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn get(&self, mode: &u16) -> Option<bool> {
+        if let Some(bit) = Self::mode_to_bit(*mode) {
+            if (self.saved_mask & (1 << bit)) != 0 {
+                return Some((self.values_mask & (1 << bit)) != 0);
+            }
+        }
+        None
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.saved_mask = 0;
+        self.values_mask = 0;
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.saved_mask == 0
+    }
+}
+
 pub struct Terminal {
     pub grid: Grid,
     pub alt_grid: Grid,
@@ -30,8 +102,18 @@ pub struct Terminal {
     pub current_flags: CellFlags,
     pub outgoing: Vec<u8>,
     pub cursor_keys_mode: bool,
+    pub keypad_application_mode: bool,
+    pub reverse_video: bool,
+    pub origin_mode: bool,
+    pub auto_wrap: bool,
+    pub insert_mode: bool,
     pub mouse_mode: u16,
     pub mouse_sgr: bool,
+    pub mouse_utf8: bool,
+    pub mouse_pixel: bool,
+    pub saved_dec_modes: SavedDecModes,
+    pub main_saved_dec_modes: SavedDecModes,
+    pub alt_saved_dec_modes: SavedDecModes,
     pub g0_charset: u8,
     pub g1_charset: u8,
     pub active_charset: u8,
@@ -54,6 +136,9 @@ pub struct Terminal {
     pub cell_width_px: u32,
     pub cell_height_px: u32,
     pub title_stack: Vec<String>,
+    pub main_kitty_keyboard_flags: u16,
+    pub alt_kitty_keyboard_flags: u16,
+    pub alt_kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
     pub kitty_keyboard_flags: u16,
     pub kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
 }
@@ -115,8 +200,18 @@ impl Terminal {
             current_flags: CellFlags::empty(),
             outgoing: Vec::new(),
             cursor_keys_mode: false,
+            keypad_application_mode: false,
+            reverse_video: false,
+            origin_mode: false,
+            auto_wrap: true,
+            insert_mode: false,
             mouse_mode: 0,
             mouse_sgr: false,
+            mouse_utf8: false,
+            mouse_pixel: false,
+            saved_dec_modes: SavedDecModes::new(),
+            main_saved_dec_modes: SavedDecModes::new(),
+            alt_saved_dec_modes: SavedDecModes::new(),
             g0_charset: 0,
             g1_charset: 0,
             active_charset: 0,
@@ -139,6 +234,9 @@ impl Terminal {
             cell_width_px: 10,
             cell_height_px: 20,
             title_stack: Vec::new(),
+            main_kitty_keyboard_flags: 0,
+            alt_kitty_keyboard_flags: 0,
+            alt_kitty_keyboard_stack: smallvec::SmallVec::new(),
             kitty_keyboard_flags: 0,
             kitty_keyboard_stack: smallvec::SmallVec::new(),
         }
@@ -158,6 +256,16 @@ impl Terminal {
         while self.prompt_marks.len() > max_marks {
             self.prompt_marks.pop_front();
         }
+    }
+
+    /// Releases excessive heap capacities across outgoing buffers, ANSI parser, and scrollback.
+    pub fn release_memory(&mut self) {
+        if self.outgoing.capacity() > 1024 {
+            self.outgoing.shrink_to_fit();
+        }
+        self.parser.shrink_buffers();
+        self.grid.scrollback.trim_memory();
+        self.alt_grid.scrollback.trim_memory();
     }
 
     pub fn set_synchronized_output(&mut self, enabled: bool) {
@@ -185,11 +293,58 @@ impl Terminal {
     }
 
     pub fn format_paste(&self, text: &str) -> String {
-        if self.bracketed_paste_mode {
-            format!("\x1b[200~{}\x1b[201~", text)
-        } else {
-            text.to_string()
+        let bracketed = self.bracketed_paste_mode;
+        let mut out = String::with_capacity(text.len() + if bracketed { 16 } else { 0 });
+        if bracketed {
+            out.push_str("\x1b[200~");
         }
+        let bytes = text.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+        let mut slice_start = 0;
+
+        while i < len {
+            // Strip any nested bracketed paste closing markers for security
+            if bracketed && i + 6 <= len && &bytes[i..i + 6] == b"\x1b[201~" {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                i += 6;
+                slice_start = i;
+                continue;
+            }
+
+            let b = bytes[i];
+            if b == b'\r' {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                out.push('\r');
+                if i + 1 < len && bytes[i + 1] == b'\n' {
+                    i += 1;
+                }
+                i += 1;
+                slice_start = i;
+            } else if b == b'\n' {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                out.push('\r');
+                i += 1;
+                slice_start = i;
+            } else {
+                i += 1;
+            }
+        }
+
+        if slice_start < len {
+            out.push_str(&text[slice_start..]);
+        }
+
+        if bracketed {
+            out.push_str("\x1b[201~");
+        }
+        out
     }
 
     pub fn feed(&mut self, data: &[u8]) {
@@ -216,6 +371,16 @@ impl Terminal {
                     if charset == 0 {
                         let start = i;
                         i += 1;
+                        while i + 8 <= len {
+                            let chunk: [u8; 8] = data[i..i + 8].try_into().unwrap();
+                            let w = u64::from_ne_bytes(chunk);
+                            let has_less_than_20 = (w.wrapping_sub(0x2020_2020_2020_2020)) & !w;
+                            let has_high = w.wrapping_add(0x0101_0101_0101_0101) | w;
+                            if (has_less_than_20 | has_high) & 0x8080_8080_8080_8080 != 0 {
+                                break;
+                            }
+                            i += 8;
+                        }
                         while i < len && (0x20..=0x7e).contains(&data[i]) {
                             i += 1;
                         }
@@ -227,21 +392,13 @@ impl Terminal {
                         if let Some(&last_b) = ascii_slice.last() {
                             self.last_char = Some(last_b as char);
                         }
-                        let grid = if self.is_alt_screen {
-                            &mut self.alt_grid
-                        } else {
-                            &mut self.grid
-                        };
+                        let grid = self.active_grid_mut();
                         grid.put_ascii_slice(ascii_slice, fg, bg, uc, flags);
                         continue;
                     }
                 } else if byte == b'\r' {
                     let bg = self.current_bg;
-                    let grid = if self.is_alt_screen {
-                        &mut self.alt_grid
-                    } else {
-                        &mut self.grid
-                    };
+                    let grid = self.active_grid_mut();
                     grid.cursor.x = 0;
                     if i + 1 < len && data[i + 1] == b'\n' {
                         grid.scroll_or_move_down(bg);
@@ -252,17 +409,17 @@ impl Terminal {
                     continue;
                 } else if byte == b'\n' {
                     let bg = self.current_bg;
-                    let grid = if self.is_alt_screen {
-                        &mut self.alt_grid
-                    } else {
-                        &mut self.grid
-                    };
+                    let grid = self.active_grid_mut();
                     if grid.cursor.x == grid.width {
                         grid.cursor.x = 0;
                         grid.scroll_or_move_down(bg);
                     } else if grid.cursor.x == 0
                         && grid.cursor.y > 0
-                        && grid.row_wrapped[grid.physical_row(grid.cursor.y - 1)]
+                        && grid
+                            .row_wrapped
+                            .get(grid.physical_row(grid.cursor.y - 1))
+                            .copied()
+                            .unwrap_or(false)
                     {
                         let physical_y = grid.physical_row(grid.cursor.y);
                         let row_start = physical_y * grid.width;
@@ -283,7 +440,9 @@ impl Terminal {
                             });
                         if is_empty {
                             let prev_physical_y = grid.physical_row(grid.cursor.y - 1);
-                            grid.row_wrapped[prev_physical_y] = false;
+                            if prev_physical_y < grid.row_wrapped.len() {
+                                grid.row_wrapped[prev_physical_y] = false;
+                            }
                         } else {
                             grid.scroll_or_move_down(bg);
                         }
@@ -317,41 +476,237 @@ impl Terminal {
         self.current_flags = CellFlags::empty();
     }
 
-    pub fn save_cursor(&mut self) {
-        let active_grid = if self.is_alt_screen {
-            &mut self.alt_grid
+    pub fn set_origin_mode(&mut self, active: bool) {
+        self.origin_mode = active;
+        let grid = self.active_grid_mut();
+        if active {
+            grid.cursor.y = grid.scroll_region_top;
+            grid.cursor.x = 0;
         } else {
-            &mut self.grid
-        };
+            grid.cursor.y = 0;
+            grid.cursor.x = 0;
+        }
+    }
+
+    pub fn set_auto_wrap(&mut self, active: bool) {
+        self.auto_wrap = active;
+        self.grid.auto_wrap = active;
+        self.alt_grid.auto_wrap = active;
+    }
+
+    pub fn set_insert_mode(&mut self, active: bool) {
+        self.insert_mode = active;
+        self.grid.insert_mode = active;
+        self.alt_grid.insert_mode = active;
+    }
+
+    pub fn save_cursor(&mut self) {
+        let saved_fg = self.current_fg;
+        let saved_bg = self.current_bg;
+        let saved_uc = self.current_underline_color;
+        let saved_flags = self.current_flags;
+        let saved_g0 = self.g0_charset;
+        let saved_g1 = self.g1_charset;
+        let saved_active = self.active_charset;
+        let saved_origin = self.origin_mode;
+        let saved_wrap = self.auto_wrap;
+
+        let active_grid = self.active_grid_mut();
         active_grid.saved_cursor = active_grid.cursor;
-        active_grid.saved_fg = self.current_fg;
-        active_grid.saved_bg = self.current_bg;
-        active_grid.saved_underline_color = self.current_underline_color;
-        active_grid.saved_flags = self.current_flags;
-        active_grid.saved_g0_charset = self.g0_charset;
-        active_grid.saved_g1_charset = self.g1_charset;
-        active_grid.saved_active_charset = self.active_charset;
+        active_grid.saved_fg = saved_fg;
+        active_grid.saved_bg = saved_bg;
+        active_grid.saved_underline_color = saved_uc;
+        active_grid.saved_flags = saved_flags;
+        active_grid.saved_g0_charset = saved_g0;
+        active_grid.saved_g1_charset = saved_g1;
+        active_grid.saved_active_charset = saved_active;
+        active_grid.saved_origin_mode = saved_origin;
+        active_grid.saved_auto_wrap = saved_wrap;
     }
 
     pub fn restore_cursor(&mut self) {
-        let active_grid = if self.is_alt_screen {
-            &mut self.alt_grid
-        } else {
-            &mut self.grid
+        let (
+            saved_fg,
+            saved_bg,
+            saved_uc,
+            saved_flags,
+            saved_g0,
+            saved_g1,
+            saved_active,
+            saved_origin,
+            saved_wrap,
+        ) = {
+            let active_grid = self.active_grid_mut();
+            let current_visible = active_grid.cursor.visible;
+            active_grid.cursor = active_grid.saved_cursor;
+            active_grid.cursor.visible = current_visible;
+            active_grid.clamp_cursor();
+            (
+                active_grid.saved_fg,
+                active_grid.saved_bg,
+                active_grid.saved_underline_color,
+                active_grid.saved_flags,
+                active_grid.saved_g0_charset,
+                active_grid.saved_g1_charset,
+                active_grid.saved_active_charset,
+                active_grid.saved_origin_mode,
+                active_grid.saved_auto_wrap,
+            )
         };
-        active_grid.cursor = active_grid.saved_cursor;
-        active_grid.clamp_cursor();
-        self.current_fg = active_grid.saved_fg;
-        self.current_bg = active_grid.saved_bg;
-        self.current_underline_color = active_grid.saved_underline_color;
-        self.current_flags = active_grid.saved_flags;
-        self.g0_charset = active_grid.saved_g0_charset;
-        self.g1_charset = active_grid.saved_g1_charset;
-        self.active_charset = active_grid.saved_active_charset;
+        self.current_fg = saved_fg;
+        self.current_bg = saved_bg;
+        self.current_underline_color = saved_uc;
+        self.current_flags = saved_flags;
+        self.g0_charset = saved_g0;
+        self.g1_charset = saved_g1;
+        self.active_charset = saved_active;
+        self.origin_mode = saved_origin;
+        self.set_auto_wrap(saved_wrap);
+    }
+
+    pub fn reset_to_defaults(&mut self, soft: bool) {
+        self.active_grid_mut().cursor.visible = true;
+        self.cursor_keys_mode = false;
+        self.keypad_application_mode = false;
+        self.set_origin_mode(false);
+        self.set_auto_wrap(true);
+        self.set_insert_mode(false);
+        self.reverse_video = false;
+        self.mouse_mode = 0;
+        self.mouse_sgr = false;
+        self.mouse_utf8 = false;
+        self.mouse_pixel = false;
+        self.focus_tracking = false;
+        self.bracketed_paste_mode = false;
+        self.set_synchronized_output(false);
+        let h = self.active_grid().height;
+        self.active_grid_mut()
+            .set_scroll_region(0, h.saturating_sub(1));
+        self.reset_attrs();
+        self.g0_charset = 0;
+        self.g1_charset = 0;
+        self.active_charset = 0;
+        self.reset_kitty_keyboard();
+        self.saved_dec_modes.clear();
+        self.main_saved_dec_modes.clear();
+        self.alt_saved_dec_modes.clear();
+
+        if !soft {
+            self.set_alt_screen(false);
+            self.theme.ansi_colors = self.theme.initial_ansi_colors;
+            self.theme.palette_256 = std::sync::Arc::clone(&self.theme.initial_palette_256);
+            self.theme.default_fg = self.theme.initial_fg;
+            self.theme.default_bg = self.theme.initial_bg;
+            self.theme.cursor_color = self.theme.initial_cursor_color;
+            self.theme.cursor_text_color = self.theme.initial_cursor_text_color;
+            self.current_fg = self.theme.initial_fg;
+            self.current_bg = self.theme.initial_bg;
+            self.grid.default_fg = self.theme.initial_fg;
+            self.grid.default_bg = self.theme.initial_bg;
+            self.alt_grid.default_fg = self.theme.initial_fg;
+            self.alt_grid.default_bg = self.theme.initial_bg;
+            self.grid.reset_tab_stops();
+            self.alt_grid.reset_tab_stops();
+            let fg = self.current_fg;
+            let bg = self.current_bg;
+            self.grid.erase_display(3, fg, bg);
+            self.grid.cursor.x = 0;
+            self.grid.cursor.y = 0;
+            self.grid.cursor.shape = self.configured_cursor_shape;
+            self.grid.saved_cursor.shape = self.configured_cursor_shape;
+            self.alt_grid.erase_display(3, fg, bg);
+            self.alt_grid.cursor.x = 0;
+            self.alt_grid.cursor.y = 0;
+            self.alt_grid.cursor.shape = self.configured_cursor_shape;
+            self.alt_grid.saved_cursor.shape = self.configured_cursor_shape;
+            self.title_stack.clear();
+            self.osc_title = None;
+            self.prompt_marks.clear();
+            self.last_command_exit_code = None;
+            self.last_char = None;
+            self.grid.mark_all_dirty();
+            self.alt_grid.mark_all_dirty();
+        }
+    }
+
+    pub fn push_kitty_keyboard_flags(&mut self, flags: u16) {
+        let stack = if self.is_alt_screen {
+            &mut self.alt_kitty_keyboard_stack
+        } else {
+            &mut self.kitty_keyboard_stack
+        };
+        if stack.len() >= 16 {
+            stack.remove(0);
+        }
+        stack.push(flags);
+        self.kitty_keyboard_flags = flags;
+        if self.is_alt_screen {
+            self.alt_kitty_keyboard_flags = flags;
+        } else {
+            self.main_kitty_keyboard_flags = flags;
+        }
+    }
+
+    pub fn pop_kitty_keyboard_flags(&mut self, count: usize) {
+        let count = count.max(1);
+        let stack = if self.is_alt_screen {
+            &mut self.alt_kitty_keyboard_stack
+        } else {
+            &mut self.kitty_keyboard_stack
+        };
+        for _ in 0..count {
+            stack.pop();
+        }
+        let flags = stack.last().copied().unwrap_or(0);
+        self.kitty_keyboard_flags = flags;
+        if self.is_alt_screen {
+            self.alt_kitty_keyboard_flags = flags;
+        } else {
+            self.main_kitty_keyboard_flags = flags;
+        }
+    }
+
+    pub fn set_kitty_keyboard_flags(&mut self, flags: u16, mode: u16) {
+        let current = self.kitty_keyboard_flags;
+        let new_flags = match mode {
+            1 => flags,
+            2 => current | flags,
+            3 => current & !flags,
+            _ => current,
+        };
+        self.kitty_keyboard_flags = new_flags;
+        if self.is_alt_screen {
+            self.alt_kitty_keyboard_flags = new_flags;
+        } else {
+            self.main_kitty_keyboard_flags = new_flags;
+        }
+    }
+
+    pub fn reset_kitty_keyboard(&mut self) {
+        self.kitty_keyboard_flags = 0;
+        self.kitty_keyboard_stack.clear();
+        self.main_kitty_keyboard_flags = 0;
+        self.alt_kitty_keyboard_flags = 0;
+        self.alt_kitty_keyboard_stack.clear();
     }
 
     pub fn set_alt_screen(&mut self, active: bool) {
         if self.is_alt_screen != active {
+            if active {
+                self.main_kitty_keyboard_flags = self.kitty_keyboard_flags;
+                self.alt_kitty_keyboard_flags = 0;
+                self.alt_kitty_keyboard_stack.clear();
+                self.kitty_keyboard_flags = 0;
+                self.main_saved_dec_modes = self.saved_dec_modes;
+                self.saved_dec_modes = self.alt_saved_dec_modes;
+                self.alt_grid.cursor.visible = self.grid.cursor.visible;
+            } else {
+                self.alt_kitty_keyboard_flags = 0;
+                self.alt_kitty_keyboard_stack.clear();
+                self.kitty_keyboard_flags = self.main_kitty_keyboard_flags;
+                self.alt_saved_dec_modes = self.saved_dec_modes;
+                self.saved_dec_modes = self.main_saved_dec_modes;
+            }
             self.is_alt_screen = active;
             self.active_grid_mut().mark_all_dirty();
         }
@@ -374,8 +729,48 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, cols: u32, rows: u32) {
-        self.grid.resize(cols, rows);
-        self.alt_grid.resize(cols, rows);
+        let new_w = (cols as usize).max(1);
+        let new_h = (rows as usize).max(1);
+
+        let normal_changed = self.grid.width != new_w || self.grid.height != new_h;
+        let alternate_changed = self.alt_grid.width != new_w || self.alt_grid.height != new_h;
+
+        if !normal_changed && !alternate_changed {
+            return;
+        }
+
+        crate::diagnostics::ResizeStats::record_terminal_resize();
+
+        if normal_changed {
+            crate::diagnostics::ResizeStats::record_normal_grid_reflow();
+            let history_len = self.grid.scrollback.len();
+            let old_cursor_y = self.grid.cursor.y;
+            let mut old_start_r = history_len + old_cursor_y;
+            while old_start_r > history_len && self.grid.is_row_wrapped(old_start_r - 1) {
+                old_start_r -= 1;
+            }
+            let pre_v_offset = (history_len + old_cursor_y).saturating_sub(old_start_r);
+
+            self.grid.resize(new_w as u32, new_h as u32);
+
+            let new_history_len = self.grid.scrollback.len();
+            let new_cursor_y = self.grid.cursor.y;
+            let mut new_start_r = new_history_len + new_cursor_y;
+            while new_start_r > new_history_len && self.grid.is_row_wrapped(new_start_r - 1) {
+                new_start_r -= 1;
+            }
+            let prompt_start_y = new_start_r.saturating_sub(new_history_len);
+            let expected_cursor_y = prompt_start_y + pre_v_offset;
+            if new_cursor_y > expected_cursor_y && expected_cursor_y < self.grid.height {
+                self.grid.cursor.y = expected_cursor_y;
+                self.grid.cursor.x = self.grid.cursor.x.min(new_w.saturating_sub(1));
+            }
+        }
+
+        if alternate_changed {
+            crate::diagnostics::ResizeStats::record_alternate_grid_reflow();
+            self.alt_grid.resize(new_w as u32, new_h as u32);
+        }
     }
 }
 
@@ -449,9 +844,9 @@ mod tests {
     #[test]
     fn test_device_attributes() {
         let mut term = Terminal::new(80, 24);
-        // Primary Device Attributes (DA1)
+        // Primary Device Attributes (DA1) -> VT220
         term.feed(b"\x1b[c");
-        assert_eq!(term.outgoing, b"\x1b[?6c");
+        assert_eq!(term.outgoing, b"\x1b[?62;c");
 
         // Secondary Device Attributes (DA2) - queried by tmux, vim, etc.
         term.outgoing.clear();
@@ -461,6 +856,11 @@ mod tests {
         term.outgoing.clear();
         term.feed(b"\x1b[>0c");
         assert_eq!(term.outgoing, b"\x1b[>0;10;0c");
+
+        // Tertiary Device Attributes (DA3)
+        term.outgoing.clear();
+        term.feed(b"\x1b[=c");
+        assert_eq!(term.outgoing, b"\x1bP!|00000000\x1b\\");
 
         // XTVERSION query
         term.outgoing.clear();
@@ -765,7 +1165,8 @@ mod tests {
     fn test_bracketed_paste_mode() {
         let mut term = Terminal::new(80, 24);
         assert!(!term.bracketed_paste_mode);
-        assert_eq!(term.format_paste("echo hello"), "echo hello");
+        // Test multiline paste and newline normalization
+        assert_eq!(term.format_paste("echo 1\r\necho 2\n"), "echo 1\recho 2\r");
 
         // Enable bracketed paste mode via CSI ? 2004 h
         term.feed(b"\x1b[?2004h");
@@ -773,6 +1174,14 @@ mod tests {
         assert_eq!(
             term.format_paste("echo hello"),
             "\x1b[200~echo hello\x1b[201~"
+        );
+        assert_eq!(
+            term.format_paste("echo 1\r\necho 2\n"),
+            "\x1b[200~echo 1\recho 2\r\x1b[201~"
+        );
+        assert_eq!(
+            term.format_paste("evil\x1b[201~payload"),
+            "\x1b[200~evilpayload\x1b[201~"
         );
 
         // Disable bracketed paste mode via CSI ? 2004 l
@@ -1155,14 +1564,62 @@ mod tests {
         assert_eq!(term.kitty_keyboard_flags, 3);
         assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3]);
 
-        // CSI = 1 ; 1 u -> Set flag bit 1
+        // CSI = 1 ; 1 u -> Replace flags with 1 (mode 1 = replace)
         term.feed(b"\x1b[=1;1u");
+        assert_eq!(term.kitty_keyboard_flags, 1);
+
+        // CSI = 2 ; 2 u -> Union with flag bit 2 (mode 2 = union)
+        term.feed(b"\x1b[=2;2u");
         assert_eq!(term.kitty_keyboard_flags, 3);
+
+        // CSI = 0 u -> Disable protocol (mode 1 default with 0 = reset flags to 0)
+        term.feed(b"\x1b[=0u");
+        assert_eq!(term.kitty_keyboard_flags, 0);
+
+        // Re-push 3
+        term.feed(b"\x1b[>3u");
+        assert_eq!(term.kitty_keyboard_flags, 3);
+        assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3, 3]);
 
         // CSI < 1 u -> Pop 1 level
         term.feed(b"\x1b[<1u");
+        assert_eq!(term.kitty_keyboard_flags, 3);
+        assert_eq!(term.kitty_keyboard_stack.as_slice(), &[3]);
+
+        // Pop last level -> empty stack resets flags to 0
+        term.feed(b"\x1b[<1u");
         assert_eq!(term.kitty_keyboard_flags, 0);
         assert!(term.kitty_keyboard_stack.is_empty());
+    }
+
+    #[test]
+    fn test_kitty_keyboard_alternate_screen_isolation() {
+        let mut term = Terminal::new(80, 24);
+
+        // Shell enables kitty keyboard flags on main screen
+        term.feed(b"\x1b[=5u");
+        assert_eq!(term.kitty_keyboard_flags, 5);
+
+        // Program like nano launches and enters alternate screen (CSI ? 1049 h)
+        term.feed(b"\x1b[?1049h");
+        // Alternate screen must start in legacy mode (flags = 0)
+        assert_eq!(term.kitty_keyboard_flags, 0);
+
+        // Typing in alt screen uses flags = 0 (legacy control codes, e.g. Ctrl+X = 0x18)
+        let ctrl_x = crate::input::keyboard::translate_key(
+            &crate::window::event::Key::Character("x".to_string()),
+            Some("x"),
+            crate::window::event::ModifiersState::CONTROL,
+            false,
+            term.keypad_application_mode,
+            term.kitty_keyboard_flags,
+        );
+        assert_eq!(ctrl_x.unwrap().as_slice(), &[24]); // ASCII 24 = ^X
+
+        // Program exits alternate screen (CSI ? 1049 l)
+        term.feed(b"\x1b[?1049l");
+        // Main screen restored
+        assert_eq!(term.kitty_keyboard_flags, 5);
     }
 
     #[test]
@@ -1207,19 +1664,20 @@ mod tests {
         // Query unrecognized capabilities (e.g. ble.sh / starship query for "indn" and "query-os-name")
         term.outgoing.clear();
         term.feed(b"\x1bP+q696e646e;71756572792d6f732d6e616d65\x1b\\");
-        // Must be completely silent without leaking raw hex characters to shell stdin
-        assert!(term.outgoing.is_empty());
+        // Must reject cleanly with standard DCS 0 + q ST without leaking raw hex characters to shell stdin
+        assert_eq!(term.outgoing, b"\x1bP0+q\x1b\\");
     }
 
     #[test]
     fn test_xterm_modified_arrow_and_kitty_keyboard_translation() {
-        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        use crate::window::event::{Key, ModifiersState, NamedKey};
 
         // Shift+Tab -> CBT (\x1b[Z)
         let cbt = crate::input::keyboard::translate_key(
             &Key::Named(NamedKey::Tab),
             None,
             ModifiersState::SHIFT,
+            false,
             false,
             0,
         );
@@ -1231,6 +1689,7 @@ mod tests {
             None,
             ModifiersState::CONTROL,
             false,
+            false,
             0,
         );
         assert_eq!(ctrl_up.as_deref(), Some(&b"\x1b[1;5A"[..]));
@@ -1240,6 +1699,7 @@ mod tests {
             &Key::Named(NamedKey::ArrowLeft),
             None,
             ModifiersState::ALT,
+            false,
             false,
             0,
         );
@@ -1251,6 +1711,7 @@ mod tests {
             Some("a"),
             ModifiersState::CONTROL,
             false,
+            false,
             1,
         );
         assert_eq!(kitty_ctrl_a.as_deref(), Some(&b"\x1b[97;5u"[..]));
@@ -1260,6 +1721,7 @@ mod tests {
             &Key::Named(NamedKey::Enter),
             None,
             ModifiersState::SHIFT,
+            false,
             false,
             1,
         );
@@ -1271,6 +1733,7 @@ mod tests {
             Some("!"),
             ModifiersState::SHIFT,
             false,
+            false,
             1,
         );
         assert_eq!(shift_symbol.as_deref(), Some(&b"!"[..]));
@@ -1280,6 +1743,7 @@ mod tests {
             &Key::Dead(Some('~')),
             None,
             ModifiersState::empty(),
+            false,
             false,
             0,
         );

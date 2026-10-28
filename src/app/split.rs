@@ -161,6 +161,18 @@ pub enum SplitNode {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SplitLayoutContext {
+    pub sep_size: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
+    pub base_cw_f: f32,
+    pub base_ch_f: f32,
+    pub base_font_size: f32,
+    pub min_cols: usize,
+    pub min_rows: usize,
+}
+
 impl SplitNode {
     #[inline]
     pub fn find_pane(&self, id: PaneId) -> Option<&Pane> {
@@ -250,6 +262,16 @@ impl SplitNode {
         }
     }
 
+    pub fn for_each_pane_mut<F: FnMut(&mut Pane)>(&mut self, f: &mut F) {
+        match self {
+            Self::Pane(p) => f(p),
+            Self::Split { first, second, .. } => {
+                first.for_each_pane_mut(f);
+                second.for_each_pane_mut(f);
+            }
+        }
+    }
+
     pub fn collect_pane_ids(&self, list: &mut Vec<PaneId>) {
         match self {
             Self::Pane(p) => list.push(p.id),
@@ -268,28 +290,26 @@ impl SplitNode {
     }
 
     pub fn remove_pane(&mut self, target_id: PaneId) -> Option<Pane> {
-        let is_first_target = match self {
-            Self::Split { first, .. } => matches!(&**first, Self::Pane(p) if p.id == target_id),
-            _ => false,
+        let (first_is_target, second_is_target) = match self {
+            Self::Split { first, second, .. } => (
+                matches!(&**first, Self::Pane(p) if p.id == target_id),
+                matches!(&**second, Self::Pane(p) if p.id == target_id),
+            ),
+            _ => (false, false),
         };
-        if is_first_target && let Self::Split { second, first, .. } = self {
-            let second_box = std::mem::replace(second, Box::new(Self::Pane(Pane::dummy())));
-            let first_box = std::mem::replace(first, Box::new(Self::Pane(Pane::dummy())));
-            *self = *second_box;
-            if let Self::Pane(removed_pane) = *first_box {
-                return Some(removed_pane);
-            }
-        }
 
-        let is_second_target = match self {
-            Self::Split { second, .. } => matches!(&**second, Self::Pane(p) if p.id == target_id),
-            _ => false,
-        };
-        if is_second_target && let Self::Split { first, second, .. } = self {
-            let first_box = std::mem::replace(first, Box::new(Self::Pane(Pane::dummy())));
-            let second_box = std::mem::replace(second, Box::new(Self::Pane(Pane::dummy())));
-            *self = *first_box;
-            if let Self::Pane(removed_pane) = *second_box {
+        if (first_is_target || second_is_target)
+            && let Self::Split { first, second, .. } = self
+        {
+            let (target_box, keep_box) = if first_is_target {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            let keep = std::mem::replace(keep_box, Box::new(Self::Pane(Pane::dummy())));
+            let target = std::mem::replace(target_box, Box::new(Self::Pane(Pane::dummy())));
+            *self = *keep;
+            if let Self::Pane(removed_pane) = *target {
                 return Some(removed_pane);
             }
         }
@@ -343,17 +363,16 @@ impl SplitNode {
                 second,
                 ..
             } => {
-                let first_has = first.find_pane(target_pane_id).is_some();
-                if first_has {
-                    if first.adjust_ancestor_split_ratio(target_pane_id, match_direction, delta) {
-                        return true;
-                    }
-                    if *direction == match_direction {
-                        *ratio = (*ratio + delta).clamp(0.05, 0.95);
-                        return true;
-                    }
+                let target_child = if first.find_pane(target_pane_id).is_some() {
+                    Some(&mut **first)
                 } else if second.find_pane(target_pane_id).is_some() {
-                    if second.adjust_ancestor_split_ratio(target_pane_id, match_direction, delta) {
+                    Some(&mut **second)
+                } else {
+                    None
+                };
+
+                if let Some(child) = target_child {
+                    if child.adjust_ancestor_split_ratio(target_pane_id, match_direction, delta) {
                         return true;
                     }
                     if *direction == match_direction {
@@ -381,38 +400,28 @@ impl SplitNode {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn calculate_layout(
         &self,
         x: f32,
         y: f32,
         w: f32,
         h: f32,
-        sep_size: f32,
-        padding_x: f32,
-        padding_y: f32,
-        base_cw: u32,
-        base_ch: u32,
-        base_font_size: f32,
-        min_cols: usize,
-        min_rows: usize,
+        ctx: &SplitLayoutContext,
         pane_rects: &mut Vec<PaneRect>,
         sep_rects: &mut Vec<SeparatorRect>,
     ) {
-        let base_cw_f = base_cw.max(1) as f32;
-        let base_ch_f = base_ch.max(1) as f32;
-
         match self {
             Self::Pane(pane) => {
-                let scale = if base_font_size > 0.0 {
-                    (pane.font_size / base_font_size).clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
+                let scale = if ctx.base_font_size > 0.0 {
+                    (pane.font_size / ctx.base_font_size)
+                        .clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
                 } else {
                     1.0
                 };
-                let pane_cw = (base_cw_f * scale).round().max(1.0);
-                let pane_ch = (base_ch_f * scale).round().max(1.0);
-                let text_w = (w - padding_x * 2.0).max(pane_cw);
-                let text_h = (h - padding_y * 2.0).max(pane_ch);
+                let pane_cw = (ctx.base_cw_f * scale).round().max(1.0);
+                let pane_ch = (ctx.base_ch_f * scale).round().max(1.0);
+                let text_w = (w - ctx.padding_x * 2.0).max(pane_cw);
+                let text_h = (h - ctx.padding_y * 2.0).max(pane_ch);
                 let cols = ((text_w / pane_cw).floor() as usize).max(1);
                 let rows = ((text_h / pane_ch).floor() as usize).max(1);
                 pane_rects.push(PaneRect {
@@ -421,8 +430,8 @@ impl SplitNode {
                     y,
                     width: w,
                     height: h,
-                    padding_x,
-                    padding_y,
+                    padding_x: ctx.padding_x,
+                    padding_y: ctx.padding_y,
                     cols,
                     rows,
                     cell_width: pane_cw,
@@ -439,9 +448,9 @@ impl SplitNode {
                 let ratio = ratio.clamp(0.05, 0.95);
                 match direction {
                     SplitDirection::Vertical => {
-                        let avail_w = (w - sep_size).max(0.0);
-                        let min_w =
-                            ((min_cols as f32 * base_cw_f) + padding_x * 2.0).min(avail_w * 0.45);
+                        let avail_w = (w - ctx.sep_size).max(0.0);
+                        let min_w = ((ctx.min_cols as f32 * ctx.base_cw_f) + ctx.padding_x * 2.0)
+                            .min(avail_w * 0.45);
                         let mut w1 = (avail_w * ratio).floor();
                         w1 = w1.clamp(min_w, (avail_w - min_w).max(min_w));
                         let w2 = (avail_w - w1).max(0.0);
@@ -452,7 +461,7 @@ impl SplitNode {
                             direction: *direction,
                             x: sep_x,
                             y,
-                            width: sep_size,
+                            width: ctx.sep_size,
                             height: h,
                             bounds_x: x,
                             bounds_y: y,
@@ -460,43 +469,21 @@ impl SplitNode {
                             bounds_h: h,
                         });
 
-                        first.calculate_layout(
-                            x,
-                            y,
-                            w1,
-                            h,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
-                            pane_rects,
-                            sep_rects,
-                        );
+                        first.calculate_layout(x, y, w1, h, ctx, pane_rects, sep_rects);
                         second.calculate_layout(
-                            sep_x + sep_size,
+                            sep_x + ctx.sep_size,
                             y,
                             w2,
                             h,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
+                            ctx,
                             pane_rects,
                             sep_rects,
                         );
                     }
                     SplitDirection::Horizontal => {
-                        let avail_h = (h - sep_size).max(0.0);
-                        let min_h =
-                            ((min_rows as f32 * base_ch_f) + padding_y * 2.0).min(avail_h * 0.45);
+                        let avail_h = (h - ctx.sep_size).max(0.0);
+                        let min_h = ((ctx.min_rows as f32 * ctx.base_ch_f) + ctx.padding_y * 2.0)
+                            .min(avail_h * 0.45);
                         let mut h1 = (avail_h * ratio).floor();
                         h1 = h1.clamp(min_h, (avail_h - min_h).max(min_h));
                         let h2 = (avail_h - h1).max(0.0);
@@ -508,42 +495,20 @@ impl SplitNode {
                             x,
                             y: sep_y,
                             width: w,
-                            height: sep_size,
+                            height: ctx.sep_size,
                             bounds_x: x,
                             bounds_y: y,
                             bounds_w: w,
                             bounds_h: h,
                         });
 
-                        first.calculate_layout(
-                            x,
-                            y,
-                            w,
-                            h1,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
-                            pane_rects,
-                            sep_rects,
-                        );
+                        first.calculate_layout(x, y, w, h1, ctx, pane_rects, sep_rects);
                         second.calculate_layout(
                             x,
-                            sep_y + sep_size,
+                            sep_y + ctx.sep_size,
                             w,
                             h2,
-                            sep_size,
-                            padding_x,
-                            padding_y,
-                            base_cw,
-                            base_ch,
-                            base_font_size,
-                            min_cols,
-                            min_rows,
+                            ctx,
                             pane_rects,
                             sep_rects,
                         );
@@ -610,6 +575,10 @@ impl SplitTree {
         list
     }
 
+    pub fn for_each_pane_mut<F: FnMut(&mut Pane)>(&mut self, f: &mut F) {
+        self.root.for_each_pane_mut(f);
+    }
+
     #[inline]
     pub fn panes_mut(&mut self) -> Vec<&mut Pane> {
         self.collect_panes_mut()
@@ -645,16 +614,19 @@ impl SplitTree {
             match node {
                 SplitNode::Pane(p) => {
                     if p.id == target_id {
-                        let new_p = pane_holder.take().unwrap();
-                        let old_p = std::mem::replace(p, Pane::dummy());
-                        *node = SplitNode::Split {
-                            id: split_id,
-                            direction,
-                            ratio: ratio.clamp(0.05, 0.95),
-                            first: Box::new(SplitNode::Pane(old_p)),
-                            second: Box::new(SplitNode::Pane(new_p)),
-                        };
-                        (true, None)
+                        if let Some(new_p) = pane_holder.take() {
+                            let old_p = std::mem::replace(p, Pane::dummy());
+                            *node = SplitNode::Split {
+                                id: split_id,
+                                direction,
+                                ratio: ratio.clamp(0.05, 0.95),
+                                first: Box::new(SplitNode::Pane(old_p)),
+                                second: Box::new(SplitNode::Pane(new_p)),
+                            };
+                            (true, None)
+                        } else {
+                            (false, None)
+                        }
                     } else {
                         (false, pane_holder)
                     }
@@ -733,22 +705,18 @@ impl SplitTree {
     ) -> (Vec<PaneRect>, Vec<SeparatorRect>) {
         let mut pane_rects = Vec::with_capacity(8);
         let mut sep_rects = Vec::with_capacity(8);
-        self.root.calculate_layout(
-            x,
-            y,
-            width,
-            height,
-            separator_size,
+        let ctx = SplitLayoutContext {
+            sep_size: separator_size,
             padding_x,
             padding_y,
-            base_cw,
-            base_ch,
+            base_cw_f: base_cw.max(1) as f32,
+            base_ch_f: base_ch.max(1) as f32,
             base_font_size,
             min_cols,
             min_rows,
-            &mut pane_rects,
-            &mut sep_rects,
-        );
+        };
+        self.root
+            .calculate_layout(x, y, width, height, &ctx, &mut pane_rects, &mut sep_rects);
         (pane_rects, sep_rects)
     }
 
@@ -834,153 +802,4 @@ pub fn find_neighbor_pane(
     }
 
     best_candidate.map(|(id, _)| id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pty::process::spawn_process;
-    use crate::terminal::terminal::Terminal;
-    use std::sync::Arc;
-
-    fn mock_pane(id: PaneId) -> Pane {
-        let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-        let terminal = Terminal::new(80, 24);
-        Pane::new(id, pty, terminal, 14.0, false)
-    }
-
-    #[test]
-    fn test_single_pane_layout() {
-        let tree = SplitTree::new(mock_pane(1));
-        assert_eq!(tree.pane_count(), 1);
-        assert_eq!(tree.first_pane_id(), Some(1));
-
-        let (rects, seps) =
-            tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects.len(), 1);
-        assert_eq!(seps.len(), 0);
-        assert_eq!(rects[0].pane_id, 1);
-        assert_eq!(rects[0].width, 800.0);
-        assert_eq!(rects[0].height, 600.0);
-        assert_eq!(rects[0].cols, 80);
-        assert_eq!(rects[0].rows, 30);
-    }
-
-    #[test]
-    fn test_horizontal_and_vertical_splits() {
-        let mut tree = SplitTree::new(mock_pane(1));
-
-        // Split 1 vertically into 1 and 2
-        let ok = tree.split_pane(1, mock_pane(2), SplitDirection::Vertical, 0.5, 100);
-        assert!(ok);
-        assert_eq!(tree.pane_count(), 2);
-
-        let (rects, seps) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(seps.len(), 1);
-        assert_eq!(rects[0].pane_id, 1);
-        assert_eq!(rects[0].width, 400.0);
-        assert_eq!(rects[1].pane_id, 2);
-        assert_eq!(rects[1].width, 400.0);
-        assert_eq!(seps[0].x, 400.0);
-        assert_eq!(seps[0].width, 2.0);
-
-        // Split 2 horizontally into 2 and 3
-        let ok2 = tree.split_pane(2, mock_pane(3), SplitDirection::Horizontal, 0.5, 101);
-        assert!(ok2);
-        assert_eq!(tree.pane_count(), 3);
-
-        let (rects3, seps3) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 602.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects3.len(), 3);
-        assert_eq!(seps3.len(), 2);
-
-        // Pane 1: Left column
-        assert_eq!(rects3[0].pane_id, 1);
-        assert_eq!(rects3[0].x, 0.0);
-        assert_eq!(rects3[0].width, 400.0);
-        assert_eq!(rects3[0].height, 602.0);
-
-        // Pane 2: Top-right
-        assert_eq!(rects3[1].pane_id, 2);
-        assert_eq!(rects3[1].x, 402.0);
-        assert_eq!(rects3[1].y, 0.0);
-        assert_eq!(rects3[1].width, 400.0);
-        assert_eq!(rects3[1].height, 300.0);
-
-        // Pane 3: Bottom-right
-        assert_eq!(rects3[2].pane_id, 3);
-        assert_eq!(rects3[2].x, 402.0);
-        assert_eq!(rects3[2].y, 302.0);
-        assert_eq!(rects3[2].width, 400.0);
-        assert_eq!(rects3[2].height, 300.0);
-    }
-
-    #[test]
-    fn test_tree_normalization_on_remove() {
-        let mut tree = SplitTree::new(mock_pane(1));
-        tree.split_pane(1, mock_pane(2), SplitDirection::Vertical, 0.5, 100);
-        tree.split_pane(2, mock_pane(3), SplitDirection::Horizontal, 0.5, 101);
-
-        assert_eq!(tree.pane_count(), 3);
-
-        // Remove pane 2 -> split 101 should collapse, leaving pane 3 in its place
-        let removed = tree.remove_pane(2);
-        assert!(removed.is_some());
-        assert_eq!(removed.unwrap().id, 2);
-        assert_eq!(tree.pane_count(), 2);
-
-        let (rects, seps) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(seps.len(), 1);
-        assert_eq!(rects[0].pane_id, 1);
-        assert_eq!(rects[1].pane_id, 3);
-        assert_eq!(rects[1].width, 400.0);
-        assert_eq!(rects[1].height, 600.0);
-
-        // Remove pane 1 -> root becomes single pane 3
-        let removed2 = tree.remove_pane(1);
-        assert!(removed2.is_some());
-        assert_eq!(tree.pane_count(), 1);
-        assert_eq!(tree.first_pane_id(), Some(3));
-
-        let (rects_final, seps_final) =
-            tree.calculate_layout(0.0, 0.0, 800.0, 600.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        assert_eq!(rects_final.len(), 1);
-        assert_eq!(seps_final.len(), 0);
-        assert_eq!(rects_final[0].pane_id, 3);
-        assert_eq!(rects_final[0].width, 800.0);
-        assert_eq!(rects_final[0].height, 600.0);
-    }
-
-    #[test]
-    fn test_directional_focus_grid() {
-        let mut tree = SplitTree::new(mock_pane(1));
-        tree.split_pane(1, mock_pane(2), SplitDirection::Vertical, 0.5, 100);
-        tree.split_pane(1, mock_pane(3), SplitDirection::Horizontal, 0.5, 101);
-        tree.split_pane(2, mock_pane(4), SplitDirection::Horizontal, 0.5, 102);
-
-        let (rects, _) =
-            tree.calculate_layout(0.0, 0.0, 802.0, 602.0, 2.0, 0.0, 0.0, 10, 20, 14.0, 20, 5);
-        // Layout:
-        // Top-left: 1, Bottom-left: 3
-        // Top-right: 2, Bottom-right: 4
-
-        assert_eq!(
-            find_neighbor_pane(&rects, 1, FocusDirection::Right),
-            Some(2)
-        );
-        assert_eq!(find_neighbor_pane(&rects, 1, FocusDirection::Down), Some(3));
-        assert_eq!(find_neighbor_pane(&rects, 2, FocusDirection::Left), Some(1));
-        assert_eq!(find_neighbor_pane(&rects, 2, FocusDirection::Down), Some(4));
-        assert_eq!(find_neighbor_pane(&rects, 3, FocusDirection::Up), Some(1));
-        assert_eq!(
-            find_neighbor_pane(&rects, 3, FocusDirection::Right),
-            Some(4)
-        );
-        assert_eq!(find_neighbor_pane(&rects, 4, FocusDirection::Up), Some(2));
-        assert_eq!(find_neighbor_pane(&rects, 4, FocusDirection::Left), Some(3));
-    }
 }

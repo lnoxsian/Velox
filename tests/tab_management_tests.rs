@@ -3,7 +3,7 @@ use std::time::Instant;
 use velox::app::tab::{Tab, TabBar, TabBarHitResult, TabBarRenderInfo, TabHeaderInfo};
 use velox::config::config::{Config, TabBarVisibility, TabsConfig};
 use velox::pty::process::spawn_process;
-use velox::renderer::software::CpuRenderer;
+use velox::renderer::CpuRenderer;
 use velox::screen::cell::Color;
 use velox::screen::cursor::CursorShape;
 use velox::screen::grid::Grid;
@@ -581,40 +581,6 @@ fn test_software_renderer_tab_switch_clean_redraw() {
 }
 
 #[test]
-fn test_per_tab_font_size_isolation() {
-    let pty1 = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-    let pty2 = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-    let terminal1 = Terminal::new(80, 24);
-    let terminal2 = Terminal::new(80, 24);
-
-    let mut tab1 = Tab::new(
-        1,
-        pty1,
-        terminal1,
-        Some("Tab 1".to_string()),
-        "Tab 1".to_string(),
-        false,
-        12.0,
-    );
-    let tab2 = Tab::new(
-        2,
-        pty2,
-        terminal2,
-        Some("Tab 2".to_string()),
-        "Tab 2".to_string(),
-        false,
-        12.0,
-    );
-
-    // Zoom Tab 1
-    tab1.font_size = 18.0;
-
-    // Verify Tab 2's font_size is unchanged
-    assert_eq!(tab1.font_size, 18.0);
-    assert_eq!(tab2.font_size, 12.0);
-}
-
-#[test]
 fn test_tab_bar_height_independent_of_cell_zoom() {
     let config = Config::default();
     let tab_bar = TabBar::from_config(&config);
@@ -708,5 +674,141 @@ fn test_software_renderer_renders_sharp_tab_bar_when_terminal_small() {
     assert!(
         active_pixels > 100,
         "Tab bar must render visible pixels with decoupled tab glyph cache"
+    );
+}
+
+#[test]
+fn test_pane_current_working_directory_detection() {
+    use velox::app::pane::Pane;
+    use velox::terminal::terminal::Terminal;
+
+    let mut pane = Pane::dummy();
+    assert_eq!(pane.current_working_directory(), None);
+
+    // Test OSC 7 fallback
+    pane.terminal.current_dir = Some("/tmp".to_string());
+    assert_eq!(pane.current_working_directory(), Some("/tmp".to_string()));
+
+    // Test spawned PTY process CWD inspection via /proc
+    let pty = velox::pty::process::spawn_process("/bin/sh", None, Some("/tmp")).unwrap();
+    let spawned_pane = Pane::new(
+        1,
+        std::sync::Arc::new(pty),
+        Terminal::new(80, 24),
+        14.0,
+        false,
+    );
+    let cwd = spawned_pane.current_working_directory();
+    assert!(cwd.is_some(), "Spawned process should report valid CWD");
+    let cwd_path = std::path::PathBuf::from(cwd.unwrap());
+    assert!(
+        cwd_path.ends_with("tmp") || cwd_path == std::path::Path::new("/tmp"),
+        "CWD must resolve to /tmp"
+    );
+}
+
+#[test]
+fn test_csd_title_bar_tab_hit_test_separation() {
+    let tab_bar = TabBar {
+        show_tab_bar: TabBarVisibility::Always,
+        configured_height: Some(28.0),
+        show_close_button: true,
+        show_new_tab_button: false,
+        hovered_tab: None,
+        hovered_close: None,
+        hovered_new_tab: false,
+    };
+
+    let csd_h = 32.0f32;
+    let win_w = 800.0f32;
+    let tab_count = 2;
+
+    // 1. Mouse at y = 15.0 is inside CSD title bar (y < csd_h)
+    let mouse_y_in_csd = 15.0f32;
+    assert!(mouse_y_in_csd < csd_h);
+
+    // 2. Mouse at y = 45.0 is inside tab bar (csd_h <= y < csd_h + tab_bar_h)
+    let mouse_y_in_tabs = 45.0f32;
+    assert!(mouse_y_in_tabs >= csd_h && mouse_y_in_tabs < csd_h + 28.0);
+
+    // Hit test with offset y: (mouse_y_in_tabs - csd_h) = 13.0
+    let relative_tab_y = mouse_y_in_tabs - csd_h;
+    let hit = tab_bar.hit_test(100.0, relative_tab_y, win_w, 20, tab_count);
+    assert_eq!(hit, TabBarHitResult::Tab(0));
+}
+
+#[test]
+fn test_close_tab_before_active_index_shifts_active_index() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    // ws starts with 1 tab (tab 0).
+    ws.create_tab(None, None, None, None); // tab 1
+    ws.create_tab(None, None, None, None); // tab 2
+    assert_eq!(ws.tabs.len(), 3);
+    assert_eq!(ws.active_tab_index, 2); // newly created tab is active
+
+    // Close tab 0
+    ws.close_tab(0);
+    assert_eq!(ws.tabs.len(), 2);
+    // Active tab index must now be 1 (pointing to the same tab)
+    assert_eq!(ws.active_tab_index, 1);
+}
+
+#[test]
+fn test_spawn_process_defaults_to_home_dir() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
+    if let Ok(home) = std::env::var("HOME") {
+        let expected = std::path::Path::new(&home);
+        let mut matched = false;
+        for _ in 0..50 {
+            if let Some(ref cwd) = pty.get_foreground_process_cwd()
+                && std::path::Path::new(cwd) == expected
+            {
+                matched = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            matched,
+            "When working_directory is None, spawn_process must default to $HOME"
+        );
+    }
+}
+
+#[test]
+fn test_create_tab_inherits_parent_pane_cwd() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, Some("/tmp")).unwrap());
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    ws.active_pane_mut().terminal.current_dir = Some("/tmp".to_string());
+
+    // Spawning a new tab with None must inherit parent pane's CWD
+    ws.create_tab(None, None, None, None);
+    assert_eq!(ws.tabs.len(), 2);
+    let new_tab = &ws.tabs[ws.active_tab_index];
+    let new_cwd = new_tab.active_pane().current_working_directory();
+    assert!(new_cwd.is_some());
+    let cwd_path = std::path::PathBuf::from(new_cwd.unwrap());
+    assert!(
+        cwd_path.ends_with("tmp") || cwd_path == std::path::Path::new("/tmp"),
+        "Newly created tab must inherit parent pane's working directory"
+    );
+}
+
+#[test]
+fn test_split_pane_inherits_parent_pane_cwd() {
+    let pty = Arc::new(spawn_process("/bin/sh", None, Some("/tmp")).unwrap());
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    ws.active_pane_mut().terminal.current_dir = Some("/tmp".to_string());
+
+    let split_id = ws.split_active_pane(velox::app::split::SplitDirection::Horizontal);
+    assert!(split_id.is_some());
+    let active_pane = ws.active_pane();
+    let new_cwd = active_pane.current_working_directory();
+    assert!(new_cwd.is_some());
+    let cwd_path = std::path::PathBuf::from(new_cwd.unwrap());
+    assert!(
+        cwd_path.ends_with("tmp") || cwd_path == std::path::Path::new("/tmp"),
+        "Newly split pane must inherit parent pane's working directory"
     );
 }

@@ -11,7 +11,9 @@ impl Framebuffer {
     pub fn new(width: u32, height: u32) -> Self {
         let w = width.max(1);
         let h = height.max(1);
-        let len = (w * h) as usize;
+        let len = (w as usize)
+            .checked_mul(h as usize)
+            .expect("framebuffer dimensions too large");
         Self {
             pixels: vec![0; len],
             width: w,
@@ -28,15 +30,31 @@ impl Framebuffer {
             return false;
         }
 
+        crate::diagnostics::ResizeStats::record_framebuffer_resize();
+
+        let pixel_count = (w as usize)
+            .checked_mul(h as usize)
+            .expect("framebuffer dimensions are too large");
+
+        if self.pixels.len() < pixel_count {
+            crate::diagnostics::ResizeStats::record_framebuffer_growth();
+            self.pixels.resize(pixel_count, 0);
+        } else {
+            self.pixels.truncate(pixel_count);
+        }
+
         self.width = w;
         self.height = h;
         self.stride = w as usize;
-        let len = (w * h) as usize;
-        self.pixels.resize(len, 0);
-        if self.pixels.capacity() > len * 2 && self.pixels.capacity() > 1920 * 1080 {
-            self.pixels.shrink_to(len);
-        }
         true
+    }
+
+    /// Explicitly release excess capacity during idle memory compaction.
+    pub fn release_memory(&mut self) {
+        if self.pixels.capacity() > self.pixels.len() {
+            crate::diagnostics::ResizeStats::record_framebuffer_shrink();
+            self.pixels.shrink_to_fit();
+        }
     }
 
     #[inline(always)]
@@ -63,10 +81,48 @@ impl Framebuffer {
         let x_end = (x + w).min(self.width) as usize;
         let y_end = (y + h).min(self.height) as usize;
         let x_start = x as usize;
+        let stride = self.stride;
 
-        for row in (y as usize)..y_end {
-            let row_offset = row * self.stride;
-            self.pixels[row_offset + x_start..row_offset + x_end].fill(color);
+        if x_start == 0 && x_end == stride {
+            let start = (y as usize) * stride;
+            let end = y_end * stride;
+            if end <= self.pixels.len() {
+                self.pixels[start..end].fill(color);
+            }
+            return;
+        }
+
+        let total_needed = (y_end - 1) * stride + x_end;
+        if total_needed > self.pixels.len() {
+            return;
+        }
+
+        let span_w = x_end - x_start;
+        let pixels = &mut self.pixels;
+
+        match span_w {
+            1 => {
+                let mut offset = (y as usize) * stride + x_start;
+                for _ in (y as usize)..y_end {
+                    pixels[offset] = color;
+                    offset += stride;
+                }
+            }
+            2 => {
+                let mut offset = (y as usize) * stride + x_start;
+                for _ in (y as usize)..y_end {
+                    pixels[offset] = color;
+                    pixels[offset + 1] = color;
+                    offset += stride;
+                }
+            }
+            _ => {
+                let mut offset = (y as usize) * stride + x_start;
+                for _ in (y as usize)..y_end {
+                    pixels[offset..offset + span_w].fill(color);
+                    offset += stride;
+                }
+            }
         }
     }
 

@@ -1,13 +1,10 @@
 [package]
 name = "velox"
-version = "0.2.1"
+version = "0.3.1"
 edition = "2024"
 
 [dependencies]
-winit = "0.30"
-glow = "0.16"
 nix = { version = "0.30", features = ["fs", "process", "term"] }
-bytemuck = "1"
 unicode-width = "0.2"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
@@ -17,16 +14,17 @@ log = "0.4"
 env_logger = "0.11"
 smallvec = "1"
 bitflags = { version = "2", features = ["serde"] }
-glutin = "0.32"
-glutin-winit = "0.5"
 ab_glyph = "0.2"
 libc = "0.2"
 fontdb = "0.23"
 png = "0.17"
 owned_ttf_parser = "0.25"
-softbuffer = "0.4"
 memmap2 = "0.9"
 ahash = "0.8"
+x11rb = { version = "0.14.0", default-features = false, features = ["shm", "randr", "cursor", "resource_manager"] }
+wayland-client = { version = "0.31.15", default-features = false }
+wayland-protocols = { version = "0.32.13", default-features = false, features = ["client", "staging", "unstable"] }
+xkbcommon-dl = "0.4.2"
 
 [[bench]]
 name = "software_renderer"
@@ -40,10 +38,13 @@ harness = false
 name = "memory_benchmark"
 harness = false
 
-[profile.optimized-release]
-inherits = "release"
+[profile.release]
 opt-level = 3
-lto = "fat"
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.optimized-release]
+inherits = "release"
+lto = "fat"

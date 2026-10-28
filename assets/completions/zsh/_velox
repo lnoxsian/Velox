@@ -1,0 +1,76 @@
+#compdef velox
+
+_velox() {
+    local curcontext="$curcontext" state line ret=1
+    typeset -A opt_args
+
+    local -a common_options
+    common_options=(
+        '(-s --single-instance)'{-s,--single-instance}'[Enable single-process mode (connects to running instance or starts server)]'
+        '(-d --daemon)'{-d,--daemon}'[Start in background daemon mode (keeps process alive for IPC requests)]'
+        '--hold[Keep window open after child command exits]'
+        '--diagnostics[Print system, display backend, and desktop diagnostics]'
+        '--banner[Print ASCII art banner]'
+        '(-h --help)'{-h,--help}'[Print help information]'
+        '(-v --version)'{-v,--version}'[Print version information]'
+        '(-b --backend)'{-b,--backend}'[Select windowing backend]:backend:(x11 wayland)'
+        '(-t --title)'{-t,--title}'[Set custom window title]:title:'
+        '(-w --working-directory --working-dir)'{-w,--working-directory,--working-dir}'[Set initial working directory]:directory:_files -/'
+        '(-e --command --)'{-e,--command,--}'[Execute specified command instead of shell]:command: _command_names -e:*::command arguments:_normal'
+    )
+
+    _arguments -s -S \
+        $common_options \
+        '1: :->subcmd' \
+        '*:: :->args' \
+        && ret=0
+
+    case $state in
+        subcmd)
+            local -a subcommands
+            subcommands=(
+                'doctor:Run diagnostics check on display and desktop environment'
+                'msg:Instruct running single-process instance'
+            )
+            _describe -t subcommands 'subcommand' subcommands && ret=0
+            ;;
+        args)
+            case $line[1] in
+                msg)
+                    local -a msg_subcommands
+                    msg_subcommands=(
+                        'create-window:Instruct running single-process instance to open a new window'
+                    )
+                    _arguments -s -S \
+                        '1: :->msg_cmd' \
+                        '*:: :->msg_args' \
+                        && ret=0
+
+                    case $state in
+                        msg_cmd)
+                            _describe -t msg_subcommands 'msg command' msg_subcommands && ret=0
+                            ;;
+                        msg_args)
+                            case $line[1] in
+                                create-window)
+                                    _arguments -s -S \
+                                        '(-t --title)'{-t,--title}'[Set custom window title]:title:' \
+                                        '(-w --working-directory --working-dir)'{-w,--working-directory,--working-dir}'[Set initial working directory]:directory:_files -/' \
+                                        '--hold[Keep window open after child command exits]' \
+                                        '(-e --command --)'{-e,--command,--}'[Execute specified command instead of shell]:command: _command_names -e:*::command arguments:_normal' \
+                                        && ret=0
+                                    ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                doctor)
+                    ;;
+            esac
+            ;;
+    esac
+
+    return ret
+}
+
+_velox "$@"

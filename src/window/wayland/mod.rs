@@ -1,0 +1,835 @@
+pub mod cursor;
+pub mod keyboard;
+pub mod shm;
+
+use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, PlatformEvent};
+use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
+use crate::window::WindowResizeEdge;
+use keyboard::{ActiveKeyRepeat, KeyRepeatConfig, XkbHandler};
+use shm::WaylandShmBuffer;
+use std::collections::VecDeque;
+use std::os::fd::{AsFd, AsRawFd};
+use std::time::{Duration, Instant};
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+    wl_surface,
+};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_protocols::xdg::decoration::zv1::client::{
+    zxdg_decoration_manager_v1, zxdg_toplevel_decoration_v1,
+};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+
+fn resolve_wayland_app_id() -> &'static str {
+    if std::path::Path::new("/usr/share/applications/io.github.lnoxsian.Velox.desktop").exists()
+        || std::path::Path::new("/usr/local/share/applications/io.github.lnoxsian.Velox.desktop")
+            .exists()
+    {
+        return CANONICAL_APP_ID;
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && std::path::PathBuf::from(home)
+            .join(".local/share/applications/io.github.lnoxsian.Velox.desktop")
+            .exists()
+    {
+        return CANONICAL_APP_ID;
+    }
+    CANONICAL_WM_CLASS_INSTANCE
+}
+
+pub struct WaylandState {
+    pub running: bool,
+    pub compositor: Option<wl_compositor::WlCompositor>,
+    pub shm: Option<wl_shm::WlShm>,
+    pub wm_base: Option<xdg_wm_base::XdgWmBase>,
+    pub seat: Option<wl_seat::WlSeat>,
+    pub surface: Option<wl_surface::WlSurface>,
+    pub xdg_surface: Option<xdg_surface::XdgSurface>,
+    pub xdg_toplevel: Option<xdg_toplevel::XdgToplevel>,
+    pub decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
+    pub toplevel_decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
+    pub use_csd: bool,
+    pub pointer_serial: u32,
+    pub pointer: Option<wl_pointer::WlPointer>,
+    pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub xkb_handler: XkbHandler,
+    pub repeat_config: Option<KeyRepeatConfig>,
+    pub active_repeat: Option<ActiveKeyRepeat>,
+    pub buffer: Option<WaylandShmBuffer>,
+    pub width: u32,
+    pub height: u32,
+    pub configured: bool,
+    pub events: VecDeque<PlatformEvent>,
+    pub modifiers: ModifiersState,
+    pub mouse_x: f64,
+    pub mouse_y: f64,
+    pub is_maximized: bool,
+    pub cursor_manager: Option<cursor::WaylandCursorManager>,
+    pub current_cursor: CursorIcon,
+    pub pointer_inside: bool,
+}
+
+pub const CSD_TITLE_BAR_HEIGHT: u32 = 38;
+
+impl WaylandState {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            running: true,
+            compositor: None,
+            shm: None,
+            wm_base: None,
+            seat: None,
+            surface: None,
+            xdg_surface: None,
+            xdg_toplevel: None,
+            decoration_manager: None,
+            toplevel_decoration: None,
+            use_csd: true,
+            pointer_serial: 0,
+            pointer: None,
+            keyboard: None,
+            xkb_handler: XkbHandler::new(),
+            repeat_config: None,
+            active_repeat: None,
+            buffer: None,
+            width: width.max(1),
+            height: height.max(1),
+            configured: false,
+            events: VecDeque::new(),
+            modifiers: ModifiersState::empty(),
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            is_maximized: false,
+            cursor_manager: None,
+            current_cursor: CursorIcon::Default,
+            pointer_inside: false,
+        }
+    }
+}
+
+pub struct WaylandWindow {
+    pub conn: Connection,
+    pub event_queue: EventQueue<WaylandState>,
+    pub qh: QueueHandle<WaylandState>,
+    pub state: WaylandState,
+}
+
+impl WaylandWindow {
+    pub fn new(title: &str, width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
+        let conn = Connection::connect_to_env()?;
+        let mut event_queue = conn.new_event_queue();
+        let qh = event_queue.handle();
+
+        let display = conn.display();
+        display.get_registry(&qh, ());
+
+        let mut state = WaylandState::new(width, height);
+
+        // Roundtrip to bind globals
+        event_queue.roundtrip(&mut state)?;
+
+        let compositor = state
+            .compositor
+            .clone()
+            .ok_or("Wayland compositor not found")?;
+        let wm_base = state.wm_base.clone().ok_or("XDG WM Base not found")?;
+        let surface = compositor.create_surface(&qh, ());
+        let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg_surface.get_toplevel(&qh, ());
+
+        toplevel.set_title(title.to_string());
+        toplevel.set_app_id(resolve_wayland_app_id().to_string());
+
+        // Request server-side window decorations if supported by compositor (e.g. KDE KWin)
+        if let Some(dec_mgr) = &state.decoration_manager {
+            let decoration = dec_mgr.get_toplevel_decoration(&toplevel, &qh, ());
+            decoration.set_mode(zxdg_toplevel_decoration_v1::Mode::ServerSide);
+            state.toplevel_decoration = Some(decoration);
+            // Default to CSD until compositor confirms Mode::ServerSide in configure event
+            state.use_csd = true;
+        } else {
+            // Compositor lacks zxdg_decoration_manager_v1 (e.g. GNOME, Cinnamon) -> must use CSD
+            state.use_csd = true;
+        }
+
+        surface.commit();
+
+        state.surface = Some(surface);
+        state.xdg_surface = Some(xdg_surface);
+        state.xdg_toplevel = Some(toplevel);
+
+        // Wait for initial configure event from compositor
+        while !state.configured {
+            event_queue.blocking_dispatch(&mut state)?;
+        }
+
+        let shm = state.shm.clone().ok_or("Wayland SHM not found")?;
+        let buffer = WaylandShmBuffer::new(&shm, &qh, state.width, state.height)?;
+        state.buffer = Some(buffer);
+
+        match cursor::WaylandCursorManager::new(&compositor, &shm, &qh) {
+            Ok(cm) => state.cursor_manager = Some(cm),
+            Err(e) => log::warn!("Failed to initialize Wayland cursor manager: {}", e),
+        }
+
+        let raw_fd = conn.as_fd().as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(raw_fd, libc::F_GETFL, 0);
+            if flags >= 0 {
+                libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+
+        unsafe {
+            if std::env::var("DESKTOP_STARTUP_ID").is_ok() {
+                std::env::remove_var("DESKTOP_STARTUP_ID");
+            }
+            if std::env::var("XDG_ACTIVATION_TOKEN").is_ok() {
+                std::env::remove_var("XDG_ACTIVATION_TOKEN");
+            }
+        }
+
+        Ok(Self {
+            conn,
+            event_queue,
+            qh,
+            state,
+        })
+    }
+
+    pub fn set_title(&self, title: &str) {
+        if let Some(toplevel) = &self.state.xdg_toplevel {
+            toplevel.set_title(title.to_string());
+            if let Some(surface) = &self.state.surface {
+                surface.commit();
+            }
+        }
+    }
+
+    pub fn set_cursor(&mut self, icon: CursorIcon) {
+        self.state.current_cursor = icon;
+        if self.state.pointer_inside {
+            if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer)
+            {
+                cm.apply_cursor(self.state.pointer_serial, icon, pointer);
+                let _ = self.conn.flush();
+            }
+        }
+    }
+
+    pub fn show_window_menu(&self, x: i32, y: i32) {
+        if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
+            toplevel.show_window_menu(seat, self.state.pointer_serial, x, y);
+            let _ = self.conn.flush();
+        }
+    }
+
+    pub fn start_interactive_resize(&self, edge: WindowResizeEdge) {
+        if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
+            let wayland_edge = match edge {
+                WindowResizeEdge::Top => xdg_toplevel::ResizeEdge::Top,
+                WindowResizeEdge::Bottom => xdg_toplevel::ResizeEdge::Bottom,
+                WindowResizeEdge::Left => xdg_toplevel::ResizeEdge::Left,
+                WindowResizeEdge::Right => xdg_toplevel::ResizeEdge::Right,
+                WindowResizeEdge::TopLeft => xdg_toplevel::ResizeEdge::TopLeft,
+                WindowResizeEdge::TopRight => xdg_toplevel::ResizeEdge::TopRight,
+                WindowResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
+                WindowResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
+            };
+            toplevel.resize(seat, self.state.pointer_serial, wayland_edge);
+            let _ = self.conn.flush();
+        }
+    }
+
+    #[inline]
+    pub fn set_visible(&mut self, _visible: bool) {}
+
+    #[inline]
+    pub fn uses_csd(&self) -> bool {
+        self.state.use_csd
+    }
+
+    #[inline]
+    pub fn csd_title_bar_height(&self) -> u32 {
+        if self.state.use_csd {
+            CSD_TITLE_BAR_HEIGHT
+        } else {
+            0
+        }
+    }
+
+    pub fn start_interactive_move(&self) {
+        if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
+            toplevel._move(seat, self.state.pointer_serial);
+            let _ = self.conn.flush();
+        }
+    }
+
+    pub fn minimize(&self) {
+        if let Some(toplevel) = &self.state.xdg_toplevel {
+            toplevel.set_minimized();
+            let _ = self.conn.flush();
+        }
+    }
+
+    pub fn toggle_maximize(&mut self) {
+        if let Some(toplevel) = &self.state.xdg_toplevel {
+            if self.state.is_maximized {
+                toplevel.unset_maximized();
+            } else {
+                toplevel.set_maximized();
+            }
+            let _ = self.conn.flush();
+        }
+    }
+
+    #[inline]
+    pub fn is_maximized(&self) -> bool {
+        self.state.is_maximized
+    }
+
+    #[inline]
+    pub fn post_close_requested(&mut self) {
+        self.state.events.push_back(PlatformEvent::CloseRequested);
+    }
+
+    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<crate::window::DamageRect>) {
+        let Some(rect) = damage else {
+            return;
+        };
+        if rect.width == 0 || rect.height == 0 || self.state.width == 0 || self.state.height == 0 {
+            return;
+        }
+
+        let width = self.state.width;
+        let height = self.state.height;
+
+        let needs_new_buf = match &self.state.buffer {
+            Some(buf) => buf.width != width || buf.height != height,
+            None => true,
+        };
+        if needs_new_buf {
+            if let Some(shm) = &self.state.shm
+                && let Ok(buf) = WaylandShmBuffer::new(shm, &self.qh, width, height)
+            {
+                self.state.buffer = Some(buf);
+            }
+        }
+
+        if let Some(buf) = &mut self.state.buffer {
+            let width = buf.width;
+            let height = buf.height;
+            if width == 0 || height == 0 {
+                return;
+            }
+
+            let damaged_y = rect.y.min(height);
+            let damaged_h = rect.height.min(height.saturating_sub(damaged_y));
+            if damaged_h == 0 {
+                return;
+            }
+
+            let stride = width as usize;
+            let start_px = (damaged_y as usize) * stride;
+            let num_px = (damaged_h as usize) * stride;
+            let end_px = (start_px + num_px).min(src_pixels.len());
+
+            let dest = buf.pixels_mut();
+            if start_px < dest.len() && end_px <= dest.len() && end_px <= src_pixels.len() {
+                dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
+            }
+
+            if let Some(surface) = &self.state.surface {
+                surface.attach(Some(&buf.buffer), 0, 0);
+                surface.damage_buffer(0, damaged_y as i32, width as i32, damaged_h as i32);
+                surface.commit();
+            }
+        }
+        let _ = self.conn.flush();
+    }
+
+    #[inline]
+    pub fn next_wake_time(&self) -> Option<Instant> {
+        self.state.active_repeat.as_ref().map(|r| r.next_deadline)
+    }
+
+    pub fn poll_event(&mut self) -> Option<PlatformEvent> {
+        let _ = self.conn.flush();
+        if let Some(guard) = self.conn.prepare_read() {
+            if let Err(e) = guard.read() {
+                match e {
+                    wayland_client::backend::WaylandError::Io(ref io_err)
+                        if io_err.kind() == std::io::ErrorKind::WouldBlock => {}
+                    _ => {
+                        log::warn!("Wayland socket error: {}", e);
+                        self.state.events.push_back(PlatformEvent::CloseRequested);
+                    }
+                }
+            }
+        }
+        if let Err(e) = self.event_queue.dispatch_pending(&mut self.state) {
+            log::warn!("Wayland dispatch error: {}", e);
+            self.state.events.push_back(PlatformEvent::CloseRequested);
+        }
+
+        if let Some(event) = self.state.events.pop_front() {
+            return Some(event);
+        }
+
+        // Handle active key repeat when no events arrived from compositor
+        if let Some(repeat) = &mut self.state.active_repeat {
+            let now = Instant::now();
+            if now >= repeat.next_deadline {
+                repeat.next_deadline += repeat.interval;
+                if repeat.next_deadline <= now {
+                    repeat.next_deadline = now + repeat.interval;
+                }
+                return Some(PlatformEvent::KeyPressed {
+                    key: repeat.key.clone(),
+                    text: repeat.text.clone(),
+                    modifiers: repeat.modifiers,
+                });
+            }
+        }
+
+        None
+    }
+}
+
+// Implement Dispatch for Wayland Protocols
+impl Dispatch<wl_registry::WlRegistry, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            match interface.as_str() {
+                "wl_compositor" => {
+                    state.compositor = Some(registry.bind(name, version.min(6), qh, ()));
+                }
+                "wl_shm" => {
+                    state.shm = Some(registry.bind(name, version.min(1), qh, ()));
+                }
+                "xdg_wm_base" => {
+                    state.wm_base = Some(registry.bind(name, version.min(4), qh, ()));
+                }
+                "wl_seat" => {
+                    state.seat = Some(registry.bind(name, version.min(7), qh, ()));
+                }
+                "zxdg_decoration_manager_v1" => {
+                    state.decoration_manager = Some(registry.bind(name, version.min(1), qh, ()));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_compositor::WlCompositor, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &wl_compositor::WlCompositor,
+        _: wl_compositor::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_shm::WlShm, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &wl_shm::WlShm,
+        _: wl_shm::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_shm_pool::WlShmPool, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &wl_shm_pool::WlShmPool,
+        _: wl_shm_pool::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        _: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &wl_surface::WlSurface,
+        _: wl_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        wm_base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            wm_base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+            state.configured = true;
+        }
+    }
+}
+
+impl Dispatch<xdg_toplevel::XdgToplevel, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &xdg_toplevel::XdgToplevel,
+        event: xdg_toplevel::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
+                let w = if width > 0 { width as u32 } else { state.width };
+                let h = if height > 0 {
+                    height as u32
+                } else {
+                    state.height
+                };
+                state.is_maximized = states.chunks_exact(4).any(|c| {
+                    u32::from_ne_bytes(c.try_into().unwrap_or([0; 4]))
+                        == xdg_toplevel::State::Maximized as u32
+                });
+                if w != state.width || h != state.height {
+                    state.width = w;
+                    state.height = h;
+                    if let Some(PlatformEvent::Resized { width, height }) = state.events.back_mut()
+                    {
+                        *width = w;
+                        *height = h;
+                    } else {
+                        state.events.push_back(PlatformEvent::Resized {
+                            width: w,
+                            height: h,
+                        });
+                    }
+                }
+            }
+            xdg_toplevel::Event::Close => {
+                state.events.push_back(PlatformEvent::CloseRequested);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: wayland_client::WEnum::Value(caps),
+        } = event
+        {
+            if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if caps.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        pointer: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                serial,
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_serial = serial;
+                state.pointer_inside = true;
+                state.mouse_x = surface_x;
+                state.mouse_y = surface_y;
+                if let Some(cm) = &mut state.cursor_manager {
+                    cm.apply_cursor(serial, state.current_cursor, pointer);
+                }
+                state.events.push_back(PlatformEvent::CursorMoved {
+                    x: surface_x,
+                    y: surface_y,
+                });
+            }
+            wl_pointer::Event::Leave { .. } => {
+                state.pointer_inside = false;
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.mouse_x = surface_x;
+                state.mouse_y = surface_y;
+                state.events.push_back(PlatformEvent::CursorMoved {
+                    x: surface_x,
+                    y: surface_y,
+                });
+            }
+            wl_pointer::Event::Button {
+                serial,
+                button,
+                state: btn_state,
+                ..
+            } => {
+                state.pointer_serial = serial;
+                let s = match btn_state {
+                    wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => {
+                        ElementState::Pressed
+                    }
+                    _ => ElementState::Released,
+                };
+                let b = match button {
+                    0x110 => MouseButton::Left,
+                    0x111 => MouseButton::Right,
+                    0x112 => MouseButton::Middle,
+                    other => MouseButton::Other(other as u16),
+                };
+                state.events.push_back(PlatformEvent::MouseInput {
+                    state: s,
+                    button: b,
+                });
+            }
+            wl_pointer::Event::Axis { value, .. } => {
+                let delta = if value > 0.0 { -1.0 } else { 1.0 };
+                state
+                    .events
+                    .push_back(PlatformEvent::MouseWheel { delta_y: delta });
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Keymap { fd, size, .. } => {
+                state.xkb_handler.update_keymap(&fd, size);
+            }
+            wl_keyboard::Event::Enter { .. } => {
+                state.events.push_back(PlatformEvent::Focused(true));
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                state.active_repeat = None;
+                let prev_mods = state.modifiers;
+                state.modifiers = ModifiersState::empty();
+                if state.modifiers != prev_mods {
+                    state
+                        .events
+                        .push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                }
+                state.events.push_back(PlatformEvent::Focused(false));
+            }
+            wl_keyboard::Event::Key {
+                key,
+                state: key_state,
+                ..
+            } => {
+                let is_pressed = matches!(
+                    key_state,
+                    wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
+                );
+                let (k, text, repeats, mods) =
+                    state.xkb_handler.translate_key(key, state.modifiers);
+                if is_pressed {
+                    let prev_mods = state.modifiers;
+                    state.modifiers = mods;
+                    if state.modifiers != prev_mods {
+                        state
+                            .events
+                            .push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                    }
+                }
+                if let Some(k) = k {
+                    if is_pressed {
+                        state.events.push_back(PlatformEvent::KeyPressed {
+                            key: k.clone(),
+                            text: text.clone(),
+                            modifiers: state.modifiers,
+                        });
+
+                        if repeats {
+                            if let Some(cfg) = state.repeat_config {
+                                let delay = Duration::from_millis(cfg.delay.max(1) as u64);
+                                let interval = Duration::from_micros(
+                                    (1_000_000.0 / (cfg.rate.max(1) as f64)) as u64,
+                                );
+                                let now = Instant::now();
+                                state.active_repeat = Some(ActiveKeyRepeat {
+                                    scancode: key,
+                                    key: k,
+                                    text,
+                                    modifiers: state.modifiers,
+                                    next_deadline: now + delay,
+                                    interval,
+                                });
+                            }
+                        } else {
+                            state.active_repeat = None;
+                        }
+                    } else {
+                        if let Some(active) = &state.active_repeat
+                            && active.scancode == key
+                        {
+                            state.active_repeat = None;
+                        }
+                        state.events.push_back(PlatformEvent::KeyReleased {
+                            key: k,
+                            modifiers: state.modifiers,
+                        });
+                    }
+                }
+            }
+            wl_keyboard::Event::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                group,
+                ..
+            } => {
+                let prev_mods = state.modifiers;
+                state.modifiers = state.xkb_handler.update_modifiers(
+                    mods_depressed,
+                    mods_latched,
+                    mods_locked,
+                    group,
+                );
+                if let Some(repeat) = &mut state.active_repeat {
+                    repeat.modifiers = state.modifiers;
+                }
+                if state.modifiers != prev_mods {
+                    state
+                        .events
+                        .push_back(PlatformEvent::ModifiersChanged(state.modifiers));
+                }
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                if rate > 0 && delay > 0 {
+                    state.repeat_config = Some(KeyRepeatConfig { rate, delay });
+                } else {
+                    state.repeat_config = None;
+                    state.active_repeat = None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
+        _: zxdg_decoration_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+        event: zxdg_toplevel_decoration_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_toplevel_decoration_v1::Event::Configure { mode } = event {
+            log::debug!("Wayland window decoration mode: {:?}", mode);
+            match mode {
+                wayland_client::WEnum::Value(zxdg_toplevel_decoration_v1::Mode::ServerSide) => {
+                    state.use_csd = false;
+                    log::info!("Wayland compositor provides server-side decorations");
+                }
+                _ => {
+                    state.use_csd = true;
+                    log::info!("Wayland compositor requires client-side decorations (CSD)");
+                }
+            }
+        }
+    }
+}

@@ -4,19 +4,17 @@ use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
 use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
-use crate::pty::process::spawn_process;
-use crate::renderer::renderer::{PaneRenderData, Renderer, SeparatorRenderData};
-use crate::renderer::software::CpuPaneRenderData;
-use crate::renderer::software::CpuRenderer;
+use crate::pty::process::spawn_terminal_pty;
+use crate::renderer::{CpuPaneRenderData, CpuRenderer, SeparatorRenderData};
 use crate::terminal::terminal::Terminal;
-use glutin::prelude::*;
+use crate::window::PlatformWindow;
+use crate::window::event::{CursorIcon, ModifiersState, PlatformEvent};
 use std::collections::HashMap;
-use std::num::NonZeroU32;
+use std::os::fd::RawFd;
 use std::sync::Arc;
-use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::window::{Window, WindowId};
+use std::sync::mpsc::{Receiver, Sender};
+
+pub type WindowId = u64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct DraggingSeparator {
@@ -26,60 +24,6 @@ pub struct DraggingSeparator {
     pub bounds_y: f32,
     pub bounds_w: f32,
     pub bounds_h: f32,
-}
-
-#[allow(clippy::large_enum_variant)]
-pub enum WindowRendererBackend {
-    OpenGL {
-        renderer: Renderer,
-        gl_surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
-        gl_context: glutin::context::PossiblyCurrentContext,
-    },
-    Software {
-        renderer: CpuRenderer,
-        surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
-    },
-}
-
-impl WindowRendererBackend {
-    #[inline(always)]
-    pub fn cell_width(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_width,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_width,
-        }
-    }
-
-    #[inline(always)]
-    pub fn cell_height(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_height,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
-        }
-    }
-
-    #[inline(always)]
-    pub fn base_cell_width(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_width,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_width,
-        }
-    }
-
-    #[inline(always)]
-    pub fn base_cell_height(&self) -> u32 {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.font_loader.cell_height,
-            Self::Software { renderer, .. } => renderer.glyph_cache.cell_height,
-        }
-    }
-
-    pub fn set_tab_font_size(&mut self, font_size: f32) {
-        match self {
-            Self::OpenGL { renderer, .. } => renderer.set_tab_font_size(font_size),
-            Self::Software { renderer, .. } => renderer.tab_glyph_cache.update_font_size(font_size),
-        }
-    }
 }
 
 pub enum CustomEvent {
@@ -108,59 +52,74 @@ pub enum CustomEvent {
     },
 }
 
-fn spawn_pty_reader(
-    pty_reader: Arc<PtyMaster>,
-    proxy: EventLoopProxy<CustomEvent>,
-    window_id: WindowId,
-    tab_id: u64,
-    pane_id: u64,
-) {
-    std::thread::spawn(move || {
-        let mut buf = crate::pty::acquire_pty_buffer();
-        loop {
-            match pty_reader.read(&mut buf) {
-                Ok(0) => {
-                    crate::pty::recycle_pty_buffer(buf);
-                    let _ = proxy.send_event(CustomEvent::PtyExit {
-                        window_id,
-                        tab_id,
-                        pane_id,
-                    });
-                    break;
-                }
-                Ok(n) => {
-                    let mut send_buf = crate::pty::acquire_pty_buffer();
-                    send_buf[..n].copy_from_slice(&buf[..n]);
-                    send_buf.truncate(n);
-                    let _ = proxy.send_event(CustomEvent::PtyData {
-                        window_id,
-                        tab_id,
-                        pane_id,
-                        data: send_buf,
-                    });
-                }
-                Err(_) => {
-                    crate::pty::recycle_pty_buffer(buf);
-                    let _ = proxy.send_event(CustomEvent::PtyExit {
-                        window_id,
-                        tab_id,
-                        pane_id,
-                    });
-                    break;
-                }
+#[derive(Clone)]
+pub struct EventLoopProxy {
+    sender: Sender<CustomEvent>,
+    wake_fd: RawFd,
+    pub(crate) wake_pending: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EventLoopProxy {
+    pub fn dummy() -> Self {
+        let (sender, _) = std::sync::mpsc::channel();
+        Self {
+            sender,
+            wake_fd: -1,
+            wake_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub fn new(sender: Sender<CustomEvent>, wake_fd: RawFd) -> Self {
+        Self {
+            sender,
+            wake_fd,
+            wake_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub fn send(&self, event: CustomEvent) -> Result<(), std::sync::mpsc::SendError<CustomEvent>> {
+        self.sender.send(event)?;
+        if self.wake_fd >= 0
+            && !self
+                .wake_pending
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            let val = 1u64;
+            unsafe {
+                libc::write(
+                    self.wake_fd,
+                    &val as *const _ as *const libc::c_void,
+                    std::mem::size_of::<u64>(),
+                );
             }
         }
-    });
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResizeState {
+    pub pending_width: u32,
+    pub pending_height: u32,
+    pub last_applied_width: u32,
+    pub last_applied_height: u32,
+    pub last_cols: usize,
+    pub last_rows: usize,
+    pub is_pending: bool,
 }
 
 pub struct WindowState {
-    pub backend: WindowRendererBackend,
-    pub window: Arc<Window>,
+    pub window_id: WindowId,
+    pub renderer: CpuRenderer,
+    pub window: PlatformWindow,
     pub mouse_x: f64,
     pub mouse_y: f64,
     pub scroll_multiplier: f64,
     pub fps_limit: Option<u32>,
     pub last_frame_instant: std::time::Instant,
+    pub last_input_instant: std::time::Instant,
+    pub last_key_instant: std::time::Instant,
+    pub last_resize_instant: std::time::Instant,
     pub current_title: String,
     pub default_font_size: f32,
     pub current_font_size: f32,
@@ -178,7 +137,7 @@ pub struct WindowState {
     pub last_mouse_cell: (usize, usize),
     pub last_mouse_pane_id: Option<PaneId>,
     pub is_focused: bool,
-    pub current_cursor_icon: winit::window::CursorIcon,
+    pub current_cursor_icon: CursorIcon,
     pub needs_redraw: bool,
     pub content_dirty: bool,
     pub cursor_blink_enabled: bool,
@@ -194,7 +153,8 @@ pub struct WindowState {
     pub next_pane_id: u64,
     pub next_split_id: u64,
     pub tab_bar: TabBar,
-    pub event_loop_proxy: EventLoopProxy<CustomEvent>,
+    pub event_loop_proxy: EventLoopProxy,
+    pub pty_reactor: crate::pty::PtyReactorHandle,
     pub tab_bar_dirty: bool,
     pub tab_bar_render_cache: Option<TabBarRenderInfo>,
     pub dragging_separator: Option<DraggingSeparator>,
@@ -204,30 +164,121 @@ pub struct WindowState {
     pub min_rows: usize,
     pub separator_color: Option<String>,
     pub active_separator_color: Option<String>,
+    pub last_separator_drag_sync: Option<std::time::Instant>,
+    pub csd_button_layout: crate::window::csd::CsdButtonLayout,
+    pub csd_palette: crate::window::csd::CsdPalette,
+    pub hovered_csd_button: Option<crate::window::csd::CsdButtonType>,
+    pub pressed_csd_button: Option<crate::window::csd::CsdButtonType>,
+    pub resize_state: ResizeState,
 }
 
 impl Drop for WindowState {
     fn drop(&mut self) {
-        if let WindowRendererBackend::OpenGL {
-            gl_context,
-            gl_surface,
-            ..
-        } = &self.backend
-        {
-            let _ = gl_context.make_current(gl_surface);
-        }
         crate::memory::trim_allocator_memory();
     }
 }
 
 impl WindowState {
+    pub fn create_test_window_state(pty_master: Arc<PtyMaster>, cols: usize, rows: usize) -> Self {
+        let theme = crate::theme::theme::Theme::default();
+        let renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 800, 600, true, 1.0);
+        let terminal = Terminal::new(cols, rows);
+        let config = crate::config::defaults::default_config();
+        let tab_bar = TabBar::from_config(&config);
+        let tab = Tab::new(
+            0,
+            pty_master,
+            terminal,
+            None,
+            "test".to_string(),
+            false,
+            14.0,
+        );
+        let csd_palette = crate::window::csd::CsdPalette::resolve(
+            config.decorations_config().as_ref(),
+            &renderer.palette,
+        );
+        let now = std::time::Instant::now();
+        WindowState {
+            window_id: 1,
+            renderer,
+            window: PlatformWindow::dummy(800, 600),
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            scroll_multiplier: 1.0,
+            fps_limit: Some(60),
+            last_frame_instant: now,
+            last_input_instant: now,
+            last_key_instant: now,
+            last_resize_instant: now,
+            current_title: "test".to_string(),
+            default_font_size: 14.0,
+            current_font_size: 14.0,
+            base_cell_width: 8,
+            base_cell_height: 16,
+            padding_x: 4.0,
+            padding_y: 4.0,
+            is_mouse_down: false,
+            mouse_down_pane_id: None,
+            last_mouse_button: 0,
+            last_click_instant: None,
+            last_click_pos: (0, 0),
+            last_click_pane_id: None,
+            click_count: 0,
+            last_mouse_cell: (0, 0),
+            last_mouse_pane_id: None,
+            is_focused: true,
+            current_cursor_icon: CursorIcon::Default,
+            needs_redraw: false,
+            content_dirty: false,
+            cursor_blink_enabled: false,
+            cursor_blink_on: true,
+            last_cursor_blink: now,
+            hide_mouse_on_typing: false,
+            opacity: 1.0,
+            window_dim: 0.0,
+            shell_path: "/bin/sh".to_string(),
+            tabs: vec![tab],
+            active_tab_index: 0,
+            next_tab_id: 1,
+            next_pane_id: 1,
+            next_split_id: 1,
+            tab_bar,
+            event_loop_proxy: EventLoopProxy::dummy(),
+            pty_reactor: crate::pty::PtyReactorHandle::dummy(),
+            tab_bar_dirty: false,
+            tab_bar_render_cache: None,
+            dragging_separator: None,
+            hovered_separator: None,
+            separator_size: 4.0,
+            min_cols: 10,
+            min_rows: 5,
+            separator_color: None,
+            active_separator_color: None,
+            last_separator_drag_sync: None,
+            csd_button_layout: crate::window::csd::CsdButtonLayout::default(),
+            csd_palette,
+            hovered_csd_button: None,
+            pressed_csd_button: None,
+            resize_state: ResizeState {
+                last_applied_width: 800,
+                last_applied_height: 600,
+                last_cols: cols,
+                last_rows: rows,
+                ..Default::default()
+            },
+        }
+    }
+
     #[inline]
     pub fn mark_interaction(&mut self) {
+        let now = std::time::Instant::now();
+        self.last_input_instant = now;
         if self.cursor_blink_enabled && !self.cursor_blink_on {
             self.cursor_blink_on = true;
             self.needs_redraw = true;
         }
-        self.last_cursor_blink = std::time::Instant::now();
+        self.last_cursor_blink = now;
     }
 
     #[inline]
@@ -248,30 +299,43 @@ impl WindowState {
     }
 
     pub fn release_memory(&mut self) {
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_context,
-                gl_surface,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                renderer.release_memory();
-            }
-            WindowRendererBackend::Software { renderer, .. } => {
-                renderer.release_memory();
-            }
+        self.renderer.release_memory();
+        for tab in &mut self.tabs {
+            tab.for_each_pane_mut(|pane| {
+                pane.terminal.release_memory();
+            });
         }
+        self.tab_bar_render_cache = None;
+        crate::screen::scrollback::clear_global_scrollback_cache();
         crate::memory::trim_allocator_memory();
+    }
+
+    pub fn prune_idle_fallbacks(&mut self, max_idle: std::time::Duration) -> usize {
+        self.renderer.prune_idle_fallbacks(max_idle)
     }
 
     #[inline(always)]
     pub fn cell_width(&self) -> u32 {
-        self.backend.cell_width()
+        self.renderer.glyph_cache.cell_width
     }
 
     #[inline(always)]
     pub fn cell_height(&self) -> u32 {
-        self.backend.cell_height()
+        self.renderer.glyph_cache.cell_height
+    }
+
+    #[inline(always)]
+    pub fn base_cell_width(&self) -> u32 {
+        self.renderer.glyph_cache.cell_width
+    }
+
+    #[inline(always)]
+    pub fn base_cell_height(&self) -> u32 {
+        self.renderer.glyph_cache.cell_height
+    }
+
+    pub fn set_tab_font_size(&mut self, font_size: f32) {
+        self.renderer.tab_glyph_cache.update_font_size(font_size);
     }
 
     #[inline(always)]
@@ -294,8 +358,50 @@ impl WindowState {
         self.active_tab_mut().active_pane_mut()
     }
 
+    pub fn write_to_pane(&self, pane_id: u64, data: Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        let tab = self.active_tab();
+        if let Some(pane) = tab.tree.find_pane(pane_id) {
+            // Fast-path: small input (e.g. single keystrokes <= 4096 bytes) directly calls
+            // non-blocking write to avoid reactor wake/channel latency.
+            if data.len() <= 4096 {
+                match pane.pty_master.write(&data) {
+                    Ok(n) if n == data.len() => (),
+                    Ok(n) => {
+                        let remainder = data[n..].to_vec();
+                        let _ = self
+                            .pty_reactor
+                            .write(self.window_id, tab.id, pane_id, remainder);
+                    }
+                    Err(e)
+                        if e.raw_os_error() == Some(libc::EAGAIN)
+                            || e.raw_os_error() == Some(libc::EWOULDBLOCK) =>
+                    {
+                        let _ = self
+                            .pty_reactor
+                            .write(self.window_id, tab.id, pane_id, data);
+                    }
+                    Err(_) => {}
+                }
+            } else {
+                // Large burst (e.g. paste of large text/corpus): queue asynchronously through the reactor
+                let _ = self
+                    .pty_reactor
+                    .write(self.window_id, tab.id, pane_id, data);
+            }
+        }
+    }
+
     #[inline(always)]
-    pub fn set_cursor_cached(&mut self, icon: winit::window::CursorIcon) {
+    pub fn write_to_active_pane(&self, data: Vec<u8>) {
+        let active_id = self.active_pane().id;
+        self.write_to_pane(active_id, data);
+    }
+
+    #[inline(always)]
+    pub fn set_cursor_cached(&mut self, icon: CursorIcon) {
         if self.current_cursor_icon != icon {
             self.current_cursor_icon = icon;
             self.window.set_cursor(icon);
@@ -318,11 +424,12 @@ impl WindowState {
         let size = self.window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
+        let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let total_x = 0.0;
-        let total_y = tab_bar_h;
+        let total_y = csd_h + tab_bar_h;
         let total_w = (width as f32).max(10.0);
-        let total_h = (height as f32 - tab_bar_h).max(10.0);
+        let total_h = (height as f32 - csd_h - tab_bar_h).max(10.0);
 
         if let Some(tab) = self.tabs.get(tab_index) {
             tab.tree.calculate_layout(
@@ -357,10 +464,19 @@ impl WindowState {
                         || pane.terminal.grid.height != rect.rows
                     {
                         pane.terminal.resize(rect.cols as u32, rect.rows as u32);
+                        crate::diagnostics::ResizeStats::record_pty_resize();
                         let _ = pane.pty_master.resize(rect.cols as u16, rect.rows as u16);
                         pane.terminal.active_grid_mut().mark_all_dirty();
                     }
                 }
+            }
+        }
+
+        if tab_index == self.active_tab_index {
+            if let Some(tab) = self.tabs.get(self.active_tab_index) {
+                let active_pane = tab.active_pane();
+                self.resize_state.last_cols = active_pane.terminal.grid.width;
+                self.resize_state.last_rows = active_pane.terminal.grid.height;
             }
         }
     }
@@ -373,11 +489,12 @@ impl WindowState {
         let size = self.window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
+        let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let avail_w = (width as f32 - self.padding_x * 2.0).max(10.0);
-        let avail_h = (height as f32 - tab_bar_h - self.padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / self.cell_width()).max(1);
-        let rows = ((avail_h as u32) / self.cell_height()).max(1);
+        let avail_h = (height as f32 - csd_h - tab_bar_h - self.padding_y * 2.0).max(10.0);
+        let cols = ((avail_w as u32) / self.cell_width().max(1)).max(1);
+        let rows = ((avail_h as u32) / self.cell_height().max(1)).max(1);
         (cols, rows)
     }
 
@@ -388,19 +505,7 @@ impl WindowState {
     }
 
     pub fn set_renderer_font_size(&mut self, size: f32) {
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                renderer.set_font_size(size);
-            }
-            WindowRendererBackend::Software { renderer, .. } => {
-                renderer.update_font_size(size);
-            }
-        }
+        self.renderer.update_font_size(size);
     }
 
     pub fn sync_active_pane_font_size(&mut self) {
@@ -443,33 +548,59 @@ impl WindowState {
         self.resize_active_tab();
     }
 
-    pub fn resize_renderer(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+    pub fn request_resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if self.resize_state.last_applied_width == width
+            && self.resize_state.last_applied_height == height
+            && !self.resize_state.is_pending
+        {
             return;
         }
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let _ = gl_context.make_current(gl_surface);
-                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-                    gl_surface.resize(gl_context, w, h);
-                }
-                renderer.resize(width, height);
-            }
-            WindowRendererBackend::Software { renderer, surface } => {
-                if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-                    let _ = surface.resize(w, h);
-                }
-                renderer.resize(width, height);
-            }
+
+        self.resize_state.pending_width = width;
+        self.resize_state.pending_height = height;
+        self.resize_state.is_pending = true;
+        self.needs_redraw = true;
+    }
+
+    pub fn apply_pending_resize(&mut self) {
+        if !self.resize_state.is_pending {
+            return;
         }
+        self.resize_state.is_pending = false;
+        let width = self.resize_state.pending_width;
+        let height = self.resize_state.pending_height;
+        self.apply_viewport_resize(width, height);
+    }
+
+    pub fn apply_viewport_resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if self.resize_state.last_applied_width == width
+            && self.resize_state.last_applied_height == height
+        {
+            return;
+        }
+
+        crate::diagnostics::ResizeStats::record_applied_viewport_resize();
+
+        self.resize_state.last_applied_width = width;
+        self.resize_state.last_applied_height = height;
+        self.last_resize_instant = std::time::Instant::now();
+
+        self.window.resize_dummy(width, height);
+        self.renderer.resize(width, height);
         self.resize_active_tab();
         self.needs_redraw = true;
         self.content_dirty = true;
         self.window.request_redraw();
+    }
+
+    pub fn resize_renderer(&mut self, width: u32, height: u32) {
+        self.apply_viewport_resize(width, height);
     }
 
     pub fn split_horizontal(&mut self) -> Option<PaneId> {
@@ -492,28 +623,28 @@ impl WindowState {
         let split_id = self.next_split_id;
         self.next_split_id += 1;
 
+        let csd_h = self.window.csd_title_bar_height() as f32;
         let avail_w =
             (self.window.inner_size().width.max(1) as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h = (self.window.inner_size().height.max(1) as f32
+            - csd_h
             - self.tab_bar_height()
             - self.padding_y * 2.0)
             .max(10.0);
         let cols = ((avail_w as u32) / self.base_cell_width.max(1)).max(1);
         let rows = ((avail_h as u32) / self.base_cell_height.max(1)).max(1);
 
-        let pty_master = Arc::new(spawn_process(&self.shell_path, None, None).ok()?);
+        let cwd = self.active_pane().current_working_directory();
+        let pty_spawn = spawn_terminal_pty(&self.shell_path, None, cwd.as_deref());
+        let pty_master = Arc::new(pty_spawn.ok()?);
         let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::new(cols as usize, rows as usize);
         terminal.set_cell_dimensions(self.base_cell_width, self.base_cell_height);
 
-        spawn_pty_reader(
-            pty_master.clone(),
-            self.event_loop_proxy.clone(),
-            self.window.id(),
-            tab_id,
-            new_pane_id,
-        );
+        let _ = self
+            .pty_reactor
+            .register(self.window_id, tab_id, new_pane_id, pty_master.clone());
 
         let font_size = self.default_font_size;
         let new_pane = Pane::new(new_pane_id, pty_master, terminal, font_size, false);
@@ -559,6 +690,7 @@ impl WindowState {
 
         let removed = tab.remove_pane(pane_id);
         if removed.is_some() {
+            let _ = self.pty_reactor.unregister(self.window_id, tab_id, pane_id);
             tab.clear_unfocused_selections();
             self.sync_active_pane_font_size();
             self.sync_tab_panes_dimensions(tab_idx);
@@ -651,6 +783,14 @@ impl WindowState {
         custom_title: Option<String>,
         hold: Option<bool>,
     ) -> u64 {
+        let working_directory = working_directory.or_else(|| {
+            if !self.tabs.is_empty() {
+                self.active_pane().current_working_directory()
+            } else {
+                None
+            }
+        });
+
         let tab_id = self.next_tab_id;
         self.next_tab_id += 1;
         let pane_id = self.next_pane_id;
@@ -658,14 +798,23 @@ impl WindowState {
 
         let was_visible = self.tab_bar.is_visible(self.tabs.len());
 
-        let pty_master = Arc::new(
-            spawn_process(
-                &self.shell_path,
-                command.as_deref(),
-                working_directory.as_deref(),
-            )
-            .unwrap(),
+        let pty_spawn = spawn_terminal_pty(
+            &self.shell_path,
+            command.as_deref(),
+            working_directory.as_deref(),
         );
+
+        let pty_master = match pty_spawn {
+            Ok(pty) => Arc::new(pty),
+            Err(e) => {
+                log::error!("Critical failure spawning terminal shell process: {}", e);
+                return self
+                    .tabs
+                    .get(self.active_tab_index)
+                    .map(|t| t.id)
+                    .unwrap_or(0);
+            }
+        };
 
         let tab_font_size = self.default_font_size;
         if (self.current_font_size - tab_font_size).abs() > 0.01 {
@@ -680,13 +829,9 @@ impl WindowState {
         terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
         let initial_title = custom_title.clone().unwrap_or_else(|| "velox".to_string());
 
-        spawn_pty_reader(
-            pty_master.clone(),
-            self.event_loop_proxy.clone(),
-            self.window.id(),
-            tab_id,
-            pane_id,
-        );
+        let _ = self
+            .pty_reactor
+            .register(self.window_id, tab_id, pane_id, pty_master.clone());
 
         let pane = Pane::with_title(
             pane_id,
@@ -728,14 +873,21 @@ impl WindowState {
             return false;
         }
 
-        self.tabs.remove(index);
+        let removed_tab = self.tabs.remove(index);
+        for pane in removed_tab.tree.panes() {
+            let _ = self
+                .pty_reactor
+                .unregister(self.window_id, removed_tab.id, pane.id);
+        }
 
         if self.tabs.is_empty() {
             return true;
         }
 
-        if self.active_tab_index >= self.tabs.len() {
-            self.active_tab_index = self.tabs.len() - 1;
+        if index < self.active_tab_index {
+            self.active_tab_index -= 1;
+        } else if self.active_tab_index >= self.tabs.len() {
+            self.active_tab_index = self.tabs.len().saturating_sub(1);
         }
 
         let active_font_size = self.tabs[self.active_tab_index].active_pane().font_size;
@@ -806,33 +958,18 @@ impl WindowState {
         }
     }
 
-    pub fn draw(&mut self) {
-        let size = self.window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-
-        self.last_frame_instant = std::time::Instant::now();
-
-        // 1. Ensure renderer font size matches the active pane's isolated font size
-        if let Some(active_tab) = self.tabs.get(self.active_tab_index) {
-            let active_pane_font_size = active_tab.active_pane().font_size;
-            if (self.current_font_size - active_pane_font_size).abs() > 0.01 {
-                self.current_font_size = active_pane_font_size;
-                self.set_renderer_font_size(active_pane_font_size);
-            }
-        }
-
-        // 2. Update title for active tab (and window title)
+    fn update_active_tab_title(&mut self) {
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index)
             && (active_tab.update_title() || self.current_title != active_tab.current_title)
         {
             self.window.set_title(&active_tab.current_title);
             self.current_title = active_tab.current_title.clone();
             self.tab_bar_dirty = true;
+            self.renderer.damage.mark_all();
         }
+    }
 
-        // 3. Prepare tab bar render info
+    fn update_tab_bar_cache_if_dirty(&mut self) {
         let is_tab_bar_visible = self.tab_bar.is_visible(self.tabs.len());
         if is_tab_bar_visible && (self.tab_bar_dirty || self.tab_bar_render_cache.is_none()) {
             for tab in &mut self.tabs {
@@ -860,27 +997,18 @@ impl WindowState {
         } else if !is_tab_bar_visible {
             self.tab_bar_render_cache = None;
         }
-        let tab_bar_info: Option<&TabBarRenderInfo> = if is_tab_bar_visible {
-            self.tab_bar_render_cache.as_ref()
-        } else {
-            None
-        };
+    }
 
-        if self.tabs.is_empty() {
-            return;
-        }
+    fn prepare_separator_render_data(
+        sep_rects: Vec<crate::app::split::SeparatorRect>,
+        active_pane_rect: Option<crate::app::split::PaneRect>,
+        dragging_separator: Option<DraggingSeparator>,
+        hovered_separator: Option<SplitId>,
+    ) -> Vec<SeparatorRenderData> {
+        let dragging_split_id = dragging_separator.map(|d| d.split_id);
+        let hovered_split_id = hovered_separator;
 
-        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
-        let active_pane_id = self.active_tab().active_pane_id;
-        let active_pane_rect = pane_rects
-            .iter()
-            .find(|r| r.pane_id == active_pane_id)
-            .copied();
-
-        let dragging_split_id = self.dragging_separator.map(|d| d.split_id);
-        let hovered_split_id = self.hovered_separator;
-
-        let separator_render_datas: Vec<SeparatorRenderData> = sep_rects
+        sep_rects
             .into_iter()
             .map(|r| {
                 let active_segment = active_pane_rect.and_then(|ap| r.active_segment_for_pane(&ap));
@@ -893,19 +1021,124 @@ impl WindowState {
                     is_dragging: dragging_split_id == Some(r.split_id),
                 }
             })
-            .collect();
+            .collect()
+    }
 
-        let effective_dim = if !self.is_focused {
-            self.window_dim
-        } else {
-            0.0
-        };
+    #[inline(always)]
+    pub(crate) fn compute_cursor_visibility(
+        is_active: bool,
+        scroll_offset: usize,
+        grid_cursor_visible: bool,
+        cursor_blink_enabled: bool,
+        cursor_blink_on: bool,
+    ) -> bool {
+        is_active
+            && scroll_offset == 0
+            && grid_cursor_visible
+            && (!cursor_blink_enabled || cursor_blink_on)
+    }
 
+    fn prepare_pane_render_data<'a>(
+        pane_rects: &[crate::app::split::PaneRect],
+        active_tab: &'a Tab,
+        active_pane_id: PaneId,
+        cursor_blink_enabled: bool,
+        cursor_blink_on: bool,
+        is_focused: bool,
+    ) -> Vec<CpuPaneRenderData<'a>> {
+        let mut pane_render_datas = Vec::with_capacity(pane_rects.len());
+
+        for rect in pane_rects {
+            if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
+                let active_grid = pane.terminal.active_grid();
+                let width = active_grid.width;
+                let offset = active_grid.scroll_offset;
+                let is_active = pane.id == active_pane_id;
+
+                let cursor_visible = Self::compute_cursor_visibility(
+                    is_active,
+                    offset,
+                    active_grid.cursor.visible,
+                    cursor_blink_enabled,
+                    cursor_blink_on,
+                );
+
+                let cursor_shape = if !is_focused
+                    && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
+                {
+                    crate::screen::cursor::CursorShape::HollowBlock
+                } else {
+                    active_grid.cursor.shape
+                };
+
+                let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+
+                pane_render_datas.push(CpuPaneRenderData {
+                    pane_id: pane.id,
+                    rect: *rect,
+                    cells: &active_grid.cells,
+                    grid: active_grid,
+                    font_size: pane.font_size,
+                    theme: &pane.terminal.theme,
+                    bold_is_bright: pane.terminal.bold_is_bright,
+                    cursor_visible,
+                    cursor_shape,
+                    display_cursor_x,
+                    is_active,
+                });
+            }
+        }
+
+        pane_render_datas
+    }
+
+    pub fn draw(&mut self) {
+        let size = self.window.inner_size();
+        if size.width == 0 || size.height == 0 || self.tabs.is_empty() {
+            return;
+        }
+
+        crate::diagnostics::ResizeStats::record_frame_rendered();
+        if self.renderer.damage.full_redraw {
+            crate::diagnostics::ResizeStats::record_full_redraw();
+        }
+
+        self.last_frame_instant = std::time::Instant::now();
+
+        // 1. Ensure renderer font size matches the active pane's isolated font size
+        self.sync_active_pane_font_size();
+
+        // 2. Update title for active tab (and window title)
+        self.update_active_tab_title();
+
+        // 3. Update tab bar render cache if dirty
+        self.update_tab_bar_cache_if_dirty();
+
+        // 4. Compute layouts & active pane
+        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
         let active_tab = &self.tabs[self.active_tab_index];
+        let active_pane_id = active_tab.active_pane_id;
+        let active_pane_rect = pane_rects
+            .iter()
+            .find(|r| r.pane_id == active_pane_id)
+            .copied();
+
+        // 5. Prepare separator & pane render data
+        let separator_render_datas = Self::prepare_separator_render_data(
+            sep_rects,
+            active_pane_rect,
+            self.dragging_separator,
+            self.hovered_separator,
+        );
+
+        let fallback_theme;
         let active_theme = if let Some(active_pane) = active_tab.tree.find_pane(active_pane_id) {
             &active_pane.terminal.theme
+        } else if let Some(first_pane) = active_tab.tree.panes().first() {
+            &first_pane.terminal.theme
         } else {
-            &active_tab.tree.panes().first().unwrap().terminal.theme
+            fallback_theme = crate::theme::theme::Theme::default();
+            &fallback_theme
         };
 
         let effective_separator_color = self
@@ -918,192 +1151,142 @@ impl WindowState {
             .and_then(|spec| active_theme.parse_color_spec(spec))
             .or_else(|| Some(active_theme.resolve_tab_accent_color()));
 
-        match &mut self.backend {
-            WindowRendererBackend::OpenGL {
-                renderer,
-                gl_surface,
-                gl_context,
-            } => {
-                let active_tab = &self.tabs[self.active_tab_index];
-                let mut pane_render_datas = Vec::with_capacity(pane_rects.len());
+        let cpu_pane_render_datas = Self::prepare_pane_render_data(
+            &pane_rects,
+            active_tab,
+            active_pane_id,
+            self.cursor_blink_enabled,
+            self.cursor_blink_on,
+            self.is_focused,
+        );
 
-                for rect in &pane_rects {
-                    if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
-                        let active_grid = pane.terminal.active_grid();
-                        let width = active_grid.width;
-                        let height = active_grid.height;
-                        let offset = active_grid.scroll_offset;
-                        let history_len = active_grid.scrollback.len();
-                        let is_active = pane.id == active_pane_id;
+        let effective_dim = if !self.is_focused {
+            self.window_dim
+        } else {
+            0.0
+        };
 
-                        let cursor_visible = if !is_active || offset > 0 {
-                            false
-                        } else if self.cursor_blink_enabled {
-                            active_grid.cursor.visible && self.cursor_blink_on
-                        } else {
-                            active_grid.cursor.visible
-                        };
+        let is_tab_bar_visible = self.tab_bar.is_visible(self.tabs.len());
+        let tab_bar_info = if is_tab_bar_visible {
+            self.tab_bar_render_cache.as_ref()
+        } else {
+            None
+        };
 
-                        let cursor_shape = if !self.is_focused
-                            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-                        {
-                            crate::screen::cursor::CursorShape::HollowBlock
-                        } else {
-                            active_grid.cursor.shape
-                        };
+        let csd_height = self.window.csd_title_bar_height();
+        self.renderer.csd_height = csd_height;
 
-                        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
+        // 6. Render & Present
+        let damage_rect = self.renderer.render_splits(
+            &cpu_pane_render_datas,
+            &separator_render_datas,
+            self.opacity,
+            effective_dim,
+            self.is_focused,
+            None,
+            tab_bar_info,
+            effective_separator_color,
+            effective_active_separator_color,
+        );
 
-                        pane_render_datas.push(PaneRenderData {
-                            pane_id: pane.id,
-                            rect: *rect,
-                            grid: Some(active_grid),
-                            cells: &active_grid.cells,
-                            row_offset: active_grid.row_offset,
-                            cols: width,
-                            rows: height,
-                            font_size: pane.font_size,
-                            cursor_x: display_cursor_x,
-                            cursor_y: active_grid.cursor.y,
-                            cursor_visible,
-                            cursor_shape,
-                            theme: &pane.terminal.theme,
-                            bold_is_bright: pane.terminal.bold_is_bright,
-                            selection: &active_grid.selection,
-                            scroll_offset: offset,
-                            history_len,
-                            is_active,
-                        });
-                    }
-                }
+        let mut final_damage = damage_rect;
 
-                let _ = gl_context.make_current(gl_surface);
-                renderer.draw_splits(
-                    &pane_render_datas,
-                    &separator_render_datas,
-                    self.opacity,
-                    effective_dim,
-                    tab_bar_info,
-                    effective_separator_color,
-                    effective_active_separator_color,
-                );
-                let _ = gl_surface.swap_buffers(gl_context);
-                if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
-                    for pane in active_tab.tree.panes_mut() {
-                        pane.terminal.active_grid_mut().clear_damage();
-                        pane.render_state.clear_damage();
-                    }
-                }
+        if csd_height > 0 {
+            let csd_redrawn = self.renderer.render_csd_title_bar(
+                &self.current_title,
+                csd_height,
+                self.is_focused,
+                self.window.is_maximized(),
+                self.hovered_csd_button,
+                self.pressed_csd_button,
+                &self.csd_button_layout,
+                &self.csd_palette,
+            );
+            if csd_redrawn {
+                self.renderer
+                    .render_csd_window_borders(self.csd_palette.border);
+                final_damage = Some(crate::window::DamageRect {
+                    x: 0,
+                    y: 0,
+                    width: self.renderer.viewport_width,
+                    height: self.renderer.viewport_height,
+                });
             }
-            WindowRendererBackend::Software { renderer, surface } => {
-                let active_tab = &self.tabs[self.active_tab_index];
-                let mut cpu_pane_render_datas = Vec::with_capacity(pane_rects.len());
+        }
 
-                for rect in &pane_rects {
-                    if let Some(pane) = active_tab.tree.find_pane(rect.pane_id) {
-                        let active_grid = pane.terminal.active_grid();
-                        let width = active_grid.width;
-                        let offset = active_grid.scroll_offset;
-                        let is_active = pane.id == active_pane_id;
+        self.window
+            .present_frame(self.renderer.framebuffer.as_slice(), final_damage);
 
-                        let cursor_visible = if !is_active || offset > 0 {
-                            false
-                        } else if self.cursor_blink_enabled {
-                            active_grid.cursor.visible && self.cursor_blink_on
-                        } else {
-                            active_grid.cursor.visible
-                        };
-
-                        let cursor_shape = if !self.is_focused
-                            && active_grid.cursor.shape == crate::screen::cursor::CursorShape::Block
-                        {
-                            crate::screen::cursor::CursorShape::HollowBlock
-                        } else {
-                            active_grid.cursor.shape
-                        };
-
-                        let display_cursor_x = active_grid.cursor.x.min(width.saturating_sub(1));
-
-                        cpu_pane_render_datas.push(CpuPaneRenderData {
-                            pane_id: pane.id,
-                            rect: *rect,
-                            cells: &active_grid.cells,
-                            grid: active_grid,
-                            font_size: pane.font_size,
-                            theme: &pane.terminal.theme,
-                            bold_is_bright: pane.terminal.bold_is_bright,
-                            cursor_visible,
-                            cursor_shape,
-                            display_cursor_x,
-                            is_active,
-                        });
-                    }
-                }
-
-                if let Ok(mut buffer) = surface.buffer_mut() {
-                    renderer.render_splits(
-                        &cpu_pane_render_datas,
-                        &separator_render_datas,
-                        self.opacity,
-                        effective_dim,
-                        self.is_focused,
-                        &mut buffer,
-                        tab_bar_info,
-                        effective_separator_color,
-                        effective_active_separator_color,
-                    );
-                    let _ = buffer.present();
-                }
-
-                if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
-                    for pane in active_tab.tree.panes_mut() {
-                        pane.terminal.active_grid_mut().clear_damage();
-                        pane.render_state.clear_damage();
-                    }
-                }
+        if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
+            for pane in active_tab.tree.panes_mut() {
+                pane.terminal.active_grid_mut().clear_damage();
             }
         }
     }
 }
 
 pub struct App {
-    pub(crate) event_loop_proxy: EventLoopProxy<CustomEvent>,
-    pub(crate) modifiers: winit::keyboard::ModifiersState,
-    pub(crate) gl_manager: Option<crate::renderer::GlDisplayManager>,
-    pub(crate) gl_info: Option<crate::renderer::GlInfo>,
+    pub(crate) event_loop_proxy: EventLoopProxy,
+    pub(crate) event_receiver: Receiver<CustomEvent>,
+    pub(crate) wake_fd: RawFd,
+    pub(crate) modifiers: ModifiersState,
     pub(crate) windows: HashMap<WindowId, WindowState>,
+    pub(crate) next_window_id: u64,
     pub(crate) daemon_mode: bool,
     pub(crate) single_instance_mode: bool,
     pub(crate) ipc_listener: Option<IpcListenerHandle>,
     pub(crate) initial_options: Option<CliOptions>,
+    pub(crate) pty_reactor: Option<crate::pty::PtyReactor>,
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(mut reactor) = self.pty_reactor.take() {
+            reactor.shutdown();
+        }
+        if self.wake_fd >= 0 {
+            unsafe {
+                libc::close(self.wake_fd);
+            }
+        }
+    }
 }
 
 impl App {
-    pub fn new(event_loop_proxy: EventLoopProxy<CustomEvent>, options: CliOptions) -> Self {
+    pub fn new(options: CliOptions) -> Result<Self, Box<dyn std::error::Error>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let wake_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if wake_fd < 0 {
+            return Err("Failed to create eventfd for main loop wakeup".into());
+        }
+
+        let proxy = EventLoopProxy::new(sender, wake_fd);
+        let pty_reactor = crate::pty::PtyReactor::new(proxy.clone())?;
         let daemon_mode = options.daemon;
         let single_instance_mode = options.single_instance;
 
-        Self {
-            event_loop_proxy,
-            modifiers: winit::keyboard::ModifiersState::default(),
-            gl_manager: None,
-            gl_info: None,
+        Ok(Self {
+            event_loop_proxy: proxy,
+            event_receiver: receiver,
+            wake_fd,
+            modifiers: ModifiersState::empty(),
             windows: HashMap::new(),
+            next_window_id: 1,
             daemon_mode,
             single_instance_mode,
             ipc_listener: None,
             initial_options: Some(options),
-        }
+            pty_reactor: Some(pty_reactor),
+        })
     }
 
     pub fn create_window(
         &mut self,
-        event_loop: &ActiveEventLoop,
         working_directory: Option<String>,
         command: Option<Vec<String>>,
         custom_title: Option<String>,
         hold: Option<bool>,
-    ) {
+    ) -> Result<WindowId, Box<dyn std::error::Error>> {
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
 
@@ -1115,44 +1298,8 @@ impl App {
             },
         };
 
-        let icon = load_app_icon();
-        let opacity = config.opacity();
-        let window_dim = config.window_dim();
-
-        let is_transparent = opacity < 1.0;
-        let mut window_attributes = Window::default_attributes()
-            .with_title(&initial_title)
-            .with_transparent(is_transparent)
-            .with_visible(false)
-            .with_inner_size(winit::dpi::PhysicalSize::new(800, 600));
-
-        if let Some(icon) = icon {
-            window_attributes = window_attributes.with_window_icon(Some(icon));
-        }
-
-        // Apply platform identity (Wayland app-id & X11 WM_CLASS)
-        window_attributes =
-            crate::platform::apply_platform_window_attributes(event_loop, window_attributes);
-
-        let (window, mut backend, gl_info) = match crate::renderer::create_window_and_renderer(
-            event_loop,
-            window_attributes,
-            &config,
-            &mut self.gl_manager,
-        ) {
-            Ok(res) => res,
-            Err(e) => {
-                log::error!("Failed to initialize window renderer backend: {}", e);
-                if self.windows.is_empty() && !self.daemon_mode {
-                    event_loop.exit();
-                }
-                return;
-            }
-        };
-
-        if self.gl_info.is_none() && gl_info.is_some() {
-            self.gl_info = gl_info;
-        }
+        let (window, mut renderer) =
+            crate::renderer::create_window_and_renderer(&initial_title, 800, 600, &config)?;
 
         let size = window.inner_size();
         let win_width = size.width.max(1);
@@ -1161,27 +1308,19 @@ impl App {
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
         let hide_mouse_on_typing = config.hide_mouse_on_typing().unwrap_or(true);
-        let gpu = matches!(backend, WindowRendererBackend::OpenGL { .. });
-        let fps_limit = match config.fps_limit() {
-            Some(limit) => Some(limit),
-            None => {
-                if gpu {
-                    Some(120)
-                } else {
-                    Some(60)
-                }
-            }
-        };
+        let detected_refresh_rate = window.detect_refresh_rate();
+        let fps_limit = config.fps_limit().or(detected_refresh_rate).or(Some(120));
 
         let font_size = config.font_size();
         let padding_x = config.pane_padding_x().unwrap_or(8.0);
         let padding_y = config.pane_padding_y().unwrap_or(4.0);
 
         let tab_font_size = config.tab_font_size();
-        backend.set_tab_font_size(tab_font_size);
-        let base_cell_width = backend.base_cell_width();
-        let base_cell_height = backend.base_cell_height();
+        renderer.tab_glyph_cache.update_font_size(tab_font_size);
+        let base_cell_width = renderer.glyph_cache.cell_width;
+        let base_cell_height = renderer.glyph_cache.cell_height;
 
+        let csd_h = window.csd_title_bar_height() as f32;
         let tab_bar = TabBar::from_config(&config);
         let tab_bar_h = if tab_bar.is_visible(1) {
             tab_bar.height(base_cell_height)
@@ -1190,9 +1329,9 @@ impl App {
         };
 
         let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
-        let avail_h = (win_height as f32 - tab_bar_h - padding_y * 2.0).max(10.0);
-        let cols = ((avail_w as u32) / backend.cell_width()).max(1);
-        let rows = ((avail_h as u32) / backend.cell_height()).max(1);
+        let avail_h = (win_height as f32 - csd_h - tab_bar_h - padding_y * 2.0).max(10.0);
+        let cols = ((avail_w as u32) / base_cell_width.max(1)).max(1);
+        let rows = ((avail_h as u32) / base_cell_height.max(1)).max(1);
 
         let terminal = Terminal::new(cols as usize, rows as usize);
 
@@ -1202,26 +1341,29 @@ impl App {
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".to_string());
 
-        let pty_master = Arc::new(
-            spawn_process(
-                &shell_path,
-                command.as_deref(),
-                working_directory.as_deref(),
-            )
-            .unwrap(),
-        );
-        pty_master.resize(cols as u16, rows as u16).unwrap();
+        let working_directory = working_directory.or_else(|| config.working_directory());
 
-        let window_id = window.id();
+        let pty_spawn = spawn_terminal_pty(
+            &shell_path,
+            command.as_deref(),
+            working_directory.as_deref(),
+        );
+
+        let pty_master = Arc::new(
+            pty_spawn
+                .map_err(|e| format!("Failed to spawn shell process after fallbacks: {}", e))?,
+        );
+        pty_master
+            .resize(cols as u16, rows as u16)
+            .map_err(|e| format!("Failed to resize PTY: {}", e))?;
+
+        let window_id = self.next_window_id;
+        self.next_window_id += 1;
         let tab_id = 0u64;
         let pane_id = 0u64;
-        spawn_pty_reader(
-            pty_master.clone(),
-            self.event_loop_proxy.clone(),
-            window_id,
-            tab_id,
-            pane_id,
-        );
+        if let Some(ref reactor) = self.pty_reactor {
+            reactor.register(window_id, tab_id, pane_id, pty_master.clone())?;
+        }
 
         let tab = Tab::new(
             tab_id,
@@ -1238,16 +1380,30 @@ impl App {
         let min_rows = config.pane_minimum_rows();
         let separator_color = config.pane_separator_color().map(String::from);
         let active_separator_color = config.pane_active_separator_color().map(String::from);
+        let csd_palette = crate::window::csd::CsdPalette::resolve(
+            config.decorations_config().as_ref(),
+            &renderer.palette,
+        );
 
         let mut window_state = WindowState {
+            window_id,
+            renderer,
             window,
-            backend,
             mouse_x: 0.0,
             mouse_y: 0.0,
             scroll_multiplier,
             fps_limit,
             last_frame_instant: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now),
+            last_input_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now),
+            last_key_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(std::time::Instant::now),
+            last_resize_instant: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
                 .unwrap_or_else(std::time::Instant::now),
             current_title: initial_title,
             default_font_size: font_size,
@@ -1266,15 +1422,15 @@ impl App {
             last_mouse_cell: (0, 0),
             last_mouse_pane_id: None,
             is_focused: true,
-            current_cursor_icon: winit::window::CursorIcon::Default,
+            current_cursor_icon: CursorIcon::Default,
             needs_redraw: false,
             content_dirty: false,
             cursor_blink_enabled,
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
             hide_mouse_on_typing,
-            opacity,
-            window_dim,
+            opacity: config.opacity(),
+            window_dim: config.window_dim(),
             shell_path,
             tabs: vec![tab],
             active_tab_index: 0,
@@ -1283,6 +1439,11 @@ impl App {
             next_split_id: 1,
             tab_bar,
             event_loop_proxy: self.event_loop_proxy.clone(),
+            pty_reactor: self
+                .pty_reactor
+                .as_ref()
+                .map(|r| r.handle())
+                .unwrap_or_else(crate::pty::PtyReactorHandle::dummy),
             tab_bar_dirty: true,
             tab_bar_render_cache: None,
             dragging_separator: None,
@@ -1292,47 +1453,31 @@ impl App {
             min_rows,
             separator_color,
             active_separator_color,
+            last_separator_drag_sync: None,
+            csd_button_layout: crate::window::csd::CsdButtonLayout::detect_system(),
+            csd_palette,
+            hovered_csd_button: None,
+            pressed_csd_button: None,
+            resize_state: ResizeState {
+                last_applied_width: win_width,
+                last_applied_height: win_height,
+                last_cols: cols as usize,
+                last_rows: rows as usize,
+                ..Default::default()
+            },
         };
 
+        window_state.window.set_opacity(window_state.opacity);
         window_state.draw();
         window_state.window.set_visible(true);
 
         self.windows.insert(window_id, window_state);
         crate::memory::trim_allocator_memory();
+        Ok(window_id)
     }
-}
 
-fn load_app_icon() -> Option<winit::window::Icon> {
-    let icon_bytes = include_bytes!("../../assets/generated_icons/icon_128x128.png");
-    let decoder = png::Decoder::new(std::io::Cursor::new(icon_bytes));
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).ok()?;
-
-    let raw_bytes = &buf[..info.buffer_size()];
-
-    let rgba_bytes = match info.color_type {
-        png::ColorType::Rgba => raw_bytes.to_vec(),
-        png::ColorType::Rgb => {
-            let mut rgba = Vec::with_capacity((info.width * info.height * 4) as usize);
-            for chunk in raw_bytes.chunks(3) {
-                if chunk.len() == 3 {
-                    rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
-                }
-            }
-            rgba
-        }
-        _ => return None,
-    };
-
-    winit::window::Icon::from_rgba(rgba_bytes, info.width, info.height).ok()
-}
-
-impl ApplicationHandler<CustomEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let backend = crate::platform::detect_backend_from_event_loop(event_loop);
-        log::info!("Velox starting");
-        log::info!("Window backend: {}", backend);
+    pub fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!("Velox starting (pure Rust zero-C-libraries windowing)");
 
         let config = crate::config::loader::load()
             .unwrap_or_else(|_| crate::config::defaults::default_config());
@@ -1355,90 +1500,99 @@ impl ApplicationHandler<CustomEvent> for App {
         if let Some(opts) = self.initial_options.take()
             && !opts.daemon
         {
-            self.create_window(
-                event_loop,
-                opts.working_directory,
-                opts.command,
-                opts.title,
-                Some(opts.hold),
-            );
+            let working_dir = opts
+                .working_directory
+                .or_else(|| config.working_directory())
+                .or_else(|| std::env::var("HOME").ok());
+            self.create_window(working_dir, opts.command, opts.title, Some(opts.hold))?;
         }
+
+        Ok(())
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        if matches!(event, WindowEvent::CloseRequested) {
-            self.windows.remove(&window_id);
-            if self.windows.is_empty() && !self.daemon_mode {
-                event_loop.exit();
-            }
-            return;
-        }
+    /// Drain pending custom events with bounded coalescing for PTY data batches.
+    /// Reduces terminal state machine re-entry, avoids intermediate redraws, and bounds latency to 256 KiB.
+    pub fn drain_custom_events(&mut self) -> bool {
+        self.drain_custom_events_with_first(None)
+    }
 
-        if let WindowEvent::ModifiersChanged(ref mods) = event {
-            self.modifiers = mods.state();
-        }
+    pub fn drain_custom_events_with_first(&mut self, mut first_event: Option<CustomEvent>) -> bool {
+        let mut last_affected_pane: Option<(WindowId, u64, PaneId)> = None;
+        let mut coalesced_bytes = 0usize;
+        let mut had_pty_data = false;
 
-        let modifiers = self.modifiers;
-        if let Some(ws) = self.windows.get_mut(&window_id) {
+        loop {
+            let event = match first_event.take() {
+                Some(ev) => ev,
+                None => match self.event_receiver.try_recv() {
+                    Ok(ev) => ev,
+                    Err(_) => break,
+                },
+            };
+
             match event {
-                WindowEvent::Focused(focused) => {
-                    ws.is_focused = focused;
-                    if !focused {
-                        ws.is_mouse_down = false;
-                        ws.mouse_down_pane_id = None;
-                        ws.dragging_separator = None;
-                        ws.cursor_blink_on = true;
-                        ws.release_memory();
+                CustomEvent::PtyData {
+                    window_id,
+                    tab_id,
+                    pane_id,
+                    data,
+                } => {
+                    had_pty_data = true;
+                    let key = (window_id, tab_id, pane_id);
+                    if let Some(prev) = last_affected_pane {
+                        if prev != key || coalesced_bytes >= 256 * 1024 {
+                            self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
+                            last_affected_pane = Some(key);
+                            coalesced_bytes = 0;
+                        }
                     } else {
-                        ws.mark_interaction();
+                        last_affected_pane = Some(key);
                     }
-                    let active_pane = ws.active_pane();
-                    if active_pane.terminal.focus_tracking {
-                        let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
-                        let _ = active_pane.pty_master.write(seq);
+
+                    if let Some(ws) = self.windows.get_mut(&window_id)
+                        && let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id)
+                        && let Some(pane) = tab.tree.find_pane_mut(pane_id)
+                    {
+                        pane.terminal.feed(&data);
+                        coalesced_bytes += data.len();
                     }
-                    ws.content_dirty = true;
-                    ws.tab_bar_dirty = true;
-                    ws.needs_redraw = true;
+                    crate::pty::recycle_pty_buffer(data);
                 }
-                WindowEvent::Resized(size) => {
-                    if size.width > 0 && size.height > 0 {
-                        ws.resize_renderer(size.width, size.height);
+                other => {
+                    if let Some(prev) = last_affected_pane.take() {
+                        self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
+                        coalesced_bytes = 0;
                     }
+                    self.handle_custom_event(other);
                 }
-                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                    log::debug!("Window scale factor changed: {}", scale_factor);
-                    let size = ws.window.inner_size();
-                    if size.width > 0 && size.height > 0 {
-                        ws.resize_renderer(size.width, size.height);
-                    }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    ws.handle_keyboard_input(event, modifiers);
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    ws.handle_cursor_moved(position, modifiers);
-                }
-                WindowEvent::MouseWheel { delta, .. } => {
-                    ws.handle_mouse_wheel(delta, modifiers);
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-                    ws.handle_mouse_input(state, button, modifiers);
-                }
-                WindowEvent::RedrawRequested => {
-                    ws.draw();
-                }
-                _ => {}
+            }
+        }
+
+        if let Some(prev) = last_affected_pane {
+            self.flush_pane_output_and_redraw(prev.0, prev.1, prev.2);
+        }
+
+        had_pty_data
+    }
+
+    fn flush_pane_output_and_redraw(&mut self, window_id: WindowId, tab_id: u64, pane_id: PaneId) {
+        if let Some(ws) = self.windows.get_mut(&window_id)
+            && let Some(tab) = ws.tabs.iter_mut().find(|t| t.id == tab_id)
+            && let Some(pane) = tab.tree.find_pane_mut(pane_id)
+        {
+            let now = std::time::Instant::now();
+            pane.last_activity = now;
+            tab.last_activity = now;
+            pane.flush_outgoing();
+            if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
+                ws.mark_interaction();
+                ws.needs_redraw = true;
+                ws.content_dirty = true;
             }
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: CustomEvent) {
+    pub fn handle_custom_event(&mut self, event: CustomEvent) {
         match event {
             CustomEvent::PtyData {
                 window_id,
@@ -1453,13 +1607,7 @@ impl ApplicationHandler<CustomEvent> for App {
                     pane.last_activity = std::time::Instant::now();
                     tab.last_activity = pane.last_activity;
                     pane.terminal.feed(&data);
-                    if !pane.terminal.outgoing.is_empty() {
-                        let _ = pane.pty_master.write(&pane.terminal.outgoing);
-                        pane.terminal.outgoing.clear();
-                        if pane.terminal.outgoing.capacity() > 4096 {
-                            pane.terminal.outgoing.shrink_to_fit();
-                        }
-                    }
+                    pane.flush_outgoing();
                     if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
                         ws.mark_interaction();
                         ws.needs_redraw = true;
@@ -1473,6 +1621,7 @@ impl ApplicationHandler<CustomEvent> for App {
                 tab_id,
                 pane_id,
             } => {
+                let mut should_remove_window = false;
                 if let Some(ws) = self.windows.get_mut(&window_id)
                     && let Some(tab_idx) = ws.tabs.iter().position(|t| t.id == tab_id)
                 {
@@ -1491,24 +1640,26 @@ impl ApplicationHandler<CustomEvent> for App {
                         ws.needs_redraw = true;
                         return;
                     }
-                    let should_close_window = ws.close_pane_in_tab(tab_id, pane_id);
-                    if should_close_window {
-                        self.windows.remove(&window_id);
-                        crate::memory::trim_allocator_memory();
-                        if self.windows.is_empty() && !self.daemon_mode {
-                            event_loop.exit();
+                    should_remove_window = ws.close_pane_in_tab(tab_id, pane_id);
+                }
+                if should_remove_window {
+                    if let Some(ws) = self.windows.remove(&window_id) {
+                        for tab in &ws.tabs {
+                            for pane in tab.tree.panes() {
+                                let _ = ws.pty_reactor.unregister(window_id, tab.id, pane.id);
+                            }
                         }
                     }
+                    crate::memory::trim_allocator_memory();
                 }
             }
-
             CustomEvent::IpcCreateWindow {
                 working_directory,
                 command,
                 title,
                 hold,
             } => {
-                self.create_window(event_loop, working_directory, command, title, hold);
+                let _ = self.create_window(working_directory, command, title, hold);
             }
             CustomEvent::IpcCreateTab {
                 working_directory,
@@ -1519,77 +1670,356 @@ impl ApplicationHandler<CustomEvent> for App {
                 if let Some((_, ws)) = self.windows.iter_mut().next() {
                     ws.create_tab(working_directory, command, title, hold);
                 } else {
-                    self.create_window(event_loop, working_directory, command, title, hold);
+                    let _ = self.create_window(working_directory, command, title, hold);
                 }
             }
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let now = std::time::Instant::now();
-        let mut min_next_wake: Option<std::time::Instant> = None;
+    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.init()?;
 
-        for ws in self.windows.values_mut() {
-            // Idle memory trimming (1.5s of PTY inactivity after burst activity / startup)
-            let mut should_release = false;
-            for tab in &mut ws.tabs {
-                if now.duration_since(tab.last_activity) >= std::time::Duration::from_millis(1500)
-                    && tab.last_activity >= tab.last_cleanup
-                {
-                    should_release = true;
-                    tab.last_cleanup = now;
+        let mut last_idle_prune = std::time::Instant::now();
+
+        while !self.windows.is_empty() || self.daemon_mode {
+            let mut closed_windows = Vec::new();
+            let mut had_keyboard_input = false;
+
+            for (&window_id, ws) in &mut self.windows {
+                let mut pending_resize: Option<(u32, u32)> = None;
+                while let Some(event) = ws.window.poll_event() {
+                    match event {
+                        PlatformEvent::CloseRequested => {
+                            closed_windows.push(window_id);
+                            break;
+                        }
+                        PlatformEvent::ModifiersChanged(mods) => {
+                            let old_mods = self.modifiers;
+                            self.modifiers = mods;
+                            if old_mods.control_key() != mods.control_key()
+                                || old_mods.shift_key() != mods.shift_key()
+                            {
+                                ws.last_mouse_cell = (usize::MAX, usize::MAX);
+                                ws.handle_cursor_moved((ws.mouse_x, ws.mouse_y), self.modifiers);
+                            }
+                        }
+                        PlatformEvent::Focused(focused) => {
+                            ws.is_focused = focused;
+                            if !focused {
+                                self.modifiers = ModifiersState::empty();
+                                ws.is_mouse_down = false;
+                                ws.mouse_down_pane_id = None;
+                                ws.dragging_separator = None;
+                                ws.cursor_blink_on = true;
+                                ws.release_memory();
+                            } else {
+                                ws.mark_interaction();
+                            }
+                            let active_pane = ws.active_pane();
+                            if active_pane.terminal.focus_tracking {
+                                let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
+                                let _ = active_pane.pty_master.write(seq);
+                            }
+                            ws.content_dirty = true;
+                            ws.tab_bar_dirty = true;
+                            ws.needs_redraw = true;
+                        }
+                        PlatformEvent::Resized { width, height } => {
+                            crate::diagnostics::ResizeStats::record_pixel_resize();
+                            if width > 0 && height > 0 {
+                                ws.request_resize(width, height);
+                                pending_resize = Some((width, height));
+                            }
+                        }
+                        PlatformEvent::KeyPressed {
+                            key,
+                            text,
+                            modifiers,
+                        } => {
+                            self.modifiers = modifiers;
+                            if ws.handle_keyboard_input(&key, text.as_deref(), modifiers) {
+                                had_keyboard_input = true;
+                            }
+                        }
+                        PlatformEvent::KeyReleased { modifiers, .. } => {
+                            self.modifiers = modifiers;
+                        }
+                        PlatformEvent::CursorMoved { x, y } => {
+                            ws.handle_cursor_moved((x, y), self.modifiers);
+                        }
+                        PlatformEvent::MouseWheel { delta_y } => {
+                            ws.handle_mouse_wheel(delta_y, self.modifiers);
+                        }
+                        PlatformEvent::MouseInput { state, button } => {
+                            ws.handle_mouse_input(state, button, self.modifiers);
+                        }
+                        PlatformEvent::RedrawRequested => {
+                            ws.renderer.damage.mark_all();
+                            ws.draw();
+                        }
+                    }
+                }
+
+                if pending_resize.is_some() {
+                    ws.apply_pending_resize();
                 }
             }
-            if should_release {
-                ws.release_memory();
-            }
 
-            // Cursor blink toggle (500ms cycle) - only when focused and cursor is visible
-            let cursor_blink_active = ws.is_cursor_blink_active();
-            if cursor_blink_active
-                && now.duration_since(ws.last_cursor_blink) >= std::time::Duration::from_millis(500)
-            {
-                ws.cursor_blink_on = !ws.cursor_blink_on;
-                ws.last_cursor_blink = now;
-                ws.needs_redraw = true;
-            }
-
-            if cursor_blink_active {
-                let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
-                min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
-            }
-
-            // Redraw scheduling
-            if ws.needs_redraw {
-                if let Some(active_tab) = ws.tabs.get_mut(ws.active_tab_index)
-                    && active_tab
-                        .active_pane_mut()
-                        .terminal
-                        .is_synchronized_output_active()
-                {
-                    continue;
+            for wid in closed_windows {
+                if let Some(ws) = self.windows.remove(&wid) {
+                    for tab in &ws.tabs {
+                        for pane in tab.tree.panes() {
+                            let _ = ws.pty_reactor.unregister(wid, tab.id, pane.id);
+                        }
+                    }
                 }
+                crate::memory::trim_allocator_memory();
+            }
 
-                let frame_duration = ws
-                    .fps_limit
-                    .filter(|&l| l > 0)
-                    .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
-                    .unwrap_or(std::time::Duration::from_millis(8));
+            if self.windows.is_empty() && !self.daemon_mode {
+                break;
+            }
 
-                let next_frame = ws.last_frame_instant + frame_duration;
-                if now >= next_frame {
-                    ws.window.request_redraw();
-                    ws.needs_redraw = false;
+            let had_pty_data = self.drain_custom_events();
+
+            let now = std::time::Instant::now();
+            let is_any_resizing = self.windows.values().any(|ws| {
+                now.duration_since(ws.last_resize_instant) < std::time::Duration::from_millis(150)
+            });
+
+            if (had_keyboard_input || had_pty_data) && !is_any_resizing {
+                // If keyboard input was just dispatched or PTY events arrived, give trailing burst packets
+                // a brief window to arrive (e.g. 1ms). Typical shell echo / CPR response latency is 50-300µs.
+                // Coalescing trailing packets ensures atomic updates (e.g. erase-line followed by text, or CPR queries)
+                // render together in a single frame without partial-frame screen flicker!
+                let coalesce_timeout = if had_keyboard_input {
+                    std::time::Duration::from_micros(1500)
                 } else {
-                    min_next_wake = Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
+                    std::time::Duration::from_micros(1000)
+                };
+                let burst_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(4);
+                while std::time::Instant::now() < burst_deadline {
+                    if let Ok(event) = self.event_receiver.recv_timeout(coalesce_timeout) {
+                        self.drain_custom_events_with_first(Some(event));
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            if self.windows.is_empty() && !self.daemon_mode {
+                break;
+            }
+
+            let mut min_next_wake: Option<std::time::Instant> = None;
+
+            for ws in self.windows.values_mut() {
+                let mut should_prune = false;
+                for tab in &mut ws.tabs {
+                    if now.duration_since(tab.last_activity) >= std::time::Duration::from_secs(60)
+                        && tab.last_activity >= tab.last_cleanup
+                    {
+                        tab.last_cleanup = now;
+                        should_prune = true;
+                    }
+                }
+                if should_prune {
+                    ws.prune_idle_fallbacks(std::time::Duration::from_secs(60));
+                }
+
+                let cursor_blink_active = ws.is_cursor_blink_active();
+                if cursor_blink_active
+                    && now.duration_since(ws.last_cursor_blink)
+                        >= std::time::Duration::from_millis(500)
+                {
+                    ws.cursor_blink_on = !ws.cursor_blink_on;
+                    ws.last_cursor_blink = now;
+                    ws.needs_redraw = true;
+                }
+
+                if cursor_blink_active {
+                    let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
+                    min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
+                }
+
+                if let Some(repeat_wake) = ws.window.next_wake_time() {
+                    min_next_wake = Some(min_next_wake.map_or(repeat_wake, |t| t.min(repeat_wake)));
+                }
+
+                if ws.needs_redraw {
+                    if let Some(active_tab) = ws.tabs.get_mut(ws.active_tab_index)
+                        && active_tab
+                            .active_pane_mut()
+                            .terminal
+                            .is_synchronized_output_active()
+                    {
+                        let sync_deadline = now + std::time::Duration::from_millis(8);
+                        min_next_wake =
+                            Some(min_next_wake.map_or(sync_deadline, |t| t.min(sync_deadline)));
+                        continue;
+                    }
+
+                    let frame_duration = ws
+                        .fps_limit
+                        .filter(|&l| l > 0)
+                        .map(|l| std::time::Duration::from_secs_f64(1.0 / l as f64))
+                        .unwrap_or(std::time::Duration::from_millis(8));
+
+                    // Zero-latency rendering for keyboard typing and active window resizing:
+                    // bypass frame-rate throttling and redraw immediately!
+                    let is_typing = now.duration_since(ws.last_key_instant)
+                        < std::time::Duration::from_millis(150);
+                    let is_resizing = now.duration_since(ws.last_resize_instant)
+                        < std::time::Duration::from_millis(150);
+
+                    let next_frame = ws.last_frame_instant + frame_duration;
+
+                    if is_typing || is_resizing || now >= next_frame {
+                        ws.draw();
+                        ws.needs_redraw = false;
+                        ws.last_frame_instant = now;
+                    } else {
+                        min_next_wake =
+                            Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
+                    }
+                }
+            }
+
+            // Periodic idle prune of fallback fonts unused for >= 10 seconds
+            if now.duration_since(last_idle_prune) >= std::time::Duration::from_secs(10) {
+                last_idle_prune = now;
+                let mut total_evicted = 0;
+                for ws in self.windows.values_mut() {
+                    total_evicted += ws.prune_idle_fallbacks(std::time::Duration::from_secs(10));
+                }
+                if total_evicted > 0 {
+                    crate::memory::trim_allocator_memory();
+                }
+            }
+
+            let timeout_ms = match min_next_wake {
+                Some(wake_time) => {
+                    let cur = std::time::Instant::now();
+                    if wake_time > cur {
+                        let diff = wake_time.duration_since(cur).as_millis();
+                        (diff as i32).max(1)
+                    } else {
+                        0
+                    }
+                }
+                None => {
+                    if self.windows.iter().any(|(_, w)| w.needs_redraw) {
+                        0
+                    } else {
+                        -1
+                    }
+                }
+            };
+
+            if timeout_ms != 0 {
+                // Flush all window connections (X11 / Wayland) before polling so that no rendering
+                // commands or property updates remain in userspace client buffers.
+                for ws in self.windows.values() {
+                    ws.window.flush();
+                }
+
+                // Drain any pending wake_fd signal before sleeping to prevent immediate spurious wakeup
+                let mut wake_buf = [0u8; 8];
+                unsafe {
+                    libc::read(self.wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8);
+                }
+                self.event_loop_proxy
+                    .wake_pending
+                    .store(false, std::sync::atomic::Ordering::Release);
+
+                let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
+                poll_fds.push(libc::pollfd {
+                    fd: self.wake_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+                for ws in self.windows.values() {
+                    poll_fds.push(libc::pollfd {
+                        fd: ws.window.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                }
+
+                unsafe {
+                    libc::poll(
+                        poll_fds.as_mut_ptr(),
+                        poll_fds.len() as libc::nfds_t,
+                        timeout_ms,
+                    );
+                }
+
+                if poll_fds[0].revents & libc::POLLIN != 0 {
+                    let mut buf = [0u8; 8];
+                    unsafe {
+                        libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+                    }
+                    self.event_loop_proxy
+                        .wake_pending
+                        .store(false, std::sync::atomic::Ordering::Release);
                 }
             }
         }
+        Ok(())
+    }
+}
 
-        if let Some(wake_time) = min_next_wake {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(wake_time));
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_cursor_visibility() {
+        // Active pane, at screen bottom (offset 0), cursor visible, blinking disabled -> true
+        assert!(WindowState::compute_cursor_visibility(
+            true, 0, true, false, false
+        ));
+        assert!(WindowState::compute_cursor_visibility(
+            true, 0, true, false, true
+        ));
+
+        // Active pane, at screen bottom, cursor visible, blinking enabled: follows blink phase
+        assert!(WindowState::compute_cursor_visibility(
+            true, 0, true, true, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, true, true, false
+        ));
+
+        // Explicit DECTCEM hidden: blinking must NEVER override explicit hidden state
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, false, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, false, false
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, true, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 0, false, true, false
+        ));
+
+        // Inactive pane: always hidden
+        assert!(!WindowState::compute_cursor_visibility(
+            false, 0, true, false, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            false, 0, true, true, true
+        ));
+
+        // Scrolled back into history (offset > 0): always hidden
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 5, true, false, true
+        ));
+        assert!(!WindowState::compute_cursor_visibility(
+            true, 1, true, true, true
+        ));
     }
 }

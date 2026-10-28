@@ -1,0 +1,77 @@
+# velox(1) bash completion                                  -*- shell-script -*-
+
+_velox() {
+    local cur prev words cword
+    if type _init_completion &>/dev/null; then
+        _init_completion || return
+    else
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+        words=("${COMP_WORDS[@]}")
+        cword=$COMP_CWORD
+    fi
+
+    local subcmd=""
+    local i
+    for ((i = 1; i < cword; i++)); do
+        case "${words[i]}" in
+            doctor|msg)
+                subcmd="${words[i]}"
+                break
+                ;;
+        esac
+    done
+
+    case "$prev" in
+        -b|--backend)
+            COMPREPLY=($(compgen -W 'x11 wayland' -- "$cur"))
+            return 0
+            ;;
+        -w|--working-directory|--working-dir)
+            if type _filedir &>/dev/null; then
+                _filedir -d
+            else
+                COMPREPLY=($(compgen -d -- "$cur"))
+            fi
+            return 0
+            ;;
+        -t|--title)
+            return 0
+            ;;
+        -e|--command)
+            if type _command_offset &>/dev/null; then
+                _command_offset "$cword"
+            else
+                COMPREPLY=($(compgen -c -- "$cur"))
+            fi
+            return 0
+            ;;
+    esac
+
+    if [[ "$subcmd" == "msg" ]]; then
+        if (( cword == 2 )); then
+            COMPREPLY=($(compgen -W 'create-window' -- "$cur"))
+            return 0
+        fi
+        if [[ "${words[2]}" == "create-window" ]]; then
+            local msg_opts="-t --title -w --working-directory --working-dir --hold -e --command -h --help"
+            COMPREPLY=($(compgen -W "$msg_opts" -- "$cur"))
+            return 0
+        fi
+        return 0
+    elif [[ "$subcmd" == "doctor" ]]; then
+        return 0
+    fi
+
+    if [[ "$cur" == -* ]]; then
+        local flags="-s --single-instance -d --daemon --hold --diagnostics --banner -h --help -v --version -b --backend -t --title -w --working-directory --working-dir -e --command"
+        COMPREPLY=($(compgen -W "$flags" -- "$cur"))
+        return 0
+    fi
+
+    local all_completions="doctor msg -s --single-instance -d --daemon --hold --diagnostics --banner -h --help -v --version -b --backend -t --title -w --working-directory --working-dir -e --command"
+    COMPREPLY=($(compgen -W "$all_completions" -- "$cur"))
+    return 0
+}
+
+complete -F _velox velox

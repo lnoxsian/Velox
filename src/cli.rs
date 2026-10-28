@@ -8,8 +8,10 @@ pub struct CliOptions {
     pub working_directory: Option<String>,
     pub command: Option<Vec<String>>,
     pub title: Option<String>,
+    pub backend: Option<String>,
     pub hold: bool,
     pub is_msg_create_window: bool,
+    pub banner: bool,
     pub help: bool,
     pub version: bool,
     pub diagnostics: bool,
@@ -68,23 +70,26 @@ impl CliOptions {
                         i += 1;
                     }
                 }
+                "-b" | "--backend" => {
+                    if i + 1 < args.len() {
+                        options.backend = Some(args[i + 1].clone());
+                        i += 1;
+                    }
+                }
                 "-w" | "--working-directory" | "--working-dir" => {
                     if i + 1 < args.len() {
                         options.working_directory = Some(args[i + 1].clone());
                         i += 1;
                     }
                 }
-                "-e" | "--command" => {
+                "-e" | "--command" | "--" => {
                     if i + 1 < args.len() {
                         options.command = Some(args[i + 1..].to_vec());
                         break;
                     }
                 }
-                "--" => {
-                    if i + 1 < args.len() {
-                        options.command = Some(args[i + 1..].to_vec());
-                        break;
-                    }
+                "--banner" => {
+                    options.banner = true;
                 }
                 "-h" | "--help" => {
                     options.help = true;
@@ -99,6 +104,10 @@ impl CliOptions {
                     if arg.starts_with('-') {
                         eprintln!("Unknown flag: {}", arg);
                         options.help = true;
+                    } else if options.working_directory.is_none()
+                        && std::path::Path::new(arg).is_dir()
+                    {
+                        options.working_directory = Some(arg.clone());
                     }
                 }
             }
@@ -115,7 +124,28 @@ impl CliOptions {
         options
     }
 
+    pub fn print_banner() {
+        println!(
+            "┌──────────────────────────────────────────┐
+| VELOX               VELOX                |
+| VELOX               VELOX                |
+| VELOX               VELOX                |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|      VELOX     VELOX     VELOX           |
+|           VELOX               VELOXVELOX |
+|           VELOX               VELOXVELOX |
+|           VELOX               VELOXVELOX |
+└──────────────────────────────────────────┘"
+        );
+    }
+
     pub fn print_help() {
+        Self::print_banner();
+        println!();
         println!(
             "Velox Terminal Emulator
 
@@ -128,17 +158,19 @@ FLAGS:
     -s, --single-instance   Enable single-process mode (connects to running instance or starts server)
     -d, --daemon            Start in background daemon mode (keeps process alive for IPC requests)
         --hold              Keep window open after child command exits
-        --diagnostics       Print system, display backend, OpenGL, and desktop diagnostics
+        --diagnostics       Print system, display backend, and desktop diagnostics
+        --banner            Print ASCII art banner
     -h, --help              Print help information
     -v, --version           Print version information
 
 OPTIONS:
+    -b, --backend <BACKEND>         Select windowing backend (x11 or wayland)
     -t, --title <TITLE>             Set custom window title
     -w, --working-directory <DIR>   Set initial working directory
     -e, --command <CMD...>          Execute specified command instead of shell
 
 SUBCOMMANDS:
-    doctor                          Run diagnostics check on display, GPU, and desktop environment
+    doctor                          Run diagnostics check on display and desktop environment
     msg create-window               Instruct running single-process instance to open a new window"
         );
     }
@@ -197,6 +229,13 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_positional_directory() {
+        let args = vec!["velox".to_string(), "/tmp".to_string()];
+        let opts = CliOptions::parse_args(&args);
+        assert_eq!(opts.working_directory, Some("/tmp".to_string()));
+    }
+
+    #[test]
     fn test_cli_diagnostics_and_doctor() {
         let args1 = vec!["velox".to_string(), "--diagnostics".to_string()];
         let opts1 = CliOptions::parse_args(&args1);
@@ -205,5 +244,48 @@ mod tests {
         let args2 = vec!["velox".to_string(), "doctor".to_string()];
         let opts2 = CliOptions::parse_args(&args2);
         assert!(opts2.diagnostics);
+    }
+
+    #[test]
+    fn test_cli_backend_flag() {
+        let args1 = vec!["velox".to_string(), "-b".to_string(), "x11".to_string()];
+        let opts1 = CliOptions::parse_args(&args1);
+        assert_eq!(opts1.backend, Some("x11".to_string()));
+
+        let args2 = vec![
+            "velox".to_string(),
+            "--backend".to_string(),
+            "wayland".to_string(),
+        ];
+        let opts2 = CliOptions::parse_args(&args2);
+        assert_eq!(opts2.backend, Some("wayland".to_string()));
+    }
+
+    #[test]
+    fn test_cli_help_flag() {
+        let args1 = vec!["velox".to_string(), "-h".to_string()];
+        let opts1 = CliOptions::parse_args(&args1);
+        assert!(opts1.help);
+
+        let args2 = vec!["velox".to_string(), "--help".to_string()];
+        let opts2 = CliOptions::parse_args(&args2);
+        assert!(opts2.help);
+    }
+
+    #[test]
+    fn test_cli_banner_flag() {
+        let args = vec!["velox".to_string(), "--banner".to_string()];
+        let opts = CliOptions::parse_args(&args);
+        assert!(opts.banner);
+    }
+
+    #[test]
+    fn test_cli_print_banner() {
+        CliOptions::print_banner();
+    }
+
+    #[test]
+    fn test_cli_print_help() {
+        CliOptions::print_help();
     }
 }

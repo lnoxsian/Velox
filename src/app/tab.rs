@@ -178,30 +178,34 @@ impl Tab {
     #[inline]
     pub fn active_pane_mut(&mut self) -> &mut Pane {
         let active_id = self.active_pane_id;
-        if self.tree.find_pane(active_id).is_some() {
-            return self.tree.find_pane_mut(active_id).expect("pane exists");
-        }
-        if let Some(&prev_id) = self
+        let id_to_find = if self.tree.find_pane(active_id).is_some() {
+            active_id
+        } else if let Some(&prev_id) = self
             .focus_history
             .iter()
             .rev()
             .find(|&&id| self.tree.find_pane(id).is_some())
         {
             self.active_pane_id = prev_id;
-            return self.tree.find_pane_mut(prev_id).expect("prev pane exists");
-        }
-        if let Some(last_id) = self.tree.last_pane_id() {
+            prev_id
+        } else if let Some(last_id) = self.tree.last_pane_id() {
             self.active_pane_id = last_id;
-            return self.tree.find_pane_mut(last_id).expect("last pane exists");
-        }
-        if let Some(first_id) = self.tree.first_pane_id() {
+            last_id
+        } else if let Some(first_id) = self.tree.first_pane_id() {
             self.active_pane_id = first_id;
-            return self
-                .tree
-                .find_pane_mut(first_id)
-                .expect("first pane exists");
-        }
-        panic!("tab must have at least one pane");
+            first_id
+        } else {
+            panic!("tab must have at least one pane");
+        };
+
+        self.tree
+            .find_pane_mut(id_to_find)
+            .expect("tab must have at least one pane")
+    }
+
+    #[inline]
+    pub fn for_each_pane_mut<F: FnMut(&mut Pane)>(&mut self, mut f: F) {
+        self.tree.for_each_pane_mut(&mut f);
     }
 
     #[inline]
@@ -287,6 +291,33 @@ impl TabBar {
             TabBarVisibility::Never => false,
             TabBarVisibility::Always => true,
             TabBarVisibility::Auto => tab_count > 1,
+        }
+    }
+
+    /// Clears any hovered tab, close button, or new tab button.
+    /// Returns `true` if any hover state was cleared (i.e. changed).
+    #[inline]
+    pub fn clear_hover(&mut self) -> bool {
+        let changed =
+            self.hovered_tab.is_some() || self.hovered_close.is_some() || self.hovered_new_tab;
+        self.hovered_tab = None;
+        self.hovered_close = None;
+        self.hovered_new_tab = false;
+        changed
+    }
+
+    /// Sets the hover states and returns `true` if the state changed.
+    #[inline]
+    pub fn set_hover(&mut self, tab: Option<usize>, close: Option<usize>, new_tab: bool) -> bool {
+        let old = (self.hovered_tab, self.hovered_close, self.hovered_new_tab);
+        let new = (tab, close, new_tab);
+        if old != new {
+            self.hovered_tab = tab;
+            self.hovered_close = close;
+            self.hovered_new_tab = new_tab;
+            true
+        } else {
+            false
         }
     }
 

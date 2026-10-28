@@ -1,4 +1,4 @@
-use crate::app::app::CustomEvent;
+use crate::app::app::{CustomEvent, EventLoopProxy};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-use winit::event_loop::EventLoopProxy;
+
+pub const MAX_IPC_PAYLOAD_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum IpcMessage {
@@ -87,6 +88,12 @@ pub fn send_ipc_message(msg: &IpcMessage) -> Result<IpcResponse, String> {
         .read_exact(&mut len_bytes)
         .map_err(|e| e.to_string())?;
     let resp_len = u32::from_be_bytes(len_bytes) as usize;
+    if resp_len > MAX_IPC_PAYLOAD_SIZE {
+        return Err(format!(
+            "IPC response exceeded max allowed size: {} bytes",
+            resp_len
+        ));
+    }
 
     let mut resp_payload = vec![0u8; resp_len];
     stream
@@ -109,7 +116,7 @@ impl Drop for IpcListenerHandle {
     }
 }
 
-pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListenerHandle, String> {
+pub fn start_ipc_server(proxy: EventLoopProxy) -> Result<IpcListenerHandle, String> {
     let path = socket_path();
 
     // Check if a stale socket exists
@@ -153,10 +160,7 @@ pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListene
             if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let proxy = proxy.clone();
-                        thread::spawn(move || {
-                            let _ = handle_client_stream(&mut stream, &proxy);
-                        });
+                        let _ = handle_client_stream(&mut stream, &proxy);
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(_) => {
@@ -180,10 +184,7 @@ pub fn start_ipc_server(proxy: EventLoopProxy<CustomEvent>) -> Result<IpcListene
     })
 }
 
-fn handle_client_stream(
-    stream: &mut UnixStream,
-    proxy: &EventLoopProxy<CustomEvent>,
-) -> Result<(), String> {
+fn handle_client_stream(stream: &mut UnixStream, proxy: &EventLoopProxy) -> Result<(), String> {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|e| e.to_string())?;
@@ -196,6 +197,12 @@ fn handle_client_stream(
         .read_exact(&mut len_bytes)
         .map_err(|e| e.to_string())?;
     let payload_len = u32::from_be_bytes(len_bytes) as usize;
+    if payload_len > MAX_IPC_PAYLOAD_SIZE {
+        return Err(format!(
+            "IPC payload exceeded max allowed size: {} bytes",
+            payload_len
+        ));
+    }
 
     let mut payload = vec![0u8; payload_len];
     stream.read_exact(&mut payload).map_err(|e| e.to_string())?;
@@ -216,7 +223,7 @@ fn handle_client_stream(
                 title,
                 hold,
             };
-            if proxy.send_event(event).is_ok() {
+            if proxy.send(event).is_ok() {
                 IpcResponse::Ok
             } else {
                 IpcResponse::Error("Event loop shut down".to_string())
@@ -234,7 +241,7 @@ fn handle_client_stream(
                 title,
                 hold,
             };
-            if proxy.send_event(event).is_ok() {
+            if proxy.send(event).is_ok() {
                 IpcResponse::Ok
             } else {
                 IpcResponse::Error("Event loop shut down".to_string())
@@ -283,5 +290,20 @@ mod tests {
             }
             _ => panic!("Expected CreateWindow variant"),
         }
+    }
+
+    #[test]
+    fn test_ipc_max_payload_rejection() {
+        // Test that receiving a payload_len exceeding MAX_IPC_PAYLOAD_SIZE returns an error without allocating
+        let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
+        // Write a 4-byte big-endian length that exceeds MAX_IPC_PAYLOAD_SIZE
+        let excessive_len = (MAX_IPC_PAYLOAD_SIZE + 1) as u32;
+        client.write_all(&excessive_len.to_be_bytes()).unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let proxy = EventLoopProxy::new(tx, -1);
+        let res = handle_client_stream(&mut server, &proxy);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("exceeded max allowed size"));
     }
 }

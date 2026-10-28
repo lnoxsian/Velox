@@ -11,6 +11,7 @@ pub struct AnsiParser {
     pub utf8_buf: SmallVec<[u8; 4]>,
     pub is_private: bool,
     pub prefix: Option<u8>,
+    pub intermediate: Option<u8>,
 }
 
 impl AnsiParser {
@@ -24,6 +25,23 @@ impl AnsiParser {
             utf8_buf: SmallVec::new(),
             is_private: false,
             prefix: None,
+            intermediate: None,
+        }
+    }
+
+    /// Shrinks heap-allocated SmallVec buffers back to stack capacity if spilled.
+    pub fn shrink_buffers(&mut self) {
+        if self.osc_buf.spilled() {
+            self.osc_buf.shrink_to_fit();
+        }
+        if self.dcs_buf.spilled() {
+            self.dcs_buf.shrink_to_fit();
+        }
+        if self.params.spilled() {
+            self.params.shrink_to_fit();
+        }
+        if self.param_buf.spilled() {
+            self.param_buf.shrink_to_fit();
         }
     }
 
@@ -47,6 +65,7 @@ impl AnsiParser {
                     self.param_buf.clear();
                     self.is_private = false;
                     self.prefix = None;
+                    self.intermediate = None;
                 } else if byte == b']' {
                     self.state = ParserState::OSC;
                     self.osc_buf.clear();
@@ -92,15 +111,7 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 }
             }
-            ParserState::EscapeDesignateG2 => {
-                if byte == 0x1b {
-                    self.state = ParserState::Escape;
-                    self.is_private = false;
-                } else {
-                    self.state = ParserState::Ground;
-                }
-            }
-            ParserState::EscapeDesignateG3 => {
+            ParserState::EscapeDesignateG2 | ParserState::EscapeDesignateG3 => {
                 if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
@@ -109,22 +120,35 @@ impl AnsiParser {
                 }
             }
             ParserState::CSI => {
-                if byte == b'?' || byte == b'>' || byte == b'<' || byte == b'=' || byte == b'!' {
+                if (byte == b'?' || byte == b'>' || byte == b'<' || byte == b'=' || byte == b'!')
+                    && self.prefix.is_none()
+                    && self.param_buf.is_empty()
+                {
                     self.is_private = true;
-                    if self.prefix.is_none() && self.param_buf.is_empty() {
-                        self.prefix = Some(byte);
-                    }
+                    self.prefix = Some(byte);
                     self.param_buf.push(byte);
-                } else if (0x20..=0x3f).contains(&byte) {
+                } else if (0x20..=0x2f).contains(&byte) {
+                    self.intermediate = Some(byte);
+                    self.param_buf.push(byte);
+                } else if (0x30..=0x3f).contains(&byte) {
                     self.param_buf.push(byte);
                 } else if (0x40..=0x7e).contains(&byte) {
                     self.parse_params();
-                    crate::ansi::csi::handle_csi(byte, &self.params, self.prefix, terminal);
+                    crate::ansi::csi::handle_csi(
+                        byte,
+                        &self.params,
+                        self.prefix,
+                        self.intermediate,
+                        terminal,
+                    );
+                    self.prefix = None;
+                    self.intermediate = None;
                     self.state = ParserState::Ground;
                 } else if byte == 0x1b {
                     self.state = ParserState::Escape;
                     self.is_private = false;
                     self.prefix = None;
+                    self.intermediate = None;
                 } else {
                     self.state = ParserState::Ground;
                 }
@@ -248,8 +272,8 @@ impl AnsiParser {
             }
             0x09 => {
                 let active = terminal.active_grid_mut();
-                let next_tab = (active.cursor.x + 8) & !7;
-                active.cursor.x = next_tab.min(active.width - 1);
+                let next_tab = active.next_tab_stop(active.cursor.x);
+                active.cursor.x = next_tab;
             }
             0x0e => {
                 terminal.active_charset = 1;
@@ -347,6 +371,7 @@ impl AnsiParser {
         }
     }
 
+    #[inline(always)]
     fn parse_params(&mut self) {
         self.params.clear();
         if self.param_buf.is_empty() {
@@ -406,8 +431,10 @@ impl AnsiParser {
         if self.osc_buf.is_empty() {
             return;
         }
-        let params: Vec<&[u8]> = self.osc_buf.split(|&b| b == b';').collect();
-        crate::ansi::osc::handle_osc(&params, terminal);
+        {
+            let params: SmallVec<[&[u8]; 8]> = self.osc_buf.split(|&b| b == b';').collect();
+            crate::ansi::osc::handle_osc(&params, terminal);
+        }
         self.osc_buf.clear();
         if self.osc_buf.capacity() > 1024 {
             self.osc_buf.shrink_to_fit();
@@ -511,10 +538,10 @@ impl AnsiParser {
                 b" q" => {
                     // DECSCUSR cursor shape query
                     let shape_code = match terminal.active_grid().cursor.shape {
-                        crate::screen::cursor::CursorShape::Block => 2,
                         crate::screen::cursor::CursorShape::Underline => 4,
                         crate::screen::cursor::CursorShape::Beam => 6,
-                        crate::screen::cursor::CursorShape::HollowBlock => 2,
+                        crate::screen::cursor::CursorShape::Block
+                        | crate::screen::cursor::CursorShape::HollowBlock => 2,
                     };
                     let mut buf = [0u8; 32];
                     use std::io::Write;
@@ -532,76 +559,68 @@ impl AnsiParser {
             // XTGETTCAP - Terminfo Capabilities Query: DCS + q <hex1> [; <hex2>...] ST
             let req = &self.dcs_buf[2..];
             let mut matched = false;
-            let mut resp_buf = Vec::with_capacity(128);
+            let mut resp_buf = SmallVec::<[u8; 256]>::new();
             resp_buf.extend_from_slice(b"\x1bP1+q");
 
             for cap_hex in req.split(|&b| b == b';') {
-                let cap_str = std::str::from_utf8(cap_hex).unwrap_or("").to_lowercase();
-                match cap_str.as_str() {
-                    "524742" | "5463" => {
-                        // RGB / Tc: 24-bit TrueColor support
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=31"); // hex for "1"
-                        matched = true;
+                if cap_hex.eq_ignore_ascii_case(b"524742") || cap_hex.eq_ignore_ascii_case(b"5463")
+                {
+                    // RGB / Tc: 24-bit TrueColor support
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "536d756c78" => {
-                        // Smulx: styled underlines (\E[4:%p1%dm)
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5b343a25703125646d");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=31"); // hex for "1"
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"536d756c78") {
+                    // Smulx: styled underlines (\E[4:%p1%dm)
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "536574756c63" => {
-                        // Setulc: colored underline
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5b35383a323a3a257031257b36353533367d252f25643a257031257b3235367d252f257b3235357d252625643a257031257b3235357d25262564253b6d");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5b343a25703125646d");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"536574756c63") {
+                    // Setulc: colored underline
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "4d73" => {
-                        // Ms: OSC 52 clipboard
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5d35323b25703125733b257032257307");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5b35383a323a3a257031257b36353533367d252f25643a257031257b3235367d252f257b3235357d252625643a257031257b3235357d25262564253b6d");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"4d73") {
+                    // Ms: OSC 52 clipboard
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "53796e63" => {
-                        // Sync: Synchronized updates mode 2026
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=1b5b3f3230323668");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5d35323b25703125733b257032257307");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"53796e63") {
+                    // Sync: Synchronized updates mode 2026
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    "544e" => {
-                        // TN: "xterm-256color"
-                        if matched {
-                            resp_buf.push(b';');
-                        }
-                        resp_buf.extend_from_slice(cap_hex);
-                        resp_buf.extend_from_slice(b"=787465726d2d323536636f6c6f72");
-                        matched = true;
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=1b5b3f3230323668");
+                    matched = true;
+                } else if cap_hex.eq_ignore_ascii_case(b"544e") {
+                    // TN: "xterm-256color"
+                    if matched {
+                        resp_buf.push(b';');
                     }
-                    _ => {}
+                    resp_buf.extend_from_slice(cap_hex);
+                    resp_buf.extend_from_slice(b"=787465726d2d323536636f6c6f72");
+                    matched = true;
                 }
             }
 
             if matched {
                 resp_buf.extend_from_slice(b"\x1b\\");
                 terminal.send_to_shell(&resp_buf);
+            } else {
+                terminal.send_to_shell(b"\x1bP0+q\x1b\\");
             }
-            // When no requested capabilities are recognized, silently ignore to prevent
-            // leaking raw hex queries into interactive shells and prompts (e.g. ble.sh / starship).
         }
         self.dcs_buf.clear();
         if self.dcs_buf.capacity() > 1024 {

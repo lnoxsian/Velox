@@ -3,22 +3,26 @@ use crate::screen::cursor::Cursor;
 use crate::screen::damage::DamageTracker;
 use crate::screen::scrollback::Scrollback;
 use crate::screen::selection::Selection;
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::{Mutex, OnceLock};
 use unicode_width::UnicodeWidthChar;
+
+thread_local! {
+    static URL_SCRATCH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
 
 pub const MAX_COMBINING_SEQUENCES: usize = 4096;
 
 pub struct CombiningRegistry {
     list: Vec<String>,
-    map: HashMap<String, u32>,
+    map: AHashMap<String, u32>,
 }
 
 impl CombiningRegistry {
     pub fn new() -> Self {
         Self {
             list: Vec::with_capacity(64),
-            map: HashMap::with_capacity(64),
+            map: AHashMap::with_capacity(64),
         }
     }
 
@@ -29,8 +33,8 @@ impl CombiningRegistry {
         } else if self.list.len() < MAX_COMBINING_SEQUENCES {
             let id = self.list.len() as u32;
             let s = seq.to_string();
-            self.list.push(s.clone());
-            self.map.insert(s, id);
+            self.map.insert(s.clone(), id);
+            self.list.push(s);
             Some(id)
         } else {
             None
@@ -40,8 +44,8 @@ impl CombiningRegistry {
     #[inline]
     pub fn append_to_entry(&mut self, reg_idx: usize, c: char) {
         if reg_idx < self.list.len() {
-            let old_str = self.list[reg_idx].clone();
-            self.map.remove(&old_str);
+            let old_str = &self.list[reg_idx];
+            self.map.remove(old_str.as_str());
             self.list[reg_idx].push(c);
             self.map.insert(self.list[reg_idx].clone(), reg_idx as u32);
         }
@@ -108,6 +112,156 @@ pub struct Grid {
     pub row_offset: usize,
     pub hyperlinks: crate::hyperlink::osc8::HyperlinkStore,
     pub current_hyperlink: Option<std::sync::Arc<crate::hyperlink::osc8::Hyperlink>>,
+    pub tab_stops: TabStops,
+    pub auto_wrap: bool,
+    pub insert_mode: bool,
+    pub saved_origin_mode: bool,
+    pub saved_auto_wrap: bool,
+}
+
+/// Compact bitset representing horizontal tab stops for up to 1024 terminal columns.
+/// Uses 16 x 64-bit words (128 bytes inline), eliminating heap allocations and enabling
+/// O(1) next/prev tab searches using CPU trailing_zeros / leading_zeros bit intrinsics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabStops {
+    pub words: [u64; 16],
+    pub width: usize,
+}
+
+impl TabStops {
+    pub const DEFAULT_PATTERN: u64 = 0x0101_0101_0101_0101; // Bits 0, 8, 16, 24, 32, 40, 48, 56
+
+    #[inline]
+    pub fn new(width: usize) -> Self {
+        let mut stops = Self {
+            words: [Self::DEFAULT_PATTERN; 16],
+            width: width.min(1024),
+        };
+        stops.mask_width();
+        stops
+    }
+
+    #[inline]
+    fn mask_width(&mut self) {
+        if self.width < 1024 {
+            let last_word = self.width / 64;
+            let bit = self.width % 64;
+            if bit > 0 && last_word < 16 {
+                let mask = (1u64 << bit) - 1;
+                self.words[last_word] &= mask;
+            }
+            for w in (last_word + if bit > 0 { 1 } else { 0 })..16 {
+                self.words[w] = 0;
+            }
+        }
+    }
+
+    #[inline]
+    pub fn resize(&mut self, new_w: usize) {
+        if new_w > self.width {
+            let old_w = self.width;
+            self.width = new_w.min(1024);
+            let start_word = old_w / 64;
+            let end_word = (self.width + 63) / 64;
+            for w in start_word..end_word.min(16) {
+                let base_col = w * 64;
+                for bit in 0..64 {
+                    let col = base_col + bit;
+                    if col >= old_w && col < self.width && col % 8 == 0 {
+                        self.words[w] |= 1u64 << bit;
+                    }
+                }
+            }
+        } else {
+            self.width = new_w.min(1024);
+        }
+        self.mask_width();
+    }
+
+    #[inline]
+    pub fn set(&mut self, col: usize) {
+        if col < self.width && col < 1024 {
+            self.words[col / 64] |= 1u64 << (col % 64);
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self, col: usize) {
+        if col < self.width && col < 1024 {
+            self.words[col / 64] &= !(1u64 << (col % 64));
+        }
+    }
+
+    #[inline]
+    pub fn clear_all(&mut self) {
+        self.words = [0u64; 16];
+    }
+
+    #[inline]
+    pub fn reset(&mut self) {
+        self.words = [Self::DEFAULT_PATTERN; 16];
+        self.mask_width();
+    }
+
+    #[inline]
+    pub fn next_stop(&self, col: usize) -> usize {
+        let start_col = col + 1;
+        if start_col >= self.width {
+            return self.width.saturating_sub(1);
+        }
+        let start_word = start_col / 64;
+        let start_bit = start_col % 64;
+
+        if start_word < 16 {
+            let mask = !((1u64 << start_bit) - 1);
+            let active = self.words[start_word] & mask;
+            if active != 0 {
+                let stop = start_word * 64 + active.trailing_zeros() as usize;
+                return stop.min(self.width.saturating_sub(1));
+            }
+
+            for w in (start_word + 1)..16.min((self.width + 63) / 64) {
+                let word = self.words[w];
+                if word != 0 {
+                    let stop = w * 64 + word.trailing_zeros() as usize;
+                    return stop.min(self.width.saturating_sub(1));
+                }
+            }
+        }
+
+        self.width.saturating_sub(1)
+    }
+
+    #[inline]
+    pub fn prev_stop(&self, col: usize) -> usize {
+        if col == 0 {
+            return 0;
+        }
+        let target_col = col - 1;
+        let start_word = (target_col / 64).min(15);
+        let start_bit = target_col % 64;
+
+        let mask = if start_bit == 63 {
+            !0u64
+        } else {
+            (1u64 << (start_bit + 1)) - 1
+        };
+        let active = self.words[start_word] & mask;
+        if active != 0 {
+            let bit = 63 - active.leading_zeros() as usize;
+            return start_word * 64 + bit;
+        }
+
+        for w in (0..start_word).rev() {
+            let word = self.words[w];
+            if word != 0 {
+                let bit = 63 - word.leading_zeros() as usize;
+                return w * 64 + bit;
+            }
+        }
+
+        0
+    }
 }
 
 impl Grid {
@@ -165,6 +319,11 @@ impl Grid {
             row_offset: 0,
             hyperlinks: crate::hyperlink::osc8::HyperlinkStore::new(),
             current_hyperlink: None,
+            tab_stops: TabStops::new(width),
+            auto_wrap: true,
+            insert_mode: false,
+            saved_origin_mode: false,
+            saved_auto_wrap: true,
         }
     }
 
@@ -175,6 +334,43 @@ impl Grid {
         } else {
             (self.row_offset + y) % self.height
         }
+    }
+
+    /// Maps a screen display row coordinate (0..height) to its absolute row coordinate
+    /// across scrollback and active grid, accounting for the current `scroll_offset`.
+    #[inline(always)]
+    pub fn display_row_to_abs(&self, row_idx: usize) -> usize {
+        (self.scrollback.len() + row_idx).saturating_sub(self.scroll_offset)
+    }
+
+    #[inline]
+    pub fn set_tab_stop(&mut self, col: usize) {
+        self.tab_stops.set(col);
+    }
+
+    #[inline]
+    pub fn clear_tab_stop(&mut self, col: usize) {
+        self.tab_stops.clear(col);
+    }
+
+    #[inline]
+    pub fn clear_all_tab_stops(&mut self) {
+        self.tab_stops.clear_all();
+    }
+
+    #[inline]
+    pub fn reset_tab_stops(&mut self) {
+        self.tab_stops.reset();
+    }
+
+    #[inline]
+    pub fn next_tab_stop(&self, col: usize) -> usize {
+        self.tab_stops.next_stop(col)
+    }
+
+    #[inline]
+    pub fn prev_tab_stop(&self, col: usize) -> usize {
+        self.tab_stops.prev_stop(col)
     }
 
     #[inline(always)]
@@ -204,6 +400,24 @@ impl Grid {
         }
     }
 
+    /// Fast-path row slice access for the visible active screen (when not viewing scrollback).
+    /// Avoids closure overhead and branch dispatch.
+    #[inline(always)]
+    pub fn active_display_row_slice(&self, y: usize) -> Option<&[Cell]> {
+        if self.scroll_offset != 0 {
+            return None;
+        }
+        if y < self.height {
+            let physical_y = self.physical_row(y);
+            let start = physical_y * self.width;
+            let end = (start + self.width).min(self.cells.len());
+            if start < self.cells.len() {
+                return Some(&self.cells[start..end]);
+            }
+        }
+        None
+    }
+
     pub fn normalize_row_offset(&mut self) {
         if self.row_offset == 0 || self.height <= 1 {
             return;
@@ -225,6 +439,180 @@ impl Grid {
         abs_row: usize,
     ) -> Option<std::sync::Arc<crate::hyperlink::osc8::Hyperlink>> {
         self.hyperlinks.get(abs_row, col)
+    }
+
+    pub fn is_row_wrapped(&self, abs_row: usize) -> bool {
+        let history_len = self.scrollback.len();
+        if abs_row < history_len {
+            self.scrollback
+                .with_row_slice(abs_row, |_cells, wrapped| wrapped)
+                .unwrap_or(false)
+        } else {
+            let grid_y = abs_row - history_len;
+            if grid_y < self.height {
+                let physical_y = self.physical_row(grid_y);
+                self.row_wrapped.get(physical_y).copied().unwrap_or(false)
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn with_row_cells<R>(&self, abs_row: usize, f: impl FnOnce(&[Cell]) -> R) -> Option<R> {
+        let history_len = self.scrollback.len();
+        if abs_row < history_len {
+            self.scrollback
+                .with_row_slice(abs_row, |cells, _wrapped| f(cells))
+        } else {
+            let grid_y = abs_row - history_len;
+            if grid_y < self.height {
+                let physical_y = self.physical_row(grid_y);
+                let start = physical_y * self.width;
+                let end = (start + self.width).min(self.cells.len());
+                if start < self.cells.len() {
+                    Some(f(&self.cells[start..end]))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Determines the start and end row indices `(start_r, end_r)` for a logical wrapped line.
+    #[inline]
+    pub fn logical_line_range(&self, abs_row: usize, total_lines: usize) -> (usize, usize) {
+        let mut start_r = abs_row;
+        while start_r > 0 && self.is_row_wrapped(start_r - 1) {
+            start_r -= 1;
+        }
+        let mut end_r = abs_row;
+        while end_r + 1 < total_lines && self.is_row_wrapped(end_r) {
+            end_r += 1;
+        }
+        (start_r, end_r)
+    }
+
+    fn fill_logical_line_scratch(&self, start_r: usize, end_r: usize, out: &mut String) {
+        out.clear();
+        for r in start_r..=end_r {
+            let _ = self.with_row_cells(r, |cells| {
+                for c in cells {
+                    out.push(c.character);
+                }
+                for _ in cells.len()..self.width {
+                    out.push(' ');
+                }
+            });
+        }
+    }
+
+    /// Checks if a cell at `(col, abs_row)` has an explicit OSC-8 hyperlink or detected URL.
+    /// Highly optimized for mouse hover: avoids string allocations for unwrapped rows without triggers.
+    pub fn has_url_at(&self, col: usize, abs_row: usize) -> bool {
+        if self.hyperlink_at(col, abs_row).is_some() {
+            return true;
+        }
+
+        let total_lines = self.scrollback.len() + self.height;
+        if abs_row >= total_lines || self.width == 0 {
+            return false;
+        }
+
+        let is_prev_wrapped = abs_row > 0 && self.is_row_wrapped(abs_row - 1);
+        let is_curr_wrapped = self.is_row_wrapped(abs_row);
+
+        if !is_prev_wrapped && !is_curr_wrapped {
+            let has_trigger = self
+                .with_row_cells(abs_row, |cells| {
+                    cells
+                        .iter()
+                        .any(|c| c.character == ':' || c.character == '.')
+                })
+                .unwrap_or(false);
+
+            if !has_trigger {
+                return false;
+            }
+
+            return URL_SCRATCH.with(|scratch| {
+                let mut text = scratch.borrow_mut();
+                text.clear();
+                let _ = self.with_row_cells(abs_row, |cells| {
+                    for c in cells {
+                        text.push(c.character);
+                    }
+                });
+                crate::hyperlink::detector::is_url_at(&text, col)
+            });
+        }
+
+        let (start_r, end_r) = self.logical_line_range(abs_row, total_lines);
+
+        URL_SCRATCH.with(|scratch| {
+            let mut logical_text = scratch.borrow_mut();
+            self.fill_logical_line_scratch(start_r, end_r, &mut logical_text);
+            let logical_col = (abs_row - start_r) * self.width + col;
+            crate::hyperlink::detector::is_url_at(&logical_text, logical_col)
+        })
+    }
+
+    pub fn hyperlink_url_at(&self, col: usize, abs_row: usize) -> Option<String> {
+        if let Some(link) = self.hyperlink_at(col, abs_row) {
+            return Some(link.url.clone());
+        }
+
+        let total_lines = self.scrollback.len() + self.height;
+        if abs_row >= total_lines || self.width == 0 {
+            return None;
+        }
+
+        let is_prev_wrapped = abs_row > 0 && self.is_row_wrapped(abs_row - 1);
+        let is_curr_wrapped = self.is_row_wrapped(abs_row);
+
+        if !is_prev_wrapped && !is_curr_wrapped {
+            let has_trigger = self
+                .with_row_cells(abs_row, |cells| {
+                    cells
+                        .iter()
+                        .any(|c| c.character == ':' || c.character == '.')
+                })
+                .unwrap_or(false);
+
+            if !has_trigger {
+                return None;
+            }
+
+            let mut text = String::with_capacity(self.width);
+            let _ = self.with_row_cells(abs_row, |cells| {
+                for c in cells {
+                    text.push(c.character);
+                }
+            });
+
+            let urls = crate::hyperlink::detector::detect(&text);
+            for (start, end, url) in urls {
+                if col >= start && col < end {
+                    return Some(url.to_string());
+                }
+            }
+            return None;
+        }
+
+        let (start_r, end_r) = self.logical_line_range(abs_row, total_lines);
+        let mut logical_text = String::with_capacity((end_r - start_r + 1) * self.width);
+        self.fill_logical_line_scratch(start_r, end_r, &mut logical_text);
+
+        let logical_col = (abs_row - start_r) * self.width + col;
+        let urls = crate::hyperlink::detector::detect(&logical_text);
+        for (start, end, url) in urls {
+            if logical_col >= start && logical_col < end {
+                return Some(url.to_string());
+            }
+        }
+
+        None
     }
 
     #[inline(always)]
@@ -259,62 +647,11 @@ impl Grid {
         underline_color: Option<Color>,
         flags: CellFlags,
     ) {
-        if self.cursor.x >= self.width {
-            let physical_y = self.physical_row(self.cursor.y);
-            let row_start = physical_y * self.width;
-            let start = (row_start + self.cursor.x).min(self.cells.len());
-            let end = (row_start + self.width).min(self.cells.len());
-            if start < end {
-                self.cells[start..end].fill(Cell {
-                    character: ' ',
-                    foreground: fg,
-                    background: bg,
-                    underline_color: None,
-                    flags: CellFlags::empty(),
-                });
-            }
-            if physical_y < self.row_wrapped.len() {
-                self.row_wrapped[physical_y] = true;
-            }
-            self.cursor.x = 0;
-            self.scroll_or_move_down(bg);
+        if self.width == 0 || self.height == 0 {
+            return;
         }
 
-        if let Some(ref link) = self.current_hyperlink {
-            let abs_row = self.scrollback.len() + self.cursor.y;
-            self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
-        } else if !self.hyperlinks.rows.is_empty() {
-            let abs_row = self.scrollback.len() + self.cursor.y;
-            self.hyperlinks.remove_cell(abs_row, self.cursor.x);
-        }
-
-        let physical_y = self.physical_row(self.cursor.y);
-        let idx = physical_y * self.width + self.cursor.x;
-        if idx < self.cells.len() {
-            self.cells[idx] = Cell {
-                character: c,
-                foreground: fg,
-                background: bg,
-                underline_color,
-                flags,
-            };
-        }
-        self.cursor.x += 1;
-        self.damage.mark_dirty(self.cursor.y);
-    }
-
-    pub fn put_ascii_slice(
-        &mut self,
-        mut text: &[u8],
-        fg: Color,
-        bg: Color,
-        underline_color: Option<Color>,
-        flags: CellFlags,
-    ) {
-        let has_hyperlinks = !self.hyperlinks.rows.is_empty();
-        let has_current_link = self.current_hyperlink.is_some();
-
-        while !text.is_empty() {
+        if self.auto_wrap {
             if self.cursor.x >= self.width {
                 let physical_y = self.physical_row(self.cursor.y);
                 let row_start = physical_y * self.width;
@@ -335,6 +672,110 @@ impl Grid {
                 self.cursor.x = 0;
                 self.scroll_or_move_down(bg);
             }
+        } else if self.cursor.x >= self.width {
+            self.cursor.x = self.width.saturating_sub(1);
+        }
+
+        if self.insert_mode {
+            self.insert_characters(1, fg, bg);
+        }
+
+        if let Some(ref link) = self.current_hyperlink {
+            let abs_row = self.scrollback.len() + self.cursor.y;
+            self.hyperlinks.insert(abs_row, self.cursor.x, link.clone());
+        } else if !self.hyperlinks.rows.is_empty() {
+            let abs_row = self.scrollback.len() + self.cursor.y;
+            self.hyperlinks.remove_cell(abs_row, self.cursor.x);
+        }
+
+        let physical_y = self.physical_row(self.cursor.y);
+        let idx = physical_y * self.width + self.cursor.x;
+        if idx < self.cells.len() {
+            // Clear paired wide character cell if overwriting a wide char or its continuation
+            let cell_flags = self.cells[idx].flags;
+            if cell_flags.intersects(CellFlags::WIDE | CellFlags::WIDE_CONTINUATION) {
+                if cell_flags.contains(CellFlags::WIDE) && self.cursor.x + 1 < self.width {
+                    let next_idx = idx + 1;
+                    if next_idx < self.cells.len()
+                        && self.cells[next_idx]
+                            .flags
+                            .contains(CellFlags::WIDE_CONTINUATION)
+                    {
+                        self.cells[next_idx] = Cell {
+                            character: ' ',
+                            foreground: fg,
+                            background: bg,
+                            underline_color: None,
+                            flags: CellFlags::empty(),
+                        };
+                    }
+                } else if self.cursor.x > 0 {
+                    let prev_idx = idx - 1;
+                    if self.cells[prev_idx].flags.contains(CellFlags::WIDE) {
+                        self.cells[prev_idx] = Cell {
+                            character: ' ',
+                            foreground: fg,
+                            background: bg,
+                            underline_color: None,
+                            flags: CellFlags::empty(),
+                        };
+                    }
+                }
+            }
+
+            self.cells[idx] = Cell {
+                character: c,
+                foreground: fg,
+                background: bg,
+                underline_color,
+                flags,
+            };
+        }
+        if self.auto_wrap || self.cursor.x + 1 < self.width {
+            self.cursor.x += 1;
+        }
+        self.damage.mark_dirty(self.cursor.y);
+    }
+
+    pub fn put_ascii_slice(
+        &mut self,
+        mut text: &[u8],
+        fg: Color,
+        bg: Color,
+        underline_color: Option<Color>,
+        flags: CellFlags,
+    ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        if self.insert_mode || !self.auto_wrap {
+            for &b in text {
+                self.put_ascii(b as char, fg, bg, underline_color, flags);
+            }
+            return;
+        }
+
+        let has_hyperlinks = !self.hyperlinks.rows.is_empty();
+        let has_current_link = self.current_hyperlink.is_some();
+
+        let template_cell = Cell {
+            character: ' ',
+            foreground: fg,
+            background: bg,
+            underline_color,
+            flags,
+        };
+
+        while !text.is_empty() {
+            if self.cursor.x >= self.width {
+                let physical_y = self.physical_row(self.cursor.y);
+                if physical_y < self.row_wrapped.len() {
+                    self.row_wrapped[physical_y] = true;
+                }
+                self.cursor.x = 0;
+                self.scroll_or_move_down(bg);
+            }
 
             let available_in_row = self.width.saturating_sub(self.cursor.x);
             if available_in_row == 0 {
@@ -349,18 +790,50 @@ impl Grid {
             let dest_end = (dest_start + chunk_len).min(self.cells.len());
 
             if dest_start < dest_end {
+                // If starting cell is WIDE_CONTINUATION, clear the preceding WIDE cell
+                if self.cells[dest_start]
+                    .flags
+                    .contains(CellFlags::WIDE_CONTINUATION)
+                    && self.cursor.x > 0
+                {
+                    let prev = dest_start - 1;
+                    if self.cells[prev].flags.contains(CellFlags::WIDE) {
+                        self.cells[prev] = Cell {
+                            character: ' ',
+                            foreground: fg,
+                            background: bg,
+                            underline_color: None,
+                            flags: CellFlags::empty(),
+                        };
+                    }
+                }
+                // If ending cell is WIDE, clear the subsequent WIDE_CONTINUATION cell
+                let last_written = dest_end - 1;
+                if self.cells[last_written].flags.contains(CellFlags::WIDE)
+                    && last_written + 1 < self.cells.len()
+                {
+                    let next = last_written + 1;
+                    if self.cells[next]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                    {
+                        self.cells[next] = Cell {
+                            character: ' ',
+                            foreground: fg,
+                            background: bg,
+                            underline_color: None,
+                            flags: CellFlags::empty(),
+                        };
+                    }
+                }
+
                 let actual_len = dest_end - dest_start;
                 let dest_slice = &mut self.cells[dest_start..dest_end];
-                let template = Cell {
-                    character: ' ',
-                    foreground: fg,
-                    background: bg,
-                    underline_color,
-                    flags,
-                };
                 for (cell, &b) in dest_slice.iter_mut().zip(&chunk[..actual_len]) {
-                    *cell = template;
-                    cell.character = b as char;
+                    *cell = Cell {
+                        character: b as char,
+                        ..template_cell
+                    };
                 }
             }
 
@@ -404,72 +877,98 @@ impl Grid {
             return;
         }
         let is_combining = UnicodeWidthChar::width(c) == Some(0);
-        if is_combining && self.cursor.x > 0 {
-            let physical_y = self.physical_row(self.cursor.y);
-            let row_start = physical_y * self.width;
-            let mut target_x = self.cursor.x - 1;
-            let mut idx = row_start + target_x;
-            if idx < self.cells.len()
-                && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION)
-                && target_x > 0
+        if is_combining {
+            // Non-combining zero-width characters (e.g. ZWSP U+200B, ZWNBSP/BOM U+FEFF, soft hyphen U+00AD)
+            // or Variation Selectors
+            if ('\u{fe00}'..='\u{fe0f}').contains(&c)
+                || ('\u{e0100}'..='\u{e01ef}').contains(&c)
+                || c == '\u{200b}'
+                || c == '\u{feff}'
+                || c == '\u{00ad}'
             {
-                target_x -= 1;
-                idx = row_start + target_x;
+                self.damage.mark_dirty(self.cursor.y);
+                return;
             }
-            if idx < self.cells.len() {
-                let base_char = self.cells[idx].character;
-                if ('\u{100000}'..='\u{10ffff}').contains(&base_char) {
-                    let reg_idx = (base_char as u32 - 0x100000) as usize;
-                    if let Ok(mut registry) = get_combining_registry().lock() {
-                        registry.append_to_entry(reg_idx, c);
-                    }
-                } else {
-                    let mut seq = String::with_capacity(8);
-                    seq.push(base_char);
-                    seq.push(c);
-                    let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
-                        if let Some(id) = registry.get_or_insert(&seq) {
-                            char::from_u32(0x100000 + id).unwrap_or(base_char)
-                        } else {
-                            base_char
+
+            if self.cursor.x > 0 {
+                let physical_y = self.physical_row(self.cursor.y);
+                let row_start = physical_y * self.width;
+                let mut target_x = self.cursor.x - 1;
+                let mut idx = row_start + target_x;
+                if idx < self.cells.len()
+                    && self.cells[idx].flags.contains(CellFlags::WIDE_CONTINUATION)
+                    && target_x > 0
+                {
+                    target_x -= 1;
+                    idx = row_start + target_x;
+                }
+                if idx < self.cells.len() {
+                    let base_char = self.cells[idx].character;
+                    if ('\u{100000}'..='\u{10ffff}').contains(&base_char) {
+                        let reg_idx = (base_char as u32 - 0x100000) as usize;
+                        if let Ok(mut registry) = get_combining_registry().lock() {
+                            registry.append_to_entry(reg_idx, c);
                         }
                     } else {
-                        base_char
-                    };
-                    self.cells[idx].character = new_char;
+                        let mut seq = String::with_capacity(8);
+                        seq.push(base_char);
+                        seq.push(c);
+                        let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
+                            if let Some(id) = registry.get_or_insert(&seq) {
+                                char::from_u32(0x100000 + id).unwrap_or(base_char)
+                            } else {
+                                base_char
+                            }
+                        } else {
+                            base_char
+                        };
+                        self.cells[idx].character = new_char;
+                    }
                 }
             }
+            self.damage.mark_dirty(self.cursor.y);
             return;
         }
 
-        let w = UnicodeWidthChar::width(c).unwrap_or(1).max(1);
+        let mut w = UnicodeWidthChar::width(c).unwrap_or(1).max(1);
+        if self.width < 2 {
+            w = 1;
+        }
 
-        if self.cursor.x + w > self.width {
-            // Fill rest of the row with spaces, then wrap
-            let physical_y = self.physical_row(self.cursor.y);
-            let row_start = physical_y * self.width;
-            let start = (row_start + self.cursor.x).min(self.cells.len());
-            let end = (row_start + self.width).min(self.cells.len());
-            if start < end {
-                self.cells[start..end].fill(Cell {
-                    character: ' ',
-                    foreground: fg,
-                    background: bg,
-                    underline_color: None,
-                    flags: CellFlags::empty(),
-                });
+        if self.auto_wrap {
+            if self.cursor.x + w > self.width {
+                // Fill rest of the row with spaces, then wrap
+                let physical_y = self.physical_row(self.cursor.y);
+                let row_start = physical_y * self.width;
+                let start = (row_start + self.cursor.x).min(self.cells.len());
+                let end = (row_start + self.width).min(self.cells.len());
+                if start < end {
+                    self.cells[start..end].fill(Cell {
+                        character: ' ',
+                        foreground: fg,
+                        background: bg,
+                        underline_color: None,
+                        flags: CellFlags::empty(),
+                    });
+                }
+                if physical_y < self.row_wrapped.len() {
+                    self.row_wrapped[physical_y] = true;
+                }
+                self.cursor.x = 0;
+                self.scroll_or_move_down(bg);
             }
-            if physical_y < self.row_wrapped.len() {
-                self.row_wrapped[physical_y] = true;
-            }
-            self.cursor.x = 0;
-            self.scroll_or_move_down(bg);
+        } else if self.cursor.x + w > self.width {
+            self.cursor.x = self.width.saturating_sub(w);
+        }
+
+        if self.insert_mode {
+            self.insert_characters(w, fg, bg);
         }
 
         let physical_y = self.physical_row(self.cursor.y);
         let row_start = physical_y * self.width;
 
-        if w == 2 {
+        if w == 2 && self.width >= 2 {
             flags.insert(CellFlags::WIDE);
             if let Some(ref link) = self.current_hyperlink {
                 let abs_row = self.scrollback.len() + self.cursor.y;
@@ -492,7 +991,9 @@ impl Grid {
                     flags,
                 };
             }
-            self.cursor.x += 1;
+            if self.auto_wrap || self.cursor.x + 1 < self.width {
+                self.cursor.x += 1;
+            }
 
             let idx_next = row_start + self.cursor.x;
             if idx_next < self.cells.len() {
@@ -504,7 +1005,9 @@ impl Grid {
                     flags: CellFlags::WIDE_CONTINUATION,
                 };
             }
-            self.cursor.x += 1;
+            if self.auto_wrap || self.cursor.x + 1 < self.width {
+                self.cursor.x += 1;
+            }
         } else {
             if let Some(ref link) = self.current_hyperlink {
                 let abs_row = self.scrollback.len() + self.cursor.y;
@@ -516,6 +1019,38 @@ impl Grid {
 
             let idx = row_start + self.cursor.x;
             if idx < self.cells.len() {
+                // Clear paired wide character cell if overwriting
+                let cell_flags = self.cells[idx].flags;
+                if cell_flags.intersects(CellFlags::WIDE | CellFlags::WIDE_CONTINUATION) {
+                    if cell_flags.contains(CellFlags::WIDE) && self.cursor.x + 1 < self.width {
+                        let next_idx = idx + 1;
+                        if next_idx < self.cells.len()
+                            && self.cells[next_idx]
+                                .flags
+                                .contains(CellFlags::WIDE_CONTINUATION)
+                        {
+                            self.cells[next_idx] = Cell {
+                                character: ' ',
+                                foreground: fg,
+                                background: bg,
+                                underline_color: None,
+                                flags: CellFlags::empty(),
+                            };
+                        }
+                    } else if self.cursor.x > 0 {
+                        let prev_idx = idx - 1;
+                        if self.cells[prev_idx].flags.contains(CellFlags::WIDE) {
+                            self.cells[prev_idx] = Cell {
+                                character: ' ',
+                                foreground: fg,
+                                background: bg,
+                                underline_color: None,
+                                flags: CellFlags::empty(),
+                            };
+                        }
+                    }
+                }
+
                 self.cells[idx] = Cell {
                     character: c,
                     foreground: fg,
@@ -524,7 +1059,9 @@ impl Grid {
                     flags,
                 };
             }
-            self.cursor.x += 1;
+            if self.auto_wrap || self.cursor.x + 1 < self.width {
+                self.cursor.x += 1;
+            }
         }
         self.damage.mark_dirty(self.cursor.y);
     }
@@ -614,6 +1151,14 @@ impl Grid {
             0 => {
                 // Cursor to end of line
                 let start_idx = row_start + cur_x;
+                if cur_x > 0
+                    && start_idx < self.cells.len()
+                    && self.cells[start_idx]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[start_idx - 1] = default_cell;
+                }
                 let end_idx = (row_start + self.width).min(self.cells.len());
                 if start_idx < end_idx {
                     self.cells[start_idx..end_idx].fill(default_cell);
@@ -623,6 +1168,15 @@ impl Grid {
                 // Start of line to cursor
                 let start_idx = row_start;
                 let end_idx = (row_start + cur_x + 1).min(self.cells.len());
+                if cur_x + 1 < self.width
+                    && end_idx < self.cells.len()
+                    && self.cells[end_idx - 1].flags.contains(CellFlags::WIDE)
+                    && self.cells[end_idx]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[end_idx] = default_cell;
+                }
                 if start_idx < end_idx {
                     self.cells[start_idx..end_idx].fill(default_cell);
                 }
@@ -645,35 +1199,76 @@ impl Grid {
 
     pub fn erase_display(&mut self, mode: u8, fg: Color, bg: Color) {
         self.clamp_cursor();
+        if self.height == 0 || self.width == 0 {
+            return;
+        }
         let default_cell = Cell::new(' ', fg, bg, CellFlags::empty());
         let cur_y = self.cursor.y.min(self.height.saturating_sub(1));
         let cur_x = self.cursor.x.min(self.width.saturating_sub(1));
         match mode {
             0 => {
-                // Cursor to end of display: normalize first if wrapped
-                self.normalize_row_offset();
-                let start = (cur_y * self.width + cur_x).min(self.cells.len());
-                self.cells[start..].fill(default_cell);
-                for y in cur_y..self.height {
+                // Cursor to end of display
+                let phys_cur_y = self.physical_row(cur_y);
+                let start = phys_cur_y * self.width + cur_x;
+                if cur_x > 0
+                    && start < self.cells.len()
+                    && self.cells[start]
+                        .flags
+                        .contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[start - 1] = default_cell;
+                }
+                let end = (phys_cur_y + 1) * self.width;
+                if start < end && end <= self.cells.len() {
+                    self.cells[start..end].fill(default_cell);
+                }
+                self.damage.mark_dirty(cur_y);
+                if phys_cur_y < self.row_wrapped.len() {
+                    self.row_wrapped[phys_cur_y] = false;
+                }
+                for y in (cur_y + 1)..self.height {
+                    let phys_y = self.physical_row(y);
+                    let row_start = phys_y * self.width;
+                    let row_end = row_start + self.width;
+                    if row_end <= self.cells.len() {
+                        self.cells[row_start..row_end].fill(default_cell);
+                    }
                     self.damage.mark_dirty(y);
-                    if y < self.row_wrapped.len() {
-                        self.row_wrapped[y] = false;
+                    if phys_y < self.row_wrapped.len() {
+                        self.row_wrapped[phys_y] = false;
                     }
                 }
             }
             1 => {
                 // Start of display to cursor
-                self.normalize_row_offset();
-                let len = self.cells.len();
-                if len > 0 {
-                    let end = (cur_y * self.width + cur_x).min(len - 1);
-                    self.cells[0..=end].fill(default_cell);
-                    for y in 0..=cur_y {
-                        self.damage.mark_dirty(y);
-                        if y < self.row_wrapped.len() {
-                            self.row_wrapped[y] = false;
-                        }
+                for y in 0..cur_y {
+                    let phys_y = self.physical_row(y);
+                    let row_start = phys_y * self.width;
+                    let row_end = row_start + self.width;
+                    if row_end <= self.cells.len() {
+                        self.cells[row_start..row_end].fill(default_cell);
                     }
+                    self.damage.mark_dirty(y);
+                    if phys_y < self.row_wrapped.len() {
+                        self.row_wrapped[phys_y] = false;
+                    }
+                }
+                let phys_cur_y = self.physical_row(cur_y);
+                let start = phys_cur_y * self.width;
+                let end = (start + cur_x + 1).min(self.cells.len());
+                if cur_x + 1 < self.width
+                    && end < self.cells.len()
+                    && self.cells[end - 1].flags.contains(CellFlags::WIDE)
+                    && self.cells[end].flags.contains(CellFlags::WIDE_CONTINUATION)
+                {
+                    self.cells[end] = default_cell;
+                }
+                if start < end {
+                    self.cells[start..end].fill(default_cell);
+                }
+                self.damage.mark_dirty(cur_y);
+                if phys_cur_y < self.row_wrapped.len() {
+                    self.row_wrapped[phys_cur_y] = false;
                 }
             }
             2 | 3 => {
@@ -692,7 +1287,7 @@ impl Grid {
     }
 
     pub fn extract_selection_text(&self) -> String {
-        if !self.selection.active {
+        if !self.selection.active || self.width == 0 || self.height == 0 {
             return String::new();
         }
 
@@ -700,11 +1295,21 @@ impl Grid {
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
 
-        let mut lines = Vec::new();
+        if min_y >= total_lines {
+            return String::new();
+        }
+        let clamped_max_y = max_y.min(total_lines.saturating_sub(1));
+        if min_y > clamped_max_y {
+            return String::new();
+        }
 
-        for y in min_y..=max_y {
-            if y >= total_lines {
-                break;
+        let num_lines = clamped_max_y - min_y + 1;
+        let estimated_capacity = (num_lines * self.width.min(80)).min(20 * 1024 * 1024);
+        let mut result = String::with_capacity(estimated_capacity);
+
+        for y in min_y..=clamped_max_y {
+            if y > min_y {
+                result.push('\n');
             }
 
             let start_col = if y == min_y { min_x } else { 0 };
@@ -714,14 +1319,28 @@ impl Grid {
                 self.width.saturating_sub(1)
             };
 
-            let mut line = String::new();
+            if start_col > end_col {
+                continue;
+            }
+
             if y < history_len {
                 self.scrollback.with_row_slice(y, |cells, _| {
-                    for x in start_col..=end_col {
-                        if x < cells.len() {
-                            line.push(cells[x].character);
-                        } else {
-                            line.push(' ');
+                    if cells.is_empty() {
+                        return;
+                    }
+                    let upper = end_col.min(cells.len() - 1);
+                    let mut last_col = None;
+                    if upper >= start_col {
+                        for x in (start_col..=upper).rev() {
+                            if cells[x].character != ' ' {
+                                last_col = Some(x);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(last) = last_col {
+                        for x in start_col..=last {
+                            result.push(cells[x].character);
                         }
                     }
                 });
@@ -730,23 +1349,37 @@ impl Grid {
                 if grid_y < self.height {
                     let physical_y = self.physical_row(grid_y);
                     let row_start = physical_y * self.width;
-                    for x in start_col..=end_col {
-                        let idx = row_start + x;
-                        if idx < self.cells.len() {
-                            line.push(self.cells[idx].character);
-                        } else {
-                            line.push(' ');
+                    if row_start + self.width <= self.cells.len() {
+                        let row_cells = &self.cells[row_start..row_start + self.width];
+                        if !row_cells.is_empty() {
+                            let upper = end_col.min(row_cells.len() - 1);
+                            let mut last_col = None;
+                            if upper >= start_col {
+                                for x in (start_col..=upper).rev() {
+                                    if row_cells[x].character != ' ' {
+                                        last_col = Some(x);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(last) = last_col {
+                                for x in start_col..=last {
+                                    result.push(row_cells[x].character);
+                                }
+                            }
                         }
                     }
                 }
             }
-            lines.push(line.trim_end().to_string());
         }
 
-        lines.join("\n")
+        result
     }
 
     pub fn select_word_at(&mut self, col: usize, abs_y: usize) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
         if abs_y >= total_lines || col >= self.width {
@@ -757,58 +1390,45 @@ impl Grid {
             c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/' || c == '~'
         };
 
-        let mut row_cells = Vec::new();
-        if abs_y < history_len {
-            self.scrollback.with_row_slice(abs_y, |cells, _| {
-                row_cells = cells.to_vec();
-            });
-        } else {
-            let grid_y = abs_y - history_len;
-            if grid_y < self.height {
-                let physical_y = self.physical_row(grid_y);
-                let row_start = physical_y * self.width;
-                let row_end = (row_start + self.width).min(self.cells.len());
-                row_cells = self.cells[row_start..row_end].to_vec();
+        let find_bounds = |row_slice: &[Cell]| -> Option<(usize, usize)> {
+            if col >= row_slice.len() {
+                return None;
             }
-        }
-
-        if col >= row_cells.len() {
-            self.selection.start_selection(col, abs_y);
-            return;
-        }
-
-        let target_c = row_cells[col].character;
-        if !is_word_char(target_c) {
-            self.selection.start_selection(col, abs_y);
-            return;
-        }
-
-        let mut start_col = col;
-        while start_col > 0 {
-            if is_word_char(row_cells[start_col - 1].character) {
+            let target_c = row_slice[col].character;
+            if !is_word_char(target_c) {
+                return None;
+            }
+            let mut start_col = col;
+            while start_col > 0 && is_word_char(row_slice[start_col - 1].character) {
                 start_col -= 1;
-            } else {
-                break;
             }
-        }
-
-        let mut end_col = col;
-        while end_col + 1 < row_cells.len() && end_col + 1 < self.width {
-            if is_word_char(row_cells[end_col + 1].character) {
+            let mut end_col = col;
+            while end_col + 1 < row_slice.len()
+                && end_col + 1 < self.width
+                && is_word_char(row_slice[end_col + 1].character)
+            {
                 end_col += 1;
-            } else {
-                break;
             }
-        }
+            Some((start_col, end_col))
+        };
 
-        self.selection.start_x = start_col;
-        self.selection.start_y = abs_y;
-        self.selection.end_x = end_col;
-        self.selection.end_y = abs_y;
-        self.selection.active = true;
+        let bounds = self.with_row_cells(abs_y, find_bounds).flatten();
+
+        if let Some((start_col, end_col)) = bounds {
+            self.selection.start_x = start_col;
+            self.selection.start_y = abs_y;
+            self.selection.end_x = end_col;
+            self.selection.end_y = abs_y;
+            self.selection.active = true;
+        } else {
+            self.selection.start_selection(col, abs_y);
+        }
     }
 
     pub fn select_line_at(&mut self, abs_y: usize) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
         if abs_y >= total_lines {
@@ -1136,5 +1756,147 @@ mod tests {
         // Scroll 1 more line: row 0 is evicted, selection is dropped
         grid.scroll(1, bg);
         assert!(!grid.selection.active);
+    }
+
+    #[test]
+    fn test_variation_selector_does_not_corrupt_emoji_codepoint() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+
+        // Put emoji followed by VS16 (emoji presentation selector: \u{fe0f})
+        grid.put_char('\u{2764}', fg, bg, None, CellFlags::empty());
+        grid.put_char('\u{fe0f}', fg, bg, None, CellFlags::empty());
+
+        let ch = grid
+            .with_display_row_slice(0, |row| row[0].character)
+            .unwrap();
+        assert_eq!(
+            ch, '\u{2764}',
+            "Base emoji codepoint must be preserved, not converted to PUA"
+        );
+    }
+
+    #[test]
+    fn test_extract_selection_text_empty_scrollback_row() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(80, 5, fg, bg, 100, false);
+
+        // Put line 0: "hello"
+        for c in "hello".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+        grid.scroll(1, bg);
+
+        // Line 1: blank line (all spaces, trimmed to empty slice in scrollback)
+        grid.scroll(1, bg);
+
+        // Line 2: "world"
+        grid.cursor.x = 0;
+        for c in "world".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+        grid.scroll(1, bg);
+
+        assert_eq!(grid.scrollback.len(), 3);
+
+        // Verify line 1 in scrollback has len 0
+        grid.scrollback.with_row_slice(1, |cells, _| {
+            assert!(
+                cells.is_empty(),
+                "Blank line should have trimmed cells to empty slice"
+            );
+        });
+
+        // Test 1: Selecting the empty row directly
+        grid.selection.start_selection(0, 1);
+        grid.selection.update_selection(10, 1);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        // Test 2: Double-click / select_word_at on empty row
+        grid.select_word_at(0, 1);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        // Test 3: Triple-click / select_line_at on empty row
+        grid.select_line_at(1);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        // Test 4: Multi-line selection spanning the empty row (rows 0..=2)
+        grid.selection.start_selection(0, 0);
+        grid.selection.update_selection(5, 2);
+        assert_eq!(grid.extract_selection_text(), "hello\n\nworld");
+    }
+
+    #[test]
+    fn test_extract_selection_zero_dimensions() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(0, 0, fg, bg, 100, false);
+
+        grid.selection.start_selection(0, 0);
+        grid.selection.update_selection(5, 0);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        grid.select_word_at(0, 0);
+        assert_eq!(grid.extract_selection_text(), "");
+
+        grid.select_line_at(0);
+        assert_eq!(grid.extract_selection_text(), "");
+    }
+
+    #[test]
+    fn test_physical_row_zero_height() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let grid = Grid::new(80, 0, fg, bg, 100, false);
+        // Must not panic on % 0
+        assert_eq!(grid.physical_row(0), 0);
+        assert_eq!(grid.physical_row(5), 0);
+    }
+
+    #[test]
+    fn test_grid_output_zero_dimensions_no_hang() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(0, 0, fg, bg, 100, false);
+        grid.put_ascii('a', fg, bg, None, CellFlags::empty());
+        grid.put_ascii_slice(b"hello world", fg, bg, None, CellFlags::empty());
+        grid.put_char('🚀', fg, bg, None, CellFlags::empty());
+    }
+
+    #[test]
+    fn test_wide_char_on_one_column_grid() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(1, 2, fg, bg, 100, false);
+        // Writing emoji on 1-column grid should not corrupt next row
+        grid.put_char('🚀', fg, bg, None, CellFlags::empty());
+        assert_eq!(grid.cells[0].character, '🚀');
+        assert!(!grid.cells[1].flags.contains(CellFlags::WIDE_CONTINUATION));
     }
 }

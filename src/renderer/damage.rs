@@ -2,6 +2,7 @@
 #[derive(Debug, Clone)]
 pub struct DamageMap {
     pub dirty_rows: Vec<bool>,
+    dirty_indices: Vec<usize>,
     pub full_redraw: bool,
     pub prev_cursor_pos: Option<(usize, usize)>,
     pub prev_selection: Option<((usize, usize), (usize, usize))>,
@@ -9,8 +10,10 @@ pub struct DamageMap {
 
 impl DamageMap {
     pub fn new(rows: usize) -> Self {
+        let r = rows.max(1);
         Self {
-            dirty_rows: vec![true; rows.max(1)],
+            dirty_rows: vec![true; r],
+            dirty_indices: Vec::new(),
             full_redraw: true,
             prev_cursor_pos: None,
             prev_selection: None,
@@ -20,13 +23,17 @@ impl DamageMap {
     pub fn resize(&mut self, rows: usize) {
         let r = rows.max(1);
         self.dirty_rows.resize(r, true);
+        self.dirty_indices.clear();
         self.full_redraw = true;
     }
 
     #[inline(always)]
     pub fn mark_row(&mut self, row: usize) {
         if row < self.dirty_rows.len() {
-            self.dirty_rows[row] = true;
+            if !self.dirty_rows[row] {
+                self.dirty_rows[row] = true;
+                self.dirty_indices.push(row);
+            }
         }
     }
 
@@ -34,12 +41,14 @@ impl DamageMap {
     pub fn mark_all(&mut self) {
         self.full_redraw = true;
         self.dirty_rows.fill(true);
+        self.dirty_indices.clear();
     }
 
     #[inline(always)]
     pub fn clear(&mut self) {
         self.full_redraw = false;
         self.dirty_rows.fill(false);
+        self.dirty_indices.clear();
     }
 
     #[inline(always)]
@@ -48,22 +57,18 @@ impl DamageMap {
     }
 
     #[inline(always)]
-    pub fn has_damage(&self) -> bool {
-        self.full_redraw || self.dirty_rows.iter().any(|&d| d)
+    pub fn dirty_indices(&self) -> &[usize] {
+        &self.dirty_indices
     }
 
-    /// Ingest damage flags from the active terminal grid.
-    pub fn sync_from_grid(&mut self, grid_dirty: &[bool], grid_full_redraw: bool) {
-        if grid_full_redraw {
-            self.full_redraw = true;
-            self.dirty_rows.fill(true);
-        } else {
-            for (dst, &src) in self.dirty_rows.iter_mut().zip(grid_dirty.iter()) {
-                if src {
-                    *dst = true;
-                }
-            }
+    #[inline(always)]
+    pub fn has_damage(&self) -> bool {
+        if self.full_redraw || !self.dirty_indices.is_empty() {
+            return true;
         }
+        let slice = self.dirty_rows.as_slice();
+        let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
+        prefix.iter().any(|&d| d) || words.iter().any(|&w| w != 0) || suffix.iter().any(|&d| d)
     }
 
     /// Mark old and new cursor rows dirty if cursor position moved.
@@ -100,12 +105,23 @@ impl DamageMap {
 
         if self.prev_selection != new_selection {
             let mark_selection_rows = |dm: &mut DamageMap, min_abs_y: usize, max_abs_y: usize| {
-                for abs_y in min_abs_y..=max_abs_y {
-                    let total_y = abs_y + scroll_offset;
-                    if total_y >= history_len {
-                        let screen_y = total_y - history_len;
-                        if screen_y < grid_h {
-                            dm.mark_row(screen_y);
+                if history_len + grid_h <= scroll_offset {
+                    return;
+                }
+                let vis_min = history_len.saturating_sub(scroll_offset);
+                let vis_max =
+                    (history_len + grid_h.saturating_sub(1)).saturating_sub(scroll_offset);
+                let start_y = min_abs_y.max(vis_min);
+                let end_y = max_abs_y.min(vis_max);
+
+                if start_y <= end_y {
+                    for abs_y in start_y..=end_y {
+                        let total_y = abs_y + scroll_offset;
+                        if total_y >= history_len {
+                            let screen_y = total_y - history_len;
+                            if screen_y < grid_h {
+                                dm.mark_row(screen_y);
+                            }
                         }
                     }
                 }
@@ -141,5 +157,25 @@ mod tests {
         assert!(dm.has_damage());
         assert!(dm.is_dirty(3));
         assert!(!dm.is_dirty(4));
+    }
+
+    #[test]
+    fn test_update_selection_large_bounds_clamped() {
+        let mut dm = DamageMap::new(24);
+        dm.clear();
+        assert!(!dm.has_damage());
+
+        // Massive selection spanning 100,000 lines
+        let bounds = ((0, 0), (80, 100_000));
+        let history_len = 90_000;
+        let scroll_offset = 0;
+        let grid_h = 24;
+
+        dm.update_selection(true, bounds, history_len, scroll_offset, grid_h);
+        assert!(dm.has_damage());
+        // All 24 screen rows should be dirty, but no out-of-bounds rows
+        for r in 0..grid_h {
+            assert!(dm.is_dirty(r));
+        }
     }
 }

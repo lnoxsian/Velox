@@ -10,7 +10,7 @@ Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;console;shell;prompt;command;line;
 StartupNotify=true
-StartupWMClass=io.github.lnoxsian.Velox
+StartupWMClass=Velox
 Actions=NewWindow;
 
 [Desktop Action NewWindow]

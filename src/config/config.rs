@@ -32,29 +32,16 @@ impl Default for FontConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RendererBackendConfig {
-    #[default]
-    Auto,
-    Opengl,
-    Software,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct WindowConfig {
     #[serde(default)]
     pub scrollback_limit: Option<usize>,
     #[serde(default)]
     pub infinite_scrollback: Option<bool>,
-    #[serde(default)]
-    pub gpu_acceleration: Option<bool>,
-    #[serde(default)]
-    pub renderer_backend: Option<RendererBackendConfig>,
 
     #[serde(default)]
     pub scroll_multiplier: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps_limit: Option<u32>,
     #[serde(default)]
     pub padding_x: Option<f32>,
@@ -77,7 +64,31 @@ pub struct WindowConfig {
     #[serde(default)]
     pub window_dim: Option<f32>,
     #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
     pub hide_mouse_on_typing: Option<bool>,
+    #[serde(default)]
+    pub csd_theme: Option<String>,
+    #[serde(default)]
+    pub decorations: Option<WindowDecorationsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct WindowDecorationsConfig {
+    #[serde(default)]
+    pub theme: Option<String>,
+    #[serde(default)]
+    pub bg: Option<String>,
+    #[serde(default)]
+    pub fg: Option<String>,
+    #[serde(default)]
+    pub inactive_bg: Option<String>,
+    #[serde(default)]
+    pub inactive_fg: Option<String>,
+    #[serde(default)]
+    pub border: Option<String>,
+    #[serde(default)]
+    pub close_fg: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -287,6 +298,8 @@ pub struct Config {
     pub app_title: Option<String>,
     #[serde(default)]
     pub single_instance: Option<bool>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
 
     // Top-level fallback fields for legacy flat TOML files
     #[serde(
@@ -321,18 +334,6 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) infinite_scrollback_legacy: Option<bool>,
-    #[serde(
-        default,
-        rename = "gpu_acceleration",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) gpu_acceleration_legacy: Option<bool>,
-    #[serde(
-        default,
-        rename = "renderer_backend",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) renderer_backend_legacy: Option<RendererBackendConfig>,
 
     #[serde(
         default,
@@ -421,9 +422,37 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) hide_mouse_on_typing_legacy: Option<bool>,
+    #[serde(
+        default,
+        rename = "decorations_theme",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) decorations_theme_legacy: Option<String>,
 }
 
 impl Config {
+    pub fn decorations_config(&self) -> Option<WindowDecorationsConfig> {
+        if let Some(ref d) = self.window.decorations {
+            let mut cfg = d.clone();
+            if cfg.theme.is_none() && self.window.csd_theme.is_some() {
+                cfg.theme = self.window.csd_theme.clone();
+            }
+            Some(cfg)
+        } else if let Some(ref t) = self.window.csd_theme {
+            Some(WindowDecorationsConfig {
+                theme: Some(t.clone()),
+                ..Default::default()
+            })
+        } else if let Some(ref t) = self.decorations_theme_legacy {
+            Some(WindowDecorationsConfig {
+                theme: Some(t.clone()),
+                ..Default::default()
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn opacity(&self) -> f32 {
         self.window
             .opacity
@@ -474,48 +503,6 @@ impl Config {
             .or(self.infinite_scrollback_legacy)
     }
 
-    pub fn renderer_backend(&self) -> RendererBackendConfig {
-        let backend = self
-            .window
-            .renderer_backend
-            .or(self.renderer_backend_legacy);
-        let gpu = self
-            .window
-            .gpu_acceleration
-            .or(self.gpu_acceleration_legacy);
-
-        match (backend, gpu) {
-            (Some(RendererBackendConfig::Opengl), _) => RendererBackendConfig::Opengl,
-            (Some(RendererBackendConfig::Software), _) => RendererBackendConfig::Software,
-            (Some(RendererBackendConfig::Auto), Some(false)) => RendererBackendConfig::Software,
-            (Some(RendererBackendConfig::Auto), _) => RendererBackendConfig::Auto,
-            (None, Some(false)) => RendererBackendConfig::Software,
-            (None, Some(true)) => RendererBackendConfig::Auto,
-            (None, None) => RendererBackendConfig::Auto,
-        }
-    }
-
-    pub fn gpu_acceleration(&self) -> Option<bool> {
-        let backend = self
-            .window
-            .renderer_backend
-            .or(self.renderer_backend_legacy);
-        let gpu = self
-            .window
-            .gpu_acceleration
-            .or(self.gpu_acceleration_legacy);
-
-        match (backend, gpu) {
-            (Some(RendererBackendConfig::Software), _) => Some(false),
-            (Some(RendererBackendConfig::Opengl), _) => Some(true),
-            (Some(RendererBackendConfig::Auto), Some(false)) => Some(false),
-            (Some(RendererBackendConfig::Auto), Some(true)) => Some(true),
-            (Some(RendererBackendConfig::Auto), None) => Some(true),
-            (None, Some(val)) => Some(val),
-            (None, None) => None,
-        }
-    }
-
     pub fn scroll_multiplier(&self) -> Option<f64> {
         self.window
             .scroll_multiplier
@@ -524,6 +511,13 @@ impl Config {
 
     pub fn fps_limit(&self) -> Option<u32> {
         self.window.fps_limit.or(self.fps_limit_legacy)
+    }
+
+    pub fn working_directory(&self) -> Option<String> {
+        self.working_directory
+            .clone()
+            .or_else(|| self.window.working_directory.clone())
+            .filter(|p| !p.trim().is_empty())
     }
 
     pub fn padding_x(&self) -> Option<f32> {
@@ -697,7 +691,6 @@ mod tests {
             [window]
             scrollback_limit = 2000
             infinite_scrollback = true
-            gpu_acceleration = true
             scroll_multiplier = 5.0
             fps_limit = 120
             padding_x = 8.0
@@ -736,7 +729,6 @@ mod tests {
 
         assert_eq!(config.scrollback_limit(), Some(2000));
         assert_eq!(config.infinite_scrollback(), Some(true));
-        assert_eq!(config.gpu_acceleration(), Some(true));
         assert_eq!(config.scroll_multiplier(), Some(5.0));
         assert_eq!(config.fps_limit(), Some(120));
         assert_eq!(config.padding_x(), Some(8.0));
@@ -977,94 +969,36 @@ mod tests {
     }
 
     #[test]
-    fn test_config_renderer_backend() {
-        // Default when omitted: Auto
-        let empty_cfg: Config = toml::from_str("").unwrap();
-        assert_eq!(empty_cfg.renderer_backend(), RendererBackendConfig::Auto);
-        assert_eq!(empty_cfg.gpu_acceleration(), None);
-
-        // Explicit in [window]
-        let toml_opengl = r#"
+    fn test_config_window_settings_and_backward_compatibility() {
+        // Confirms standard window configs and that old unrecognized keys are safely ignored
+        let toml_str = r#"
             [window]
-            renderer_backend = "opengl"
+            scrollback_limit = 5000
+            infinite_scrollback = true
+            scroll_multiplier = 3.0
+            fps_limit = 60
+            padding_x = 10.0
+            padding_y = 5.0
+            cursor_shape = "block"
+            cursor_blink = false
+            unrecognized_legacy_key = true
         "#;
-        let cfg_gl: Config = toml::from_str(toml_opengl).unwrap();
-        assert_eq!(cfg_gl.renderer_backend(), RendererBackendConfig::Opengl);
-        assert_eq!(cfg_gl.gpu_acceleration(), Some(true));
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.scrollback_limit(), Some(5000));
+        assert_eq!(cfg.infinite_scrollback(), Some(true));
+        assert_eq!(cfg.scroll_multiplier(), Some(3.0));
+        assert_eq!(cfg.fps_limit(), Some(60));
+        assert_eq!(cfg.padding_x(), Some(10.0));
+        assert_eq!(cfg.padding_y(), Some(5.0));
+        assert_eq!(cfg.cursor_shape(), Some("block"));
+        assert_eq!(cfg.cursor_blink(), Some(false));
+    }
 
-        let toml_software = r#"
-            [window]
-            renderer_backend = "software"
-        "#;
-        let cfg_sw: Config = toml::from_str(toml_software).unwrap();
-        assert_eq!(cfg_sw.renderer_backend(), RendererBackendConfig::Software);
-        assert_eq!(cfg_sw.gpu_acceleration(), Some(false));
-
-        // Precedence: renderer_backend over legacy gpu_acceleration
-        let toml_precedence = r#"
-            [window]
-            gpu_acceleration = false
-            renderer_backend = "opengl"
-        "#;
-        let cfg_prec: Config = toml::from_str(toml_precedence).unwrap();
-        assert_eq!(cfg_prec.renderer_backend(), RendererBackendConfig::Opengl);
-        assert_eq!(cfg_prec.gpu_acceleration(), Some(true));
-
-        // Legacy gpu_acceleration = false maps to Software
-        let toml_legacy_false = r#"
-            [window]
-            gpu_acceleration = false
-        "#;
-        let cfg_leg_false: Config = toml::from_str(toml_legacy_false).unwrap();
-        assert_eq!(
-            cfg_leg_false.renderer_backend(),
-            RendererBackendConfig::Software
-        );
-        assert_eq!(cfg_leg_false.gpu_acceleration(), Some(false));
-
-        // Legacy flat config: renderer_backend = "software"
-        let toml_flat = r#"
-            renderer_backend = "software"
-        "#;
-        let cfg_flat: Config = toml::from_str(toml_flat).unwrap();
-        assert_eq!(cfg_flat.renderer_backend(), RendererBackendConfig::Software);
-
-        // renderer_backend = "auto" with explicit gpu_acceleration = false resolves to Software
-        let toml_auto_gpu_false = r#"
-            [window]
-            gpu_acceleration = false
-            renderer_backend = "auto"
-        "#;
-        let cfg_auto_gpu_false: Config = toml::from_str(toml_auto_gpu_false).unwrap();
-        assert_eq!(
-            cfg_auto_gpu_false.renderer_backend(),
-            RendererBackendConfig::Software
-        );
-        assert_eq!(cfg_auto_gpu_false.gpu_acceleration(), Some(false));
-
-        // renderer_backend = "auto" with explicit gpu_acceleration = true resolves to Auto
-        let toml_auto_gpu_true = r#"
-            [window]
-            gpu_acceleration = true
-            renderer_backend = "auto"
-        "#;
-        let cfg_auto_gpu_true: Config = toml::from_str(toml_auto_gpu_true).unwrap();
-        assert_eq!(
-            cfg_auto_gpu_true.renderer_backend(),
-            RendererBackendConfig::Auto
-        );
-        assert_eq!(cfg_auto_gpu_true.gpu_acceleration(), Some(true));
-
-        // Flat legacy renderer_backend = "auto" with gpu_acceleration = false resolves to Software
-        let toml_flat_auto_false = r#"
-            gpu_acceleration = false
-            renderer_backend = "auto"
-        "#;
-        let cfg_flat_auto_false: Config = toml::from_str(toml_flat_auto_false).unwrap();
-        assert_eq!(
-            cfg_flat_auto_false.renderer_backend(),
-            RendererBackendConfig::Software
-        );
-        assert_eq!(cfg_flat_auto_false.gpu_acceleration(), Some(false));
+    #[test]
+    fn test_default_config_omits_fps_limit() {
+        let default_cfg = crate::config::defaults::default_config();
+        assert_eq!(default_cfg.fps_limit(), None);
+        let serialized = toml::to_string_pretty(&default_cfg).unwrap();
+        assert!(!serialized.contains("fps_limit"));
     }
 }

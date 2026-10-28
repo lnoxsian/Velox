@@ -41,6 +41,8 @@ bitflags! {
         const DIM = 1 << 9;
         const DOUBLE_UNDERLINE = 1 << 10;
         const CURLY_UNDERLINE = 1 << 11;
+
+        const ALL_UNDERLINES = Self::UNDERLINE.bits() | Self::DOUBLE_UNDERLINE.bits() | Self::CURLY_UNDERLINE.bits();
     }
 }
 
@@ -63,6 +65,14 @@ impl Cell {
             underline_color: None,
             flags,
         }
+    }
+
+    #[inline(always)]
+    pub fn is_blank_with_bg(&self, bg: Color) -> bool {
+        self.character == ' '
+            && self.flags.is_empty()
+            && self.underline_color.is_none()
+            && self.background == bg
     }
 }
 

@@ -1,2 +1,6 @@
 /target
+/dist
 /assets/generated_icons
+*.deb
+*.rpm
+*.pkg.tar.*
