@@ -22,11 +22,15 @@ VERSION_FILE := VERSION
 VERSION := $(shell cat $(VERSION_FILE) 2>/dev/null | tr -d '\n\r')
 
 PROFILE ?= release
+CORE ?= 0
+DURATION ?=
+WORKLOAD ?=
 ARGS ?=
 
 .PHONY: all build release optimized-release run run-release run-optimized-release check test clean update lint \
 	update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
-	ram-debug palette generate-icons install install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
+	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-optimized-release cpu-debug cpu-compare cpu-benchmark \
+	palette generate-icons install install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
 
 # Default target
 all: build
@@ -171,6 +175,38 @@ ram-release:
 ram-debug:
 	python3 scripts/measure_ram.py --profile debug $(ARGS)
 
+# Measure and profile single-core CPU usage (default: release, or PROFILE=optimized-release / PROFILE=debug, CORE=0)
+cpu-usage:
+	python3 scripts/measure_cpu.py --profile $(PROFILE) --core $(CORE) $(ARGS)
+
+# Aliases for single-core CPU usage profiling and testing
+cpu: cpu-usage
+single-cpu: cpu-usage
+bench-cpu: cpu-usage
+
+# Test terminal throughput and CPU efficiency on a single CPU core (5-second workload by default)
+test-single-cpu:
+	python3 scripts/measure_cpu.py --profile $(PROFILE) --core $(CORE) --workload $(if $(WORKLOAD),$(WORKLOAD),stream-ascii) $(if $(DURATION),--duration $(DURATION),--duration 5) $(ARGS)
+
+# Run standardized single-core CPU benchmark workload (WORKLOAD=stream-ascii/stream-ansi/scroll/idle, DURATION=5)
+cpu-benchmark: test-single-cpu
+
+# Measure single-core CPU usage in release mode
+cpu-release:
+	python3 scripts/measure_cpu.py --profile release --core $(CORE) $(ARGS)
+
+# Measure single-core CPU usage in optimized-release mode
+cpu-optimized-release:
+	python3 scripts/measure_cpu.py --profile optimized-release --core $(CORE) $(ARGS)
+
+# Measure single-core CPU usage in debug mode
+cpu-debug:
+	python3 scripts/measure_cpu.py --profile debug --core $(CORE) $(ARGS)
+
+# Benchmark and compare single-core CPU performance across all build profiles (debug, release, optimized-release)
+cpu-compare:
+	python3 scripts/measure_cpu.py --all-profiles --core $(CORE) $(ARGS)
+
 # Display ANSI 256 / 24-bit color test
 palette:
 	bash scripts/colortest
@@ -246,10 +282,17 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-icons" "Install hicolor icons for all supported resolutions"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-completions" "Install Bash, Zsh, and Fish shell completions"
 	@printf "  \033[36m%-25s\033[0m %s\n" "uninstall" "Remove installed binary, desktop file, icons, and completions"
-	@printf "\n\033[1;32mBenchmarking & Memory:\033[0m\n"
+	@printf "\n\033[1;32mBenchmarking & Performance:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bench" "Run text rendering benchmark script"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bench-grid" "Run text rendering benchmark in grid mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bench-scrollback" "Run text rendering benchmark in scrollback mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu / cpu-usage" "Profile terminal pinned to single CPU core (CORE=0, PROFILE=...)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "test-single-cpu" "Run single-core CPU throughput test (WORKLOAD=..., DURATION=...)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-benchmark" "Alias for test-single-cpu standardized workload"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-release" "Measure single-core CPU usage of release build"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-optimized-release" "Measure single-core CPU usage of optimized release build"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-debug" "Measure single-core CPU usage of debug build"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-compare" "Compare single-core CPU usage across all profiles"
 	@printf "  \033[36m%-25s\033[0m %s\n" "ram / ram-usage" "Measure RAM usage (optional: PROFILE=..., ARGS=...)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "ram-release" "Measure RAM usage of release build"
 	@printf "  \033[36m%-25s\033[0m %s\n" "ram-optimized-release" "Measure RAM usage of optimized release build"
@@ -264,6 +307,9 @@ list:
 	@printf "  \033[33mPREFIX\033[0m       Installation prefix (default: /usr/local)\n"
 	@printf "  \033[33mDESTDIR\033[0m      Staging root directory for packaging\n"
 	@printf "  \033[33mPROFILE\033[0m      Cargo profile (default: release or optimized-release)\n"
+	@printf "  \033[33mCORE\033[0m         CPU core ID to pin single-core tests (default: 0)\n"
+	@printf "  \033[33mWORKLOAD\033[0m     Workload for CPU tests (stream-ascii, stream-ansi, scroll, idle)\n"
+	@printf "  \033[33mDURATION\033[0m     Duration in seconds for CPU test workloads (default: 5)\n"
 	@printf "  \033[33mARGS\033[0m         Extra command arguments passed to scripts\n\n"
 
 # Alias help to list
