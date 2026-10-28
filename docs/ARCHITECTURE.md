@@ -159,6 +159,16 @@ Velox initializes native Linux windows and display surfaces via `create_window_a
 - Display-isolated Unix domain socket server running on the main event loop.
 - Supports CLI commands `velox msg create-window` and `velox msg create-tab` to launch new windows or tabs in an existing running Velox process in under 3ms.
 
+### 10. PTY Process Execution & Environment Architecture (`src/pty/process.rs`)
+
+- **Environment Inheritance**: Velox inherits the parent process environment by default and never calls `env_clear()`. System environment variables including `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, locale variables (`LANG`, `LANGUAGE`, `LC_*`), proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), session/desktop variables (`XDG_*`, `DBUS_*`, `DISPLAY`, `WAYLAND_DISPLAY`), and authentication sockets (`SSH_AUTH_SOCK`) are fully preserved without alteration or empty fallbacks.
+- **Terminal Capability Variables**: Velox centrally configures only terminal-describing variables via `configure_terminal_environment`:
+  - `TERM=xterm-256color`: Identifies terminal capabilities and xterm-compatible 256-color escape code parsing.
+  - `COLORTERM=truecolor`: Identifies 24-bit direct color (truecolor) support.
+- **Terminator / VTE Isolation**: Terminator and VTE-specific environment variables (`VTE_VERSION`, `TERMINATOR_DBUS_NAME`, `TERMINATOR_DBUS_PATH`, `TERMINATOR_UUID`) are not required and are not set or emulated.
+- **Terminfo Preservation**: `TERMINFO` and `TERMINFO_DIRS` are intentionally preserved from the parent environment and not overwritten.
+- **Package Manager Neutrality**: `DEBIAN_FRONTEND` is not set by Velox; package-manager behavior and Debian frontend configurations are never modified.
+
 ---
 
 ## Data Flow & Lifecycle

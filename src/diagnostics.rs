@@ -49,6 +49,8 @@ pub fn run_diagnostics(_config: &Config) {
         "  Persistent Threads:   2 (main event/render thread + shared PTY reactor; 3 with IPC enabled)"
     );
 
+    println!("\n{}", format_terminal_diagnostics().trim_end());
+
     println!("\n[Desktop & Icon Integration]");
     println!("  Canonical App ID:   {}", CANONICAL_APP_ID);
 
@@ -145,6 +147,66 @@ fn check_hicolor_status() -> String {
     } else {
         "Not installed (run 'make install-icons' or 'make install' to install)".to_string()
     }
+}
+
+/// Collects and formats non-invasive diagnostic information about the terminal environment and TTY state.
+///
+/// This reports only standard terminal and capability variables without logging secrets or
+/// dumping the complete process environment.
+pub fn format_terminal_diagnostics() -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let _ = writeln!(out, "[Terminal Environment & TTY]");
+
+    let term = std::env::var("TERM").unwrap_or_else(|_| "not set".to_string());
+    let colorterm = std::env::var("COLORTERM").unwrap_or_else(|_| "not set".to_string());
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "not set".to_string());
+    let path = std::env::var("PATH").unwrap_or_else(|_| "not set".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "not set".to_string());
+    let lang = std::env::var("LANG").unwrap_or_else(|_| "not set".to_string());
+    let lc_all = std::env::var("LC_ALL").unwrap_or_else(|_| "not set".to_string());
+    let lc_ctype = std::env::var("LC_CTYPE").unwrap_or_else(|_| "not set".to_string());
+
+    let stdin_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
+    let stdout_tty = unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 };
+    let tty_status = format!(
+        "stdin: {}, stdout: {}",
+        if stdin_tty { "tty" } else { "not a tty" },
+        if stdout_tty { "tty" } else { "not a tty" }
+    );
+
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let stty_size = if unsafe {
+        libc::ioctl(
+            libc::STDOUT_FILENO,
+            libc::TIOCGWINSZ,
+            &mut ws as *mut libc::winsize,
+        )
+    } == 0
+        && ws.ws_col > 0
+        && ws.ws_row > 0
+    {
+        format!("{} rows, {} cols", ws.ws_row, ws.ws_col)
+    } else {
+        "unknown (not a tty or window size unavailable)".to_string()
+    };
+
+    let _ = writeln!(out, "  TERM:               {}", term);
+    let _ = writeln!(out, "  COLORTERM:          {}", colorterm);
+    let _ = writeln!(out, "  SHELL:              {}", shell);
+    let _ = writeln!(out, "  PATH:               {}", path);
+    let _ = writeln!(out, "  HOME:               {}", home);
+    let _ = writeln!(out, "  LANG:               {}", lang);
+    let _ = writeln!(out, "  LC_ALL:             {}", lc_all);
+    let _ = writeln!(out, "  LC_CTYPE:           {}", lc_ctype);
+    let _ = writeln!(out, "  tty status:         {}", tty_status);
+    let _ = writeln!(out, "  stty size:          {}", stty_size);
+
+    out
+}
+
+pub fn print_terminal_diagnostics() {
+    print!("{}", format_terminal_diagnostics());
 }
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -301,5 +363,26 @@ impl ResizeStats {
             s.full_redraws,
             s.frames_rendered,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_terminal_diagnostics() {
+        let diag = format_terminal_diagnostics();
+        assert!(diag.contains("[Terminal Environment & TTY]"));
+        assert!(diag.contains("TERM:"));
+        assert!(diag.contains("COLORTERM:"));
+        assert!(diag.contains("SHELL:"));
+        assert!(diag.contains("PATH:"));
+        assert!(diag.contains("HOME:"));
+        assert!(diag.contains("LANG:"));
+        assert!(diag.contains("LC_ALL:"));
+        assert!(diag.contains("LC_CTYPE:"));
+        assert!(diag.contains("tty status:"));
+        assert!(diag.contains("stty size:"));
     }
 }
