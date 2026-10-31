@@ -78,6 +78,17 @@ pub fn spawn_process(
                 libc::close(master_fd);
                 libc::close(slave_fd);
 
+                // Close all inherited file descriptors >= 3 so child shells start with a pristine FD table
+                #[cfg(target_os = "linux")]
+                {
+                    if libc::syscall(libc::SYS_close_range, 3, libc::c_uint::MAX, 0) != 0 {
+                        let max_fd = libc::sysconf(libc::_SC_OPEN_MAX).clamp(256, 4096) as libc::c_int;
+                        for fd in 3..max_fd {
+                            libc::close(fd);
+                        }
+                    }
+                }
+
                 if let Some(dir) = working_directory {
                     if let Ok(c_dir) = CString::new(dir) {
                         if libc::chdir(c_dir.as_ptr()) != 0 {

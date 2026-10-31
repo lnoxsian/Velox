@@ -111,6 +111,10 @@ impl WaylandCursorManager {
             );
         }
     }
+
+    pub fn hide_cursor(&mut self, serial: u32, pointer: &wl_pointer::WlPointer) {
+        pointer.set_cursor(serial, None, 0, 0);
+    }
 }
 
 pub struct CursorImageData {

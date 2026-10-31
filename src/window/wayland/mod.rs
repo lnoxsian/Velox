@@ -66,6 +66,7 @@ pub struct WaylandState {
     pub is_maximized: bool,
     pub cursor_manager: Option<cursor::WaylandCursorManager>,
     pub current_cursor: CursorIcon,
+    pub cursor_visible: bool,
     pub pointer_inside: bool,
 }
 
@@ -102,6 +103,7 @@ impl WaylandState {
             is_maximized: false,
             cursor_manager: None,
             current_cursor: CursorIcon::Default,
+            cursor_visible: true,
             pointer_inside: false,
         }
     }
@@ -208,10 +210,28 @@ impl WaylandWindow {
 
     pub fn set_cursor(&mut self, icon: CursorIcon) {
         self.state.current_cursor = icon;
-        if self.state.pointer_inside {
+        if self.state.pointer_inside && self.state.cursor_visible {
             if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer)
             {
                 cm.apply_cursor(self.state.pointer_serial, icon, pointer);
+                let _ = self.conn.flush();
+            }
+        }
+    }
+
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        if self.state.cursor_visible == visible {
+            return;
+        }
+        self.state.cursor_visible = visible;
+        if self.state.pointer_inside {
+            if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer)
+            {
+                if visible {
+                    cm.apply_cursor(self.state.pointer_serial, self.state.current_cursor, pointer);
+                } else {
+                    cm.hide_cursor(self.state.pointer_serial, pointer);
+                }
                 let _ = self.conn.flush();
             }
         }
@@ -617,7 +637,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 state.mouse_x = surface_x;
                 state.mouse_y = surface_y;
                 if let Some(cm) = &mut state.cursor_manager {
-                    cm.apply_cursor(serial, state.current_cursor, pointer);
+                    if state.cursor_visible {
+                        cm.apply_cursor(serial, state.current_cursor, pointer);
+                    } else {
+                        cm.hide_cursor(serial, pointer);
+                    }
                 }
                 state.events.push_back(PlatformEvent::CursorMoved {
                     x: surface_x,

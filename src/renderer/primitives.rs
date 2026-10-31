@@ -347,6 +347,188 @@ fn get_box_drawing_arms(c: char) -> Option<(LineStyle, LineStyle, LineStyle, Lin
     Some(arms)
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ArcCorner {
+    DownRight, // ╭ or ╔ (top-left corner turning down and right)
+    DownLeft,  // ╮ or ╗ (top-right corner turning down and left)
+    UpRight,   // ╰ or ╚ (bottom-left corner turning up and right)
+    UpLeft,    // ╯ or ╝ (bottom-right corner turning up and left)
+}
+
+#[inline(always)]
+fn eval_fillet_distance(
+    corner: ArcCorner,
+    xc: f32,
+    yc: f32,
+    x0: f32,
+    y0: f32,
+    cx: f32,
+    cy: f32,
+    r: f32,
+) -> f32 {
+    let (is_arc, is_h, is_v) = match corner {
+        ArcCorner::DownRight => (xc < cx && yc < cy, xc >= cx && yc < cy, xc < cx && yc >= cy),
+        ArcCorner::DownLeft => (xc > cx && yc < cy, xc <= cx && yc < cy, xc > cx && yc >= cy),
+        ArcCorner::UpRight => (xc < cx && yc > cy, xc >= cx && yc > cy, xc < cx && yc <= cy),
+        ArcCorner::UpLeft => (xc > cx && yc > cy, xc <= cx && yc > cy, xc > cx && yc <= cy),
+    };
+
+    if is_arc {
+        ((xc - cx).hypot(yc - cy) - r).abs()
+    } else if is_h {
+        (yc - y0).abs()
+    } else if is_v {
+        (xc - x0).abs()
+    } else {
+        999.0
+    }
+}
+
+fn draw_smooth_arc(
+    corner: ArcCorner,
+    px: u32,
+    py: u32,
+    cell_w: u32,
+    cell_h: u32,
+    fg: u32,
+    fb: &mut Framebuffer,
+) {
+    if cell_w == 0 || cell_h == 0 || px >= fb.width || py >= fb.height {
+        return;
+    }
+
+    let mid_x = px + cell_w / 2;
+    let mid_y = py + cell_h / 2;
+    let t_light = (cell_w / 10).max(1);
+    let half_tl = t_light / 2;
+    let x_s_light = mid_x.saturating_sub(half_tl);
+    let y_s_light = mid_y.saturating_sub(half_tl);
+
+    let x0 = x_s_light as f32 + (t_light as f32) / 2.0;
+    let y0 = y_s_light as f32 + (t_light as f32) / 2.0;
+    let half_w = (t_light as f32) / 2.0;
+
+    let avail = (cell_w as f32 / 2.0).min(cell_h as f32 / 2.0);
+    let r = (avail * 0.75).max(2.0);
+
+    let (cx, cy) = match corner {
+        ArcCorner::DownRight => (x0 + r, y0 + r),
+        ArcCorner::DownLeft => (x0 - r, y0 + r),
+        ArcCorner::UpRight => (x0 + r, y0 - r),
+        ArcCorner::UpLeft => (x0 - r, y0 - r),
+    };
+
+    let max_x = (px + cell_w).min(fb.width);
+    let max_y = (py + cell_h).min(fb.height);
+    let stride = fb.stride;
+    let pixels = fb.as_mut_slice();
+
+    for y in py..max_y {
+        let yc = y as f32 + 0.5;
+        let row_offset = (y as usize) * stride;
+
+        for x in px..max_x {
+            let xc = x as f32 + 0.5;
+            let dist = eval_fillet_distance(corner, xc, yc, x0, y0, cx, cy, r);
+
+            if dist <= half_w {
+                pixels[row_offset + (x as usize)] = fg;
+            } else if dist < half_w + 1.0 {
+                let cov = half_w + 1.0 - dist;
+                let alpha = (cov * 255.0).round().min(255.0) as u8;
+                if alpha > 0 {
+                    let idx = row_offset + (x as usize);
+                    pixels[idx] = blend_alpha(pixels[idx], fg, alpha);
+                }
+            }
+        }
+    }
+}
+
+fn draw_double_smooth_arc(
+    corner: ArcCorner,
+    px: u32,
+    py: u32,
+    cell_w: u32,
+    cell_h: u32,
+    fg: u32,
+    fb: &mut Framebuffer,
+) {
+    if cell_w == 0 || cell_h == 0 || px >= fb.width || py >= fb.height {
+        return;
+    }
+
+    let mid_x = px + cell_w / 2;
+    let mid_y = py + cell_h / 2;
+    let t_light = (cell_w / 10).max(1);
+    let half_tl = t_light / 2;
+
+    let d_off_x = (cell_w / 5).max(t_light + 1);
+    let d_off_y = (cell_h / 5).max(t_light + 1);
+
+    let x_d_left = (mid_x.saturating_sub(d_off_x)).saturating_sub(half_tl);
+    let x_d_right = (mid_x + d_off_x).saturating_sub(half_tl);
+    let y_d_top = (mid_y.saturating_sub(d_off_y)).saturating_sub(half_tl);
+    let y_d_bot = (mid_y + d_off_y).saturating_sub(half_tl);
+
+    let xl = x_d_left as f32 + (t_light as f32) / 2.0;
+    let xr = x_d_right as f32 + (t_light as f32) / 2.0;
+    let yt = y_d_top as f32 + (t_light as f32) / 2.0;
+    let yb = y_d_bot as f32 + (t_light as f32) / 2.0;
+    let half_w = (t_light as f32) / 2.0;
+
+    let r_out = ((cell_w as f32 / 2.5).min(cell_h as f32 / 3.0)).max(3.0);
+    let r_in = (r_out - ((d_off_x + d_off_y) as f32) / 2.0).max(1.5);
+
+    let (x0_o, y0_o, cx_o, cy_o, x0_i, y0_i, cx_i, cy_i) = match corner {
+        ArcCorner::DownRight => (
+            xl, yt, xl + r_out, yt + r_out,
+            xr, yb, xr + r_in,  yb + r_in,
+        ),
+        ArcCorner::DownLeft => (
+            xr, yt, xr - r_out, yt + r_out,
+            xl, yb, xl - r_in,  yb + r_in,
+        ),
+        ArcCorner::UpRight => (
+            xl, yb, xl + r_out, yb - r_out,
+            xr, yt, xr + r_in,  yt - r_in,
+        ),
+        ArcCorner::UpLeft => (
+            xr, yb, xr - r_out, yb - r_out,
+            xl, yt, xl - r_in,  yt - r_in,
+        ),
+    };
+
+    let max_x = (px + cell_w).min(fb.width);
+    let max_y = (py + cell_h).min(fb.height);
+    let stride = fb.stride;
+    let pixels = fb.as_mut_slice();
+
+    for y in py..max_y {
+        let yc = y as f32 + 0.5;
+        let row_offset = (y as usize) * stride;
+
+        for x in px..max_x {
+            let xc = x as f32 + 0.5;
+
+            let d_o = eval_fillet_distance(corner, xc, yc, x0_o, y0_o, cx_o, cy_o, r_out);
+            let d_i = eval_fillet_distance(corner, xc, yc, x0_i, y0_i, cx_i, cy_i, r_in);
+            let dist = d_o.min(d_i);
+
+            if dist <= half_w {
+                pixels[row_offset + (x as usize)] = fg;
+            } else if dist < half_w + 1.0 {
+                let cov = half_w + 1.0 - dist;
+                let alpha = (cov * 255.0).round().min(255.0) as u8;
+                if alpha > 0 {
+                    let idx = row_offset + (x as usize);
+                    pixels[idx] = blend_alpha(pixels[idx], fg, alpha);
+                }
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_box_arms(
     up: LineStyle,
@@ -409,127 +591,19 @@ fn draw_box_arms(
             }
             (LineStyle::None, LineStyle::Double, LineStyle::None, LineStyle::Double) => {
                 // ╔
-                fb.fill_span(
-                    x_d_left,
-                    y_d_top,
-                    cell_right.saturating_sub(x_d_left),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_left,
-                    y_d_top,
-                    t_light,
-                    cell_bottom.saturating_sub(y_d_top),
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_right,
-                    y_d_bot,
-                    cell_right.saturating_sub(x_d_right),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_right,
-                    y_d_bot,
-                    t_light,
-                    cell_bottom.saturating_sub(y_d_bot),
-                    fg,
-                );
+                draw_double_smooth_arc(ArcCorner::DownRight, px, py, cell_w, cell_h, fg, fb);
             }
             (LineStyle::None, LineStyle::Double, LineStyle::Double, LineStyle::None) => {
                 // ╗
-                fb.fill_span(
-                    px,
-                    y_d_top,
-                    (x_d_right + t_light).saturating_sub(px),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_right,
-                    y_d_top,
-                    t_light,
-                    cell_bottom.saturating_sub(y_d_top),
-                    fg,
-                );
-                fb.fill_span(
-                    px,
-                    y_d_bot,
-                    (x_d_left + t_light).saturating_sub(px),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_left,
-                    y_d_bot,
-                    t_light,
-                    cell_bottom.saturating_sub(y_d_bot),
-                    fg,
-                );
+                draw_double_smooth_arc(ArcCorner::DownLeft, px, py, cell_w, cell_h, fg, fb);
             }
             (LineStyle::Double, LineStyle::None, LineStyle::None, LineStyle::Double) => {
                 // ╚
-                fb.fill_span(
-                    x_d_left,
-                    y_d_bot,
-                    cell_right.saturating_sub(x_d_left),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_left,
-                    py,
-                    t_light,
-                    (y_d_bot + t_light).saturating_sub(py),
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_right,
-                    y_d_top,
-                    cell_right.saturating_sub(x_d_right),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_right,
-                    py,
-                    t_light,
-                    (y_d_top + t_light).saturating_sub(py),
-                    fg,
-                );
+                draw_double_smooth_arc(ArcCorner::UpRight, px, py, cell_w, cell_h, fg, fb);
             }
             (LineStyle::Double, LineStyle::None, LineStyle::Double, LineStyle::None) => {
                 // ╝
-                fb.fill_span(
-                    px,
-                    y_d_bot,
-                    (x_d_right + t_light).saturating_sub(px),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_right,
-                    py,
-                    t_light,
-                    (y_d_bot + t_light).saturating_sub(py),
-                    fg,
-                );
-                fb.fill_span(
-                    px,
-                    y_d_top,
-                    (x_d_left + t_light).saturating_sub(px),
-                    t_light,
-                    fg,
-                );
-                fb.fill_span(
-                    x_d_left,
-                    py,
-                    t_light,
-                    (y_d_top + t_light).saturating_sub(py),
-                    fg,
-                );
+                draw_double_smooth_arc(ArcCorner::UpLeft, px, py, cell_w, cell_h, fg, fb);
             }
             (LineStyle::Double, LineStyle::Double, LineStyle::None, LineStyle::Double) => {
                 // ╠
@@ -1207,113 +1281,23 @@ fn render_box_drawing(
     let half_tl = t_light / 2;
     let y_s_light = mid_y.saturating_sub(half_tl);
     let x_s_light = mid_x.saturating_sub(half_tl);
-    let cell_right = px + cell_w;
-    let cell_bottom = py + cell_h;
 
     match c {
         // Rounded corners
         '╭' => {
-            fb.fill_span(
-                mid_x + half_tl,
-                y_s_light,
-                cell_right.saturating_sub(mid_x + half_tl),
-                t_light,
-                fg,
-            );
-            fb.fill_span(
-                x_s_light,
-                mid_y + half_tl,
-                t_light,
-                cell_bottom.saturating_sub(mid_y + half_tl),
-                fg,
-            );
-            if x_s_light + t_light < cell_right && y_s_light + t_light < cell_bottom {
-                fb.fill_span(
-                    x_s_light + t_light,
-                    y_s_light + t_light,
-                    t_light,
-                    t_light,
-                    fg,
-                );
-            }
+            draw_smooth_arc(ArcCorner::DownRight, px, py, cell_w, cell_h, fg, fb);
             true
         }
         '╮' => {
-            fb.fill_span(
-                px,
-                y_s_light,
-                (mid_x.saturating_sub(half_tl)).saturating_sub(px),
-                t_light,
-                fg,
-            );
-            fb.fill_span(
-                x_s_light,
-                mid_y + half_tl,
-                t_light,
-                cell_bottom.saturating_sub(mid_y + half_tl),
-                fg,
-            );
-            if x_s_light >= px + t_light && y_s_light + t_light < cell_bottom {
-                fb.fill_span(
-                    x_s_light.saturating_sub(t_light),
-                    y_s_light + t_light,
-                    t_light,
-                    t_light,
-                    fg,
-                );
-            }
+            draw_smooth_arc(ArcCorner::DownLeft, px, py, cell_w, cell_h, fg, fb);
             true
         }
         '╯' => {
-            fb.fill_span(
-                px,
-                y_s_light,
-                (mid_x.saturating_sub(half_tl)).saturating_sub(px),
-                t_light,
-                fg,
-            );
-            fb.fill_span(
-                x_s_light,
-                py,
-                t_light,
-                (mid_y.saturating_sub(half_tl)).saturating_sub(py),
-                fg,
-            );
-            if x_s_light >= px + t_light && y_s_light >= py + t_light {
-                fb.fill_span(
-                    x_s_light.saturating_sub(t_light),
-                    y_s_light.saturating_sub(t_light),
-                    t_light,
-                    t_light,
-                    fg,
-                );
-            }
+            draw_smooth_arc(ArcCorner::UpLeft, px, py, cell_w, cell_h, fg, fb);
             true
         }
         '╰' => {
-            fb.fill_span(
-                mid_x + half_tl,
-                y_s_light,
-                cell_right.saturating_sub(mid_x + half_tl),
-                t_light,
-                fg,
-            );
-            fb.fill_span(
-                x_s_light,
-                py,
-                t_light,
-                (mid_y.saturating_sub(half_tl)).saturating_sub(py),
-                fg,
-            );
-            if x_s_light + t_light < cell_right && y_s_light >= py + t_light {
-                fb.fill_span(
-                    x_s_light + t_light,
-                    y_s_light.saturating_sub(t_light),
-                    t_light,
-                    t_light,
-                    fg,
-                );
-            }
+            draw_smooth_arc(ArcCorner::UpRight, px, py, cell_w, cell_h, fg, fb);
             true
         }
 
@@ -1738,5 +1722,155 @@ mod tests {
                 center_est
             );
         }
+    }
+
+    #[test]
+    fn test_smooth_curved_arc_single_corners() {
+        let cw = 14;
+        let ch = 24;
+        let fg = 0xFFFFFFFF;
+        let mut fb = Framebuffer::new(cw * 2, ch * 2);
+
+        // Test all four curved corners
+        let corners = ['╭', '╮', '╯', '╰'];
+        for &c in &corners {
+            fb.clear(0);
+            let handled = try_render_primitive(c, 0, 0, cw, ch, fg, &mut fb);
+            assert!(handled, "Corner {} should be handled", c);
+            assert!(
+                fb.pixels.contains(&fg),
+                "Corner {} must draw solid core pixels",
+                c
+            );
+
+            // Verify anti-aliased pixels exist (values between 0 and fg)
+            let has_anti_aliasing = fb
+                .pixels
+                .iter()
+                .any(|&p| p != 0 && p != fg);
+            assert!(
+                has_anti_aliasing,
+                "Corner {} must have smooth anti-aliased curved edge pixels",
+                c
+            );
+        }
+
+        // Verify continuity: ╭ connected to ─ at right edge
+        fb.clear(0);
+        try_render_primitive('╭', 0, 0, cw, ch, fg, &mut fb);
+        try_render_primitive('─', cw, 0, cw, ch, fg, &mut fb);
+
+        let mid_y = ch as usize / 2;
+        let left_edge_px = fb.pixels[mid_y * fb.stride + (cw as usize - 1)];
+        let right_edge_px = fb.pixels[mid_y * fb.stride + cw as usize];
+        assert_eq!(left_edge_px, fg, "╭ right arm must reach right boundary");
+        assert_eq!(right_edge_px, fg, "─ left arm must connect at boundary");
+    }
+
+    #[test]
+    fn test_smooth_curved_arc_double_corners() {
+        let cw = 14;
+        let ch = 24;
+        let fg = 0xFFFFFFFF;
+        let mut fb = Framebuffer::new(cw * 2, ch * 2);
+
+        let double_corners = ['╔', '╗', '╚', '╝'];
+        for &c in &double_corners {
+            fb.clear(0);
+            let handled = try_render_primitive(c, 0, 0, cw, ch, fg, &mut fb);
+            assert!(handled, "Double corner {} should be handled", c);
+            assert!(
+                fb.pixels.contains(&fg),
+                "Double corner {} must draw solid core pixels",
+                c
+            );
+
+            // Verify anti-aliased pixels exist
+            let has_anti_aliasing = fb
+                .pixels
+                .iter()
+                .any(|&p| p != 0 && p != fg);
+            assert!(
+                has_anti_aliasing,
+                "Double corner {} must have anti-aliased edge pixels",
+                c
+            );
+        }
+
+        // Verify continuity: ╔ connected to ═ at right edge
+        fb.clear(0);
+        try_render_primitive('╔', 0, 0, cw, ch, fg, &mut fb);
+        try_render_primitive('═', cw, 0, cw, ch, fg, &mut fb);
+
+        let d_off_y = (ch / 5).max(2);
+        let mid_y = ch / 2;
+        let y_top = (mid_y - d_off_y) as usize;
+        let y_bot = (mid_y + d_off_y) as usize;
+
+        assert_eq!(
+            fb.pixels[y_top * fb.stride + (cw as usize - 1)],
+            fg,
+            "╔ top outer line must reach right boundary"
+        );
+        assert_eq!(
+            fb.pixels[y_top * fb.stride + cw as usize],
+            fg,
+            "═ top line must connect at boundary"
+        );
+        assert_eq!(
+            fb.pixels[y_bot * fb.stride + (cw as usize - 1)],
+            fg,
+            "╔ bottom inner line must reach right boundary"
+        );
+        assert_eq!(
+            fb.pixels[y_bot * fb.stride + cw as usize],
+            fg,
+            "═ bottom line must connect at boundary"
+        );
+    }
+
+    #[test]
+    fn test_smooth_curved_arc_closed_box_connectivity() {
+        let cw = 12;
+        let ch = 20;
+        let fg = 0xFFFFFFFF;
+        let mut fb = Framebuffer::new(cw * 2, ch * 2);
+
+        // 1. Single smooth box
+        fb.clear(0);
+        assert!(try_render_primitive('╭', 0, 0, cw, ch, fg, &mut fb));
+        assert!(try_render_primitive('╮', cw, 0, cw, ch, fg, &mut fb));
+        assert!(try_render_primitive('╰', 0, ch, cw, ch, fg, &mut fb));
+        assert!(try_render_primitive('╯', cw, ch, cw, ch, fg, &mut fb));
+
+        // Horizontal line continuity across top boundary (x = cw - 1 to x = cw)
+        let mid_y = (ch / 2) as usize;
+        let top_seam_l = fb.pixels[mid_y * fb.stride + (cw as usize - 1)];
+        let top_seam_r = fb.pixels[mid_y * fb.stride + cw as usize];
+        assert_eq!(top_seam_l, fg, "Single box top left must reach right boundary");
+        assert_eq!(top_seam_r, fg, "Single box top right must reach left boundary");
+
+        // Vertical line continuity across left boundary (y = ch - 1 to y = ch)
+        let mid_x = (cw / 2) as usize;
+        let left_seam_t = fb.pixels[(ch as usize - 1) * fb.stride + mid_x];
+        let left_seam_b = fb.pixels[ch as usize * fb.stride + mid_x];
+        assert_eq!(left_seam_t, fg, "Single box left top must reach bottom boundary");
+        assert_eq!(left_seam_b, fg, "Single box left bottom must reach top boundary");
+
+        // 2. Double smooth concentric box
+        fb.clear(0);
+        assert!(try_render_primitive('╔', 0, 0, cw, ch, fg, &mut fb));
+        assert!(try_render_primitive('╗', cw, 0, cw, ch, fg, &mut fb));
+        assert!(try_render_primitive('╚', 0, ch, cw, ch, fg, &mut fb));
+        assert!(try_render_primitive('╝', cw, ch, cw, ch, fg, &mut fb));
+
+        let d_off_y = (ch / 5).max(2) as usize;
+        let y_top = mid_y.saturating_sub(d_off_y);
+        let y_bot = mid_y + d_off_y;
+
+        assert_eq!(fb.pixels[y_top * fb.stride + (cw as usize - 1)], fg);
+        assert_eq!(fb.pixels[y_top * fb.stride + cw as usize], fg);
+        assert_eq!(fb.pixels[y_bot * fb.stride + (cw as usize - 1)], fg);
+        assert_eq!(fb.pixels[y_bot * fb.stride + cw as usize], fg);
     }
 }

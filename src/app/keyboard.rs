@@ -74,6 +74,9 @@ impl WindowState {
                             self.write_to_active_pane(formatted.into_bytes());
                             self.last_key_instant = std::time::Instant::now();
                             self.mark_interaction();
+                            if self.hide_mouse_on_typing {
+                                self.hide_mouse();
+                            }
                             self.needs_redraw = true;
                             log::debug!("Velox shortcut: paste (Shift+Insert)");
                             return true;
@@ -229,6 +232,9 @@ impl WindowState {
                                     self.write_to_active_pane(formatted.into_bytes());
                                     self.last_key_instant = std::time::Instant::now();
                                     self.mark_interaction();
+                                    if self.hide_mouse_on_typing {
+                                        self.hide_mouse();
+                                    }
                                     self.needs_redraw = true;
                                     log::debug!("Velox shortcut: paste");
                                     return true;
@@ -408,6 +414,9 @@ impl WindowState {
             let _ = active_pane.pty_master.write(&bytes);
             self.last_key_instant = std::time::Instant::now();
             self.mark_interaction();
+            if self.hide_mouse_on_typing {
+                self.hide_mouse();
+            }
             if redraw {
                 self.needs_redraw = true;
             }
@@ -734,5 +743,109 @@ mod tests {
         );
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
+    }
+
+    #[test]
+    fn test_hide_mouse_on_typing_and_unhide_on_motion() {
+        let (pty, _read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+        assert!(ws.hide_mouse_on_typing);
+        assert!(!ws.mouse_hidden);
+        assert!(ws.window.is_cursor_visible());
+
+        // Typing a character key hides the mouse
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("a".to_string()),
+            Some("a"),
+            ModifiersState::empty(),
+        );
+        assert!(handled);
+        assert!(ws.mouse_hidden);
+        assert!(!ws.window.is_cursor_visible());
+
+        // Moving mouse unhides the cursor
+        ws.handle_cursor_moved((150.0, 120.0), ModifiersState::empty());
+        assert!(!ws.mouse_hidden);
+        assert!(ws.window.is_cursor_visible());
+    }
+
+    #[test]
+    fn test_hide_mouse_disabled_config() {
+        let (pty, _read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+        ws.hide_mouse_on_typing = false;
+
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("x".to_string()),
+            Some("x"),
+            ModifiersState::empty(),
+        );
+        assert!(handled);
+        assert!(!ws.mouse_hidden);
+        assert!(ws.window.is_cursor_visible());
+    }
+
+    #[test]
+    fn test_unhide_mouse_on_click_and_wheel() {
+        let (pty, _read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // Hide mouse by typing
+        ws.handle_keyboard_input(
+            &Key::Character("z".to_string()),
+            Some("z"),
+            ModifiersState::empty(),
+        );
+        assert!(ws.mouse_hidden);
+        assert!(!ws.window.is_cursor_visible());
+
+        // Unhide on click
+        ws.handle_mouse_input(
+            crate::window::event::ElementState::Pressed,
+            crate::window::event::MouseButton::Left,
+            ModifiersState::empty(),
+        );
+        assert!(!ws.mouse_hidden);
+        assert!(ws.window.is_cursor_visible());
+
+        // Hide again
+        ws.handle_keyboard_input(
+            &Key::Character("k".to_string()),
+            Some("k"),
+            ModifiersState::empty(),
+        );
+        assert!(ws.mouse_hidden);
+        assert!(!ws.window.is_cursor_visible());
+
+        // Unhide on mouse wheel scroll
+        ws.handle_mouse_wheel(1.0, ModifiersState::empty());
+        assert!(!ws.mouse_hidden);
+        assert!(ws.window.is_cursor_visible());
+    }
+
+    #[test]
+    fn test_modifiers_do_not_unhide_or_hide_mouse() {
+        let (pty, _read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // Pressing modifier alone does not hide mouse
+        ws.handle_keyboard_input(&Key::Named(NamedKey::Shift), None, ModifiersState::SHIFT);
+        assert!(!ws.mouse_hidden);
+        assert!(ws.window.is_cursor_visible());
+
+        // Now hide mouse by typing
+        ws.handle_keyboard_input(
+            &Key::Character("b".to_string()),
+            Some("b"),
+            ModifiersState::empty(),
+        );
+        assert!(ws.mouse_hidden);
+        assert!(!ws.window.is_cursor_visible());
+
+        // Modifier change with identical cursor coordinates (e.g. typing capital letter with Shift)
+        // must NOT unhide the mouse!
+        ws.handle_cursor_moved((ws.mouse_x, ws.mouse_y), ModifiersState::SHIFT);
+        assert!(ws.mouse_hidden);
+        assert!(!ws.window.is_cursor_visible());
     }
 }

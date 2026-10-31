@@ -144,6 +144,7 @@ pub struct WindowState {
     pub cursor_blink_on: bool,
     pub last_cursor_blink: std::time::Instant,
     pub hide_mouse_on_typing: bool,
+    pub mouse_hidden: bool,
     pub opacity: f32,
     pub window_dim: f32,
     pub shell_path: String,
@@ -234,7 +235,8 @@ impl WindowState {
             cursor_blink_enabled: false,
             cursor_blink_on: true,
             last_cursor_blink: now,
-            hide_mouse_on_typing: false,
+            hide_mouse_on_typing: config.hide_mouse_on_typing().unwrap_or(true),
+            mouse_hidden: false,
             opacity: 1.0,
             window_dim: 0.0,
             shell_path: "/bin/sh".to_string(),
@@ -405,6 +407,23 @@ impl WindowState {
         if self.current_cursor_icon != icon {
             self.current_cursor_icon = icon;
             self.window.set_cursor(icon);
+        }
+    }
+
+    #[inline]
+    pub fn hide_mouse(&mut self) {
+        if !self.mouse_hidden {
+            self.mouse_hidden = true;
+            self.window.set_cursor_visible(false);
+        }
+    }
+
+    #[inline]
+    pub fn unhide_mouse(&mut self) {
+        if self.mouse_hidden {
+            self.mouse_hidden = false;
+            self.window.set_cursor_visible(true);
+            self.window.set_cursor(self.current_cursor_icon);
         }
     }
 
@@ -1429,6 +1448,7 @@ impl App {
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
             hide_mouse_on_typing,
+            mouse_hidden: false,
             opacity: config.opacity(),
             window_dim: config.window_dim(),
             shell_path,
@@ -1706,6 +1726,7 @@ impl App {
                         PlatformEvent::Focused(focused) => {
                             ws.is_focused = focused;
                             if !focused {
+                                ws.unhide_mouse();
                                 self.modifiers = ModifiersState::empty();
                                 ws.is_mouse_down = false;
                                 ws.mouse_down_pane_id = None;

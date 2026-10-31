@@ -13,12 +13,22 @@ pub use x11::X11Window;
 pub enum PlatformWindow {
     X11(X11Window),
     Wayland(Box<WaylandWindow>),
-    Dummy { width: u32, height: u32 },
+    Dummy {
+        width: u32,
+        height: u32,
+        cursor: CursorIcon,
+        cursor_visible: bool,
+    },
 }
 
 impl PlatformWindow {
     pub fn dummy(width: u32, height: u32) -> Self {
-        Self::Dummy { width, height }
+        Self::Dummy {
+            width,
+            height,
+            cursor: CursorIcon::Default,
+            cursor_visible: true,
+        }
     }
     pub fn new(
         title: &str,
@@ -144,7 +154,25 @@ impl PlatformWindow {
         match self {
             Self::X11(w) => w.set_cursor(icon),
             Self::Wayland(w) => w.set_cursor(icon),
-            Self::Dummy { .. } => {}
+            Self::Dummy { cursor, .. } => *cursor = icon,
+        }
+    }
+
+    #[inline]
+    pub fn set_cursor_visible(&mut self, visible: bool) {
+        match self {
+            Self::X11(w) => w.set_cursor_visible(visible),
+            Self::Wayland(w) => w.set_cursor_visible(visible),
+            Self::Dummy { cursor_visible, .. } => *cursor_visible = visible,
+        }
+    }
+
+    #[inline]
+    pub fn is_cursor_visible(&self) -> bool {
+        match self {
+            Self::X11(w) => w.cursor_visible.get(),
+            Self::Wayland(w) => w.state.cursor_visible,
+            Self::Dummy { cursor_visible, .. } => *cursor_visible,
         }
     }
 
@@ -212,7 +240,7 @@ impl PlatformWindow {
 
     #[inline]
     pub fn resize_dummy(&mut self, new_w: u32, new_h: u32) {
-        if let Self::Dummy { width, height } = self {
+        if let Self::Dummy { width, height, .. } = self {
             *width = new_w;
             *height = new_h;
         }

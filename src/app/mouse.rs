@@ -206,8 +206,13 @@ fn send_mouse_report(
 impl WindowState {
     pub fn handle_cursor_moved(&mut self, position: (f64, f64), modifiers: ModifiersState) {
         self.mark_interaction();
+        let position_changed = (position.0 - self.mouse_x).abs() > f64::EPSILON
+            || (position.1 - self.mouse_y).abs() > f64::EPSILON;
         self.mouse_x = position.0;
         self.mouse_y = position.1;
+        if position_changed {
+            self.unhide_mouse();
+        }
 
         // ── 1. Separator Dragging ────────────────────────────────────────────
         if let Some(dragging) = self.dragging_separator {
@@ -550,6 +555,7 @@ impl WindowState {
 
     pub fn handle_mouse_wheel(&mut self, delta_y: f32, _modifiers: ModifiersState) -> bool {
         self.mark_interaction();
+        self.unhide_mouse();
         let lines_f = delta_y as f64;
         let lines = (lines_f * self.scroll_multiplier).round() as i32;
         if lines != 0 {
@@ -656,6 +662,7 @@ impl WindowState {
         modifiers: ModifiersState,
     ) {
         self.mark_interaction();
+        self.unhide_mouse();
 
         if state == ElementState::Pressed {
             let csd_h = self.window.csd_title_bar_height() as f64;

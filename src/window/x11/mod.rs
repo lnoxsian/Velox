@@ -6,6 +6,7 @@ use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, Platfo
 use crate::platform::{CANONICAL_WM_CLASS_GENERAL, CANONICAL_WM_CLASS_INSTANCE};
 use icon::get_net_wm_icon_data;
 use shm::X11Framebuffer;
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
@@ -39,6 +40,9 @@ pub struct X11Window {
     cursor_pointer: Option<xproto::Cursor>,
     cursor_col_resize: Option<xproto::Cursor>,
     cursor_row_resize: Option<xproto::Cursor>,
+    cursor_blank: Option<xproto::Cursor>,
+    current_cursor: Cell<CursorIcon>,
+    pub cursor_visible: Cell<bool>,
     events: VecDeque<PlatformEvent>,
     keymap: Option<Vec<u32>>,
     keysyms_per_keycode: usize,
@@ -84,6 +88,37 @@ fn create_font_cursor(conn: &RustConnection, glyph: u16) -> Option<xproto::Curso
     .ok()?;
     let _ = conn.close_font(font);
     Some(cursor)
+}
+
+fn create_blank_cursor(conn: &RustConnection, root: xproto::Window) -> Option<xproto::Cursor> {
+    let pixmap = conn.generate_id().ok()?;
+    conn.create_pixmap(1, pixmap, root, 1, 1).ok()?;
+    let gc = conn.generate_id().ok()?;
+    conn.create_gc(gc, pixmap, &xproto::CreateGCAux::new()).ok()?;
+    let pad = (conn.setup().bitmap_format_scanline_pad / 8) as usize;
+    let data = vec![0u8; pad.max(1)];
+    let _ = conn.put_image(
+        xproto::ImageFormat::XY_BITMAP,
+        pixmap,
+        gc,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        &data,
+    );
+    let cursor = conn.generate_id().ok()?;
+    let res = conn.create_cursor(cursor, pixmap, pixmap, 0, 0, 0, 0, 0, 0, 0, 0);
+    let _ = conn.free_gc(gc);
+    let _ = conn.free_pixmap(pixmap);
+    if let Ok(cookie) = res {
+        if cookie.check().is_ok() {
+            return Some(cursor);
+        }
+    }
+    None
 }
 
 fn detect_desktop_cursor_theme() -> Option<String> {
@@ -350,6 +385,7 @@ impl X11Window {
             ],
             116, // XC_sb_v_double_arrow
         );
+        let cursor_blank = create_blank_cursor(&conn, root);
 
         let mut win_aux = CreateWindowAux::new().event_mask(event_mask);
         if let Some(c) = cursor_default {
@@ -523,6 +559,9 @@ impl X11Window {
             cursor_pointer,
             cursor_col_resize,
             cursor_row_resize,
+            cursor_blank,
+            current_cursor: Cell::new(CursorIcon::Default),
+            cursor_visible: Cell::new(true),
             events: VecDeque::new(),
             keymap,
             keysyms_per_keycode,
@@ -602,6 +641,29 @@ impl X11Window {
     }
 
     pub fn set_cursor(&self, icon: CursorIcon) {
+        self.current_cursor.set(icon);
+        if self.cursor_visible.get() {
+            self.apply_cursor_icon(icon);
+        }
+    }
+
+    pub fn set_cursor_visible(&self, visible: bool) {
+        if self.cursor_visible.get() == visible {
+            return;
+        }
+        self.cursor_visible.set(visible);
+        if visible {
+            self.apply_cursor_icon(self.current_cursor.get());
+        } else if let Some(blank) = self.cursor_blank {
+            let aux = ChangeWindowAttributesAux::new().cursor(blank);
+            if let Ok(cookie) = self.conn.change_window_attributes(self.window_id, &aux) {
+                let _ = cookie.check();
+            }
+            let _ = self.conn.flush();
+        }
+    }
+
+    fn apply_cursor_icon(&self, icon: CursorIcon) {
         let cid = match icon {
             CursorIcon::Default => self.cursor_default,
             CursorIcon::Text => self.cursor_text,
@@ -1026,6 +1088,9 @@ impl Drop for X11Window {
         if let Some(c) = self.cursor_row_resize {
             let _ = self.conn.free_cursor(c);
         }
+        if let Some(c) = self.cursor_blank {
+            let _ = self.conn.free_cursor(c);
+        }
         if let Some(cmap) = self.colormap.take() {
             let _ = self.conn.free_colormap(cmap);
         }
@@ -1200,6 +1265,7 @@ mod tests {
                 assert!(win.cursor_pointer.is_some());
                 assert!(win.cursor_col_resize.is_some());
                 assert!(win.cursor_row_resize.is_some());
+                assert!(win.cursor_blank.is_some());
 
                 // Test switching cursors
                 win.set_cursor(CursorIcon::Text);
@@ -1207,6 +1273,13 @@ mod tests {
                 win.set_cursor(CursorIcon::ColResize);
                 win.set_cursor(CursorIcon::RowResize);
                 win.set_cursor(CursorIcon::Default);
+
+                // Test cursor visibility toggling
+                assert!(win.cursor_visible.get());
+                win.set_cursor_visible(false);
+                assert!(!win.cursor_visible.get());
+                win.set_cursor_visible(true);
+                assert!(win.cursor_visible.get());
             }
         }
     }

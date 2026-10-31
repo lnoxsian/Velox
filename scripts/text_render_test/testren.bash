@@ -2,6 +2,7 @@
 
 SCROLLBACK_ONLY=false
 GRID_ONLY=false
+BOX_ONLY=false
 
 for arg in "$@"; do
     if [ "$arg" = "--scroll-back" ] || [ "$arg" = "--scrollback" ]; then
@@ -10,9 +11,308 @@ for arg in "$@"; do
     if [ "$arg" = "--grid" ] || [ "$arg" = "--full-grid" ]; then
         GRID_ONLY=true
     fi
+    if [ "$arg" = "--box" ] || [ "$arg" = "--box-only" ] || [ "$arg" = "--box-draw" ]; then
+        BOX_ONLY=true
+    fi
 done
 
 clear
+
+run_box_drawing_tests() {
+    echo "================================================================================"
+    echo "4. UNICODE BOX DRAWING COMPREHENSIVE BENCHMARK (U+2500 - U+257F)"
+    echo "   Reference: https://www.w3schools.com/charsets/ref_utf_box.asp"
+    echo "   Full Set of 128 Unicode Box Drawing Characters (Single, Double, Heavy, Dashed, Hybrids)"
+    echo "================================================================================"
+    echo
+    echo "--- 4.0: COMPLETE 128-GLYPH CODEPOINT MATRIX (U+2500 - U+257F) ---"
+    echo
+    cat << 'EOF'
+       +0 +1 +2 +3 +4 +5 +6 +7 +8 +9 +A +B +C +D +E +F
+U+2500: ─  ━  │  ┃  ┄  ┅  ┆  ┇  ┈  ┉  ┊  ┋  ┌  ┍  ┎  ┏
+U+2510: ┐  ┑  ┒  ┓  └  ┕  ┖  ┗  ┘  ┙  ┚  ┛  ├  ┝  ┞  ┟
+U+2520: ┠  ┡  ┢  ┣  ┤  ┥  ┦  ┧  ┨  ┩  ┪  ┫  ┬  ┭  ┮  ┯
+U+2530: ┰  ┱  ┲  ┳  ┴  ┵  ┶  ┷  ┸  ┹  ┺  ┻  ┼  ┽  ┾  ┿
+U+2540: ╀  ╁  ╂  ╃  ╄  ╅  ╆  ╇  ╈  ╉  ╊  ╋  ╌  ╍  ╎  ╏
+U+2550: ═  ║  ╒  ╓  ╔  ╕  ╖  ╗  ╘  ╙  ╚  ╛  ╜  ╝  ╞  ╟
+U+2560: ╠  ╡  ╢  ╣  ╤  ╥  ╦  ╧  ╨  ╩  ╪  ╫  ╬  ╭  ╮  ╯
+U+2570: ╰  ╱  ╲  ╳  ╴  ╵  ╶  ╷  ╸  ╹  ╺  ╻  ╼  ╽  ╾  ╿
+EOF
+    echo
+    echo "--- 4.1: PRIMARY BOX FRAMES & 3×3 MATRIX GRIDS ---"
+    echo
+    cat << 'EOF'
+[ Light / Single ]     [ Heavy / Bold ]       [ Double (Concentric) ]  [ Rounded / Arc (Single) ]
+┌───┬───┬───┐          ┏━━━┳━━━┳━━━┓          ╔═══╦═══╦═══╗            ╭───┬───┬───╮
+│ 1 │ 2 │ 3 │          ┃ 1 ┃ 2 ┃ 3 ┃          ║ 1 ║ 2 ║ 3 ║            │ 1 │ 2 │ 3 │
+├───┼───┼───┤          ┣━━━╋━━━╋━━━┫          ╠═══╬═══╬═══╣            ├───┼───┼───┤
+│ 4 │ 5 │ 6 │          ┃ 4 ┃ 5 ┃ 6 ┃          ║ 4 ║ 5 ║ 6 ║            │ 4 │ 5 │ 6 │
+├───┼───┼───┤          ┣━━━╋━━━╋━━━┫          ╠═══╬═══╬═══╣            ├───┼───┼───┤
+│ 7 │ 8 │ 9 │          ┃ 7 ┃ 8 ┃ 9 ┃          ║ 7 ║ 8 ║ 9 ║            │ 7 │ 8 │ 9 │
+└───┴───┴───┘          ┗━━━┻━━━┻━━━┛          ╚═══╩═══╩═══╝            ╰───┴───┴───╯
+
+[ Square vs. Smooth Curved Corners Comparison ]
+  Single Square (┌ ┐ ┘ └):      Single Smooth Curve (╭ ╮ ╯ ╰):
+  ┌──────────────────────┐      ╭──────────────────────╮
+  │ Sharp 90° Orthogonal │      │ Smooth Curved Arc    │
+  └──────────────────────┘      ╰──────────────────────╯
+
+  Double Square/Standard:       Double Smooth Concentric (╔ ╗ ╝ ╚):
+  ┌──╥────────────────╥──┐      ╔══════════════════════╗
+  │  ║ (Orthogonal)   ║  │      ║ Smooth Double Curves ║
+  └──╨────────────────╨──┘      ╚══════════════════════╝
+EOF
+    echo
+    echo "--- 4.2: DASHED BOXES (TRIPLE, QUADRUPLE & DOUBLE DASH - LIGHT & HEAVY) ---"
+    echo
+    cat << 'EOF'
+[ Light Triple Dash ]     [ Heavy Triple Dash ]     [ Light Quadruple Dash ]  [ Heavy Quadruple Dash ]
+┌┄┄┄┬┄┄┄┐                 ┏┅┅┅┳┅┅┅┓                 ┌┈┈┈┬┈┈┈┐                 ┏┉┉┉┳┉┉┉┓
+┆ 1 ┆ 2 ┆                 ┇ 1 ┇ 2 ┇                 ┊ 1 ┊ 2 ┊                 ┋ 1 ┋ 2 ┋
+├┄┄┄┼┄┄┄┤                 ┣┅┅┅╋┅┅┅┫                 ├┈┈┈┼┈┈┈┤                 ┣┉┉┉╋┉┉┉┫
+┆ 3 ┆ 4 ┆                 ┇ 3 ┇ 4 ┇                 ┊ 3 ┊ 4 ┊                 ┋ 3 ┋ 4 ┋
+└┄┄┄┴┄┄┄┘                 ┗┅┅┅┻┅┅┅┛                 └┈┈┈┴┈┈┈┘                 ┗┉┉┉┻┉┉┉┛
+
+[ Light Double Dash ]     [ Heavy Double Dash ]     [ Mixed Dashed Outer + Solid Inner ]
+┌╌╌╌┬╌╌╌┐                 ┏╍╍╍┳╍╍╍┓                 ┌┄┄┄┬┄┄┄┐
+╎ 1 ╎ 2 ╎                 ╏ 1 ╏ 2 ╏                 ┆ 1 │ 2 ┆
+├╌╌╌┼╌╌╌┤                 ┣╍╍╍╋╍╍╍┫                 ├───┼───┤
+╎ 3 ╎ 4 ╎                 ╏ 3 ╏ 4 ╏                 ┆ 3 │ 4 ┆
+└╌╌╌┴╌╌╌┘                 ┗╍╍╍┻╍╍╍┛                 └┄┄┄┴┄┄┄┘
+EOF
+    echo
+    echo "--- 4.3: HYBRID SINGLE & DOUBLE INTERSECTIONS ---"
+    echo
+    cat << 'EOF'
+[ Double Horiz / Single Vert ]      [ Single Horiz / Double Vert ]      [ Double Outer / Single Inner ]
+╒═════════╤═════════╕               ╓─────────╥─────────╖               ╔═════════╤═════════╗
+│ U+2552  │ U+2564  │ U+2555        ║ U+2553  ║ U+2565  ║ U+2556        ║ Outer D │ Outer D ║
+╞═════════╪═════════╡               ╟─────────╫─────────╢               ╟─────────┼─────────╢
+│ U+255E  │ U+256A  │ U+2561        ║ U+255F  ║ U+256B  ║ U+2562        ║ Inner S │ Inner S ║
+╘═════════╧═════════╛               ╙─────────╨─────────╜               ╚═════════╧═════════╝
+
+[ Single Outer / Double Inner ]     [ Complex Single/Double Cross Combination Matrix ]
+┌─────────╥─────────┐               ╒═════╤═════╕  ╓─────╥─────╖  ╔═════╤═════╗
+│ Outer S ║ Outer S │               │  A  │  B  │  ║  C  ║  D  ║  ║  E  │  F  ║
+╞═════════╬═════════╡               ╞═════╪═════╡  ╟─────╫─────╢  ╠═════╪═════╣
+│ Inner D ║ Inner D │               │  G  │  H  │  ║  I  ║  J  ║  ║  K  │  L  ║
+└─────────╨─────────┘               ╘═════╧═════╛  ╙─────╨─────╜  ╚═════╧═════╝
+EOF
+    echo
+    echo "--- 4.4: MIXED LIGHT & HEAVY WEIGHT INTERSECTIONS (ALL 36 HYBRIDS) ---"
+    echo
+    cat << 'EOF'
+[ Heavy Horiz / Light Vert ]        [ Light Horiz / Heavy Vert ]        [ Heavy Frame / Light Grid ]
+┍━━━━━━━━━┯━━━━━━━━━┑               ┎─────────┰─────────┒               ┏━━━━━━━━━┳━━━━━━━━━┓
+│ U+250D  │ U+252F  │ U+2511        ┃ U+250E  ┃ U+2530  ┃ U+2512        ┃ H-Top   ┃ H-Top   ┃
+┝━━━━━━━━━┿━━━━━━━━━┥               ┠─────────╂─────────┨               ┣───┼───┼─╋───┼───┼─┫
+│ U+251D  │ U+253F  │ U+2525        ┃ U+2520  ┃ U+2542  ┃ U+2528        ┃ Light   ┃ Light   ┃
+┕━━━━━━━━━┷━━━━━━━━━┙               ┖─────────┸─────────┚               ┗━━━━━━━━━┻━━━━━━━━━┛
+
+[ Asymmetric Tees: Left/Right Heavy ]  [ Asymmetric Tees: Up/Down Heavy ]  [ Complex 4-Way Crosses ]
+┍━━━┭───┮━━━┑  ┌───┱───┲───┐        ┎───┰───┒  ┍━━━┳━━━┑               ┌───┽───┾───┐
+│ A │ B │ C │  │ D │ E │ F │        ┃ G ┃ H ┃  │ I ┃ J │               │ U+253D/E  │
+┞───┽───┾───┦  ┝━━━┿━━━┿━━━┥        ┠───╂───┨  ┞───╀───┦               ├───╀───╁───┤
+│ G │ H │ I │  │ J │ K │ L │        ┃ M ┃ N ┃  │ O ┃ P │               │ U+2540/1  │
+┟───┿───╀───┧  ┖───┹───┺───┚        ┡━━━╅───╆  ┢━━━╃───╄               ├───╃───╄───┤
+│ M │ N │ O │  ┌───┵───┶───┐        │ Q │ R │  ┃ S │ T │               │ U+2543/4  │
+┕━━━┵───┶━━━┙  └───┴───┴───┘        ┗━━━┻━━━┛  ┗━━━┻━━━┛               └───┴───┴───┘
+
+[ Asymmetric Cross Matrix (U+2543 - U+254B) ]
+  ╃ (L-Up-Hvy, R-Dn-Lt)   ╄ (R-Up-Hvy, L-Dn-Lt)   ╅ (L-Dn-Hvy, R-Up-Lt)   ╆ (R-Dn-Hvy, L-Up-Lt)
+  ╇ (Dn-Lt, Up-Horiz-Hvy) ╈ (Up-Lt, Dn-Horiz-Hvy) ╉ (R-Lt, L-Vert-Hvy)    ╊ (L-Lt, R-Vert-Hvy)
+  ╋ (Full Heavy Cross)    ╂ (Vert Heavy, Horiz Light)
+EOF
+    echo
+    echo "--- 4.5: DIAGONAL ELEMENTS & BOX HATCHING (U+2571 - U+2573) ---"
+    echo
+    cat << 'EOF'
+[ Diagonal Slashing & Cross Frames ]              [ Diamond / Patterned Tessellation ]
+┌───────────────┬───────────────┐                 ┌───┬───┬───┬───┐
+│ ╲           ╱ │ ╱ ╱ ╱ ╱ ╱ ╱ ╱ │                 │ ╲ │ ╱ │ ╲ │ ╱ │
+│   ╲       ╱   │ ╱ ╱ ╱ ╱ ╱ ╱ ╱ │                 │  ╲│╱  │  ╲│╱  │
+│     ╲   ╱     │ ╱ ╱ ╱ ╱ ╱ ╱ ╱ │                 ├───╳───┼───╳───┤
+│       ╳       │ ╱ ╱ ╱ ╱ ╱ ╱ ╱ │                 │  ╱│╲  │  ╱│╲  │
+│     ╱   ╲     │ ╲ ╲ ╲ ╲ ╲ ╲ ╲ │                 │ ╱ │ ╲ │ ╱ │ ╲ │
+│   ╱       ╲   │ ╲ ╲ ╲ ╲ ╲ ╲ ╲ │                 └───┴───┴───┴───┘
+│ ╱           ╲ │ ╳ ╳ ╳ ╳ ╳ ╳ ╳ │                 Diagonal glyphs: ╱ (U+2571)  ╲ (U+2572)  ╳ (U+2573)
+└───────────────┴───────────────┘
+EOF
+    echo
+    echo "--- 4.6: LINE CAPS, TERMINAL STUBS & WEIGHT TRANSITIONS (U+2574 - U+257F) ---"
+    echo
+    cat << 'EOF'
+[ Isolated Stubs & Caps (Light vs Heavy) ]        [ Weight Transitions (Light ↔ Heavy) ]
+Light Left:      [ ────╴ ]  (U+2574)              Light-Left / Heavy-Right: [ ────╼━━━━ ]  (U+257C)
+Light Up:        [   ╵   ]  (U+2575)              Light-Up / Heavy-Down:    [   ╽   ]  (U+257D)
+Light Right:     [ ╶──── ]  (U+2576)                                        [   ┃   ]  
+Light Down:      [   ╷   ]  (U+2577)              Heavy-Left / Light-Right: [ ━━━━╾──── ]  (U+257E)
+Heavy Left:      [ ━━━━╸ ]  (U+2578)              Heavy-Up / Light-Down:    [   ┃   ]  
+Heavy Up:        [   ╹   ]  (U+2579)                                        [   ╿   ]  (U+257F)
+Heavy Right:     [ ╺━━━━ ]  (U+257A)                                        [   │   ]  
+Heavy Down:      [   ╻   ]  (U+257B)
+
+[ Star & Crosshair Alignment Targets ]
+       ╵                 ╹                 ╽                 ╿
+       │                 ┃                 │                 ┃
+   ╶───┼───╴         ╺━━━╋━━━╸         ╾───┼───╼         ╺━━━╂━━━╸
+       │                 ┃                 ┃                 │
+       ╷                 ╻                 ╿                 ╽
+EOF
+    echo
+    echo "--- 4.7: COMPLETE W3SCHOOLS UTF-8 BOX DRAWING REFERENCE DIRECTORY (128 CHARACTERS) ---"
+    echo
+    printf "\e[1;34m=== 1. Standard & Double Lines (6 Characters) ===\e[0m\n"
+    printf "  \e[1;36mU+2500\e[0m (\e[1;33m9472\e[0m)  \e[1;32m─\e[0m  Light Horizontal\n"
+    printf "  \e[1;36mU+2501\e[0m (\e[1;33m9473\e[0m)  \e[1;32m━\e[0m  Heavy Horizontal\n"
+    printf "  \e[1;36mU+2502\e[0m (\e[1;33m9474\e[0m)  \e[1;32m│\e[0m  Light Vertical\n"
+    printf "  \e[1;36mU+2503\e[0m (\e[1;33m9475\e[0m)  \e[1;32m┃\e[0m  Heavy Vertical\n"
+    printf "  \e[1;36mU+2550\e[0m (\e[1;33m9552\e[0m)  \e[1;32m═\e[0m  Double Horizontal\n"
+    printf "  \e[1;36mU+2551\e[0m (\e[1;33m9553\e[0m)  \e[1;32m║\e[0m  Double Vertical\n"
+    echo
+    printf "\e[1;34m=== 2. Dashed Lines (Triple, Quadruple & Double Dash) (12 Characters) ===\e[0m\n"
+    printf "  \e[1;36mU+2504\e[0m (\e[1;33m9476\e[0m)  \e[1;32m┄\e[0m  Light Triple Dash Horizontal\n"
+    printf "  \e[1;36mU+2505\e[0m (\e[1;33m9477\e[0m)  \e[1;32m┅\e[0m  Heavy Triple Dash Horizontal\n"
+    printf "  \e[1;36mU+2506\e[0m (\e[1;33m9478\e[0m)  \e[1;32m┆\e[0m  Light Triple Dash Vertical\n"
+    printf "  \e[1;36mU+2507\e[0m (\e[1;33m9479\e[0m)  \e[1;32m┇\e[0m  Heavy Triple Dash Vertical\n"
+    printf "  \e[1;36mU+2508\e[0m (\e[1;33m9480\e[0m)  \e[1;32m┈\e[0m  Light Quadruple Dash Horizontal\n"
+    printf "  \e[1;36mU+2509\e[0m (\e[1;33m9481\e[0m)  \e[1;32m┉\e[0m  Heavy Quadruple Dash Horizontal\n"
+    printf "  \e[1;36mU+250A\e[0m (\e[1;33m9482\e[0m)  \e[1;32m┊\e[0m  Light Quadruple Dash Vertical\n"
+    printf "  \e[1;36mU+250B\e[0m (\e[1;33m9483\e[0m)  \e[1;32m┋\e[0m  Heavy Quadruple Dash Vertical\n"
+    printf "  \e[1;36mU+254C\e[0m (\e[1;33m9548\e[0m)  \e[1;32m╌\e[0m  Light Double Dash Horizontal\n"
+    printf "  \e[1;36mU+254D\e[0m (\e[1;33m9549\e[0m)  \e[1;32m╍\e[0m  Heavy Double Dash Horizontal\n"
+    printf "  \e[1;36mU+254E\e[0m (\e[1;33m9550\e[0m)  \e[1;32m╎\e[0m  Light Double Dash Vertical\n"
+    printf "  \e[1;36mU+254F\e[0m (\e[1;33m9551\e[0m)  \e[1;32m╏\e[0m  Heavy Double Dash Vertical\n"
+    echo
+    printf "\e[1;34m=== 3. Corners & Arcs (Light, Heavy, Double & Rounded) (32 Characters) ===\e[0m\n"
+    printf "  \e[1;36mU+250C\e[0m (\e[1;33m9484\e[0m)  \e[1;32m┌\e[0m  Light Down & Right\n"
+    printf "  \e[1;36mU+250D\e[0m (\e[1;33m9485\e[0m)  \e[1;32m┍\e[0m  Down Light & Right Heavy\n"
+    printf "  \e[1;36mU+250E\e[0m (\e[1;33m9486\e[0m)  \e[1;32m┎\e[0m  Down Heavy & Right Light\n"
+    printf "  \e[1;36mU+250F\e[0m (\e[1;33m9487\e[0m)  \e[1;32m┏\e[0m  Heavy Down & Right\n"
+    printf "  \e[1;36mU+2510\e[0m (\e[1;33m9488\e[0m)  \e[1;32m┐\e[0m  Light Down & Left\n"
+    printf "  \e[1;36mU+2511\e[0m (\e[1;33m9489\e[0m)  \e[1;32m┑\e[0m  Down Light & Left Heavy\n"
+    printf "  \e[1;36mU+2512\e[0m (\e[1;33m9490\e[0m)  \e[1;32m┒\e[0m  Down Heavy & Left Light\n"
+    printf "  \e[1;36mU+2513\e[0m (\e[1;33m9491\e[0m)  \e[1;32m┓\e[0m  Heavy Down & Left\n"
+    printf "  \e[1;36mU+2514\e[0m (\e[1;33m9492\e[0m)  \e[1;32m└\e[0m  Light Up & Right\n"
+    printf "  \e[1;36mU+2515\e[0m (\e[1;33m9493\e[0m)  \e[1;32m┕\e[0m  Up Light & Right Heavy\n"
+    printf "  \e[1;36mU+2516\e[0m (\e[1;33m9494\e[0m)  \e[1;32m┖\e[0m  Up Heavy & Right Light\n"
+    printf "  \e[1;36mU+2517\e[0m (\e[1;33m9495\e[0m)  \e[1;32m┗\e[0m  Heavy Up & Right\n"
+    printf "  \e[1;36mU+2518\e[0m (\e[1;33m9496\e[0m)  \e[1;32m┘\e[0m  Light Up & Left\n"
+    printf "  \e[1;36mU+2519\e[0m (\e[1;33m9497\e[0m)  \e[1;32m┙\e[0m  Up Light & Left Heavy\n"
+    printf "  \e[1;36mU+251A\e[0m (\e[1;33m9498\e[0m)  \e[1;32m┚\e[0m  Up Heavy & Left Light\n"
+    printf "  \e[1;36mU+251B\e[0m (\e[1;33m9499\e[0m)  \e[1;32m┛\e[0m  Heavy Up & Left\n"
+    printf "  \e[1;36mU+2552\e[0m (\e[1;33m9554\e[0m)  \e[1;32m╒\e[0m  Down Single & Right Double\n"
+    printf "  \e[1;36mU+2553\e[0m (\e[1;33m9555\e[0m)  \e[1;32m╓\e[0m  Down Double & Right Single\n"
+    printf "  \e[1;36mU+2554\e[0m (\e[1;33m9556\e[0m)  \e[1;32m╔\e[0m  Double Down & Right\n"
+    printf "  \e[1;36mU+2555\e[0m (\e[1;33m9557\e[0m)  \e[1;32m╕\e[0m  Down Single & Left Double\n"
+    printf "  \e[1;36mU+2556\e[0m (\e[1;33m9558\e[0m)  \e[1;32m╖\e[0m  Down Double & Left Single\n"
+    printf "  \e[1;36mU+2557\e[0m (\e[1;33m9559\e[0m)  \e[1;32m╗\e[0m  Double Down & Left\n"
+    printf "  \e[1;36mU+2558\e[0m (\e[1;33m9560\e[0m)  \e[1;32m╘\e[0m  Up Single & Right Double\n"
+    printf "  \e[1;36mU+2559\e[0m (\e[1;33m9561\e[0m)  \e[1;32m╙\e[0m  Up Double & Right Single\n"
+    printf "  \e[1;36mU+255A\e[0m (\e[1;33m9562\e[0m)  \e[1;32m╚\e[0m  Double Up & Right\n"
+    printf "  \e[1;36mU+255B\e[0m (\e[1;33m9563\e[0m)  \e[1;32m╛\e[0m  Up Single & Left Double\n"
+    printf "  \e[1;36mU+255C\e[0m (\e[1;33m9564\e[0m)  \e[1;32m╜\e[0m  Up Double & Left Single\n"
+    printf "  \e[1;36mU+255D\e[0m (\e[1;33m9565\e[0m)  \e[1;32m╝\e[0m  Double Up & Left\n"
+    printf "  \e[1;36mU+256D\e[0m (\e[1;33m9581\e[0m)  \e[1;32m╭\e[0m  Light Arc Down & Right\n"
+    printf "  \e[1;36mU+256E\e[0m (\e[1;33m9582\e[0m)  \e[1;32m╮\e[0m  Light Arc Down & Left\n"
+    printf "  \e[1;36mU+256F\e[0m (\e[1;33m9583\e[0m)  \e[1;32m╯\e[0m  Light Arc Up & Left\n"
+    printf "  \e[1;36mU+2570\e[0m (\e[1;33m9584\e[0m)  \e[1;32m╰\e[0m  Light Arc Up & Right\n"
+    echo
+    printf "\e[1;34m=== 4. T-Junctions / Tees (Vertical & Horizontal) (44 Characters) ===\e[0m\n"
+    printf "  \e[1;36mU+251C\e[0m (\e[1;33m9500\e[0m)  \e[1;32m├\e[0m  Light Vertical & Right\n"
+    printf "  \e[1;36mU+251D\e[0m (\e[1;33m9501\e[0m)  \e[1;32m┝\e[0m  Vertical Light & Right Heavy\n"
+    printf "  \e[1;36mU+251E\e[0m (\e[1;33m9502\e[0m)  \e[1;32m┞\e[0m  Up Heavy & Right Down Light\n"
+    printf "  \e[1;36mU+251F\e[0m (\e[1;33m9503\e[0m)  \e[1;32m┟\e[0m  Down Heavy & Right Up Light\n"
+    printf "  \e[1;36mU+2520\e[0m (\e[1;33m9504\e[0m)  \e[1;32m┠\e[0m  Vertical Heavy & Right Light\n"
+    printf "  \e[1;36mU+2521\e[0m (\e[1;33m9505\e[0m)  \e[1;32m┡\e[0m  Down Light & Right Up Heavy\n"
+    printf "  \e[1;36mU+2522\e[0m (\e[1;33m9506\e[0m)  \e[1;32m┢\e[0m  Up Light & Right Down Heavy\n"
+    printf "  \e[1;36mU+2523\e[0m (\e[1;33m9507\e[0m)  \e[1;32m┣\e[0m  Heavy Vertical & Right\n"
+    printf "  \e[1;36mU+2524\e[0m (\e[1;33m9508\e[0m)  \e[1;32m┤\e[0m  Light Vertical & Left\n"
+    printf "  \e[1;36mU+2525\e[0m (\e[1;33m9509\e[0m)  \e[1;32m┥\e[0m  Vertical Light & Left Heavy\n"
+    printf "  \e[1;36mU+2526\e[0m (\e[1;33m9510\e[0m)  \e[1;32m┦\e[0m  Up Heavy & Left Down Light\n"
+    printf "  \e[1;36mU+2527\e[0m (\e[1;33m9511\e[0m)  \e[1;32m┧\e[0m  Down Heavy & Left Up Light\n"
+    printf "  \e[1;36mU+2528\e[0m (\e[1;33m9512\e[0m)  \e[1;32m┨\e[0m  Vertical Heavy & Left Light\n"
+    printf "  \e[1;36mU+2529\e[0m (\e[1;33m9513\e[0m)  \e[1;32m┩\e[0m  Down Light & Left Up Heavy\n"
+    printf "  \e[1;36mU+252A\e[0m (\e[1;33m9514\e[0m)  \e[1;32m┪\e[0m  Up Light & Left Down Heavy\n"
+    printf "  \e[1;36mU+252B\e[0m (\e[1;33m9515\e[0m)  \e[1;32m┫\e[0m  Heavy Vertical & Left\n"
+    printf "  \e[1;36mU+252C\e[0m (\e[1;33m9516\e[0m)  \e[1;32m┬\e[0m  Light Down & Horizontal\n"
+    printf "  \e[1;36mU+252D\e[0m (\e[1;33m9517\e[0m)  \e[1;32m┭\e[0m  Left Heavy & Right Down Light\n"
+    printf "  \e[1;36mU+252E\e[0m (\e[1;33m9518\e[0m)  \e[1;32m┮\e[0m  Right Heavy & Left Down Light\n"
+    printf "  \e[1;36mU+252F\e[0m (\e[1;33m9519\e[0m)  \e[1;32m┯\e[0m  Down Light & Horizontal Heavy\n"
+    printf "  \e[1;36mU+2530\e[0m (\e[1;33m9520\e[0m)  \e[1;32m┰\e[0m  Down Heavy & Horizontal Light\n"
+    printf "  \e[1;36mU+2531\e[0m (\e[1;33m9521\e[0m)  \e[1;32m┱\e[0m  Right Light & Left Down Heavy\n"
+    printf "  \e[1;36mU+2532\e[0m (\e[1;33m9522\e[0m)  \e[1;32m┲\e[0m  Left Light & Right Down Heavy\n"
+    printf "  \e[1;36mU+2533\e[0m (\e[1;33m9523\e[0m)  \e[1;32m┳\e[0m  Heavy Down & Horizontal\n"
+    printf "  \e[1;36mU+2534\e[0m (\e[1;33m9524\e[0m)  \e[1;32m┴\e[0m  Light Up & Horizontal\n"
+    printf "  \e[1;36mU+2535\e[0m (\e[1;33m9525\e[0m)  \e[1;32m┵\e[0m  Left Heavy & Right Up Light\n"
+    printf "  \e[1;36mU+2536\e[0m (\e[1;33m9526\e[0m)  \e[1;32m┶\e[0m  Right Heavy & Left Up Light\n"
+    printf "  \e[1;36mU+2537\e[0m (\e[1;33m9527\e[0m)  \e[1;32m┷\e[0m  Up Light & Horizontal Heavy\n"
+    printf "  \e[1;36mU+2538\e[0m (\e[1;33m9528\e[0m)  \e[1;32m┸\e[0m  Up Heavy & Horizontal Light\n"
+    printf "  \e[1;36mU+2539\e[0m (\e[1;33m9529\e[0m)  \e[1;32m┹\e[0m  Right Light & Left Up Heavy\n"
+    printf "  \e[1;36mU+253A\e[0m (\e[1;33m9530\e[0m)  \e[1;32m┺\e[0m  Left Light & Right Up Heavy\n"
+    printf "  \e[1;36mU+253B\e[0m (\e[1;33m9531\e[0m)  \e[1;32m┻\e[0m  Heavy Up & Horizontal\n"
+    printf "  \e[1;36mU+255E\e[0m (\e[1;33m9566\e[0m)  \e[1;32m╞\e[0m  Vertical Single & Right Double\n"
+    printf "  \e[1;36mU+255F\e[0m (\e[1;33m9567\e[0m)  \e[1;32m╟\e[0m  Vertical Double & Right Single\n"
+    printf "  \e[1;36mU+2560\e[0m (\e[1;33m9568\e[0m)  \e[1;32m╠\e[0m  Double Vertical & Right\n"
+    printf "  \e[1;36mU+2561\e[0m (\e[1;33m9569\e[0m)  \e[1;32m╡\e[0m  Vertical Single & Left Double\n"
+    printf "  \e[1;36mU+2562\e[0m (\e[1;33m9570\e[0m)  \e[1;32m╢\e[0m  Vertical Double & Left Single\n"
+    printf "  \e[1;36mU+2563\e[0m (\e[1;33m9571\e[0m)  \e[1;32m╣\e[0m  Double Vertical & Left\n"
+    printf "  \e[1;36mU+2564\e[0m (\e[1;33m9572\e[0m)  \e[1;32m╤\e[0m  Down Single & Horizontal Double\n"
+    printf "  \e[1;36mU+2565\e[0m (\e[1;33m9573\e[0m)  \e[1;32m╥\e[0m  Down Double & Horizontal Single\n"
+    printf "  \e[1;36mU+2566\e[0m (\e[1;33m9574\e[0m)  \e[1;32m╦\e[0m  Double Down & Horizontal\n"
+    printf "  \e[1;36mU+2567\e[0m (\e[1;33m9575\e[0m)  \e[1;32m╧\e[0m  Up Single & Horizontal Double\n"
+    printf "  \e[1;36mU+2568\e[0m (\e[1;33m9576\e[0m)  \e[1;32m╨\e[0m  Up Double & Horizontal Single\n"
+    printf "  \e[1;36mU+2569\e[0m (\e[1;33m9577\e[0m)  \e[1;32m╩\e[0m  Double Up & Horizontal\n"
+    echo
+    printf "\e[1;34m=== 5. Crosses & 4-Way Intersections (19 Characters) ===\e[0m\n"
+    printf "  \e[1;36mU+253C\e[0m (\e[1;33m9532\e[0m)  \e[1;32m┼\e[0m  Light Vertical & Horizontal\n"
+    printf "  \e[1;36mU+253D\e[0m (\e[1;33m9533\e[0m)  \e[1;32m┽\e[0m  Left Heavy & Right Vertical Light\n"
+    printf "  \e[1;36mU+253E\e[0m (\e[1;33m9534\e[0m)  \e[1;32m┾\e[0m  Right Heavy & Left Vertical Light\n"
+    printf "  \e[1;36mU+253F\e[0m (\e[1;33m9535\e[0m)  \e[1;32m┿\e[0m  Vertical Light & Horizontal Heavy\n"
+    printf "  \e[1;36mU+2540\e[0m (\e[1;33m9536\e[0m)  \e[1;32m╀\e[0m  Up Heavy & Down Horizontal Light\n"
+    printf "  \e[1;36mU+2541\e[0m (\e[1;33m9537\e[0m)  \e[1;32m╁\e[0m  Down Heavy & Up Horizontal Light\n"
+    printf "  \e[1;36mU+2542\e[0m (\e[1;33m9538\e[0m)  \e[1;32m╂\e[0m  Vertical Heavy & Horizontal Light\n"
+    printf "  \e[1;36mU+2543\e[0m (\e[1;33m9539\e[0m)  \e[1;32m╃\e[0m  Left Up Heavy & Right Down Light\n"
+    printf "  \e[1;36mU+2544\e[0m (\e[1;33m9540\e[0m)  \e[1;32m╄\e[0m  Right Up Heavy & Left Down Light\n"
+    printf "  \e[1;36mU+2545\e[0m (\e[1;33m9541\e[0m)  \e[1;32m╅\e[0m  Left Down Heavy & Right Up Light\n"
+    printf "  \e[1;36mU+2546\e[0m (\e[1;33m9542\e[0m)  \e[1;32m╆\e[0m  Right Down Heavy & Left Up Light\n"
+    printf "  \e[1;36mU+2547\e[0m (\e[1;33m9543\e[0m)  \e[1;32m╇\e[0m  Down Light & Up Horizontal Heavy\n"
+    printf "  \e[1;36mU+2548\e[0m (\e[1;33m9544\e[0m)  \e[1;32m╈\e[0m  Up Light & Down Horizontal Heavy\n"
+    printf "  \e[1;36mU+2549\e[0m (\e[1;33m9545\e[0m)  \e[1;32m╉\e[0m  Right Light & Left Vertical Heavy\n"
+    printf "  \e[1;36mU+254A\e[0m (\e[1;33m9546\e[0m)  \e[1;32m╊\e[0m  Left Light & Right Vertical Heavy\n"
+    printf "  \e[1;36mU+254B\e[0m (\e[1;33m9547\e[0m)  \e[1;32m╋\e[0m  Heavy Vertical & Horizontal\n"
+    printf "  \e[1;36mU+256A\e[0m (\e[1;33m9578\e[0m)  \e[1;32m╪\e[0m  Vertical Single & Horizontal Double\n"
+    printf "  \e[1;36mU+256B\e[0m (\e[1;33m9579\e[0m)  \e[1;32m╫\e[0m  Vertical Double & Horizontal Single\n"
+    printf "  \e[1;36mU+256C\e[0m (\e[1;33m9580\e[0m)  \e[1;32m╬\e[0m  Double Vertical & Horizontal\n"
+    echo
+    printf "\e[1;34m=== 6. Diagonals, Terminal Caps & Weight Transitions (15 Characters) ===\e[0m\n"
+    printf "  \e[1;36mU+2571\e[0m (\e[1;33m9585\e[0m)  \e[1;32m╱\e[0m  Light Diagonal Upper Right To Lower Left\n"
+    printf "  \e[1;36mU+2572\e[0m (\e[1;33m9586\e[0m)  \e[1;32m╲\e[0m  Light Diagonal Upper Left To Lower Right\n"
+    printf "  \e[1;36mU+2573\e[0m (\e[1;33m9587\e[0m)  \e[1;32m╳\e[0m  Light Diagonal Cross\n"
+    printf "  \e[1;36mU+2574\e[0m (\e[1;33m9588\e[0m)  \e[1;32m╴\e[0m  Light Left\n"
+    printf "  \e[1;36mU+2575\e[0m (\e[1;33m9589\e[0m)  \e[1;32m╵\e[0m  Light Up\n"
+    printf "  \e[1;36mU+2576\e[0m (\e[1;33m9590\e[0m)  \e[1;32m╶\e[0m  Light Right\n"
+    printf "  \e[1;36mU+2577\e[0m (\e[1;33m9591\e[0m)  \e[1;32m╷\e[0m  Light Down\n"
+    printf "  \e[1;36mU+2578\e[0m (\e[1;33m9592\e[0m)  \e[1;32m╸\e[0m  Heavy Left\n"
+    printf "  \e[1;36mU+2579\e[0m (\e[1;33m9593\e[0m)  \e[1;32m╹\e[0m  Heavy Up\n"
+    printf "  \e[1;36mU+257A\e[0m (\e[1;33m9594\e[0m)  \e[1;32m╺\e[0m  Heavy Right\n"
+    printf "  \e[1;36mU+257B\e[0m (\e[1;33m9595\e[0m)  \e[1;32m╻\e[0m  Heavy Down\n"
+    printf "  \e[1;36mU+257C\e[0m (\e[1;33m9596\e[0m)  \e[1;32m╼\e[0m  Light Left & Heavy Right\n"
+    printf "  \e[1;36mU+257D\e[0m (\e[1;33m9597\e[0m)  \e[1;32m╽\e[0m  Light Up & Heavy Down\n"
+    printf "  \e[1;36mU+257E\e[0m (\e[1;33m9598\e[0m)  \e[1;32m╾\e[0m  Heavy Left & Light Right\n"
+    printf "  \e[1;36mU+257F\e[0m (\e[1;33m9599\e[0m)  \e[1;32m╿\e[0m  Heavy Up & Light Down\n"
+    echo
+}
+
+if [ "$BOX_ONLY" = true ]; then
+    run_box_drawing_tests
+    echo "==========================================="
+    echo "BOX DRAWING TEST COMPLETE"
+    echo "==========================================="
+    echo
+    exit 0
+fi
+
 
 if [ "$GRID_ONLY" = true ]; then
     echo "==========================================="
@@ -249,17 +549,7 @@ sleep 0.5
 
 #################################################
 echo
-echo "4. BOX DRAWING & GRID ALIGNMENT"
-echo
-
-printf "┌───┬───┬───┐  ╔═══╦═══╦═══╗  ╭───┬───┬───╮\n"
-printf "│ 1 │ 2 │ 3 │  ║ 1 ║ 2 ║ 3 ║  │ 1 │ 2 │ 3 │\n"
-printf "├───┼───┼───┤  ╠═══╬═══╬═══╣  ├───┼───┼───┤\n"
-printf "│ 4 │ 5 │ 6 │  ║ 4 ║ 5 ║ 6 ║  │ 4 │ 5 │ 6 │\n"
-printf "├───┼───┼───┤  ╠═══╬═══╬═══╣  ├───┼───┼───┤\n"
-printf "│ 7 │ 8 │ 9 │  ║ 7 ║ 8 ║ 9 ║  │ 7 │ 8 │ 9 │\n"
-printf "└───┴───┴───┘  ╚═══╩═══╩═══╝  ╰───┴───┴───╯\n"
-
+run_box_drawing_tests
 sleep 0.5
 
 #################################################
