@@ -356,31 +356,48 @@ pub enum ArcCorner {
 }
 
 #[inline(always)]
-fn eval_fillet_distance(
-    corner: ArcCorner,
+fn eval_line_sample(
     xc: f32,
     yc: f32,
-    x0: f32,
-    y0: f32,
+    y: u32,
+    x: u32,
     cx: f32,
     cy: f32,
     r: f32,
-) -> f32 {
-    let (is_arc, is_h, is_v) = match corner {
-        ArcCorner::DownRight => (xc < cx && yc < cy, xc >= cx && yc < cy, xc < cx && yc >= cy),
-        ArcCorner::DownLeft => (xc > cx && yc < cy, xc <= cx && yc < cy, xc > cx && yc >= cy),
-        ArcCorner::UpRight => (xc < cx && yc > cy, xc >= cx && yc > cy, xc < cx && yc <= cy),
-        ArcCorner::UpLeft => (xc > cx && yc > cy, xc <= cx && yc > cy, xc > cx && yc <= cy),
-    };
-
+    is_arc: bool,
+    is_h: bool,
+    is_v: bool,
+    y_h_start: u32,
+    y_h_end: u32,
+    x_v_start: u32,
+    x_v_end: u32,
+    solid_thresh: f32,
+    aa_width: f32,
+) -> u8 {
     if is_arc {
-        ((xc - cx).hypot(yc - cy) - r).abs()
+        let dist = ((xc - cx).hypot(yc - cy) - r).abs();
+        if dist <= solid_thresh {
+            255
+        } else if dist < solid_thresh + aa_width {
+            let cov = 1.0 - (dist - solid_thresh) / aa_width;
+            (cov * 255.0).round().min(255.0) as u8
+        } else {
+            0
+        }
     } else if is_h {
-        (yc - y0).abs()
+        if y >= y_h_start && y < y_h_end {
+            255
+        } else {
+            0
+        }
     } else if is_v {
-        (xc - x0).abs()
+        if x >= x_v_start && x < x_v_end {
+            255
+        } else {
+            0
+        }
     } else {
-        999.0
+        0
     }
 }
 
@@ -407,6 +424,8 @@ fn draw_smooth_arc(
     let x0 = x_s_light as f32 + (t_light as f32) / 2.0;
     let y0 = y_s_light as f32 + (t_light as f32) / 2.0;
     let half_w = (t_light as f32) / 2.0;
+    let solid_thresh = half_w + 0.1;
+    let aa_width = 0.4;
 
     let avail = (cell_w as f32 / 2.0).min(cell_h as f32 / 2.0);
     let r = (avail * 0.75).max(2.0);
@@ -429,17 +448,38 @@ fn draw_smooth_arc(
 
         for x in px..max_x {
             let xc = x as f32 + 0.5;
-            let dist = eval_fillet_distance(corner, xc, yc, x0, y0, cx, cy, r);
 
-            if dist <= half_w {
+            let (is_arc, is_h, is_v) = match corner {
+                ArcCorner::DownRight => (xc < cx && yc < cy, xc >= cx && yc < cy, xc < cx && yc >= cy),
+                ArcCorner::DownLeft => (xc > cx && yc < cy, xc <= cx && yc < cy, xc > cx && yc >= cy),
+                ArcCorner::UpRight => (xc < cx && yc > cy, xc >= cx && yc > cy, xc < cx && yc <= cy),
+                ArcCorner::UpLeft => (xc > cx && yc > cy, xc <= cx && yc > cy, xc > cx && yc <= cy),
+            };
+
+            let alpha = eval_line_sample(
+                xc,
+                yc,
+                y,
+                x,
+                cx,
+                cy,
+                r,
+                is_arc,
+                is_h,
+                is_v,
+                y_s_light,
+                y_s_light + t_light,
+                x_s_light,
+                x_s_light + t_light,
+                solid_thresh,
+                aa_width,
+            );
+
+            if alpha == 255 {
                 pixels[row_offset + (x as usize)] = fg;
-            } else if dist < half_w + 1.0 {
-                let cov = half_w + 1.0 - dist;
-                let alpha = (cov * 255.0).round().min(255.0) as u8;
-                if alpha > 0 {
-                    let idx = row_offset + (x as usize);
-                    pixels[idx] = blend_alpha(pixels[idx], fg, alpha);
-                }
+            } else if alpha > 0 {
+                let idx = row_offset + (x as usize);
+                pixels[idx] = blend_alpha(pixels[idx], fg, alpha);
             }
         }
     }
@@ -476,26 +516,52 @@ fn draw_double_smooth_arc(
     let yt = y_d_top as f32 + (t_light as f32) / 2.0;
     let yb = y_d_bot as f32 + (t_light as f32) / 2.0;
     let half_w = (t_light as f32) / 2.0;
+    let solid_thresh = half_w + 0.1;
+    let aa_width = 0.4;
 
     let r_out = ((cell_w as f32 / 2.5).min(cell_h as f32 / 3.0)).max(3.0);
     let r_in = (r_out - ((d_off_x + d_off_y) as f32) / 2.0).max(1.5);
 
-    let (x0_o, y0_o, cx_o, cy_o, x0_i, y0_i, cx_i, cy_i) = match corner {
+    let (cx_o, cy_o, cx_i, cy_i, y_h_o, y_h_i, x_v_o, x_v_i) = match corner {
         ArcCorner::DownRight => (
-            xl, yt, xl + r_out, yt + r_out,
-            xr, yb, xr + r_in,  yb + r_in,
+            xl + r_out,
+            yt + r_out,
+            xr + r_in,
+            yb + r_in,
+            (y_d_top, y_d_top + t_light),
+            (y_d_bot, y_d_bot + t_light),
+            (x_d_left, x_d_left + t_light),
+            (x_d_right, x_d_right + t_light),
         ),
         ArcCorner::DownLeft => (
-            xr, yt, xr - r_out, yt + r_out,
-            xl, yb, xl - r_in,  yb + r_in,
+            xr - r_out,
+            yt + r_out,
+            xl - r_in,
+            yb + r_in,
+            (y_d_top, y_d_top + t_light),
+            (y_d_bot, y_d_bot + t_light),
+            (x_d_right, x_d_right + t_light),
+            (x_d_left, x_d_left + t_light),
         ),
         ArcCorner::UpRight => (
-            xl, yb, xl + r_out, yb - r_out,
-            xr, yt, xr + r_in,  yt - r_in,
+            xl + r_out,
+            yb - r_out,
+            xr + r_in,
+            yt - r_in,
+            (y_d_bot, y_d_bot + t_light),
+            (y_d_top, y_d_top + t_light),
+            (x_d_left, x_d_left + t_light),
+            (x_d_right, x_d_right + t_light),
         ),
         ArcCorner::UpLeft => (
-            xr, yb, xr - r_out, yb - r_out,
-            xl, yt, xl - r_in,  yt - r_in,
+            xr - r_out,
+            yb - r_out,
+            xl - r_in,
+            yt - r_in,
+            (y_d_bot, y_d_bot + t_light),
+            (y_d_top, y_d_top + t_light),
+            (x_d_right, x_d_right + t_light),
+            (x_d_left, x_d_left + t_light),
         ),
     };
 
@@ -511,19 +577,97 @@ fn draw_double_smooth_arc(
         for x in px..max_x {
             let xc = x as f32 + 0.5;
 
-            let d_o = eval_fillet_distance(corner, xc, yc, x0_o, y0_o, cx_o, cy_o, r_out);
-            let d_i = eval_fillet_distance(corner, xc, yc, x0_i, y0_i, cx_i, cy_i, r_in);
-            let dist = d_o.min(d_i);
+            let (arc_o, h_o, v_o) = match corner {
+                ArcCorner::DownRight => (
+                    xc < cx_o && yc < cy_o,
+                    xc >= cx_o && yc < cy_o,
+                    xc < cx_o && yc >= cy_o,
+                ),
+                ArcCorner::DownLeft => (
+                    xc > cx_o && yc < cy_o,
+                    xc <= cx_o && yc < cy_o,
+                    xc > cx_o && yc >= cy_o,
+                ),
+                ArcCorner::UpRight => (
+                    xc < cx_o && yc > cy_o,
+                    xc >= cx_o && yc > cy_o,
+                    xc < cx_o && yc <= cy_o,
+                ),
+                ArcCorner::UpLeft => (
+                    xc > cx_o && yc > cy_o,
+                    xc <= cx_o && yc > cy_o,
+                    xc > cx_o && yc <= cy_o,
+                ),
+            };
 
-            if dist <= half_w {
+            let (arc_i, h_i, v_i) = match corner {
+                ArcCorner::DownRight => (
+                    xc < cx_i && yc < cy_i,
+                    xc >= cx_i && yc < cy_i,
+                    xc < cx_i && yc >= cy_i,
+                ),
+                ArcCorner::DownLeft => (
+                    xc > cx_i && yc < cy_i,
+                    xc <= cx_i && yc < cy_i,
+                    xc > cx_i && yc >= cy_i,
+                ),
+                ArcCorner::UpRight => (
+                    xc < cx_i && yc > cy_i,
+                    xc >= cx_i && yc > cy_i,
+                    xc < cx_i && yc <= cy_i,
+                ),
+                ArcCorner::UpLeft => (
+                    xc > cx_i && yc > cy_i,
+                    xc <= cx_i && yc > cy_i,
+                    xc > cx_i && yc <= cy_i,
+                ),
+            };
+
+            let a_o = eval_line_sample(
+                xc,
+                yc,
+                y,
+                x,
+                cx_o,
+                cy_o,
+                r_out,
+                arc_o,
+                h_o,
+                v_o,
+                y_h_o.0,
+                y_h_o.1,
+                x_v_o.0,
+                x_v_o.1,
+                solid_thresh,
+                aa_width,
+            );
+
+            let a_i = eval_line_sample(
+                xc,
+                yc,
+                y,
+                x,
+                cx_i,
+                cy_i,
+                r_in,
+                arc_i,
+                h_i,
+                v_i,
+                y_h_i.0,
+                y_h_i.1,
+                x_v_i.0,
+                x_v_i.1,
+                solid_thresh,
+                aa_width,
+            );
+
+            let alpha = a_o.max(a_i);
+
+            if alpha == 255 {
                 pixels[row_offset + (x as usize)] = fg;
-            } else if dist < half_w + 1.0 {
-                let cov = half_w + 1.0 - dist;
-                let alpha = (cov * 255.0).round().min(255.0) as u8;
-                if alpha > 0 {
-                    let idx = row_offset + (x as usize);
-                    pixels[idx] = blend_alpha(pixels[idx], fg, alpha);
-                }
+            } else if alpha > 0 {
+                let idx = row_offset + (x as usize);
+                pixels[idx] = blend_alpha(pixels[idx], fg, alpha);
             }
         }
     }

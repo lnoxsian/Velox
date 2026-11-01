@@ -1605,7 +1605,6 @@ impl App {
             tab.last_activity = now;
             pane.flush_outgoing();
             if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
-                ws.mark_interaction();
                 ws.needs_redraw = true;
                 ws.content_dirty = true;
             }
@@ -1629,7 +1628,6 @@ impl App {
                     pane.terminal.feed(&data);
                     pane.flush_outgoing();
                     if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
-                        ws.mark_interaction();
                         ws.needs_redraw = true;
                         ws.content_dirty = true;
                     }
@@ -1801,31 +1799,22 @@ impl App {
                 break;
             }
 
-            let had_pty_data = self.drain_custom_events();
+            let _had_pty_data = self.drain_custom_events();
 
             let now = std::time::Instant::now();
             let is_any_resizing = self.windows.values().any(|ws| {
                 now.duration_since(ws.last_resize_instant) < std::time::Duration::from_millis(150)
             });
 
-            if (had_keyboard_input || had_pty_data) && !is_any_resizing {
-                // If keyboard input was just dispatched or PTY events arrived, give trailing burst packets
-                // a brief window to arrive (e.g. 1ms). Typical shell echo / CPR response latency is 50-300µs.
-                // Coalescing trailing packets ensures atomic updates (e.g. erase-line followed by text, or CPR queries)
-                // render together in a single frame without partial-frame screen flicker!
-                let coalesce_timeout = if had_keyboard_input {
-                    std::time::Duration::from_micros(1500)
-                } else {
-                    std::time::Duration::from_micros(1000)
-                };
-                let burst_deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(4);
-                while std::time::Instant::now() < burst_deadline {
-                    if let Ok(event) = self.event_receiver.recv_timeout(coalesce_timeout) {
-                        self.drain_custom_events_with_first(Some(event));
-                    } else {
-                        break;
-                    }
+            if had_keyboard_input && !is_any_resizing {
+                // If keyboard input was just dispatched to PTY, give the shell up to 1.5ms to return its echo.
+                // Typical shell latency is 50-300µs; as soon as the echo arrives, recv_timeout returns
+                // immediately and renders in the exact same frame with zero delay!
+                if let Ok(event) = self
+                    .event_receiver
+                    .recv_timeout(std::time::Duration::from_micros(1500))
+                {
+                    self.drain_custom_events_with_first(Some(event));
                 }
             }
 
@@ -1899,7 +1888,7 @@ impl App {
                     if is_typing || is_resizing || now >= next_frame {
                         ws.draw();
                         ws.needs_redraw = false;
-                        ws.last_frame_instant = now;
+                        ws.last_frame_instant = std::time::Instant::now();
                     } else {
                         min_next_wake =
                             Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
@@ -1930,7 +1919,7 @@ impl App {
                     }
                 }
                 None => {
-                    if self.windows.iter().any(|(_, w)| w.needs_redraw) {
+                    if self.windows.values().any(|w| w.needs_redraw) {
                         0
                     } else {
                         -1
@@ -1938,53 +1927,63 @@ impl App {
                 }
             };
 
-            if timeout_ms != 0 {
-                // Flush all window connections (X11 / Wayland) before polling so that no rendering
-                // commands or property updates remain in userspace client buffers.
-                for ws in self.windows.values() {
-                    ws.window.flush();
-                }
+            // If new custom events arrived while drawing or updating, drain immediately without sleeping
+            if let Ok(event) = self.event_receiver.try_recv() {
+                self.drain_custom_events_with_first(Some(event));
+                continue;
+            }
 
-                // Drain any pending wake_fd signal before sleeping to prevent immediate spurious wakeup
-                let mut wake_buf = [0u8; 8];
+            // Flush all window connections (X11 / Wayland) before polling so that no rendering
+            // commands or property updates remain in userspace client buffers.
+            for ws in self.windows.values() {
+                ws.window.flush();
+            }
+
+            // Drain any pending wake_fd signal before sleeping to prevent immediate spurious wakeup
+            let mut wake_buf = [0u8; 8];
+            unsafe {
+                libc::read(self.wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8);
+            }
+            self.event_loop_proxy
+                .wake_pending
+                .store(false, std::sync::atomic::Ordering::Release);
+
+            // Double check if an event arrived concurrently with draining wake_fd
+            if let Ok(event) = self.event_receiver.try_recv() {
+                self.drain_custom_events_with_first(Some(event));
+                continue;
+            }
+
+            let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
+            poll_fds.push(libc::pollfd {
+                fd: self.wake_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            });
+            for ws in self.windows.values() {
+                poll_fds.push(libc::pollfd {
+                    fd: ws.window.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
+
+            unsafe {
+                libc::poll(
+                    poll_fds.as_mut_ptr(),
+                    poll_fds.len() as libc::nfds_t,
+                    timeout_ms,
+                );
+            }
+
+            if poll_fds[0].revents & libc::POLLIN != 0 {
+                let mut buf = [0u8; 8];
                 unsafe {
-                    libc::read(self.wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8);
+                    libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
                 }
                 self.event_loop_proxy
                     .wake_pending
                     .store(false, std::sync::atomic::Ordering::Release);
-
-                let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
-                poll_fds.push(libc::pollfd {
-                    fd: self.wake_fd,
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-                for ws in self.windows.values() {
-                    poll_fds.push(libc::pollfd {
-                        fd: ws.window.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    });
-                }
-
-                unsafe {
-                    libc::poll(
-                        poll_fds.as_mut_ptr(),
-                        poll_fds.len() as libc::nfds_t,
-                        timeout_ms,
-                    );
-                }
-
-                if poll_fds[0].revents & libc::POLLIN != 0 {
-                    let mut buf = [0u8; 8];
-                    unsafe {
-                        libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
-                    }
-                    self.event_loop_proxy
-                        .wake_pending
-                        .store(false, std::sync::atomic::Ordering::Release);
-                }
             }
         }
         Ok(())

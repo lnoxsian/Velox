@@ -45,6 +45,7 @@ impl Grid {
 
         // Fast path: Full-screen scroll via circular row offset rotation O(1) with ZERO memory copying
         if top == 0 && bottom == self.height - 1 {
+            let prev_scrolled = self.damage.scrolled_lines;
             if u_delta == 1 {
                 self.damage.mark_scrolled(1);
                 let physical_y = self.row_offset;
@@ -77,6 +78,19 @@ impl Grid {
                     next = 0;
                 }
                 self.row_offset = next;
+
+                if self.scroll_offset > 0 {
+                    self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());
+                }
+
+                if prev_scrolled == 0 && !self.damage.full_redraw {
+                    let last_row = self.height.saturating_sub(1);
+                    self.damage.mark_dirty(last_row);
+                    self.damage.mark_dirty(self.cursor.y);
+                } else {
+                    self.damage.mark_all();
+                }
+                return;
             } else {
                 for y in 0..u_delta.min(self.height) {
                     let physical_y = (self.row_offset + y) % self.height;
@@ -107,14 +121,14 @@ impl Grid {
                     }
                 }
                 self.row_offset = (self.row_offset + u_delta) % self.height;
-            }
 
-            if self.scroll_offset > 0 {
-                self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());
-            }
+                if self.scroll_offset > 0 {
+                    self.scroll_offset = (self.scroll_offset + u_delta).min(self.scrollback.len());
+                }
 
-            self.damage.mark_all();
-            return;
+                self.damage.mark_all();
+                return;
+            }
         }
 
         // Sub-region scrolling (e.g. vim/htop): Normalize row offset first, then standard copy_within
