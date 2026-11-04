@@ -224,35 +224,50 @@ fn test_single_line_scroll_damage_fast_path() {
     term.active_grid_mut().clear_damage();
     assert!(!term.active_grid().damage.has_damage());
     assert!(!term.active_grid().damage.full_redraw);
-    assert_eq!(term.active_grid().damage.scrolled_lines, 0);
 
-    // Scroll by exactly 1 line
+    // Scroll by 1 line (e.g. streaming output reaching bottom)
     term.active_grid_mut()
         .scroll_or_move_down(Color { r: 0, g: 0, b: 0 });
 
     let grid = term.active_grid();
-    // 1-line scroll must set scrolled_lines == 1
-    assert_eq!(grid.damage.scrolled_lines, 1);
-    // 1-line scroll must NOT trigger full_redraw!
-    assert!(
-        !grid.damage.full_redraw,
-        "1-line scroll must not mark full_redraw = true"
-    );
-    // Dirty indices should be bounded (bottom row and cursor)
-    assert!(
-        grid.damage.dirty_indices().len() <= 3,
-        "1-line scroll dirty rows must be <= 3 (got {})",
-        grid.damage.dirty_indices().len()
-    );
-
-    // If another scroll occurs before clear_damage, it must escalate to mark_all
-    term.active_grid_mut()
-        .scroll_or_move_down(Color { r: 0, g: 0, b: 0 });
-    let grid = term.active_grid();
+    // Scroll MUST trigger full_redraw = true to ensure all rows are refreshed
+    // from the circular buffer without desync or hidden lines (e.g. in ssh running ls)
     assert!(
         grid.damage.full_redraw,
-        "Multiple scrolls before render must escalate to full_redraw"
+        "Scroll must mark full_redraw = true to prevent unrendered lines"
     );
+    assert!(
+        grid.damage.has_damage(),
+        "Grid must report damage after scrolling"
+    );
+}
+
+#[test]
+fn test_ssh_ls_streaming_scroll_marks_full_damage() {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    let mut term = Terminal::new(80, 24);
+
+    // Initial state: fill screen up to bottom row with shell prompt at row 23
+    for i in 0..23 {
+        term.feed(format!("prompt-{}\r\n", i).as_bytes());
+    }
+    term.feed(b"user@remote:~$ ");
+    term.active_grid_mut().clear_damage();
+
+    // Now user runs `ls`: SSH transmits chunks with newlines that scroll row 23
+    term.feed(b"ls\r\nfile1.txt  file2.txt  file3.txt\r\n");
+
+    // The scroll MUST mark full_redraw = true so that all rotated rows are rendered,
+    // avoiding the bug where lines are hidden until manually scrolled!
+    assert!(term.active_grid().damage.full_redraw);
+    assert_eq!(term.active_grid().damage.scrolled_lines, 0);
+
+    // Verify row 22 contains the ls output
+    let row_22_text: String = term
+        .active_grid()
+        .with_display_row_slice(22, |cells| cells.iter().map(|c| c.character).collect())
+        .unwrap();
+    assert!(row_22_text.starts_with("file1.txt"));
 }
 
 #[test]

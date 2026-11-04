@@ -556,9 +556,24 @@ impl WindowState {
     pub fn handle_mouse_wheel(&mut self, delta_y: f32, _modifiers: ModifiersState) -> bool {
         self.mark_interaction();
         self.unhide_mouse();
-        let lines_f = delta_y as f64;
-        let lines = (lines_f * self.scroll_multiplier).round() as i32;
-        if lines != 0 {
+
+        // Direction reversal resets accumulator so user feels immediate responsiveness
+        if (self.scroll_accumulator > 0.0 && delta_y < 0.0)
+            || (self.scroll_accumulator < 0.0 && delta_y > 0.0)
+        {
+            self.scroll_accumulator = 0.0;
+        }
+
+        self.scroll_accumulator += delta_y as f64;
+
+        if self.scroll_accumulator.abs() < 1.0 {
+            return false;
+        }
+
+        let notches = self.scroll_accumulator.trunc() as i32;
+        self.scroll_accumulator -= notches as f64;
+
+        if notches != 0 {
             let csd_h = self.window.csd_title_bar_height() as f64;
             if csd_h > 0.0 && self.mouse_y < csd_h {
                 return false;
@@ -568,7 +583,7 @@ impl WindowState {
 
             // Scroll over tab bar switches tabs
             if tab_bar_h > 0.0 && self.mouse_y >= csd_h && self.mouse_y < csd_h + tab_bar_h {
-                if lines > 0 {
+                if notches > 0 {
                     self.prev_tab();
                 } else {
                     self.next_tab();
@@ -593,7 +608,7 @@ impl WindowState {
                 let tab = self.active_tab();
                 if let Some(pane) = tab.tree.find_pane(pane_rect.pane_id) {
                     if pane.terminal.mouse_mode > 0 {
-                        let btn = if lines > 0 { 64 } else { 65 };
+                        let btn = if notches > 0 { 64 } else { 65 };
                         let proto = MouseProtocol {
                             sgr: pane.terminal.mouse_sgr,
                             utf8: pane.terminal.mouse_utf8,
@@ -601,7 +616,7 @@ impl WindowState {
                         };
                         let (pixel_x, pixel_y) =
                             pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
-                        for _ in 0..lines.abs() {
+                        for _ in 0..notches.abs() {
                             send_mouse_report(
                                 &pane.pty_master,
                                 proto,
@@ -615,7 +630,7 @@ impl WindowState {
                         }
                         return true;
                     } else if pane.terminal.is_alt_screen {
-                        let key_seq: &[u8] = if lines > 0 {
+                        let key_seq: &[u8] = if notches > 0 {
                             if pane.terminal.cursor_keys_mode {
                                 b"\x1bOA"
                             } else {
@@ -626,11 +641,12 @@ impl WindowState {
                         } else {
                             b"\x1b[B"
                         };
-                        for _ in 0..lines.abs() {
+                        for _ in 0..notches.abs() {
                             let _ = pane.pty_master.write(key_seq);
                         }
                         return true;
                     } else {
+                        let lines = (notches as f64 * self.scroll_multiplier).round() as i32;
                         let tab_mut = self.active_tab_mut();
                         if let Some(pane_mut) = tab_mut.tree.find_pane_mut(pane_rect.pane_id) {
                             let active_grid = pane_mut.terminal.active_grid_mut();

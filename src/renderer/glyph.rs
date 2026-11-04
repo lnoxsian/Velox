@@ -101,6 +101,7 @@ pub struct GlyphCache {
     pub fallback_manager: FallbackManager,
     pub cell_width: u32,
     pub cell_height: u32,
+    pub baseline_y: f32,
     pub font_size: f32,
     pub font_scale_multiplier: f32,
     pub atlas: GlyphAtlas,
@@ -112,6 +113,71 @@ pub struct GlyphCache {
     /// Previous generation preserved across eviction cycles to avoid re-rasterizing hot glyphs
     unicode_previous: AHashMap<GlyphKey, GlyphRef>,
     max_unicode_entries: usize,
+}
+
+/// Calculated metrics for character cells based on font outline bounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FontMetrics {
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub baseline_y: f32,
+}
+
+pub const SAMPLE_METRIC_GLYPHS: &str = "AQWMH_gyljpq1234567890@#%&ÅÉ";
+
+/// Accurately compute cell dimensions and baseline offset for any font (monospace or proportional).
+pub fn compute_font_cell_metrics(font: &FontArc, scale: PxScale) -> FontMetrics {
+    let scaled_font = font.as_scaled(scale);
+    let adv_a = scaled_font.h_advance(font.glyph_id('A'));
+    let adv_i = scaled_font.h_advance(font.glyph_id('i'));
+    let adv_m = scaled_font.h_advance(font.glyph_id('m'));
+
+    let is_mono = (adv_a - adv_i).abs() < 0.01 && (adv_a - adv_m).abs() < 0.01;
+
+    let ascent = scaled_font.ascent();
+    let descent = scaled_font.descent();
+    let line_gap = scaled_font.line_gap().max(0.0);
+
+    let mut min_y = -ascent;
+    let mut max_y = descent.abs();
+    let mut max_adv = adv_a;
+    for ch in SAMPLE_METRIC_GLYPHS.chars() {
+        let gid = font.glyph_id(ch);
+        if gid.0 != 0 {
+            let adv = scaled_font.h_advance(gid);
+            if adv > max_adv {
+                max_adv = adv;
+            }
+            if let Some(outlined) = font.outline_glyph(gid.with_scale(scale)) {
+                let b = outlined.px_bounds();
+                if b.min.y < min_y {
+                    min_y = b.min.y;
+                }
+                if b.max.y > max_y {
+                    max_y = b.max.y;
+                }
+            }
+        }
+    }
+
+    let cell_width = if is_mono {
+        adv_a.ceil().max(1.0) as u32
+    } else {
+        max_adv.ceil().max(1.0) as u32
+    };
+
+    let max_ascent = (-min_y).ceil().max(ascent.ceil());
+    let max_descent = max_y.ceil().max(descent.abs().ceil());
+    let needed_height = (max_ascent + max_descent) as u32;
+    let typo_height = (ascent - descent + line_gap).ceil().max(1.0) as u32;
+    let cell_height = needed_height.max(typo_height);
+    let baseline_y = max_ascent;
+
+    FontMetrics {
+        cell_width,
+        cell_height,
+        baseline_y,
+    }
 }
 
 impl GlyphCache {
@@ -154,6 +220,21 @@ impl GlyphCache {
                     synthetic_bold: font_bold_italic.is_none() && font_bold.is_none(),
                 },
             });
+        let px_size = (font_size * font_scale_multiplier).round().max(1.0);
+        let scale = PxScale::from(px_size);
+        let metrics = compute_font_cell_metrics(&font, scale);
+        let cw = if cell_width == 0 {
+            metrics.cell_width
+        } else {
+            cell_width
+        };
+        let ch = if cell_height == 0 {
+            metrics.cell_height
+        } else {
+            cell_height
+        };
+        let baseline_y = metrics.baseline_y;
+
         let mut cache = Self {
             font_set,
             font,
@@ -161,8 +242,9 @@ impl GlyphCache {
             font_italic,
             font_bold_italic,
             fallback_manager,
-            cell_width,
-            cell_height,
+            cell_width: cw,
+            cell_height: ch,
+            baseline_y,
             font_size,
             font_scale_multiplier,
             atlas: GlyphAtlas::new(),
@@ -206,12 +288,10 @@ impl GlyphCache {
 
         let px_size = (font_size * font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
-        let scaled_font = font.as_scaled(scale);
-        let cell_width = scaled_font.h_advance(font.glyph_id('A')).ceil().max(1.0) as u32;
-        let cell_height = (scaled_font.ascent() - scaled_font.descent()
-            + scaled_font.line_gap().max(0.0))
-        .ceil()
-        .max(1.0) as u32;
+        let metrics = compute_font_cell_metrics(&font, scale);
+        let cell_width = metrics.cell_width;
+        let cell_height = metrics.cell_height;
+        let baseline_y = metrics.baseline_y;
 
         let mut cache = Self {
             font_set,
@@ -222,6 +302,7 @@ impl GlyphCache {
             fallback_manager,
             cell_width,
             cell_height,
+            baseline_y,
             font_size,
             font_scale_multiplier,
             atlas: GlyphAtlas::new(),
@@ -247,15 +328,10 @@ impl GlyphCache {
             .round()
             .max(1.0);
         let scale = PxScale::from(px_size);
-        let scaled_font = self.font.as_scaled(scale);
-        let cell_width = scaled_font
-            .h_advance(self.font.glyph_id('A'))
-            .ceil()
-            .max(1.0) as u32;
-        let cell_height = (scaled_font.ascent() - scaled_font.descent()
-            + scaled_font.line_gap().max(0.0))
-        .ceil()
-        .max(1.0) as u32;
+        let metrics = compute_font_cell_metrics(&self.font, scale);
+        let cell_width = metrics.cell_width;
+        let cell_height = metrics.cell_height;
+        let baseline_y = metrics.baseline_y;
 
         let mut cache = Self {
             font_set: self.font_set.clone(),
@@ -266,6 +342,7 @@ impl GlyphCache {
             fallback_manager: FallbackManager::new(),
             cell_width,
             cell_height,
+            baseline_y,
             font_size: pane_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
             atlas: GlyphAtlas::new(),
@@ -286,15 +363,10 @@ impl GlyphCache {
             .round()
             .max(1.0);
         let scale = PxScale::from(px_size);
-        let scaled_font = self.font.as_scaled(scale);
-        let cell_width = scaled_font
-            .h_advance(self.font.glyph_id('A'))
-            .ceil()
-            .max(1.0) as u32;
-        let cell_height = (scaled_font.ascent() - scaled_font.descent()
-            + scaled_font.line_gap().max(0.0))
-        .ceil()
-        .max(1.0) as u32;
+        let metrics = compute_font_cell_metrics(&self.font, scale);
+        let cell_width = metrics.cell_width;
+        let cell_height = metrics.cell_height;
+        let baseline_y = metrics.baseline_y;
 
         let mut cache = Self {
             font_set: self.font_set.clone(),
@@ -305,6 +377,7 @@ impl GlyphCache {
             fallback_manager: FallbackManager::new(),
             cell_width,
             cell_height,
+            baseline_y,
             font_size: tab_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
             atlas: GlyphAtlas::with_capacity(8 * 1024, 0),
@@ -333,15 +406,10 @@ impl GlyphCache {
         self.font_size = font_size;
         let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
-        let scaled_font = self.font.as_scaled(scale);
-        self.cell_width = scaled_font
-            .h_advance(self.font.glyph_id('A'))
-            .ceil()
-            .max(1.0) as u32;
-        self.cell_height = (scaled_font.ascent() - scaled_font.descent()
-            + scaled_font.line_gap().max(0.0))
-        .ceil()
-        .max(1.0) as u32;
+        let metrics = compute_font_cell_metrics(&self.font, scale);
+        self.cell_width = metrics.cell_width;
+        self.cell_height = metrics.cell_height;
+        self.baseline_y = metrics.baseline_y;
 
         self.clear();
         self.preload_common_glyphs();
@@ -457,7 +525,6 @@ impl GlyphCache {
         let mut glyph_h = 0.0f32;
         let mut bounds_min_x = 0.0f32;
         let mut bounds_min_y = 0.0f32;
-        let mut ascent = 0.0f32;
         let mut font_adv = 0.0f32;
         let mut has_outline = false;
         let mut the_outlined: Option<ab_glyph::OutlinedGlyph> = None;
@@ -520,12 +587,39 @@ impl GlyphCache {
                     } else {
                         scale = PxScale::from(font_scale);
                     }
+                } else if !is_box {
+                    let probe_scale = PxScale::from(font_scale);
+                    let probe_glyph = char_glyph_id.with_scale(probe_scale);
+                    if let Some(outlined) = char_font.outline_glyph(probe_glyph) {
+                        let bounds = outlined.px_bounds();
+                        let gw = bounds.width();
+                        let gh = bounds.height();
+                        // Only scale down if extremely oversized (exceeding double cell width or cell height)
+                        let max_w = base_target_width as f32 * 2.0;
+                        let sw = if gw > max_w && gw > 0.0 {
+                            max_w / gw
+                        } else {
+                            1.0
+                        };
+                        let sh = if gh > self.cell_height as f32 && gh > 0.0 {
+                            self.cell_height as f32 / gh
+                        } else {
+                            1.0
+                        };
+                        let fit = sw.min(sh);
+                        if fit < 1.0 {
+                            scale = PxScale::from(font_scale * fit);
+                        } else {
+                            scale = PxScale::from(font_scale);
+                        }
+                    } else {
+                        scale = PxScale::from(font_scale);
+                    }
                 } else {
                     scale = PxScale::from(font_scale);
                 }
 
                 let scaled_font = char_font.as_scaled(scale);
-                ascent = scaled_font.ascent();
                 font_adv = scaled_font.h_advance(char_glyph_id);
 
                 let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
@@ -549,18 +643,37 @@ impl GlyphCache {
         }
 
         let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box {
-            (ascent * crate::font::resolved::SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
+            (self.baseline_y * crate::font::resolved::SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
         } else {
             0
         };
 
-        let target_width: u32 = if is_nerd_or_pua && !is_pw_sep && glyph_w > 0.0 {
-            (glyph_w.ceil() as u32)
-                .max(base_target_width)
-                .min(base_target_width * 2)
+        let (x_offset, y_offset) = if !has_outline {
+            (0.0, 0.0)
+        } else if is_nerd_or_pua && !is_pw_sep {
+            let xo = (glyph_w.ceil().max(base_target_width as f32) - glyph_w) / 2.0;
+            let yo = (self.cell_height as f32 - glyph_h) / 2.0;
+            (xo, yo)
+        } else if is_pw_sep {
+            let xo = (base_target_width as f32 - glyph_w) / 2.0;
+            let yo = (self.cell_height as f32 - glyph_h) / 2.0;
+            (xo, yo)
+        } else if is_box {
+            (bounds_min_x, self.baseline_y + bounds_min_y)
         } else {
-            base_target_width + italic_bleed
+            let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+            let xo = (pad_x + bounds_min_x).max(0.0);
+            let yo = (self.baseline_y + bounds_min_y)
+                .clamp(0.0, (self.cell_height as f32 - glyph_h).max(0.0));
+            (xo, yo)
         };
+
+        let needed_w = if has_outline {
+            ((x_offset + glyph_w).ceil() as u32).max(base_target_width)
+        } else {
+            base_target_width
+        };
+        let target_width = (needed_w + italic_bleed).min(base_target_width * 2);
 
         let width_mult = if is_nerd_or_pua && !is_pw_sep && glyph_w > base_target_width as f32 {
             ((glyph_w / base_target_width as f32).ceil() as u8).clamp(1, 2)
@@ -573,25 +686,6 @@ impl GlyphCache {
         if let Some((w, h)) = color_extract {
             Some(self.blit_color_glyph(w, h, target_width, width_mult))
         } else {
-            let (x_offset, y_offset) = if !has_outline {
-                (0.0, 0.0)
-            } else if is_nerd_or_pua && !is_pw_sep {
-                let xo = (target_width as f32 - glyph_w) / 2.0;
-                let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-                (xo, yo)
-            } else if is_pw_sep {
-                let xo = (base_target_width as f32 - glyph_w) / 2.0;
-                let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-                (xo, yo)
-            } else if is_box {
-                (bounds_min_x, ascent + bounds_min_y)
-            } else {
-                let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
-                let xo = pad_x + bounds_min_x;
-                let yo = ascent + bounds_min_y;
-                (xo, yo)
-            };
-
             Some(self.blit_alpha_glyph(the_outlined, target_width, x_offset, y_offset, width_mult))
         }
     }

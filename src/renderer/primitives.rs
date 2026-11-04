@@ -450,9 +450,15 @@ fn draw_smooth_arc(
             let xc = x as f32 + 0.5;
 
             let (is_arc, is_h, is_v) = match corner {
-                ArcCorner::DownRight => (xc < cx && yc < cy, xc >= cx && yc < cy, xc < cx && yc >= cy),
-                ArcCorner::DownLeft => (xc > cx && yc < cy, xc <= cx && yc < cy, xc > cx && yc >= cy),
-                ArcCorner::UpRight => (xc < cx && yc > cy, xc >= cx && yc > cy, xc < cx && yc <= cy),
+                ArcCorner::DownRight => {
+                    (xc < cx && yc < cy, xc >= cx && yc < cy, xc < cx && yc >= cy)
+                }
+                ArcCorner::DownLeft => {
+                    (xc > cx && yc < cy, xc <= cx && yc < cy, xc > cx && yc >= cy)
+                }
+                ArcCorner::UpRight => {
+                    (xc < cx && yc > cy, xc >= cx && yc > cy, xc < cx && yc <= cy)
+                }
                 ArcCorner::UpLeft => (xc > cx && yc > cy, xc <= cx && yc > cy, xc > cx && yc <= cy),
             };
 
@@ -1451,7 +1457,16 @@ fn render_box_drawing(
             true
         }
         '╲' => {
-            draw_diagonal_line(px, py, cell_w, cell_h, t_light, DiagonalType::Backslash, fg, fb);
+            draw_diagonal_line(
+                px,
+                py,
+                cell_w,
+                cell_h,
+                t_light,
+                DiagonalType::Backslash,
+                fg,
+                fb,
+            );
             true
         }
         '╳' => {
@@ -1707,7 +1722,11 @@ mod tests {
             fb.clear(0);
             let handled = try_render_primitive(c, px, py, cell_w, cell_h, fg, &mut fb);
             assert!(handled, "Character {} must be handled", c);
-            assert!(fb.pixels.contains(&fg), "Character {} must render full-color pixels", c);
+            assert!(
+                fb.pixels.contains(&fg),
+                "Character {} must render full-color pixels",
+                c
+            );
 
             // 1. Every row within [py, py + cell_h) must have rendered pixels (no gaps / dotted appearance)
             for y in py..(py + cell_h) {
@@ -1739,7 +1758,9 @@ mod tests {
                         assert!(
                             x >= px && x < px + cell_w && y >= py && y < py + cell_h,
                             "Character {} drew pixel outside cell at ({}, {})",
-                            c, x, y
+                            c,
+                            x,
+                            y
                         );
                     }
                 }
@@ -1761,7 +1782,13 @@ mod tests {
                         assert!(
                             connected,
                             "Character {} has disconnected step between row {} and {}: [{}, {}] vs [{}, {}]",
-                            c, y - 1, y, p_min, p_max, min_x, max_x
+                            c,
+                            y - 1,
+                            y,
+                            p_min,
+                            p_max,
+                            min_x,
+                            max_x
                         );
                     }
                     prev_min_x = Some(min_x);
@@ -1795,14 +1822,22 @@ mod tests {
                 for y in 5..(5 + ch) {
                     let has_pixel = (5..(5 + cw))
                         .any(|x| fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0);
-                    assert!(has_pixel, "Char {} at size {}x{} has empty row at y={}", c, cw, ch, y);
+                    assert!(
+                        has_pixel,
+                        "Char {} at size {}x{} has empty row at y={}",
+                        c, cw, ch, y
+                    );
                 }
 
                 // Every col must have at least one pixel when cw > 0
                 for x in 5..(5 + cw) {
                     let has_pixel = (5..(5 + ch))
                         .any(|y| fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0);
-                    assert!(has_pixel, "Char {} at size {}x{} has empty col at x={}", c, cw, ch, x);
+                    assert!(
+                        has_pixel,
+                        "Char {} at size {}x{} has empty col at x={}",
+                        c, cw, ch, x
+                    );
                 }
             }
         }
@@ -1888,10 +1923,7 @@ mod tests {
             );
 
             // Verify anti-aliased pixels exist (values between 0 and fg)
-            let has_anti_aliasing = fb
-                .pixels
-                .iter()
-                .any(|&p| p != 0 && p != fg);
+            let has_anti_aliasing = fb.pixels.iter().any(|&p| p != 0 && p != fg);
             assert!(
                 has_anti_aliasing,
                 "Corner {} must have smooth anti-aliased curved edge pixels",
@@ -1930,10 +1962,7 @@ mod tests {
             );
 
             // Verify anti-aliased pixels exist
-            let has_anti_aliasing = fb
-                .pixels
-                .iter()
-                .any(|&p| p != 0 && p != fg);
+            let has_anti_aliasing = fb.pixels.iter().any(|&p| p != 0 && p != fg);
             assert!(
                 has_anti_aliasing,
                 "Double corner {} must have anti-aliased edge pixels",
@@ -1991,15 +2020,27 @@ mod tests {
         let mid_y = (ch / 2) as usize;
         let top_seam_l = fb.pixels[mid_y * fb.stride + (cw as usize - 1)];
         let top_seam_r = fb.pixels[mid_y * fb.stride + cw as usize];
-        assert_eq!(top_seam_l, fg, "Single box top left must reach right boundary");
-        assert_eq!(top_seam_r, fg, "Single box top right must reach left boundary");
+        assert_eq!(
+            top_seam_l, fg,
+            "Single box top left must reach right boundary"
+        );
+        assert_eq!(
+            top_seam_r, fg,
+            "Single box top right must reach left boundary"
+        );
 
         // Vertical line continuity across left boundary (y = ch - 1 to y = ch)
         let mid_x = (cw / 2) as usize;
         let left_seam_t = fb.pixels[(ch as usize - 1) * fb.stride + mid_x];
         let left_seam_b = fb.pixels[ch as usize * fb.stride + mid_x];
-        assert_eq!(left_seam_t, fg, "Single box left top must reach bottom boundary");
-        assert_eq!(left_seam_b, fg, "Single box left bottom must reach top boundary");
+        assert_eq!(
+            left_seam_t, fg,
+            "Single box left top must reach bottom boundary"
+        );
+        assert_eq!(
+            left_seam_b, fg,
+            "Single box left bottom must reach top boundary"
+        );
 
         // 2. Double smooth concentric box
         fb.clear(0);

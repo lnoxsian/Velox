@@ -94,7 +94,8 @@ fn create_blank_cursor(conn: &RustConnection, root: xproto::Window) -> Option<xp
     let pixmap = conn.generate_id().ok()?;
     conn.create_pixmap(1, pixmap, root, 1, 1).ok()?;
     let gc = conn.generate_id().ok()?;
-    conn.create_gc(gc, pixmap, &xproto::CreateGCAux::new()).ok()?;
+    conn.create_gc(gc, pixmap, &xproto::CreateGCAux::new())
+        .ok()?;
     let pad = (conn.setup().bitmap_format_scanline_pad / 8) as usize;
     let data = vec![0u8; pad.max(1)];
     let _ = conn.put_image(

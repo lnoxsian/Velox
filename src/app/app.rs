@@ -115,6 +115,7 @@ pub struct WindowState {
     pub mouse_x: f64,
     pub mouse_y: f64,
     pub scroll_multiplier: f64,
+    pub scroll_accumulator: f64,
     pub fps_limit: Option<u32>,
     pub last_frame_instant: std::time::Instant,
     pub last_input_instant: std::time::Instant,
@@ -207,6 +208,7 @@ impl WindowState {
             mouse_x: 0.0,
             mouse_y: 0.0,
             scroll_multiplier: 1.0,
+            scroll_accumulator: 0.0,
             fps_limit: Some(60),
             last_frame_instant: now,
             last_input_instant: now,
@@ -1411,6 +1413,7 @@ impl App {
             mouse_x: 0.0,
             mouse_y: 0.0,
             scroll_multiplier,
+            scroll_accumulator: 0.0,
             fps_limit,
             last_frame_instant: std::time::Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))

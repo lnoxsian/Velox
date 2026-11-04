@@ -82,7 +82,8 @@ pub fn spawn_process(
                 #[cfg(target_os = "linux")]
                 {
                     if libc::syscall(libc::SYS_close_range, 3, libc::c_uint::MAX, 0) != 0 {
-                        let max_fd = libc::sysconf(libc::_SC_OPEN_MAX).clamp(256, 4096) as libc::c_int;
+                        let max_fd =
+                            libc::sysconf(libc::_SC_OPEN_MAX).clamp(256, 4096) as libc::c_int;
                         for fd in 3..max_fd {
                             libc::close(fd);
                         }

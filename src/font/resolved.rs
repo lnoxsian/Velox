@@ -55,19 +55,47 @@ pub const STANDARD_MONOSPACE_FAMILIES: &[&str] = &[
     "FreeMono",
 ];
 
-/// Resolve the primary regular font face from the database, falling back through known monospace
-/// families, generic monospace queries, and any available system font face.
-pub fn resolve_regular_font(
+/// Resolves a single font family candidate from the database, handling generic CSS keywords,
+/// exact name queries, case-insensitive scanning, and qualifier-stripped name variants.
+fn resolve_single_candidate(
     db: &Database,
-    requested_family: &str,
-) -> Result<(FontArc, fontdb::ID, String), FontError> {
-    if db.faces().count() == 0 {
-        return Err(FontError::NoFontsInstalled);
+    candidate: &str,
+) -> Option<(FontArc, fontdb::ID, String)> {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return None;
     }
 
-    // 1. Try requested font family (exact name match)
+    // 1. Generic CSS / font family keywords
+    let generic = match trimmed.to_ascii_lowercase().as_str() {
+        "sans-serif" | "sans" => Some(fontdb::Family::SansSerif),
+        "serif" => Some(fontdb::Family::Serif),
+        "monospace" | "mono" => Some(fontdb::Family::Monospace),
+        "cursive" => Some(fontdb::Family::Cursive),
+        "fantasy" => Some(fontdb::Family::Fantasy),
+        _ => None,
+    };
+    if let Some(gen_fam) = generic {
+        let query = fontdb::Query {
+            families: &[gen_fam],
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            style: fontdb::Style::Normal,
+        };
+        if let Some(id) = db.query(&query)
+            && let Some(font) = crate::font::loader::load_font_face_by_id(db, id)
+        {
+            let family_name = db
+                .face(id)
+                .and_then(|f| f.families.first().map(|(n, _)| n.clone()))
+                .unwrap_or_else(|| trimmed.to_string());
+            return Some((font, id, family_name));
+        }
+    }
+
+    // 2. Exact name query
     let query_requested = fontdb::Query {
-        families: &[fontdb::Family::Name(requested_family)],
+        families: &[fontdb::Family::Name(trimmed)],
         weight: fontdb::Weight::NORMAL,
         stretch: fontdb::Stretch::Normal,
         style: fontdb::Style::Normal,
@@ -78,8 +106,74 @@ pub fn resolve_regular_font(
         let family_name = db
             .face(id)
             .and_then(|f| f.families.first().map(|(n, _)| n.clone()))
-            .unwrap_or_else(|| requested_family.to_string());
-        return Ok((font, id, family_name));
+            .unwrap_or_else(|| trimmed.to_string());
+        return Some((font, id, family_name));
+    }
+
+    // 3. Case-insensitive face scan
+    for face in db.faces() {
+        if face.style == fontdb::Style::Normal
+            && face
+                .families
+                .iter()
+                .any(|(fam, _)| fam.eq_ignore_ascii_case(trimmed))
+            && let Some(font) = crate::font::loader::load_font_face_by_id(db, face.id)
+        {
+            let family_name = face
+                .families
+                .first()
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| trimmed.to_string());
+            return Some((font, face.id, family_name));
+        }
+    }
+
+    // 4. Qualifier-stripped scan (e.g. "ubuntu non mono" -> "ubuntu")
+    let lower = trimmed.to_ascii_lowercase();
+    let cleaned = lower
+        .replace("non mono", "")
+        .replace("non-mono", "")
+        .replace("nonmono", "")
+        .replace("regular", "")
+        .trim()
+        .to_string();
+    if !cleaned.is_empty() && cleaned != lower {
+        for face in db.faces() {
+            if face.style == fontdb::Style::Normal
+                && face
+                    .families
+                    .iter()
+                    .any(|(fam, _)| fam.eq_ignore_ascii_case(&cleaned))
+                && let Some(font) = crate::font::loader::load_font_face_by_id(db, face.id)
+            {
+                let family_name = face
+                    .families
+                    .first()
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_else(|| cleaned);
+                return Some((font, face.id, family_name));
+            }
+        }
+    }
+
+    None
+}
+
+/// Resolve the primary regular font face from the database, falling back through known monospace
+/// families, generic monospace queries, and any available system font face.
+pub fn resolve_regular_font(
+    db: &Database,
+    requested_family: &str,
+) -> Result<(FontArc, fontdb::ID, String), FontError> {
+    if db.faces().count() == 0 {
+        return Err(FontError::NoFontsInstalled);
+    }
+
+    // 1. Try requested font family (supports comma-separated candidate lists, aliases, case-insensitivity)
+    for candidate in requested_family.split(',') {
+        if let Some(res) = resolve_single_candidate(db, candidate) {
+            return Ok(res);
+        }
     }
 
     // 2. Try standard monospace families

@@ -68,6 +68,7 @@ pub struct WaylandState {
     pub current_cursor: CursorIcon,
     pub cursor_visible: bool,
     pub pointer_inside: bool,
+    pub scroll_accumulator_y: f64,
 }
 
 pub const CSD_TITLE_BAR_HEIGHT: u32 = 38;
@@ -105,6 +106,7 @@ impl WaylandState {
             current_cursor: CursorIcon::Default,
             cursor_visible: true,
             pointer_inside: false,
+            scroll_accumulator_y: 0.0,
         }
     }
 }
@@ -228,7 +230,11 @@ impl WaylandWindow {
             if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer)
             {
                 if visible {
-                    cm.apply_cursor(self.state.pointer_serial, self.state.current_cursor, pointer);
+                    cm.apply_cursor(
+                        self.state.pointer_serial,
+                        self.state.current_cursor,
+                        pointer,
+                    );
                 } else {
                     cm.hide_cursor(self.state.pointer_serial, pointer);
                 }
@@ -650,6 +656,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
             }
             wl_pointer::Event::Leave { .. } => {
                 state.pointer_inside = false;
+                state.scroll_accumulator_y = 0.0;
             }
             wl_pointer::Event::Motion {
                 surface_x,
@@ -687,11 +694,31 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                     button: b,
                 });
             }
-            wl_pointer::Event::Axis { value, .. } => {
-                let delta = if value > 0.0 { -1.0 } else { 1.0 };
-                state
-                    .events
-                    .push_back(PlatformEvent::MouseWheel { delta_y: delta });
+            wl_pointer::Event::Axis { axis, value, .. } => {
+                if let wayland_client::WEnum::Value(wl_pointer::Axis::VerticalScroll) = axis {
+                    if (state.scroll_accumulator_y > 0.0 && value < 0.0)
+                        || (state.scroll_accumulator_y < 0.0 && value > 0.0)
+                    {
+                        state.scroll_accumulator_y = 0.0;
+                    }
+                    state.scroll_accumulator_y += value;
+                    let threshold = 10.0;
+                    while state.scroll_accumulator_y.abs() >= threshold {
+                        let delta = if state.scroll_accumulator_y > 0.0 {
+                            -1.0
+                        } else {
+                            1.0
+                        };
+                        if state.scroll_accumulator_y > 0.0 {
+                            state.scroll_accumulator_y -= threshold;
+                        } else {
+                            state.scroll_accumulator_y += threshold;
+                        }
+                        state
+                            .events
+                            .push_back(PlatformEvent::MouseWheel { delta_y: delta });
+                    }
+                }
             }
             _ => {}
         }
