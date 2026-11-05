@@ -1,6 +1,6 @@
 /target
+/assets/generated_icons/
 /dist
-/assets/generated_icons
 *.deb
 *.rpm
 *.pkg.tar.*

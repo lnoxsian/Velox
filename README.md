@@ -74,6 +74,8 @@ Velox guarantees strict performance metrics across runtime workloads:
 - **Rust**: 1.75+ (Stable toolchain)
 - **Platform**: Linux (Wayland or X11)
 - **Display**: Linux display server with shared-memory support (X11 MIT-SHM or Wayland wl_shm)
+- **Icons & Assets**: Pre-generated multi-resolution application icons are committed and distributed in [`assets/generated_icons/`](file:///home/lnoxsian/lnox-files/project-rust/Velox/assets/generated_icons/) for pure-Rust out-of-the-box compilation and packaging.
+- **Python 3 & Pillow** *(Optional)*: Only required if modifying the source SVG [`assets/icons/velox_terminal_icon_final.svg`](file:///home/lnoxsian/lnox-files/project-rust/Velox/assets/icons/velox_terminal_icon_final.svg) and regenerating icons (`python3 scripts/generate_icons.py` or `make generate-icons`). Install with `python3 -m pip install Pillow` (or system package `python3-pil` / `python3-pillow`).
 
 ### 1. Build
 

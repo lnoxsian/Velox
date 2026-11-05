@@ -40,7 +40,7 @@ generate-icons:
 	python3 scripts/generate_icons.py
 
 # Build the project (debug mode)
-build: generate-icons
+build:
 	cargo build
 
 # Build the project in release mode (fat LTO, codegen-units=1, stripped)
