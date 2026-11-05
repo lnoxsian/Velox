@@ -15,6 +15,7 @@ pub struct Pane {
     pub last_title_check: Instant,
     pub last_activity: Instant,
     pub last_cleanup: Instant,
+    pub created_at: Instant,
     pub hold: bool,
 }
 
@@ -37,6 +38,7 @@ impl Pane {
             last_title_check: now,
             last_activity: now,
             last_cleanup: now,
+            created_at: now,
             hold,
         }
     }
@@ -61,6 +63,7 @@ impl Pane {
             last_title_check: now,
             last_activity: now,
             last_cleanup: now,
+            created_at: now,
             hold,
         }
     }
@@ -77,6 +80,7 @@ impl Pane {
             last_title_check: now,
             last_activity: now,
             last_cleanup: now,
+            created_at: now,
             hold: false,
         }
     }

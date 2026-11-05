@@ -646,6 +646,180 @@ impl Config {
     pub fn pane_padding_y(&self) -> Option<f32> {
         self.panes.padding_y.or_else(|| self.padding_y())
     }
+
+    /// Performs semantic validation on configuration fields, emitting warnings for invalid ranges,
+    /// unparseable color strings, unknown cursor shapes, or non-existent shells.
+    pub fn validate(&self) -> Vec<crate::config::loader::ConfigDiagnostic> {
+        use crate::config::loader::{ConfigDiagnostic, DiagnosticSeverity};
+        let mut diags = Vec::new();
+
+        // 1. Font settings
+        let fs = self.font_size();
+        if fs <= 0.0 || fs.is_nan() {
+            diags.push(ConfigDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!("Invalid font_size ({fs}); defaulting to 14.0"),
+                line: None,
+                col: None,
+            });
+        }
+        if let Some(fsm) = self.font_scale_multiplier() {
+            if fsm <= 0.0 || fsm.is_nan() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!("Invalid font_scale_multiplier ({fsm}); defaulting to 1.5"),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+
+        // 2. Window / Opacity / Dim / Scroll multiplier
+        let raw_op = self.window.opacity.or(self.opacity_legacy);
+        if let Some(op) = raw_op {
+            if !(0.0..=1.0).contains(&op) || op.is_nan() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "Opacity {op} is out of range 0.0..=1.0; clamped to {}",
+                        op.clamp(0.0, 1.0)
+                    ),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+        let raw_dim = self.window.window_dim.or(self.window_dim_legacy);
+        if let Some(wd) = raw_dim {
+            if !(0.0..=1.0).contains(&wd) || wd.is_nan() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "Window dim {wd} is out of range 0.0..=1.0; clamped to {}",
+                        wd.clamp(0.0, 1.0)
+                    ),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+        if let Some(sm) = self.scroll_multiplier() {
+            if sm <= 0.0 || sm.is_nan() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!("Invalid scroll_multiplier ({sm}); defaulting to 1.0"),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+
+        // 3. Cursor
+        if let Some(shape) = self.cursor_shape() {
+            let lower = shape.to_ascii_lowercase();
+            match lower.as_str() {
+                "block" | "beam" | "underline" | "hollow" | "hollow_block" | "hollowblock"
+                | "bar" => {}
+                _ => {
+                    diags.push(ConfigDiagnostic {
+                        severity: DiagnosticSeverity::Warning,
+                        message: format!("Unknown cursor_shape '{shape}'; defaulting to 'block'"),
+                        line: None,
+                        col: None,
+                    });
+                }
+            }
+        }
+        if let Some(cc) = self.cursor_color() {
+            if parse_hex_color(cc).is_none() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "Invalid hex color '{cc}' for cursor_color (expected #RGB or #RRGGBB)"
+                    ),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+        if let Some(ctc) = self.cursor_text_color() {
+            if parse_hex_color(ctc).is_none() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "Invalid hex color '{ctc}' for cursor_text_color (expected #RGB or #RRGGBB)"
+                    ),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+
+        // 4. Color palette validation
+        if let Some(ref colors) = self.colors {
+            let mut check_color = |name: &str, opt: &Option<String>| {
+                if let Some(val) = opt {
+                    if parse_hex_color(val).is_none() {
+                        diags.push(ConfigDiagnostic {
+                            severity: DiagnosticSeverity::Warning,
+                            message: format!(
+                                "Invalid hex color '{val}' for colors.{name} (expected #RGB or #RRGGBB)"
+                            ),
+                            line: None,
+                            col: None,
+                        });
+                    }
+                }
+            };
+            check_color("default_fg", &colors.default_fg);
+            check_color("default_bg", &colors.default_bg);
+            check_color("black", &colors.black);
+            check_color("red", &colors.red);
+            check_color("green", &colors.green);
+            check_color("yellow", &colors.yellow);
+            check_color("blue", &colors.blue);
+            check_color("magenta", &colors.magenta);
+            check_color("cyan", &colors.cyan);
+            check_color("white", &colors.white);
+            check_color("bright_black", &colors.bright_black);
+            check_color("bright_red", &colors.bright_red);
+            check_color("bright_green", &colors.bright_green);
+            check_color("bright_yellow", &colors.bright_yellow);
+            check_color("bright_blue", &colors.bright_blue);
+            check_color("bright_magenta", &colors.bright_magenta);
+            check_color("bright_cyan", &colors.bright_cyan);
+            check_color("bright_white", &colors.bright_white);
+        }
+
+        // 5. Shell validation
+        if let Some(ref sh) = self.shell {
+            let p = std::path::Path::new(sh);
+            if p.is_absolute() {
+                if !p.exists() {
+                    diags.push(ConfigDiagnostic {
+                        severity: DiagnosticSeverity::Warning,
+                        message: format!("Configured shell '{sh}' does not exist on disk"),
+                        line: None,
+                        col: None,
+                    });
+                }
+            } else {
+                let in_path = std::env::var_os("PATH").is_some_and(|paths| {
+                    std::env::split_paths(&paths).any(|dir| dir.join(sh).exists())
+                });
+                if !in_path {
+                    diags.push(ConfigDiagnostic {
+                        severity: DiagnosticSeverity::Warning,
+                        message: format!("Configured shell '{sh}' not found in PATH"),
+                        line: None,
+                        col: None,
+                    });
+                }
+            }
+        }
+
+        diags
+    }
 }
 
 pub fn parse_hex_color(hex: &str) -> Option<Color> {

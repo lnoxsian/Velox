@@ -144,10 +144,12 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(width: usize, height: usize) -> Self {
-        let config = crate::config::loader::load()
-            .unwrap_or_else(|_| crate::config::defaults::default_config());
-        let theme = Theme::from_config(&config);
+    pub fn with_config(
+        width: usize,
+        height: usize,
+        config: &crate::config::config::Config,
+    ) -> Self {
+        let theme = Theme::from_config(config);
 
         let default_fg = theme.default_fg;
         let default_bg = theme.default_bg;
@@ -240,6 +242,11 @@ impl Terminal {
             kitty_keyboard_flags: 0,
             kitty_keyboard_stack: smallvec::SmallVec::new(),
         }
+    }
+
+    pub fn new(width: usize, height: usize) -> Self {
+        let config = crate::config::defaults::default_config();
+        Self::with_config(width, height, &config)
     }
 
     pub fn mark_semantic_zone(&mut self, zone: SemanticZone, exit_code: Option<i32>) {

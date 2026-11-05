@@ -18,6 +18,17 @@ impl WindowState {
             modifiers
         );
 
+        // Escape dismisses any active alert banner
+        if let Key::Named(NamedKey::Escape) = logical_key {
+            if self.banner.is_some() {
+                self.banner = None;
+                self.sync_active_tab_layout();
+                self.content_dirty = true;
+                self.needs_redraw = true;
+                return true;
+            }
+        }
+
         // ── 1. Velox-Owned Shortcuts ──────────────────────────────────────────
         let has_ctrl = modifiers.control_key();
         let has_alt = modifiers.alt_key();

@@ -30,15 +30,24 @@ fn main() {
         return;
     }
 
-    // Load user configuration
-    let config = match config::loader::load() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("Warning: Failed to load configuration file: {}", e);
-            eprintln!("Falling back to default configuration.\n");
-            config::defaults::default_config()
+    // Load user configuration with resilient diagnostics
+    let (config, diagnostics, config_path) = config::loader::load_with_diagnostics();
+    for diag in &diagnostics {
+        let path_str = config_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "config.toml".to_string());
+        match diag.severity {
+            config::loader::DiagnosticSeverity::Error => {
+                log::error!("Config Error [{}]: {}", path_str, diag);
+                eprintln!("Velox Config Error [{}]: {}", path_str, diag);
+            }
+            config::loader::DiagnosticSeverity::Warning => {
+                log::warn!("Config Warning [{}]: {}", path_str, diag);
+                eprintln!("Velox Config Warning [{}]: {}", path_str, diag);
+            }
         }
-    };
+    }
 
     if cli_opts.diagnostics {
         velox::diagnostics::run_diagnostics(&config);
@@ -76,13 +85,22 @@ fn main() {
         "Initialized Velox with native pure-Rust zero-C-libraries display backend and CPU software renderer."
     );
 
-    let mut app = match App::new(cli_opts) {
+    let mut app = match App::new_with_config(cli_opts, config, diagnostics) {
         Ok(app) => app,
         Err(e) => {
             eprintln!("Error: Failed to initialize display backend: {}", e);
             eprintln!(
                 "Note: Velox requires a running graphical session (Wayland or X11).\nEnsure WAYLAND_DISPLAY or DISPLAY is set in your environment."
             );
+            #[cfg(target_os = "linux")]
+            if !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+                let _ = std::process::Command::new("notify-send")
+                    .arg("Velox Terminal Error")
+                    .arg(format!(
+                        "Failed to initialize display backend: {e}\nEnsure WAYLAND_DISPLAY or DISPLAY is set."
+                    ))
+                    .spawn();
+            }
             std::process::exit(1);
         }
     };

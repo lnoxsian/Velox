@@ -2,6 +2,7 @@ use crate::app::pane::{Pane, PaneId};
 use crate::app::split::{FocusDirection, PaneRect, SeparatorRect, SplitDirection, SplitId};
 use crate::app::tab::{Tab, TabBar, TabBarRenderInfo, TabHeaderInfo};
 use crate::cli::CliOptions;
+use crate::config::config::Config;
 use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
 use crate::pty::process::spawn_terminal_pty;
@@ -108,8 +109,17 @@ pub struct ResizeState {
     pub is_pending: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlertBanner {
+    pub severity: crate::config::loader::DiagnosticSeverity,
+    pub message: String,
+    pub dismiss_hovered: bool,
+}
+
 pub struct WindowState {
     pub window_id: WindowId,
+    pub config: Config,
+    pub banner: Option<AlertBanner>,
     pub renderer: CpuRenderer,
     pub window: PlatformWindow,
     pub mouse_x: f64,
@@ -203,6 +213,8 @@ impl WindowState {
         let now = std::time::Instant::now();
         WindowState {
             window_id: 1,
+            config: config.clone(),
+            banner: None,
             renderer,
             window: PlatformWindow::dummy(800, 600),
             mouse_x: 0.0,
@@ -438,6 +450,11 @@ impl WindowState {
         }
     }
 
+    #[inline(always)]
+    pub fn banner_height(&self) -> f32 {
+        if self.banner.is_some() { 26.0 } else { 0.0 }
+    }
+
     pub fn recalculate_panes_layout(
         &self,
         tab_index: usize,
@@ -447,10 +464,11 @@ impl WindowState {
         let height = size.height.max(1);
         let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
+        let banner_h = self.banner_height();
         let total_x = 0.0;
-        let total_y = csd_h + tab_bar_h;
+        let total_y = csd_h + tab_bar_h + banner_h;
         let total_w = (width as f32).max(10.0);
-        let total_h = (height as f32 - csd_h - tab_bar_h).max(10.0);
+        let total_h = (height as f32 - csd_h - tab_bar_h - banner_h).max(10.0);
 
         if let Some(tab) = self.tabs.get(tab_index) {
             tab.tree.calculate_layout(
@@ -512,8 +530,10 @@ impl WindowState {
         let height = size.height.max(1);
         let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
+        let banner_h = self.banner_height();
         let avail_w = (width as f32 - self.padding_x * 2.0).max(10.0);
-        let avail_h = (height as f32 - csd_h - tab_bar_h - self.padding_y * 2.0).max(10.0);
+        let avail_h =
+            (height as f32 - csd_h - tab_bar_h - banner_h - self.padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / self.cell_width().max(1)).max(1);
         let rows = ((avail_h as u32) / self.cell_height().max(1)).max(1);
         (cols, rows)
@@ -645,11 +665,13 @@ impl WindowState {
         self.next_split_id += 1;
 
         let csd_h = self.window.csd_title_bar_height() as f32;
+        let banner_h = self.banner_height();
         let avail_w =
             (self.window.inner_size().width.max(1) as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h = (self.window.inner_size().height.max(1) as f32
             - csd_h
             - self.tab_bar_height()
+            - banner_h
             - self.padding_y * 2.0)
             .max(10.0);
         let cols = ((avail_w as u32) / self.base_cell_width.max(1)).max(1);
@@ -660,7 +682,7 @@ impl WindowState {
         let pty_master = Arc::new(pty_spawn.ok()?);
         let _ = pty_master.resize(cols as u16, rows as u16);
 
-        let mut terminal = Terminal::new(cols as usize, rows as usize);
+        let mut terminal = Terminal::with_config(cols as usize, rows as usize, &self.config);
         terminal.set_cell_dimensions(self.base_cell_width, self.base_cell_height);
 
         let _ = self
@@ -846,7 +868,7 @@ impl WindowState {
         let (cols, rows) = self.recalculate_grid_size();
         let _ = pty_master.resize(cols as u16, rows as u16);
 
-        let mut terminal = Terminal::new(cols as usize, rows as usize);
+        let mut terminal = Terminal::with_config(cols as usize, rows as usize, &self.config);
         terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
         let initial_title = custom_title.clone().unwrap_or_else(|| "velox".to_string());
 
@@ -1235,6 +1257,22 @@ impl WindowState {
             }
         }
 
+        if let Some(ref banner) = self.banner {
+            let tab_bar_h = if is_tab_bar_visible {
+                self.tab_bar_height()
+            } else {
+                0.0
+            };
+            let banner_y = csd_height + tab_bar_h as u32;
+            self.renderer.render_alert_banner(banner, banner_y, 26);
+            final_damage = Some(crate::window::DamageRect {
+                x: 0,
+                y: 0,
+                width: self.renderer.viewport_width,
+                height: self.renderer.viewport_height,
+            });
+        }
+
         self.window
             .present_frame(self.renderer.framebuffer.as_slice(), final_damage);
 
@@ -1258,6 +1296,8 @@ pub struct App {
     pub(crate) ipc_listener: Option<IpcListenerHandle>,
     pub(crate) initial_options: Option<CliOptions>,
     pub(crate) pty_reactor: Option<crate::pty::PtyReactor>,
+    pub(crate) config: Config,
+    pub(crate) config_diagnostics: Vec<crate::config::loader::ConfigDiagnostic>,
 }
 
 impl Drop for App {
@@ -1274,7 +1314,11 @@ impl Drop for App {
 }
 
 impl App {
-    pub fn new(options: CliOptions) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new_with_config(
+        options: CliOptions,
+        config: Config,
+        diagnostics: Vec<crate::config::loader::ConfigDiagnostic>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let wake_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
         if wake_fd < 0 {
@@ -1298,7 +1342,14 @@ impl App {
             ipc_listener: None,
             initial_options: Some(options),
             pty_reactor: Some(pty_reactor),
+            config,
+            config_diagnostics: diagnostics,
         })
+    }
+
+    pub fn new(options: CliOptions) -> Result<Self, Box<dyn std::error::Error>> {
+        let (config, diagnostics, _) = crate::config::loader::load_with_diagnostics();
+        Self::new_with_config(options, config, diagnostics)
     }
 
     pub fn create_window(
@@ -1308,8 +1359,7 @@ impl App {
         custom_title: Option<String>,
         hold: Option<bool>,
     ) -> Result<WindowId, Box<dyn std::error::Error>> {
-        let config = crate::config::loader::load()
-            .unwrap_or_else(|_| crate::config::defaults::default_config());
+        let config = self.config.clone();
 
         let initial_title = match &custom_title {
             Some(t) => t.clone(),
@@ -1349,12 +1399,24 @@ impl App {
             0.0
         };
 
+        let banner = if let Some(diag) = self.config_diagnostics.first() {
+            Some(AlertBanner {
+                severity: diag.severity,
+                message: format!("{diag}"),
+                dismiss_hovered: false,
+            })
+        } else {
+            None
+        };
+        let banner_h = if banner.is_some() { 26.0 } else { 0.0 };
+
         let avail_w = (win_width as f32 - padding_x * 2.0).max(10.0);
-        let avail_h = (win_height as f32 - csd_h - tab_bar_h - padding_y * 2.0).max(10.0);
+        let avail_h =
+            (win_height as f32 - csd_h - tab_bar_h - banner_h - padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / base_cell_width.max(1)).max(1);
         let rows = ((avail_h as u32) / base_cell_height.max(1)).max(1);
 
-        let terminal = Terminal::new(cols as usize, rows as usize);
+        let terminal = Terminal::with_config(cols as usize, rows as usize, &config);
 
         let shell_path = config
             .shell
@@ -1408,6 +1470,8 @@ impl App {
 
         let mut window_state = WindowState {
             window_id,
+            config: config.clone(),
+            banner,
             renderer,
             window,
             mouse_x: 0.0,
@@ -1502,8 +1566,7 @@ impl App {
     pub fn init(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("Velox starting (pure Rust zero-C-libraries windowing)");
 
-        let config = crate::config::loader::load()
-            .unwrap_or_else(|_| crate::config::defaults::default_config());
+        let config = &self.config;
 
         if config.single_instance.unwrap_or(true) {
             self.single_instance_mode = true;
@@ -1647,19 +1710,27 @@ impl App {
                     && let Some(tab_idx) = ws.tabs.iter().position(|t| t.id == tab_id)
                 {
                     let tab = &mut ws.tabs[tab_idx];
-                    if let Some(pane) = tab.tree.find_pane_mut(pane_id)
-                        && pane.hold
-                    {
-                        pane.current_title = "[Process exited]".to_string();
-                        if tab.active_pane_id == pane_id {
-                            tab.current_title = "[Process exited]".to_string();
-                            if ws.active_tab_index == tab_idx {
-                                ws.window.set_title("[Process exited]");
+                    if let Some(pane) = tab.tree.find_pane_mut(pane_id) {
+                        let immediate_exit =
+                            pane.created_at.elapsed() < std::time::Duration::from_millis(1500);
+                        if pane.hold || immediate_exit {
+                            pane.hold = true;
+                            let title = if immediate_exit {
+                                "[Process failed to start]"
+                            } else {
+                                "[Process exited]"
+                            };
+                            pane.current_title = title.to_string();
+                            if tab.active_pane_id == pane_id {
+                                tab.current_title = title.to_string();
+                                if ws.active_tab_index == tab_idx {
+                                    ws.window.set_title(title);
+                                }
                             }
+                            ws.tab_bar_dirty = true;
+                            ws.needs_redraw = true;
+                            return;
                         }
-                        ws.tab_bar_dirty = true;
-                        ws.needs_redraw = true;
-                        return;
                     }
                     should_remove_window = ws.close_pane_in_tab(tab_id, pane_id);
                 }

@@ -157,20 +157,63 @@ pub fn spawn_process(
     }
 }
 
+/// Resolves a shell path, falling back through $SHELL, /bin/bash, and /bin/sh if not found.
+pub fn resolve_executable_shell(shell_path: &str) -> String {
+    let p = std::path::Path::new(shell_path);
+    if p.is_absolute() && p.exists() {
+        return shell_path.to_string();
+    }
+    if !p.is_absolute() {
+        if let Some(paths) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&paths) {
+                let candidate = dir.join(shell_path);
+                if candidate.exists() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    if let Ok(sh) = std::env::var("SHELL") {
+        if std::path::Path::new(&sh).exists() {
+            log::warn!(
+                "Configured shell '{}' not found. Falling back to $SHELL '{}'",
+                shell_path,
+                sh
+            );
+            return sh;
+        }
+    }
+
+    for candidate in &["/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"] {
+        if std::path::Path::new(candidate).exists() {
+            log::warn!(
+                "Configured shell '{}' not found. Falling back to '{}'",
+                shell_path,
+                candidate
+            );
+            return candidate.to_string();
+        }
+    }
+
+    shell_path.to_string()
+}
+
 /// Spawns a terminal shell process with layered fallbacks:
-/// 1. Requested shell + requested working directory
-/// 2. Requested shell + $HOME directory
+/// 1. Resolved executable shell + requested working directory
+/// 2. Resolved executable shell + $HOME directory
 /// 3. Standard /bin/sh + $HOME directory
 pub fn spawn_terminal_pty(
     shell_path: &str,
     command: Option<&[String]>,
     working_directory: Option<&str>,
 ) -> Result<PtyMaster, PtyError> {
+    let resolved_shell = resolve_executable_shell(shell_path);
     let home = std::env::var("HOME").ok();
     let effective_dir = working_directory.or(home.as_deref());
 
-    spawn_process(shell_path, command, effective_dir)
-        .or_else(|_| spawn_process(shell_path, command, home.as_deref()))
+    spawn_process(&resolved_shell, command, effective_dir)
+        .or_else(|_| spawn_process(&resolved_shell, command, home.as_deref()))
         .or_else(|_| spawn_process("/bin/sh", command, home.as_deref()))
 }
 

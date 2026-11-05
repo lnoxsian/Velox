@@ -1195,6 +1195,67 @@ impl CpuRenderer {
         }
     }
 
+    pub fn render_alert_banner(
+        &mut self,
+        banner: &crate::app::app::AlertBanner,
+        y_offset: u32,
+        height: u32,
+    ) {
+        if height == 0 {
+            return;
+        }
+        let bg_color = match banner.severity {
+            crate::config::loader::DiagnosticSeverity::Error => 0xFFC0392B,
+            crate::config::loader::DiagnosticSeverity::Warning => 0xFFD35400,
+        };
+        let border_color = match banner.severity {
+            crate::config::loader::DiagnosticSeverity::Error => 0xFFE74C3C,
+            crate::config::loader::DiagnosticSeverity::Warning => 0xFFE67E22,
+        };
+        let text_color = 0xFFFFFFFF;
+        let w = self.viewport_width;
+
+        // 1. Fill background span
+        self.framebuffer.fill_span(0, y_offset, w, height, bg_color);
+
+        // 2. Render bottom border line
+        self.framebuffer
+            .fill_span(0, y_offset + height.saturating_sub(1), w, 1, border_color);
+
+        // 3. Render message text
+        let tab_cw = self.tab_glyph_cache.cell_width;
+        let tab_ch = self.tab_glyph_cache.cell_height;
+        let char_baseline_y = y_offset + (height.saturating_sub(tab_ch)) / 2;
+
+        let close_space = 28u32;
+        let max_text_w = (w.saturating_sub(16 + close_space)) as f32;
+        let max_chars = (max_text_w / (tab_cw.max(1) as f32)).floor() as usize;
+        let text_start_x = 10u32;
+
+        self.blit_truncated_text(
+            &banner.message,
+            text_start_x,
+            char_baseline_y,
+            max_chars,
+            tab_cw,
+            text_color,
+        );
+
+        // 4. Render dismiss button [×] on the right side
+        let btn_w = 20u32;
+        let btn_x = w.saturating_sub(btn_w + 6);
+        let btn_y = y_offset + (height.saturating_sub(btn_w)) / 2;
+
+        if banner.dismiss_hovered {
+            let hover_bg = 0x33FFFFFF;
+            self.framebuffer
+                .fill_span(btn_x, btn_y, btn_w, btn_w, hover_bg);
+        }
+
+        let cross_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;
+        self.blit_tab_char('×', cross_x, char_baseline_y, text_color);
+    }
+
     fn render_separators(
         &mut self,
         separators: &[SeparatorRenderData],

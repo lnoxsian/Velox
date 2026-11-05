@@ -438,6 +438,28 @@ impl WindowState {
             self.needs_redraw = true;
         }
 
+        let banner_h = self.banner_height() as f64;
+        if banner_h > 0.0
+            && self.mouse_y >= csd_h + tab_bar_h
+            && self.mouse_y < csd_h + tab_bar_h + banner_h
+        {
+            let win_w = self.window.width() as f64;
+            let is_close_hover = self.mouse_x >= win_w - 30.0;
+            if let Some(ref mut b) = self.banner {
+                if b.dismiss_hovered != is_close_hover {
+                    b.dismiss_hovered = is_close_hover;
+                    self.needs_redraw = true;
+                }
+            }
+            self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
+            return;
+        } else if let Some(ref mut b) = self.banner {
+            if b.dismiss_hovered {
+                b.dismiss_hovered = false;
+                self.needs_redraw = true;
+            }
+        }
+
         // ── 4. Separator Hover Hit-testing (When not dragging) ───────────────
         let mut hit_sep = None;
         for sep in &sep_rects {
@@ -588,6 +610,14 @@ impl WindowState {
                 } else {
                     self.next_tab();
                 }
+                return false;
+            }
+
+            let banner_h = self.banner_height() as f64;
+            if banner_h > 0.0
+                && self.mouse_y >= csd_h + tab_bar_h
+                && self.mouse_y < csd_h + tab_bar_h + banner_h
+            {
                 return false;
             }
 
@@ -788,6 +818,20 @@ impl WindowState {
                         }
                     }
                     TabBarHitResult::None => {}
+                }
+                return;
+            }
+
+            let banner_h = self.banner_height() as f64;
+            if banner_h > 0.0
+                && self.mouse_y >= csd_h + tab_bar_h
+                && self.mouse_y < csd_h + tab_bar_h + banner_h
+            {
+                if button == MouseButton::Left {
+                    self.banner = None;
+                    self.sync_active_tab_layout();
+                    self.content_dirty = true;
+                    self.needs_redraw = true;
                 }
                 return;
             }
