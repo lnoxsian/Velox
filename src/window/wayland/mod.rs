@@ -6,7 +6,7 @@ use super::event::{CursorIcon, ElementState, ModifiersState, MouseButton, Platfo
 use crate::platform::{CANONICAL_APP_ID, CANONICAL_WM_CLASS_INSTANCE};
 use crate::window::WindowResizeEdge;
 use keyboard::{ActiveKeyRepeat, KeyRepeatConfig, XkbHandler};
-use shm::WaylandShmBuffer;
+use shm::WaylandBufferPool;
 use std::collections::VecDeque;
 use std::os::fd::{AsFd, AsRawFd};
 use std::time::{Duration, Instant};
@@ -55,7 +55,9 @@ pub struct WaylandState {
     pub xkb_handler: XkbHandler,
     pub repeat_config: Option<KeyRepeatConfig>,
     pub active_repeat: Option<ActiveKeyRepeat>,
-    pub buffer: Option<WaylandShmBuffer>,
+    pub buffer_pool: WaylandBufferPool,
+    pub has_deferred_frame: bool,
+    pub deferred_damage: Option<crate::window::DamageRect>,
     pub width: u32,
     pub height: u32,
     pub configured: bool,
@@ -93,7 +95,9 @@ impl WaylandState {
             xkb_handler: XkbHandler::new(),
             repeat_config: None,
             active_repeat: None,
-            buffer: None,
+            buffer_pool: WaylandBufferPool::new(3),
+            has_deferred_frame: false,
+            deferred_damage: None,
             width: width.max(1),
             height: height.max(1),
             configured: false,
@@ -168,8 +172,6 @@ impl WaylandWindow {
         }
 
         let shm = state.shm.clone().ok_or("Wayland SHM not found")?;
-        let buffer = WaylandShmBuffer::new(&shm, &qh, state.width, state.height)?;
-        state.buffer = Some(buffer);
 
         match cursor::WaylandCursorManager::new(&compositor, &shm, &qh) {
             Ok(cm) => state.cursor_manager = Some(cm),
@@ -330,47 +332,51 @@ impl WaylandWindow {
         let width = self.state.width;
         let height = self.state.height;
 
-        let needs_new_buf = match &self.state.buffer {
-            Some(buf) => buf.width != width || buf.height != height,
-            None => true,
+        let effective_damage = match self.state.deferred_damage.take() {
+            Some(prev) => prev.union(rect),
+            None => rect,
         };
-        if needs_new_buf {
-            if let Some(shm) = &self.state.shm
-                && let Ok(buf) = WaylandShmBuffer::new(shm, &self.qh, width, height)
-            {
-                self.state.buffer = Some(buf);
-            }
+
+        let Some(shm) = &self.state.shm else {
+            return;
+        };
+
+        let acquired = self.state.buffer_pool.acquire(shm, &self.qh, width, height);
+
+        let Some(buf) = acquired else {
+            self.state.has_deferred_frame = true;
+            self.state.deferred_damage = Some(effective_damage);
+            log::debug!(
+                "Wayland SHM buffers exhausted; deferring frame for ({}, {})",
+                width,
+                height
+            );
+            return;
+        };
+
+        let damaged_y = effective_damage.y.min(height);
+        let damaged_h = effective_damage
+            .height
+            .min(height.saturating_sub(damaged_y));
+        if damaged_h == 0 {
+            return;
         }
 
-        if let Some(buf) = &mut self.state.buffer {
-            let width = buf.width;
-            let height = buf.height;
-            if width == 0 || height == 0 {
-                return;
-            }
+        let dest = buf.pixels_mut();
+        let copy_len = dest.len().min(src_pixels.len());
+        dest[..copy_len].copy_from_slice(&src_pixels[..copy_len]);
 
-            let damaged_y = rect.y.min(height);
-            let damaged_h = rect.height.min(height.saturating_sub(damaged_y));
-            if damaged_h == 0 {
-                return;
-            }
+        use wayland_client::Proxy;
+        let buffer_id = buf.buffer.id();
+        let wl_buf_clone = buf.buffer.clone();
 
-            let stride = width as usize;
-            let start_px = (damaged_y as usize) * stride;
-            let num_px = (damaged_h as usize) * stride;
-            let end_px = (start_px + num_px).min(src_pixels.len());
-
-            let dest = buf.pixels_mut();
-            if start_px < dest.len() && end_px <= dest.len() && end_px <= src_pixels.len() {
-                dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
-            }
-
-            if let Some(surface) = &self.state.surface {
-                surface.attach(Some(&buf.buffer), 0, 0);
-                surface.damage_buffer(0, damaged_y as i32, width as i32, damaged_h as i32);
-                surface.commit();
-            }
+        if let Some(surface) = &self.state.surface {
+            surface.attach(Some(&wl_buf_clone), 0, 0);
+            surface.damage_buffer(0, damaged_y as i32, width as i32, damaged_h as i32);
+            surface.commit();
         }
+
+        self.state.buffer_pool.submit(&buffer_id);
         let _ = self.conn.flush();
     }
 
@@ -498,13 +504,23 @@ impl Dispatch<wl_shm_pool::WlShmPool, ()> for WaylandState {
 
 impl Dispatch<wl_buffer::WlBuffer, ()> for WaylandState {
     fn event(
-        _: &mut Self,
-        _: &wl_buffer::WlBuffer,
-        _: wl_buffer::Event,
+        state: &mut Self,
+        buffer: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        match event {
+            wl_buffer::Event::Release => {
+                state.buffer_pool.release(buffer);
+                if state.has_deferred_frame {
+                    state.has_deferred_frame = false;
+                    state.events.push_back(PlatformEvent::RedrawRequested);
+                }
+            }
+            _ => {}
+        }
     }
 }
 

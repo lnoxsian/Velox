@@ -374,3 +374,25 @@ pub struct DamageRect {
     pub width: u32,
     pub height: u32,
 }
+
+impl DamageRect {
+    /// Computes the minimal bounding box covering both damage rectangles.
+    pub fn union(&self, other: DamageRect) -> DamageRect {
+        if self.width == 0 || self.height == 0 {
+            return other;
+        }
+        if other.width == 0 || other.height == 0 {
+            return *self;
+        }
+        let min_x = self.x.min(other.x);
+        let min_y = self.y.min(other.y);
+        let max_x = (self.x.saturating_add(self.width)).max(other.x.saturating_add(other.width));
+        let max_y = (self.y.saturating_add(self.height)).max(other.y.saturating_add(other.height));
+        DamageRect {
+            x: min_x,
+            y: min_y,
+            width: max_x.saturating_sub(min_x),
+            height: max_y.saturating_sub(min_y),
+        }
+    }
+}
