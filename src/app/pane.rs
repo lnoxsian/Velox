@@ -142,15 +142,29 @@ impl Pane {
     }
 
     /// Flushes any pending terminal response bytes directly to the PTY master process.
-    /// Trims excessive vector capacity if needed.
+    /// Drains only bytes successfully written; preserves unwritten bytes on EAGAIN/EWOULDBLOCK.
+    /// Returns number of bytes flushed, or an error if the PTY encountered a hard write failure.
     #[inline]
-    pub fn flush_outgoing(&mut self) {
-        if !self.terminal.outgoing.is_empty() {
-            let _ = self.pty_master.write(&self.terminal.outgoing);
-            self.terminal.outgoing.clear();
-            if self.terminal.outgoing.capacity() > 4096 {
-                self.terminal.outgoing.shrink_to_fit();
+    pub fn flush_outgoing(&mut self) -> std::io::Result<usize> {
+        if self.terminal.outgoing.is_empty() {
+            return Ok(0);
+        }
+        match self.pty_master.write(&self.terminal.outgoing) {
+            Ok(n) => {
+                self.terminal.outgoing.drain(..n);
+                if self.terminal.outgoing.capacity() > 4096 && self.terminal.outgoing.is_empty() {
+                    self.terminal.outgoing.shrink_to_fit();
+                }
+                Ok(n)
             }
+            Err(e)
+                if e.raw_os_error() == Some(libc::EAGAIN)
+                    || e.raw_os_error() == Some(libc::EWOULDBLOCK) =>
+            {
+                // Nonblocking backpressure: preserve unwritten bytes in outgoing buffer to retry
+                Ok(0)
+            }
+            Err(e) => Err(e),
         }
     }
 }

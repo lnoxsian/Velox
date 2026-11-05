@@ -185,7 +185,8 @@ fn format_mouse_report(
 }
 
 fn send_mouse_report(
-    pty: &crate::pty::master::PtyMaster,
+    ws: &WindowState,
+    pane_id: u64,
     proto: MouseProtocol,
     btn_code: usize,
     col_idx: usize,
@@ -199,7 +200,7 @@ fn send_mouse_report(
         proto, btn_code, col_idx, row_idx, pixel_x, pixel_y, is_release, &mut buf,
     );
     if written > 0 {
-        let _ = pty.write(&buf[..written]);
+        ws.write_to_pane(pane_id, buf[..written].to_vec());
     }
 }
 
@@ -273,7 +274,7 @@ impl WindowState {
                 self.last_mouse_pane_id = Some(drag_pane_id);
                 self.last_mouse_cell = (col_idx, row_idx);
 
-                let (mouse_mode, mouse_proto, pty_master) = {
+                let (mouse_mode, mouse_proto, _pty_master) = {
                     let tab = self.active_tab();
                     if let Some(pane) = tab.tree.find_pane(drag_pane_id) {
                         (
@@ -303,13 +304,14 @@ impl WindowState {
 
                 if should_report_motion {
                     self.set_cursor_cached(crate::window::event::CursorIcon::Default);
-                    if let Some(pty_master) = pty_master {
+                    if _pty_master.is_some() {
                         let btn_code =
                             apply_mouse_modifiers(32 + self.last_mouse_button, modifiers);
                         let (pixel_x, pixel_y) =
                             pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
-                            &pty_master,
+                            self,
+                            pane_rect.pane_id,
                             mouse_proto,
                             btn_code,
                             col_idx,
@@ -539,7 +541,7 @@ impl WindowState {
                     }
                 };
 
-                if let (Some(mouse_mode), Some(mouse_proto), Some(pty_master)) =
+                if let (Some(mouse_mode), Some(mouse_proto), Some(_pty_master)) =
                     (mouse_mode, mouse_proto, pty_master)
                 {
                     if mouse_mode == 0 || modifiers.shift_key() || modifiers.control_key() {
@@ -558,7 +560,8 @@ impl WindowState {
                         let (pixel_x, pixel_y) =
                             pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         send_mouse_report(
-                            &pty_master,
+                            self,
+                            pane_rect.pane_id,
                             mouse_proto,
                             35,
                             col_idx,
@@ -663,7 +666,8 @@ impl WindowState {
                             pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                         for _ in 0..notches.abs() {
                             send_mouse_report(
-                                &pane.pty_master,
+                                self,
+                                pane_rect.pane_id,
                                 proto,
                                 btn,
                                 col_idx,
@@ -687,7 +691,7 @@ impl WindowState {
                             b"\x1b[B"
                         };
                         for _ in 0..notches.abs() {
-                            let _ = pane.pty_master.write(key_seq);
+                            self.write_to_pane(pane_rect.pane_id, key_seq.to_vec());
                         }
                         return true;
                     } else {
@@ -923,7 +927,7 @@ impl WindowState {
                 }
             }
 
-            let (mouse_mode, mouse_proto, pty_master) = {
+            let (mouse_mode, mouse_proto, _pty_master) = {
                 let pane = match self.active_tab().tree.find_pane(clicked_pane_id) {
                     Some(p) => p,
                     None => return,
@@ -956,7 +960,8 @@ impl WindowState {
                     let (pixel_x, pixel_y) =
                         pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
                     send_mouse_report(
-                        &pty_master,
+                        self,
+                        pane_rect.pane_id,
                         mouse_proto,
                         report_btn,
                         col_idx,
@@ -1163,25 +1168,19 @@ impl WindowState {
             if mouse_mode > 0 && !modifiers.shift_key() {
                 if let Some(btn) = btn_code {
                     let report_btn = apply_mouse_modifiers(btn, modifiers);
-                    let pty_master = self
-                        .active_tab()
-                        .tree
-                        .find_pane(target_pane_id)
-                        .map(|p| p.pty_master.clone());
-                    if let Some(pty) = pty_master {
-                        let (pixel_x, pixel_y) =
-                            pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
-                        send_mouse_report(
-                            &pty,
-                            mouse_proto,
-                            report_btn,
-                            col_idx,
-                            row_idx,
-                            pixel_x,
-                            pixel_y,
-                            true,
-                        );
-                    }
+                    let (pixel_x, pixel_y) =
+                        pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
+                    send_mouse_report(
+                        self,
+                        target_pane_id,
+                        mouse_proto,
+                        report_btn,
+                        col_idx,
+                        row_idx,
+                        pixel_x,
+                        pixel_y,
+                        true,
+                    );
                 }
                 return;
             }

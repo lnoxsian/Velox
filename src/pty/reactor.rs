@@ -55,6 +55,10 @@ impl PtyReactorHandle {
         }
     }
 
+    pub fn is_stopped(&self) -> bool {
+        self.is_stopped.load(Ordering::Acquire)
+    }
+
     pub fn register(
         &self,
         window_id: WindowId,
@@ -212,6 +216,10 @@ impl PtyReactor {
 
     pub fn handle(&self) -> PtyReactorHandle {
         self.handle.clone()
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.is_stopped.load(Ordering::Acquire)
     }
 
     pub fn register(
@@ -439,6 +447,7 @@ fn run_reactor_loop(
                                 let queue = write_buffers.entry(pty_fd).or_default();
                                 if queue.is_empty() {
                                     let mut written = 0;
+                                    let mut closed = false;
                                     while written < data.len() {
                                         let chunk = &data[written..];
                                         let res = unsafe {
@@ -455,12 +464,38 @@ fn run_reactor_loop(
                                             if err.raw_os_error() == Some(libc::EINTR) {
                                                 continue;
                                             }
+                                            if err.raw_os_error() == Some(libc::EAGAIN)
+                                                || err.raw_os_error() == Some(libc::EWOULDBLOCK)
+                                            {
+                                                break;
+                                            }
+                                            log::warn!("PTY write error on fd {}: {}", pty_fd, err);
+                                            closed = true;
                                             break;
                                         } else {
                                             break;
                                         }
                                     }
-                                    if written < data.len() {
+
+                                    if closed {
+                                        unsafe {
+                                            libc::epoll_ctl(
+                                                epoll_fd,
+                                                libc::EPOLL_CTL_DEL,
+                                                pty_fd,
+                                                std::ptr::null_mut(),
+                                            );
+                                        }
+                                        fds.remove(&pty_fd);
+                                        key_to_fd.remove(&key);
+                                        write_buffers.remove(&pty_fd);
+
+                                        let _ = proxy.send(CustomEvent::PtyExit {
+                                            window_id: key.window_id,
+                                            tab_id: key.tab_id,
+                                            pane_id: key.pane_id,
+                                        });
+                                    } else if written < data.len() {
                                         queue.extend(&data[written..]);
                                         set_epoll_out_interest(epoll_fd, pty_fd, true);
                                     }
@@ -483,6 +518,7 @@ fn run_reactor_loop(
                 let key = reg.key;
 
                 if (ev.events & libc::EPOLLOUT as u32) != 0 {
+                    let mut closed = false;
                     if let Some(queue) = write_buffers.get_mut(&fd) {
                         while !queue.is_empty() {
                             let (first, _) = queue.as_slices();
@@ -497,12 +533,38 @@ fn run_reactor_loop(
                                 if err.raw_os_error() == Some(libc::EINTR) {
                                     continue;
                                 }
+                                if err.raw_os_error() == Some(libc::EAGAIN)
+                                    || err.raw_os_error() == Some(libc::EWOULDBLOCK)
+                                {
+                                    break;
+                                }
+                                log::warn!("PTY write flush error on fd {}: {}", fd, err);
+                                closed = true;
                                 break;
                             } else {
                                 break;
                             }
                         }
-                        if queue.is_empty() {
+                        if closed {
+                            unsafe {
+                                libc::epoll_ctl(
+                                    epoll_fd,
+                                    libc::EPOLL_CTL_DEL,
+                                    fd,
+                                    std::ptr::null_mut(),
+                                );
+                            }
+                            fds.remove(&fd);
+                            key_to_fd.remove(&key);
+                            write_buffers.remove(&fd);
+
+                            let _ = proxy.send(CustomEvent::PtyExit {
+                                window_id: key.window_id,
+                                tab_id: key.tab_id,
+                                pane_id: key.pane_id,
+                            });
+                            continue;
+                        } else if queue.is_empty() {
                             write_buffers.remove(&fd);
                             set_epoll_out_interest(epoll_fd, fd, false);
                         }

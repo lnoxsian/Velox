@@ -712,7 +712,9 @@ impl X11Window {
         }
 
         if self.fb.width != self.width || self.fb.height != self.height {
-            self.fb.resize(&self.conn, self.width, self.height);
+            if let Err(e) = self.fb.resize(&self.conn, self.width, self.height) {
+                log::warn!("Failed to resize X11 framebuffer: {e}");
+            }
         }
 
         let damaged_y = rect.y.min(self.height);
@@ -1112,12 +1114,12 @@ mod tests {
             assert!(initial_cap >= 400 * 300 * 4);
 
             // Downward resize should NOT deallocate or re-create SHM segment!
-            win.fb.resize(&win.conn, 350, 250);
+            assert!(win.fb.resize(&win.conn, 350, 250).is_ok());
             assert_eq!(win.fb.shm_seg, initial_seg);
             assert_eq!(win.fb.shm_capacity_bytes, initial_cap);
 
             // Upward resize within the 25% headroom should ALSO retain SHM segment!
-            win.fb.resize(&win.conn, 410, 310);
+            assert!(win.fb.resize(&win.conn, 410, 310).is_ok());
             assert_eq!(win.fb.shm_seg, initial_seg);
             assert_eq!(win.fb.shm_capacity_bytes, initial_cap);
         }

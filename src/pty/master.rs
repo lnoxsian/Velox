@@ -75,11 +75,20 @@ impl PtyMaster {
         if self.fd < 0 {
             return Ok(buf.len());
         }
-        let res = unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
-        if res < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(res as usize)
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            let res =
+                unsafe { libc::write(self.fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+            if res >= 0 {
+                return Ok(res as usize);
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(err);
         }
     }
 

@@ -380,33 +380,13 @@ impl WindowState {
         }
         let tab = self.active_tab();
         if let Some(pane) = tab.tree.find_pane(pane_id) {
-            // Fast-path: small input (e.g. single keystrokes <= 4096 bytes) directly calls
-            // non-blocking write to avoid reactor wake/channel latency.
-            if data.len() <= 4096 {
-                match pane.pty_master.write(&data) {
-                    Ok(n) if n == data.len() => (),
-                    Ok(n) => {
-                        let remainder = data[n..].to_vec();
-                        let _ = self
-                            .pty_reactor
-                            .write(self.window_id, tab.id, pane_id, remainder);
-                    }
-                    Err(e)
-                        if e.raw_os_error() == Some(libc::EAGAIN)
-                            || e.raw_os_error() == Some(libc::EWOULDBLOCK) =>
-                    {
-                        let _ = self
-                            .pty_reactor
-                            .write(self.window_id, tab.id, pane_id, data);
-                    }
-                    Err(_) => {}
-                }
-            } else {
-                // Large burst (e.g. paste of large text/corpus): queue asynchronously through the reactor
-                let _ = self
-                    .pty_reactor
-                    .write(self.window_id, tab.id, pane_id, data);
+            if self.pty_reactor.is_stopped() {
+                let _ = pane.pty_master.write(&data);
+                return;
             }
+            let _ = self
+                .pty_reactor
+                .write(self.window_id, tab.id, pane_id, data);
         }
     }
 
@@ -1704,7 +1684,11 @@ impl App {
             let now = std::time::Instant::now();
             pane.last_activity = now;
             tab.last_activity = now;
-            pane.flush_outgoing();
+            let _ = pane.flush_outgoing();
+            if !pane.terminal.outgoing.is_empty() {
+                let unwritten = std::mem::take(&mut pane.terminal.outgoing);
+                let _ = ws.pty_reactor.write(window_id, tab_id, pane_id, unwritten);
+            }
             if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
                 ws.needs_redraw = true;
                 ws.content_dirty = true;
@@ -1727,7 +1711,11 @@ impl App {
                     pane.last_activity = std::time::Instant::now();
                     tab.last_activity = pane.last_activity;
                     pane.terminal.feed(&data);
-                    pane.flush_outgoing();
+                    let _ = pane.flush_outgoing();
+                    if !pane.terminal.outgoing.is_empty() {
+                        let unwritten = std::mem::take(&mut pane.terminal.outgoing);
+                        let _ = ws.pty_reactor.write(window_id, tab_id, pane_id, unwritten);
+                    }
                     if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
                         ws.needs_redraw = true;
                         ws.content_dirty = true;
@@ -1846,7 +1834,7 @@ impl App {
                             let active_pane = ws.active_pane();
                             if active_pane.terminal.focus_tracking {
                                 let seq = if focused { b"\x1b[I" } else { b"\x1b[O" };
-                                let _ = active_pane.pty_master.write(seq);
+                                ws.write_to_active_pane(seq.to_vec());
                             }
                             ws.content_dirty = true;
                             ws.tab_bar_dirty = true;

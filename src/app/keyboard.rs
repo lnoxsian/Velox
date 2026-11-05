@@ -422,7 +422,7 @@ impl WindowState {
                 active_grid.damage.mark_all();
                 redraw = true;
             }
-            let _ = active_pane.pty_master.write(&bytes);
+            self.write_to_active_pane(bytes.to_vec());
             self.last_key_instant = std::time::Instant::now();
             self.mark_interaction();
             if self.hide_mouse_on_typing {
