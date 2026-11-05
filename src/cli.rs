@@ -14,7 +14,7 @@ pub struct CliOptions {
     pub banner: bool,
     pub help: bool,
     pub version: bool,
-    pub diagnostics: bool,
+    pub doc: bool,
 }
 
 impl CliOptions {
@@ -33,12 +33,6 @@ impl CliOptions {
         let mut i = 1;
         while i < args.len() {
             let arg = &args[i];
-
-            if arg == "doctor" || arg == "--doctor" {
-                options.diagnostics = true;
-                i += 1;
-                continue;
-            }
 
             if arg == "msg" {
                 if i + 1 < args.len() && args[i + 1] == "create-window" {
@@ -97,8 +91,8 @@ impl CliOptions {
                 "-v" | "--version" => {
                     options.version = true;
                 }
-                "--diagnostics" | "--doctor" => {
-                    options.diagnostics = true;
+                "--doc" => {
+                    options.doc = true;
                 }
                 _ => {
                     if arg.starts_with('-') {
@@ -151,15 +145,13 @@ impl CliOptions {
 
 USAGE:
     velox [OPTIONS]
-    velox doctor
     velox msg create-window [OPTIONS]
 
 FLAGS:
     -s, --single-instance   Enable single-process mode (connects to running instance or starts server)
     -d, --daemon            Start in background daemon mode (keeps process alive for IPC requests)
         --hold              Keep window open after child command exits
-        --diagnostics, --doctor
-                            Print system, display backend, desktop, and configuration diagnostics
+        --doc               Print system, display backend, desktop, and configuration diagnostics
         --banner            Print ASCII art banner
     -h, --help              Print help information
     -v, --version           Print version information
@@ -171,7 +163,6 @@ OPTIONS:
     -e, --command <CMD...>          Execute specified command instead of shell
 
 SUBCOMMANDS:
-    doctor                          Run diagnostics check on display, desktop, and configuration
     msg create-window               Instruct running single-process instance to open a new window"
         );
     }
@@ -237,18 +228,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_diagnostics_and_doctor() {
-        let args1 = vec!["velox".to_string(), "--diagnostics".to_string()];
-        let opts1 = CliOptions::parse_args(&args1);
-        assert!(opts1.diagnostics);
-
-        let args2 = vec!["velox".to_string(), "doctor".to_string()];
-        let opts2 = CliOptions::parse_args(&args2);
-        assert!(opts2.diagnostics);
-
-        let args3 = vec!["velox".to_string(), "--doctor".to_string()];
-        let opts3 = CliOptions::parse_args(&args3);
-        assert!(opts3.diagnostics);
+    fn test_cli_doc_flag() {
+        let args = vec!["velox".to_string(), "--doc".to_string()];
+        let opts = CliOptions::parse_args(&args);
+        assert!(opts.doc);
     }
 
     #[test]

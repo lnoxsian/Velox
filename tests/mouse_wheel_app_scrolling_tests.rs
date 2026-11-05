@@ -207,3 +207,38 @@ fn test_wayland_state_scroll_accumulator_init() {
     assert_eq!(state.scroll_accumulator_y, 0.0);
     assert!(state.events.is_empty());
 }
+
+#[test]
+fn test_ctrl_mouse_wheel_zoom_unconstrained() {
+    let (pty, read_fd) = create_pipe_pty_master();
+    let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+    let initial_font_size = ws.active_pane().font_size;
+
+    // Ctrl + Wheel Up (+1.0) zooms in
+    ws.handle_mouse_wheel(1.0, ModifiersState::CONTROL);
+    assert_eq!(ws.active_pane().font_size, initial_font_size + 1.0);
+
+    // Zoom in repeatedly past previous 5.0x / 70.0px ceiling
+    for _ in 0..100 {
+        ws.handle_mouse_wheel(1.0, ModifiersState::CONTROL);
+    }
+    assert!(
+        ws.active_pane().font_size > 100.0,
+        "Font zoom in must not be artificially capped at 70px"
+    );
+
+    // Extreme zoom in clamps dynamically so number of rows is 1
+    ws.set_font_size(2000.0);
+    assert_eq!(
+        ws.active_pane().terminal.grid.height,
+        1,
+        "Font zoom in must clamp dynamically so number of rows is 1"
+    );
+
+    // Ctrl + Wheel Down (-1.0) zooms out
+    let current_size = ws.active_pane().font_size;
+    ws.handle_mouse_wheel(-1.0, ModifiersState::CONTROL);
+    assert!(ws.active_pane().font_size < current_size);
+
+    unsafe { libc::close(read_fd) };
+}

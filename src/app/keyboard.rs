@@ -356,7 +356,7 @@ impl WindowState {
                     }
                     Key::Keypad(KeypadKey::Minus) => {
                         let active_size = self.active_pane().font_size;
-                        let new_size = (active_size - 1.0).max(4.0);
+                        let new_size = active_size - 1.0;
                         self.set_font_size(new_size);
                         log::debug!("Velox shortcut: zoom out");
                         return false;
@@ -374,7 +374,7 @@ impl WindowState {
                     match s.as_str() {
                         "-" => {
                             let active_size = self.active_pane().font_size;
-                            let new_size = (active_size - 1.0).max(4.0);
+                            let new_size = active_size - 1.0;
                             self.set_font_size(new_size);
                             log::debug!("Velox shortcut: zoom out");
                             return false;
@@ -733,6 +733,50 @@ mod tests {
         assert!(!handled);
         assert_eq!(read_pty_output(&read_end), b"");
         assert_eq!(ws.active_pane().font_size, ws.default_font_size);
+
+        // Zoom in past 100
+        for _ in 0..100 {
+            ws.handle_keyboard_input(
+                &Key::Character("+".to_string()),
+                Some("+"),
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+            );
+        }
+        assert!(
+            ws.active_pane().font_size > 100.0,
+            "Zoom in must not be capped at 70px"
+        );
+
+        // Extreme zoom in clamps dynamically so number of rows is 1
+        ws.set_font_size(2000.0);
+        assert_eq!(
+            ws.active_pane().terminal.grid.height,
+            1,
+            "Zoom in must clamp dynamically so number of rows is 1"
+        );
+
+        // Reset zoom again
+        ws.handle_keyboard_input(
+            &Key::Character("0".to_string()),
+            Some("0"),
+            ModifiersState::CONTROL,
+        );
+        assert_eq!(ws.active_pane().font_size, ws.default_font_size);
+
+        // Zoom out down to min_expected (20% of base font size)
+        let min_expected = (ws.default_font_size * 0.2).max(1.0);
+        for _ in 0..25 {
+            ws.handle_keyboard_input(
+                &Key::Character("-".to_string()),
+                Some("-"),
+                ModifiersState::CONTROL,
+            );
+        }
+        assert_eq!(
+            ws.active_pane().font_size,
+            min_expected,
+            "Zoom out must reach minimum scale floor"
+        );
     }
 
     #[test]

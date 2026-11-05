@@ -33,7 +33,7 @@ fn main() {
     // Load user configuration with resilient diagnostics
     let (config, diagnostics, config_path) = config::loader::load_with_diagnostics();
 
-    if cli_opts.diagnostics {
+    if cli_opts.doc {
         velox::diagnostics::run_diagnostics(&config, &diagnostics, config_path.as_deref());
         return;
     }

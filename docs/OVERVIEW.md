@@ -142,11 +142,8 @@ Velox reads configuration from `~/.config/velox/config.toml` (or `$XDG_CONFIG_HO
 ## Building & Running
 
 ```bash
-# Standard release
+# Build release binary (fat LTO, stripped)
 cargo build --release
-
-# Optimized release
-cargo build --profile optimized-release
 
 # Run terminal
 ./target/release/velox

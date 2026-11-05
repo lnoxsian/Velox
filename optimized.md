@@ -59,8 +59,8 @@ Use commands similar to:
 
 ```bash
 cargo test --all-targets
-cargo build --profile optimized-release
-cargo run --profile optimized-release --bin velox
+cargo build --release
+cargo run --release --bin velox
 ```
 
 Run the existing benchmark:

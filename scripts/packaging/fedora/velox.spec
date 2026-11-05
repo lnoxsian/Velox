@@ -26,11 +26,11 @@ runtime dependencies.
 %autosetup -n Velox-%{version}
 
 %build
-cargo build --profile optimized-release --locked
+cargo build --release --locked
 
 %install
 rm -rf %{buildroot}
-install -D -p -m 0755 target/optimized-release/velox %{buildroot}%{_bindir}/velox
+install -D -p -m 0755 target/release/velox %{buildroot}%{_bindir}/velox
 install -D -p -m 0644 assets/io.github.lnoxsian.Velox.desktop %{buildroot}%{_datadir}/applications/io.github.lnoxsian.Velox.desktop
 
 for size in 16x16 32x32 48x48 64x64 128x128 256x256 512x512 1024x1024; do

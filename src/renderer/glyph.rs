@@ -412,12 +412,15 @@ impl GlyphCache {
         self.baseline_y = metrics.baseline_y;
 
         self.clear();
-        self.preload_common_glyphs();
     }
 
     pub fn preload_common_glyphs(&mut self) {
         // Preload printable ASCII characters for regular style (32..=126).
-        // Bold and italic glyphs are rasterized on demand when needed.
+        // Only preload for normal font sizes; for large/zoomed fonts, rasterize on demand
+        // to avoid allocating large atlas buffers and freezing the UI.
+        if self.cell_height > 80 || self.font_size > 48.0 {
+            return;
+        }
         for c in 32u8..=126u8 {
             let ch = c as char;
             self.get_or_rasterize(GlyphKey::new(ch, false, false, false));
@@ -484,20 +487,30 @@ impl GlyphCache {
             return Some(g_ref);
         }
 
-        let g_ref = self.rasterize_glyph(key)?;
+        let g_ref = match self.rasterize_glyph(key) {
+            Some(gr) => gr,
+            None => return None,
+        };
+
+        if self.atlas.is_full() {
+            self.unicode_table.clear();
+            self.unicode_previous.clear();
+            self.atlas.clear();
+            self.ascii_table = [None; 512];
+            // Re-rasterize into cleared atlas
+            let fresh_ref = self.rasterize_glyph(key)?;
+            if let Some(idx) = key.ascii_index() {
+                self.ascii_table[idx] = Some(fresh_ref);
+            } else {
+                self.unicode_table.insert(key, fresh_ref);
+            }
+            return Some(fresh_ref);
+        }
 
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx] = Some(g_ref);
         } else {
-            if self.atlas.is_full() {
-                self.unicode_table.clear();
-                self.unicode_previous.clear();
-                self.atlas.clear();
-                self.ascii_table = [None; 512];
-                self.preload_common_glyphs();
-                // Re-rasterize the requested key if it was flushed
-                return self.get_or_rasterize(key);
-            } else if self.unicode_table.len() >= self.max_unicode_entries {
+            if self.unicode_table.len() >= self.max_unicode_entries {
                 // Generational eviction: drop previous generation, current generation becomes previous
                 self.unicode_previous = std::mem::take(&mut self.unicode_table);
             }

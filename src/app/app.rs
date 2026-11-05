@@ -549,13 +549,46 @@ impl WindowState {
         self.renderer.update_font_size(size);
     }
 
+    pub fn max_font_size_for_active_pane(&self) -> f32 {
+        let size = self.window.inner_size();
+        let csd_h = self.window.csd_title_bar_height() as f32;
+        let tab_bar_h = self.tab_bar_height();
+        let banner_h = self.banner_height();
+        let total_h = (size.height as f32 - csd_h - tab_bar_h - banner_h).max(10.0);
+
+        let pane_h = if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            tab.tree
+                .find_pane_height(
+                    tab.active_pane_id,
+                    total_h,
+                    self.separator_size,
+                    self.min_rows,
+                    self.base_cell_height as f32,
+                    self.padding_y,
+                )
+                .unwrap_or(total_h)
+        } else {
+            total_h
+        };
+
+        let text_h = (pane_h - self.padding_y * 2.0).max(1.0);
+
+        crate::app::split::max_font_size_for_1_row(
+            text_h,
+            self.base_cell_height as f32,
+            self.default_font_size,
+        )
+    }
+
     pub fn sync_active_pane_font_size(&mut self) {
         if self.tabs.is_empty() {
             return;
         }
-        let active_pane_font_size = crate::app::split::clamp_font_size(
+        let max_size = self.max_font_size_for_active_pane();
+        let active_pane_font_size = crate::app::split::clamp_font_size_with_max(
             self.active_pane().font_size,
             self.default_font_size,
+            max_size,
         );
         let active_pane_id = self.active_tab().active_pane_id;
         if let Some(pane) = self.active_tab_mut().tree.find_pane_mut(active_pane_id) {
@@ -570,7 +603,9 @@ impl WindowState {
     }
 
     pub fn set_font_size(&mut self, size: f32) {
-        let size = crate::app::split::clamp_font_size(size, self.default_font_size);
+        let max_size = self.max_font_size_for_active_pane();
+        let size =
+            crate::app::split::clamp_font_size_with_max(size, self.default_font_size, max_size);
         if (self.current_font_size - size).abs() < 0.01
             && !self.tabs.is_empty()
             && (self.active_pane().font_size - size).abs() < 0.01

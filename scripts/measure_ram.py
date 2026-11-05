@@ -82,6 +82,12 @@ def format_mb(kb):
 
 def resolve_binary(args):
     """Resolve binary path and remaining arguments from CLI input."""
+    if args and args[0] in ("-h", "--help"):
+        print("Usage: ./scripts/measure_ram.py [--profile PROFILE] [ARGS...]")
+        print("       ./scripts/measure_ram.py [release|debug|dev] [ARGS...]")
+        print("\nMonitors real-time RSS, PSS, and peak memory usage of Velox.")
+        sys.exit(0)
+
     profile = None
     cmd = []
     
@@ -91,7 +97,7 @@ def resolve_binary(args):
             remaining = args[2:]
         else:
             remaining = []
-    elif args and args[0] in ("optimized-release", "release", "debug", "dev"):
+    elif args and args[0] in ("release", "debug", "dev"):
         profile = args[0]
         remaining = args[1:]
     else:
@@ -101,7 +107,7 @@ def resolve_binary(args):
         profile_dir = "debug" if profile in ("debug", "dev") else profile
         bin_path = f"target/{profile_dir}/velox"
         if not os.path.exists(bin_path):
-            print(f"[!] Binary '{bin_path}' not found. Building with cargo build --profile {profile}...")
+            print(f"[!] Binary '{bin_path}' not found. Building with cargo build --release...")
             build_cmd = ["cargo", "build"]
             if profile == "release":
                 build_cmd.append("--release")
@@ -115,19 +121,15 @@ def resolve_binary(args):
     elif remaining:
         bin_path = remaining[0]
         if not os.path.exists(bin_path):
-            if os.path.exists(f"target/optimized-release/{bin_path}"):
-                bin_path = f"target/optimized-release/{bin_path}"
-            elif os.path.exists(f"target/release/{bin_path}"):
+            if os.path.exists(f"target/release/{bin_path}"):
                 bin_path = f"target/release/{bin_path}"
             elif os.path.exists(f"target/debug/{bin_path}"):
                 bin_path = f"target/debug/{bin_path}"
         cmd = [bin_path] + remaining[1:]
     else:
-        # Default binary fallback: optimized-release > release > debug
+        # Default binary fallback: release > debug
         default_bin = "target/release/velox"
-        if os.path.exists("target/optimized-release/velox"):
-            default_bin = "target/optimized-release/velox"
-        elif not os.path.exists(default_bin) and os.path.exists("target/debug/velox"):
+        if not os.path.exists(default_bin) and os.path.exists("target/debug/velox"):
             default_bin = "target/debug/velox"
         elif not os.path.exists(default_bin):
             print("[!] Binary not found. Building release binary with cargo build --release...")

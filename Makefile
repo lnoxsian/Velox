@@ -43,13 +43,12 @@ generate-icons:
 build: generate-icons
 	cargo build
 
-# Build the project in release mode
+# Build the project in release mode (fat LTO, codegen-units=1, stripped)
 release:
 	cargo build --release
 
-# Build the project in optimized release mode
-optimized-release:
-	cargo build --profile optimized-release
+# Alias for backward compatibility
+optimized-release: release
 
 # Run the project (debug mode)
 run:
@@ -59,9 +58,8 @@ run:
 run-release:
 	cargo run --release
 
-# Run the project in optimized release mode
-run-optimized-release:
-	cargo run --profile optimized-release
+# Alias for backward compatibility
+run-optimized-release: run-release
 
 # Check the project for compilation errors
 check:
@@ -156,26 +154,25 @@ bench-grid:
 bench-scrollback:
 	bash scripts/text_render_test/testren.bash --scroll-back
 
-# Measure RAM usage with selectable profile (default: release, or PROFILE=optimized-release / PROFILE=debug)
+# Measure RAM usage with selectable profile (default: release, or PROFILE=debug)
 ram-usage:
 	python3 scripts/measure_ram.py --profile $(PROFILE) $(ARGS)
 
 # Alias for measuring RAM usage
 ram: ram-usage
 
-# Measure RAM usage in optimized-release mode
-ram-optimized-release:
-	python3 scripts/measure_ram.py --profile optimized-release $(ARGS)
-
 # Measure RAM usage in release mode
 ram-release:
 	python3 scripts/measure_ram.py --profile release $(ARGS)
+
+# Alias for backward compatibility
+ram-optimized-release: ram-release
 
 # Measure RAM usage in debug mode
 ram-debug:
 	python3 scripts/measure_ram.py --profile debug $(ARGS)
 
-# Measure and profile single-core CPU usage (default: release, or PROFILE=optimized-release / PROFILE=debug, CORE=0)
+# Measure and profile single-core CPU usage (default: release, or PROFILE=debug, CORE=0)
 cpu-usage:
 	python3 scripts/measure_cpu.py --profile $(PROFILE) --core $(CORE) $(ARGS)
 
@@ -195,15 +192,14 @@ cpu-benchmark: test-single-cpu
 cpu-release:
 	python3 scripts/measure_cpu.py --profile release --core $(CORE) $(ARGS)
 
-# Measure single-core CPU usage in optimized-release mode
-cpu-optimized-release:
-	python3 scripts/measure_cpu.py --profile optimized-release --core $(CORE) $(ARGS)
+# Alias for backward compatibility
+cpu-optimized-release: cpu-release
 
 # Measure single-core CPU usage in debug mode
 cpu-debug:
 	python3 scripts/measure_cpu.py --profile debug --core $(CORE) $(ARGS)
 
-# Benchmark and compare single-core CPU performance across all build profiles (debug, release, optimized-release)
+# Benchmark and compare single-core CPU performance across build profiles (debug vs release)
 cpu-compare:
 	python3 scripts/measure_cpu.py --all-profiles --core $(CORE) $(ARGS)
 
@@ -259,14 +255,12 @@ list:
 	@printf "\033[1mUsage:\033[0m make \033[36m<target>\033[0m [\033[33mVARIABLE=value\033[0m...]\n\n"
 	@printf "\033[1;32mBuilding & Compilation:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "build" "Build binary in debug mode (generates icons first)"
-	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build binary in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release" "Build binary with fat LTO, codegen-units=1, stripped"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build binary in release mode (fat LTO, codegen-units=1, stripped)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "generate-icons" "Generate multi-resolution icon assets"
 	@printf "  \033[36m%-25s\033[0m %s\n" "clean" "Remove target/ and dist/ artifacts"
 	@printf "\n\033[1;32mRunning:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "run" "Run Velox in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "run-release" "Run Velox in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "run-optimized-release" "Run Velox in optimized release mode"
 	@printf "\n\033[1;32mTesting & Quality:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "check" "Type-check code without compiling binary"
 	@printf "  \033[36m%-25s\033[0m %s\n" "test" "Run full test suite (unit + integration tests)"
@@ -290,12 +284,10 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "test-single-cpu" "Run single-core CPU throughput test (WORKLOAD=..., DURATION=...)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-benchmark" "Alias for test-single-cpu standardized workload"
 	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-release" "Measure single-core CPU usage of release build"
-	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-optimized-release" "Measure single-core CPU usage of optimized release build"
 	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-debug" "Measure single-core CPU usage of debug build"
-	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-compare" "Compare single-core CPU usage across all profiles"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cpu-compare" "Compare single-core CPU usage across profiles"
 	@printf "  \033[36m%-25s\033[0m %s\n" "ram / ram-usage" "Measure RAM usage (optional: PROFILE=..., ARGS=...)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "ram-release" "Measure RAM usage of release build"
-	@printf "  \033[36m%-25s\033[0m %s\n" "ram-optimized-release" "Measure RAM usage of optimized release build"
 	@printf "  \033[36m%-25s\033[0m %s\n" "ram-debug" "Measure RAM usage of debug build"
 	@printf "\n\033[1;32mVersion Management:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "update" "Update Cargo dependencies in Cargo.lock"
@@ -306,7 +298,7 @@ list:
 	@printf "\n\033[1mVariables:\033[0m\n"
 	@printf "  \033[33mPREFIX\033[0m       Installation prefix (default: /usr/local)\n"
 	@printf "  \033[33mDESTDIR\033[0m      Staging root directory for packaging\n"
-	@printf "  \033[33mPROFILE\033[0m      Cargo profile (default: release or optimized-release)\n"
+	@printf "  \033[33mPROFILE\033[0m      Cargo profile (default: release or debug)\n"
 	@printf "  \033[33mCORE\033[0m         CPU core ID to pin single-core tests (default: 0)\n"
 	@printf "  \033[33mWORKLOAD\033[0m     Workload for CPU tests (stream-ascii, stream-ansi, scroll, idle)\n"
 	@printf "  \033[33mDURATION\033[0m     Duration in seconds for CPU test workloads (default: 5)\n"

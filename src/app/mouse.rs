@@ -575,7 +575,7 @@ impl WindowState {
         }
     }
 
-    pub fn handle_mouse_wheel(&mut self, delta_y: f32, _modifiers: ModifiersState) -> bool {
+    pub fn handle_mouse_wheel(&mut self, delta_y: f32, modifiers: ModifiersState) -> bool {
         self.mark_interaction();
         self.unhide_mouse();
 
@@ -596,6 +596,21 @@ impl WindowState {
         self.scroll_accumulator -= notches as f64;
 
         if notches != 0 {
+            // Ctrl + Mouse Wheel zoom in/out
+            if modifiers.control_key() {
+                let active_size = self.active_pane().font_size;
+                let step = if active_size >= 64.0 {
+                    4.0
+                } else if active_size >= 32.0 {
+                    2.0
+                } else {
+                    1.0
+                };
+                let new_size = active_size + (notches as f32) * step;
+                self.set_font_size(new_size);
+                return false;
+            }
+
             let csd_h = self.window.csd_title_bar_height() as f64;
             if csd_h > 0.0 && self.mouse_y < csd_h {
                 return false;

@@ -113,6 +113,7 @@ pub struct CpuRenderer {
     prev_tab_accent_color: Option<crate::screen::cell::Color>,
     bold_is_bright: bool,
     pub default_font_size: f32,
+    pub default_cell_height: f32,
     pub start_time: Instant,
     pub prev_blink_on: bool,
     pub opacity: f32,
@@ -273,6 +274,7 @@ impl CpuRenderer {
         let opacity = opacity.clamp(0.0, 1.0);
         let palette = PrecomputedPalette::new(theme, opacity);
         let rows = (height / glyph_cache.cell_height.max(1)).max(1) as usize;
+        let default_cell_height = glyph_cache.cell_height as f32;
 
         Ok(Self {
             framebuffer,
@@ -292,6 +294,7 @@ impl CpuRenderer {
             prev_tab_accent_color: theme.tab_accent_color,
             bold_is_bright,
             default_font_size: font_size,
+            default_cell_height,
             start_time: Instant::now(),
             prev_blink_on: true,
             opacity,
@@ -350,8 +353,39 @@ impl CpuRenderer {
         }
     }
 
+    #[inline]
+    pub fn clamp_pane_font_size(&self, pane: &CpuPaneRenderData) -> f32 {
+        let base_ch = if self.default_cell_height > 0.0 {
+            self.default_cell_height
+        } else {
+            16.0
+        };
+        let text_h = (pane.rect.height - pane.rect.padding_y * 2.0).max(1.0);
+        let max_font_size =
+            crate::app::split::max_font_size_for_1_row(text_h, base_ch, self.default_font_size);
+        crate::app::split::clamp_font_size_with_max(
+            pane.font_size,
+            self.default_font_size,
+            max_font_size,
+        )
+    }
+
     pub fn update_font_size(&mut self, font_size: f32) {
-        let font_size = crate::app::split::clamp_font_size(font_size, self.default_font_size);
+        let base_ch = if self.default_cell_height > 0.0 {
+            self.default_cell_height
+        } else {
+            16.0
+        };
+        let max_font_size = crate::app::split::max_font_size_for_1_row(
+            self.viewport_height as f32,
+            base_ch,
+            self.default_font_size,
+        );
+        let font_size = crate::app::split::clamp_font_size_with_max(
+            font_size,
+            self.default_font_size,
+            max_font_size,
+        );
         if (self.glyph_cache.font_size - font_size).abs() < 0.01 {
             return;
         }
@@ -558,14 +592,12 @@ impl CpuRenderer {
 
     fn prune_stale_caches(&mut self, panes: &[CpuPaneRenderData]) {
         if self.pane_glyph_caches.len() > panes.len() {
-            let default_size = self.default_font_size;
-            self.pane_glyph_caches.retain(|&k, _| {
-                panes.iter().any(|p| {
-                    (crate::app::split::clamp_font_size(p.font_size, default_size) * 100.0).round()
-                        as u32
-                        == k
-                })
-            });
+            let active_keys: Vec<u32> = panes
+                .iter()
+                .map(|p| (self.clamp_pane_font_size(p) * 100.0).round() as u32)
+                .collect();
+            self.pane_glyph_caches
+                .retain(|&k, _| active_keys.contains(&k));
         }
         if self.pane_states.len() > panes.len() {
             self.pane_states
@@ -607,6 +639,7 @@ impl CpuRenderer {
             return true;
         }
         for pane in panes {
+            let clamped_font_size = self.clamp_pane_font_size(pane);
             let state = self.pane_states.entry(pane.pane_id).or_default();
             let grid = pane.grid;
             let selection_bounds = if grid.selection.active {
@@ -621,8 +654,6 @@ impl CpuRenderer {
                 effective_dim
             };
 
-            let clamped_font_size =
-                crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
             let pane_layout_changed = state.last_rect != Some(pane.rect)
                 || state.last_scroll_offset != grid.scroll_offset
                 || state.last_is_active != pane.is_active
@@ -676,8 +707,7 @@ impl CpuRenderer {
 
     fn ensure_pane_glyph_caches(&mut self, panes: &[CpuPaneRenderData]) {
         for pane in panes {
-            let font_size =
-                crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
+            let font_size = self.clamp_pane_font_size(pane);
             let key = (font_size * 100.0).round() as u32;
             if (self.glyph_cache.font_size - font_size).abs() >= 0.01
                 && !self.pane_glyph_caches.contains_key(&key)
@@ -1359,7 +1389,7 @@ impl CpuRenderer {
         blink_on: bool,
         blink_changed: bool,
     ) -> Option<(u32, u32)> {
-        let font_size = crate::app::split::clamp_font_size(pane.font_size, self.default_font_size);
+        let font_size = self.clamp_pane_font_size(pane);
         let cell_w = pane.rect.cell_width.round().max(1.0) as u32;
         let cell_h = pane.rect.cell_height.round().max(1.0) as u32;
         let grid = pane.grid;

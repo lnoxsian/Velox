@@ -5,7 +5,7 @@ scripts/measure_cpu.py - Single-Core CPU Usage Profiler & Benchmark for Velox
 Runs and profiles Velox binaries pinned strictly to a single CPU core.
 Measures user and system CPU time, instantaneous and average CPU utilization,
 context switch rates, per-thread CPU distribution, and memory footprint.
-Supports comparing multiple builds/profiles (debug, release, optimized-release)
+Supports comparing multiple builds/profiles (debug, release)
 across standardized or custom workloads.
 
 Usage:
@@ -18,11 +18,11 @@ Usage:
     # Benchmark idle CPU efficiency of the release build:
     ./scripts/measure_cpu.py --workload idle --duration 5
 
-    # Benchmark and compare all profiles (debug, release, optimized-release):
+    # Benchmark and compare all profiles (debug, release):
     ./scripts/measure_cpu.py --all-profiles --workload stream-ascii
 
     # Compare arbitrary binaries:
-    ./scripts/measure_cpu.py --compare Baseline:target/release/velox Optimized:target/optimized-release/velox
+    ./scripts/measure_cpu.py --compare Debug:target/debug/velox Release:target/release/velox
 
     # Run with a custom shell command inside Velox:
     ./scripts/measure_cpu.py -e "bash -c 'for i in {1..1000}; do echo \$i; done'"
@@ -235,7 +235,7 @@ def resolve_target_binary(target: str) -> Tuple[str, str]:
         label, path = target.split(":", 1)
         return label, path
 
-    if target in ("debug", "release", "optimized-release"):
+    if target in ("debug", "release"):
         bin_path = build_profile_if_needed(target)
         return target, bin_path
 
@@ -246,7 +246,7 @@ def resolve_target_binary(target: str) -> Tuple[str, str]:
         return label, target
 
     # Check target/<profile>/target
-    for prof in ("optimized-release", "release", "debug"):
+    for prof in ("release", "debug"):
         candidate = f"target/{prof}/{target}"
         if os.path.exists(candidate):
             return prof, candidate
@@ -696,7 +696,7 @@ def main():
     parser.add_argument(
         "targets",
         nargs="*",
-        help="Path to Velox binary or cargo profile name (e.g. release, debug, optimized-release)",
+        help="Path to Velox binary or cargo profile name (e.g. release, debug)",
     )
     parser.add_argument(
         "-c", "--core",
@@ -720,13 +720,13 @@ def main():
         "-p", "--profile",
         type=str,
         default=None,
-        choices=["debug", "dev", "release", "optimized-release"],
+        choices=["debug", "dev", "release"],
         help="Cargo profile to profile (builds automatically if missing)",
     )
     parser.add_argument(
         "--all-profiles",
         action="store_true",
-        help="Benchmark and compare all three profiles: debug, release, and optimized-release",
+        help="Benchmark and compare build profiles: debug and release",
     )
     parser.add_argument(
         "--compare",
@@ -782,7 +782,7 @@ def main():
     target_list: List[Tuple[str, str]] = []
 
     if args.all_profiles:
-        for prof in ["debug", "release", "optimized-release"]:
+        for prof in ["debug", "release"]:
             label, path = resolve_target_binary(prof)
             target_list.append((label, path))
     elif args.compare:
@@ -797,10 +797,8 @@ def main():
             label, path = resolve_target_binary(t)
             target_list.append((label, path))
     else:
-        # Default binary fallback: optimized-release > release > debug
+        # Default binary fallback: release > debug
         default_profile = "release"
-        if os.path.exists("target/optimized-release/velox"):
-            default_profile = "optimized-release"
         label, path = resolve_target_binary(default_profile)
         target_list.append((label, path))
 

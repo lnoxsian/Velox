@@ -21,7 +21,63 @@ pub enum FocusDirection {
 pub const MIN_FONT_SIZE_SCALE: f32 = 0.2;
 pub const MAX_FONT_SIZE_SCALE: f32 = 5.0;
 
-/// Clamps a font size to between 20% and 500% of base font size, with a minimum of 1.0 px.
+pub const MIN_FONT_SIZE: f32 = 1.0;
+pub const MAX_FONT_SIZE: f32 = 2048.0;
+
+/// Dynamically calculates maximum font size allowing at least target_rows (default 1) in available_height.
+#[inline]
+pub fn max_font_size_for_rows(
+    available_height: f32,
+    base_cell_height: f32,
+    base_font_size: f32,
+    target_rows: usize,
+) -> f32 {
+    let base_ch = if base_cell_height > 0.0 {
+        base_cell_height
+    } else {
+        1.0
+    };
+    let base_fs = if base_font_size > 0.0 {
+        base_font_size
+    } else {
+        14.0
+    };
+    let target = target_rows.max(1) as f32;
+    let max_size = (available_height.max(1.0) / (base_ch * target)) * base_fs;
+    let min_size = (base_fs * MIN_FONT_SIZE_SCALE).max(MIN_FONT_SIZE);
+    max_size.max(min_size)
+}
+
+/// Dynamically calculates maximum font size so that the number of rows in the zoom is at least 1.
+#[inline]
+pub fn max_font_size_for_1_row(
+    available_height: f32,
+    base_cell_height: f32,
+    base_font_size: f32,
+) -> f32 {
+    max_font_size_for_rows(available_height, base_cell_height, base_font_size, 1)
+}
+
+/// Clamps font size with dynamic upper bound so number of rows is at least 1.
+#[inline]
+pub fn clamp_font_size_with_max(font_size: f32, base_font_size: f32, max_font_size: f32) -> f32 {
+    let base = if base_font_size > 0.0 {
+        base_font_size
+    } else {
+        14.0
+    };
+    let min_size = (base * MIN_FONT_SIZE_SCALE).max(MIN_FONT_SIZE);
+    let max_size = max_font_size.max(min_size);
+    if font_size.is_nan() || font_size < min_size {
+        min_size
+    } else if font_size > max_size {
+        max_size
+    } else {
+        font_size
+    }
+}
+
+/// Clamps a font size to a safe rendering range (between 20% and 500% fallback, or minimum 1.0 px).
 #[inline]
 pub fn clamp_font_size(font_size: f32, base_font_size: f32) -> f32 {
     let base = if base_font_size > 0.0 {
@@ -29,9 +85,15 @@ pub fn clamp_font_size(font_size: f32, base_font_size: f32) -> f32 {
     } else {
         14.0
     };
-    let min_size = (base * MIN_FONT_SIZE_SCALE).max(1.0);
+    let min_size = (base * MIN_FONT_SIZE_SCALE).max(MIN_FONT_SIZE);
     let max_size = (base * MAX_FONT_SIZE_SCALE).max(min_size);
-    font_size.clamp(min_size, max_size)
+    if font_size.is_nan() || font_size < min_size {
+        min_size
+    } else if font_size > max_size {
+        max_size
+    } else {
+        font_size
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -174,6 +236,62 @@ pub struct SplitLayoutContext {
 }
 
 impl SplitNode {
+    /// Zero-allocation calculation of layout height for a target pane in the split tree.
+    pub fn find_pane_height(
+        &self,
+        target_id: PaneId,
+        h: f32,
+        sep_size: f32,
+        min_rows: usize,
+        base_ch_f: f32,
+        padding_y: f32,
+    ) -> Option<f32> {
+        match self {
+            Self::Pane(p) => {
+                if p.id == target_id {
+                    Some(h)
+                } else {
+                    None
+                }
+            }
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+                ..
+            } => {
+                let ratio = ratio.clamp(0.05, 0.95);
+                match direction {
+                    SplitDirection::Vertical => first
+                        .find_pane_height(target_id, h, sep_size, min_rows, base_ch_f, padding_y)
+                        .or_else(|| {
+                            second.find_pane_height(
+                                target_id, h, sep_size, min_rows, base_ch_f, padding_y,
+                            )
+                        }),
+                    SplitDirection::Horizontal => {
+                        let avail_h = (h - sep_size).max(0.0);
+                        let min_h =
+                            ((min_rows as f32 * base_ch_f) + padding_y * 2.0).min(avail_h * 0.45);
+                        let mut h1 = (avail_h * ratio).floor();
+                        h1 = h1.clamp(min_h, (avail_h - min_h).max(min_h));
+                        let h2 = (avail_h - h1).max(0.0);
+                        first
+                            .find_pane_height(
+                                target_id, h1, sep_size, min_rows, base_ch_f, padding_y,
+                            )
+                            .or_else(|| {
+                                second.find_pane_height(
+                                    target_id, h2, sep_size, min_rows, base_ch_f, padding_y,
+                                )
+                            })
+                    }
+                }
+            }
+        }
+    }
+
     #[inline]
     pub fn find_pane(&self, id: PaneId) -> Option<&Pane> {
         match self {
@@ -412,16 +530,22 @@ impl SplitNode {
     ) {
         match self {
             Self::Pane(pane) => {
-                let scale = if ctx.base_font_size > 0.0 {
-                    (pane.font_size / ctx.base_font_size)
-                        .clamp(MIN_FONT_SIZE_SCALE, MAX_FONT_SIZE_SCALE)
+                let text_w = (w - ctx.padding_x * 2.0).max(1.0);
+                let text_h = (h - ctx.padding_y * 2.0).max(1.0);
+                let min_scale = MIN_FONT_SIZE_SCALE;
+                let max_scale = if ctx.base_ch_f > 0.0 {
+                    (text_h / ctx.base_ch_f).max(min_scale)
+                } else {
+                    MAX_FONT_SIZE_SCALE
+                };
+                let raw_scale = if ctx.base_font_size > 0.0 {
+                    pane.font_size / ctx.base_font_size
                 } else {
                     1.0
                 };
+                let scale = raw_scale.clamp(min_scale, max_scale);
                 let pane_cw = (ctx.base_cw_f * scale).round().max(1.0);
                 let pane_ch = (ctx.base_ch_f * scale).round().max(1.0);
-                let text_w = (w - ctx.padding_x * 2.0).max(pane_cw);
-                let text_h = (h - ctx.padding_y * 2.0).max(pane_ch);
                 let cols = ((text_w / pane_cw).floor() as usize).max(1);
                 let rows = ((text_h / pane_ch).floor() as usize).max(1);
                 pane_rects.push(PaneRect {
@@ -532,6 +656,19 @@ impl SplitTree {
 
     pub fn find_pane(&self, id: PaneId) -> Option<&Pane> {
         self.root.find_pane(id)
+    }
+
+    pub fn find_pane_height(
+        &self,
+        target_id: PaneId,
+        h: f32,
+        sep_size: f32,
+        min_rows: usize,
+        base_ch_f: f32,
+        padding_y: f32,
+    ) -> Option<f32> {
+        self.root
+            .find_pane_height(target_id, h, sep_size, min_rows, base_ch_f, padding_y)
     }
 
     pub fn find_pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {

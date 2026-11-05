@@ -77,14 +77,9 @@ Velox guarantees strict performance metrics across runtime workloads:
 
 ### 1. Build
 
-Standard Release:
+Release Build (Fat LTO, stripped binary, panic=abort):
 ```bash
 cargo build --release
-```
-
-Production Optimized Build (Fat LTO, stripped binary, panic=abort):
-```bash
-cargo build --profile optimized-release
 ```
 
 ### 2. Run
@@ -96,9 +91,7 @@ Standard Run (Default Single-Process Mode):
 
 Diagnostics & System Check:
 ```bash
-velox doctor
-# or
-velox --diagnostics
+velox --doc
 ```
 
 Single-Instance Window Creation:

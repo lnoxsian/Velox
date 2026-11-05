@@ -9,7 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-PROFILE="optimized-release"
+PROFILE="release"
 NO_BUILD=0
 OUTPUT_DIR="${REPO_ROOT}/dist"
 
@@ -20,7 +20,7 @@ Usage: $(basename "$0") [OPTIONS]
 Builds a Fedora / RHEL binary package (.rpm) for Velox.
 
 Options:
-    --profile <PROFILE>     Cargo build profile ('optimized-release' or 'release', default: optimized-release)
+    --profile <PROFILE>     Cargo build profile ('release' or 'debug', default: release)
     --no-build              Skip compiling; package existing target binary immediately
     --output-dir <DIR>      Directory to write the .rpm package (default: dist/)
     -h, --help              Show this help message

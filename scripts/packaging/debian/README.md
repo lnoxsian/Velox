@@ -4,7 +4,7 @@ This directory contains the packaging script and artifacts to build a Debian bin
 
 ## Building the .deb Package
 
-To build the Debian package using the optimized release binary:
+To build the Debian package using the release binary:
 
 ```bash
 # From repository root or scripts/packaging/debian/
@@ -17,7 +17,7 @@ To build the Debian package using the optimized release binary:
 ./scripts/packaging/debian/build-deb.sh [OPTIONS]
 
 Options:
-    --profile <PROFILE>     Cargo build profile ('optimized-release' or 'release', default: optimized-release)
+    --profile <PROFILE>     Cargo build profile ('release' or 'debug', default: release)
     --no-build              Skip compiling; package existing target binary immediately
     --output-dir <DIR>      Output directory for .deb file (default: dist/)
     -h, --help              Show help message

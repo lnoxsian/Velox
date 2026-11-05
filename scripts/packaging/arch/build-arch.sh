@@ -10,7 +10,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-PROFILE="optimized-release"
+PROFILE="release"
 NO_BUILD=0
 STANDALONE=0
 OUTPUT_DIR="${REPO_ROOT}/dist"
@@ -22,7 +22,7 @@ Usage: $(basename "$0") [OPTIONS]
 Builds an Arch Linux package (.pkg.tar.zst) for Velox.
 
 Options:
-    --profile <PROFILE>     Cargo build profile ('optimized-release' or 'release', default: optimized-release)
+    --profile <PROFILE>     Cargo build profile ('release' or 'debug', default: release)
     --no-build              Skip compiling; package existing target binary immediately
     --standalone            Force standalone packaging (using tar/zstd without calling makepkg)
     --output-dir <DIR>      Output directory for package archive (default: dist/)

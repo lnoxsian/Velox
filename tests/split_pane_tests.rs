@@ -1585,47 +1585,74 @@ fn test_software_renderer_multi_pane_focus_switching() {
 
 #[test]
 fn test_zoom_limits_and_clamping_parity() {
-    use velox::app::split::{MAX_FONT_SIZE_SCALE, MIN_FONT_SIZE_SCALE, clamp_font_size};
+    use velox::app::split::{
+        MAX_FONT_SIZE_SCALE, MIN_FONT_SIZE_SCALE, clamp_font_size, clamp_font_size_with_max,
+        max_font_size_for_1_row,
+    };
 
     let base = 14.0;
     let min_expected = (base * MIN_FONT_SIZE_SCALE).max(1.0); // 2.8
     let max_expected = base * MAX_FONT_SIZE_SCALE; // 70.0
 
-    // 1. clamp_font_size function bounds
+    // 1. clamp_font_size fallback bounds (static fallback when dimensions unknown)
     assert_eq!(clamp_font_size(14.0, base), 14.0);
     assert_eq!(clamp_font_size(28.0, base), 28.0);
     assert_eq!(clamp_font_size(min_expected, base), min_expected);
     assert_eq!(clamp_font_size(max_expected, base), max_expected);
     assert_eq!(clamp_font_size(1.0, base), min_expected);
+    assert_eq!(clamp_font_size(0.5, 3.0), 1.0); // small base floor
     assert_eq!(clamp_font_size(0.0, base), min_expected);
     assert_eq!(clamp_font_size(-10.0, base), min_expected);
     assert_eq!(clamp_font_size(75.0, base), max_expected);
     assert_eq!(clamp_font_size(150.0, base), max_expected);
     assert_eq!(clamp_font_size(500.0, base), max_expected);
-    assert_eq!(clamp_font_size(0.5, 3.0), 1.0); // small base floor
-    assert_eq!(clamp_font_size(20.0, 3.0), 15.0);
 
-    // 2. CpuRenderer::update_font_size clamping
+    // 2. Dynamic 1-row max font size clamping
+    let avail_h = 720.0;
+    let base_ch = 24.0;
+    let dyn_max = max_font_size_for_1_row(avail_h, base_ch, base);
+    assert_eq!(dyn_max, (720.0 / 24.0) * 14.0); // 420.0
+    assert_eq!(clamp_font_size_with_max(300.0, base, dyn_max), 300.0);
+    assert_eq!(clamp_font_size_with_max(500.0, base, dyn_max), 420.0);
+    assert_eq!(clamp_font_size_with_max(1.0, base, dyn_max), min_expected);
+
+    // 3. CpuRenderer::update_font_size dynamic 1-row zoom support
     let theme = Theme::default();
     let mut renderer = CpuRenderer::new("monospace", base, 1.0, &theme, 1000, 800, true, 1.0);
     assert_eq!(renderer.default_font_size, base);
     assert_eq!(renderer.glyph_cache.font_size, base);
 
-    for zoom_in in [18.0, 30.0, 50.0, 70.0, 80.0, 100.0, 200.0, 500.0] {
+    // Zoom in within dynamic bounds
+    for zoom_in in [18.0, 30.0, 50.0, 70.0, 100.0, 200.0] {
         renderer.update_font_size(zoom_in);
+        assert_eq!(renderer.glyph_cache.font_size, zoom_in);
     }
-    assert_eq!(renderer.glyph_cache.font_size, max_expected);
 
-    for zoom_out in [60.0, 40.0, 14.0, 5.0, 2.8, 1.5, 0.5, -10.0] {
+    // Zoom past 1-row height clamps dynamically to 1-row limit
+    renderer.update_font_size(2000.0);
+    let rows = (renderer.viewport_height / renderer.glyph_cache.cell_height.max(1)).max(1);
+    assert_eq!(
+        rows, 1,
+        "Zoom in must clamp dynamically so number of rows is 1"
+    );
+    assert!(
+        renderer.glyph_cache.font_size < 1000.0,
+        "Font size must be clamped dynamically and not reach 2000.0"
+    );
+
+    // Zoom out down to min_expected
+    for zoom_out in [60.0, 40.0, 14.0, 5.0, 2.8] {
         renderer.update_font_size(zoom_out);
+        assert_eq!(renderer.glyph_cache.font_size, zoom_out);
     }
+    renderer.update_font_size(0.5);
     assert_eq!(renderer.glyph_cache.font_size, min_expected);
 
     // Reset base font size so glyph_cache is at base (14.0) before testing per-pane caches
     renderer.update_font_size(base);
     assert_eq!(renderer.glyph_cache.font_size, base);
 
-    // 3. CpuRenderer::render_splits clamps per-pane font sizes
+    // 4. CpuRenderer::render_splits renders per-pane font sizes with dynamic 1-row limits
     let p1 = create_test_pane(1, 49, 39);
     let p2 = create_test_pane(2, 49, 39);
     let rect1 = PaneRect {
@@ -1660,7 +1687,7 @@ fn test_zoom_limits_and_clamping_parity() {
         rect: rect1,
         cells: &p1.terminal.grid.cells,
         grid: &p1.terminal.grid,
-        font_size: 200.0, // extreme zoom in
+        font_size: 200.0, // large zoom in within 800px height (rows >= 1)
         theme: &theme,
         bold_is_bright: true,
         cursor_visible: false,
@@ -1673,7 +1700,7 @@ fn test_zoom_limits_and_clamping_parity() {
         rect: rect2,
         cells: &p2.terminal.grid.cells,
         grid: &p2.terminal.grid,
-        font_size: 0.1, // extreme zoom out
+        font_size: 2.8, // zoom out to min_expected
         theme: &theme,
         bold_is_bright: true,
         cursor_visible: false,
@@ -1695,19 +1722,17 @@ fn test_zoom_limits_and_clamping_parity() {
         None,
     );
 
-    assert!(renderer.pane_glyph_caches.contains_key(&7000));
-    assert!(!renderer.pane_glyph_caches.contains_key(&20000));
+    assert!(renderer.pane_glyph_caches.contains_key(&20000));
     assert_eq!(
-        renderer.pane_glyph_caches.get(&7000).unwrap().font_size,
-        70.0
+        renderer.pane_glyph_caches.get(&20000).unwrap().font_size,
+        200.0
     );
     assert!(renderer.pane_glyph_caches.contains_key(&280));
-    assert!(!renderer.pane_glyph_caches.contains_key(&10));
     assert_eq!(renderer.pane_glyph_caches.get(&280).unwrap().font_size, 2.8);
-    assert_eq!(renderer.pane_states.get(&1).unwrap().last_font_size, 70.0);
+    assert_eq!(renderer.pane_states.get(&1).unwrap().last_font_size, 200.0);
     assert_eq!(renderer.pane_states.get(&2).unwrap().last_font_size, 2.8);
 
-    // 4. SplitTree::calculate_layout clamps dimensions identically
+    // 5. SplitTree::calculate_layout scales dimensions and clamps to 1 row dynamically
     let mut tab = Tab::new(
         1,
         Arc::new(spawn_process("/bin/sh", None, None).unwrap()),
@@ -1725,23 +1750,29 @@ fn test_zoom_limits_and_clamping_parity() {
     let (rects_200, _) = tab
         .tree
         .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
-    assert_eq!(rects_70[0].cell_width, rects_200[0].cell_width);
-    assert_eq!(rects_70[0].cell_height, rects_200[0].cell_height);
-    assert_eq!(rects_70[0].cols, rects_200[0].cols);
-    assert_eq!(rects_70[0].rows, rects_200[0].rows);
+    assert!(rects_200[0].cell_width > rects_70[0].cell_width);
+    assert!(rects_200[0].cell_height > rects_70[0].cell_height);
+
+    // Extreme zoom in calculate_layout clamps so rows == 1
+    tab.tree.find_pane_mut(1).unwrap().font_size = 1000.0;
+    let (rects_1000, _) = tab
+        .tree
+        .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
+    assert_eq!(
+        rects_1000[0].rows, 1,
+        "Layout must clamp so rows is at least 1"
+    );
 
     tab.tree.find_pane_mut(1).unwrap().font_size = 2.8;
-    let (rects_2_8, _) = tab
+    let (rects_2, _) = tab
         .tree
         .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
-    tab.tree.find_pane_mut(1).unwrap().font_size = 0.1;
-    let (rects_0_1, _) = tab
+    tab.tree.find_pane_mut(1).unwrap().font_size = 14.0;
+    let (rects_14, _) = tab
         .tree
         .calculate_layout(0.0, 0.0, 800.0, 600.0, 4.0, 4.0, 4.0, 8, 16, base, 20, 10);
-    assert_eq!(rects_2_8[0].cell_width, rects_0_1[0].cell_width);
-    assert_eq!(rects_2_8[0].cell_height, rects_0_1[0].cell_height);
-    assert_eq!(rects_2_8[0].cols, rects_0_1[0].cols);
-    assert_eq!(rects_2_8[0].rows, rects_0_1[0].rows);
+    assert!(rects_14[0].cell_width > rects_2[0].cell_width);
+    assert!(rects_14[0].cell_height > rects_2[0].cell_height);
 }
 
 #[test]

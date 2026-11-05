@@ -22,7 +22,7 @@ build() {
     if [ ! -f "Cargo.toml" ] && [ -d "Velox-$pkgver" ]; then
         cd "Velox-$pkgver"
     fi
-    cargo build --profile optimized-release --locked
+    cargo build --release --locked
 }
 
 check() {
@@ -40,7 +40,7 @@ package() {
     fi
 
     # Install binary
-    install -Dm755 "target/optimized-release/velox" "$pkgdir/usr/bin/velox"
+    install -Dm755 "target/release/velox" "$pkgdir/usr/bin/velox"
 
     # Install desktop entry
     install -Dm644 "assets/io.github.lnoxsian.Velox.desktop" "$pkgdir/usr/share/applications/io.github.lnoxsian.Velox.desktop"
