@@ -731,11 +731,14 @@ impl Config {
             }
         }
         if let Some(cc) = self.cursor_color() {
-            if parse_hex_color(cc).is_none() {
+            let lower = cc.trim().to_ascii_lowercase();
+            let is_valid = matches!(lower.as_str(), "default" | "inverted" | "invert")
+                || parse_hex_color(cc).is_some();
+            if !is_valid {
                 diags.push(ConfigDiagnostic {
                     severity: DiagnosticSeverity::Warning,
                     message: format!(
-                        "Invalid hex color '{cc}' for cursor_color (expected #RGB or #RRGGBB)"
+                        "Invalid color '{cc}' for cursor_color (expected 'default', 'inverted', or #RGB/#RRGGBB)"
                     ),
                     line: None,
                     col: None,
@@ -743,11 +746,14 @@ impl Config {
             }
         }
         if let Some(ctc) = self.cursor_text_color() {
-            if parse_hex_color(ctc).is_none() {
+            let lower = ctc.trim().to_ascii_lowercase();
+            let is_valid = matches!(lower.as_str(), "default" | "inverted" | "invert")
+                || parse_hex_color(ctc).is_some();
+            if !is_valid {
                 diags.push(ConfigDiagnostic {
                     severity: DiagnosticSeverity::Warning,
                     message: format!(
-                        "Invalid hex color '{ctc}' for cursor_text_color (expected #RGB or #RRGGBB)"
+                        "Invalid color '{ctc}' for cursor_text_color (expected 'default', 'inverted', or #RGB/#RRGGBB)"
                     ),
                     line: None,
                     col: None,
@@ -755,7 +761,28 @@ impl Config {
             }
         }
 
-        // 4. Color palette validation
+        // 4. Tab accent color
+        if let Some(tac) = self.tab_accent_color() {
+            let lower = tac.trim().to_ascii_lowercase();
+            let is_valid = match lower.as_str() {
+                "default" | "none" | "default_fg" | "fg" | "foreground" | "default_bg" | "bg"
+                | "background" | "cursor" | "cursor_color" | "black" | "red" | "green"
+                | "yellow" | "blue" | "magenta" | "purple" | "cyan" | "white" => true,
+                _ => parse_hex_color(tac).is_some(),
+            };
+            if !is_valid {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "Invalid color '{tac}' for tab_accent_color (expected 'default', ANSI color name, or #RGB/#RRGGBB)"
+                    ),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+
+        // 5. Color palette validation
         if let Some(ref colors) = self.colors {
             let mut check_color = |name: &str, opt: &Option<String>| {
                 if let Some(val) = opt {
@@ -791,7 +818,7 @@ impl Config {
             check_color("bright_white", &colors.bright_white);
         }
 
-        // 5. Shell validation
+        // 6. Shell validation
         if let Some(ref sh) = self.shell {
             let p = std::path::Path::new(sh);
             if p.is_absolute() {

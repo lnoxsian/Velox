@@ -34,7 +34,7 @@ impl CliOptions {
         while i < args.len() {
             let arg = &args[i];
 
-            if arg == "doctor" {
+            if arg == "doctor" || arg == "--doctor" {
                 options.diagnostics = true;
                 i += 1;
                 continue;
@@ -97,7 +97,7 @@ impl CliOptions {
                 "-v" | "--version" => {
                     options.version = true;
                 }
-                "--diagnostics" => {
+                "--diagnostics" | "--doctor" => {
                     options.diagnostics = true;
                 }
                 _ => {
@@ -158,7 +158,8 @@ FLAGS:
     -s, --single-instance   Enable single-process mode (connects to running instance or starts server)
     -d, --daemon            Start in background daemon mode (keeps process alive for IPC requests)
         --hold              Keep window open after child command exits
-        --diagnostics       Print system, display backend, and desktop diagnostics
+        --diagnostics, --doctor
+                            Print system, display backend, desktop, and configuration diagnostics
         --banner            Print ASCII art banner
     -h, --help              Print help information
     -v, --version           Print version information
@@ -170,7 +171,7 @@ OPTIONS:
     -e, --command <CMD...>          Execute specified command instead of shell
 
 SUBCOMMANDS:
-    doctor                          Run diagnostics check on display and desktop environment
+    doctor                          Run diagnostics check on display, desktop, and configuration
     msg create-window               Instruct running single-process instance to open a new window"
         );
     }
@@ -244,6 +245,10 @@ mod tests {
         let args2 = vec!["velox".to_string(), "doctor".to_string()];
         let opts2 = CliOptions::parse_args(&args2);
         assert!(opts2.diagnostics);
+
+        let args3 = vec!["velox".to_string(), "--doctor".to_string()];
+        let opts3 = CliOptions::parse_args(&args3);
+        assert!(opts3.diagnostics);
     }
 
     #[test]

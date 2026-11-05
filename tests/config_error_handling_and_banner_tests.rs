@@ -187,3 +187,74 @@ fn test_alert_banner_dismiss_via_mouse_click() {
     );
     assert_eq!(ws.banner_height(), 0.0);
 }
+
+#[test]
+fn test_default_config_produces_zero_diagnostics() {
+    let default_cfg = velox::config::defaults::default_config();
+    let diags = default_cfg.validate();
+    assert!(
+        diags.is_empty(),
+        "default_config() must produce 0 validation diagnostics, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn test_default_config_toml_produces_zero_diagnostics() {
+    let default_toml = r##"
+single_instance = true
+
+[font]
+font_family = "Nerd Font"
+font_scale_multiplier = 1.5
+bold_is_bright = true
+
+[window]
+scrollback_limit = 2000
+infinite_scrollback = true
+scroll_multiplier = 2.5
+padding_x = 4.0
+padding_y = 4.0
+cursor_shape = "block"
+cursor_blink = false
+cursor_color = "default"
+cursor_text_color = "default"
+scroll_on_output = false
+scroll_on_keystroke = true
+opacity = 1.0
+window_dim = 0.2
+hide_mouse_on_typing = true
+
+[tabs]
+show_tab_bar = "Auto"
+show_close_button = true
+show_new_tab_button = false
+tab_accent_color = "blue"
+
+[panes]
+enabled = true
+separator_size = 2.0
+minimum_columns = 20
+minimum_rows = 5
+
+[colors]
+default_fg = "#ebdbb2"
+default_bg = "#282828"
+black = "#282828"
+red = "#cc241d"
+green = "#98971a"
+yellow = "#d79921"
+blue = "#458588"
+magenta = "#b16286"
+cyan = "#689d6a"
+white = "#a89984"
+bright_black = "#928374"
+bright_red = "#fb4934"
+"##;
+    let (_cfg, diags) = load_from_str(default_toml);
+    assert!(
+        diags.is_empty(),
+        "Default-style configuration must produce 0 diagnostics, got: {:?}",
+        diags
+    );
+}

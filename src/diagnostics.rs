@@ -2,8 +2,12 @@ use crate::config::config::Config;
 use crate::platform::{self, CANONICAL_APP_ID};
 use std::path::PathBuf;
 
-/// Diagnostic information about the host environment, display, and rendering setup.
-pub fn run_diagnostics(_config: &Config) {
+/// Diagnostic information about the host environment, display, rendering, and configuration.
+pub fn run_diagnostics(
+    _config: &Config,
+    diagnostics: &[crate::config::loader::ConfigDiagnostic],
+    config_path: Option<&std::path::Path>,
+) {
     println!("================================================================================");
     println!("                           Velox System Diagnostics                             ");
     println!("================================================================================");
@@ -13,6 +17,45 @@ pub fn run_diagnostics(_config: &Config) {
 
     let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "not set".to_string());
     println!("Session Type:         {} (XDG_SESSION_TYPE)", session_type);
+
+    println!("\n[Configuration Diagnostics]");
+    let path_display = config_path
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "None (using built-in default configuration)".to_string());
+    println!("  Config File:        {}", path_display);
+    if diagnostics.is_empty() {
+        println!("  Config Status:      Valid (0 errors, 0 warnings)");
+    } else {
+        let errors = diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::config::loader::DiagnosticSeverity::Error)
+            .count();
+        let warnings = diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::config::loader::DiagnosticSeverity::Warning)
+            .count();
+        println!(
+            "  Config Status:      Found {} issue(s) ({} error{}, {} warning{}):",
+            diagnostics.len(),
+            errors,
+            if errors == 1 { "" } else { "s" },
+            warnings,
+            if warnings == 1 { "" } else { "s" }
+        );
+        for d in diagnostics {
+            let prefix = match d.severity {
+                crate::config::loader::DiagnosticSeverity::Error => "Error",
+                crate::config::loader::DiagnosticSeverity::Warning => "Warning",
+            };
+            if let (Some(line), Some(col)) = (d.line, d.col) {
+                println!("    - [{}] Line {}:{} - {}", prefix, line, col, d.message);
+            } else if let Some(line) = d.line {
+                println!("    - [{}] Line {} - {}", prefix, line, d.message);
+            } else {
+                println!("    - [{}] {}", prefix, d.message);
+            }
+        }
+    }
 
     println!("\n[Display Environment]");
     let wayland_disp = std::env::var("WAYLAND_DISPLAY").ok();

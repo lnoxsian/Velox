@@ -32,6 +32,12 @@ fn main() {
 
     // Load user configuration with resilient diagnostics
     let (config, diagnostics, config_path) = config::loader::load_with_diagnostics();
+
+    if cli_opts.diagnostics {
+        velox::diagnostics::run_diagnostics(&config, &diagnostics, config_path.as_deref());
+        return;
+    }
+
     for diag in &diagnostics {
         let path_str = config_path
             .as_ref()
@@ -47,11 +53,6 @@ fn main() {
                 eprintln!("Velox Config Warning [{}]: {}", path_str, diag);
             }
         }
-    }
-
-    if cli_opts.diagnostics {
-        velox::diagnostics::run_diagnostics(&config);
-        return;
     }
 
     let single_instance = cli_opts.single_instance || config.single_instance.unwrap_or(true);
