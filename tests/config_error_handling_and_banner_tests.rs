@@ -258,3 +258,28 @@ bright_red = "#fb4934"
         diags
     );
 }
+
+#[test]
+fn test_alert_banner_renders_with_foreground_as_background() {
+    let pty = Arc::new(PtyMaster::dummy());
+    let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+    ws.banner = Some(AlertBanner {
+        severity: DiagnosticSeverity::Warning,
+        message: "Test warning".to_string(),
+        dismiss_hovered: false,
+    });
+
+    ws.draw();
+
+    let csd_h = ws.window.csd_title_bar_height() as usize;
+    let banner_y = csd_h;
+    let expected_banner_bg = ws.renderer.palette.default_fg;
+
+    let stride = ws.renderer.framebuffer.stride;
+    let sample_pixel = ws.renderer.framebuffer.pixels[(banner_y + 1) * stride + 1];
+    assert_eq!(
+        sample_pixel, expected_banner_bg,
+        "Banner background must use foreground color (inverted style)"
+    );
+}

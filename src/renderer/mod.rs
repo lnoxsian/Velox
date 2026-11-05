@@ -1204,15 +1204,9 @@ impl CpuRenderer {
         if height == 0 {
             return;
         }
-        let bg_color = match banner.severity {
-            crate::config::loader::DiagnosticSeverity::Error => 0xFFC0392B,
-            crate::config::loader::DiagnosticSeverity::Warning => 0xFFD35400,
-        };
-        let border_color = match banner.severity {
-            crate::config::loader::DiagnosticSeverity::Error => 0xFFE74C3C,
-            crate::config::loader::DiagnosticSeverity::Warning => 0xFFE67E22,
-        };
-        let text_color = 0xFFFFFFFF;
+        let bg_color = self.palette.default_fg;
+        let text_color = PackedColor::from_color(self.palette.raw_default_bg).to_u32();
+        let border_color = text_color;
         let w = self.viewport_width;
 
         // 1. Fill background span
@@ -1247,7 +1241,15 @@ impl CpuRenderer {
         let btn_y = y_offset + (height.saturating_sub(btn_w)) / 2;
 
         if banner.dismiss_hovered {
-            let hover_bg = 0x33FFFFFF;
+            let fg = self.palette.raw_default_fg;
+            let bg = self.palette.raw_default_bg;
+            let blend = |c1: u8, c2: u8| -> u8 { ((c1 as u16 * 85 + c2 as u16 * 15) / 100) as u8 };
+            let hover_bg = PackedColor::from_color(crate::screen::cell::Color {
+                r: blend(fg.r, bg.r),
+                g: blend(fg.g, bg.g),
+                b: blend(fg.b, bg.b),
+            })
+            .to_u32();
             self.framebuffer
                 .fill_span(btn_x, btn_y, btn_w, btn_w, hover_bg);
         }
