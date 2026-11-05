@@ -1,5 +1,6 @@
 use crate::screen::cell::{Cell, Color};
 use bincode;
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -9,6 +10,94 @@ use tempfile::tempfile;
 
 pub const SCROLLBACK_CHUNK_ROWS: usize = 512;
 pub const CHUNK_CACHE_CAPACITY: usize = 4;
+pub const MAX_CONSECUTIVE_FLUSH_FAILURES: usize = 3;
+pub const MAX_SERIALIZED_CHUNK_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_PENDING_CHUNK_ROWS: usize = SCROLLBACK_CHUNK_ROWS * 2;
+pub const FALLBACK_IN_MEMORY_LIMIT: usize = 2000;
+
+#[derive(Debug)]
+pub enum ScrollbackError {
+    /// Temporary file creation failed
+    TempfileCreation(std::io::Error),
+    /// File seek operation failed
+    Seek { offset: u64, source: std::io::Error },
+    /// File write operation failed
+    Write {
+        bytes: usize,
+        source: std::io::Error,
+    },
+    /// File read operation failed
+    Read {
+        offset: u64,
+        bytes: usize,
+        source: std::io::Error,
+    },
+    /// Chunk bincode serialization failed
+    Serialization(bincode::Error),
+    /// Chunk bincode deserialization failed
+    Deserialization(bincode::Error),
+    /// Serialized chunk size is zero or exceeds maximum allowed size
+    OversizedChunk { size: usize, max: usize },
+    /// Corrupted chunk metadata
+    CorruptedMetadata(String),
+    /// Storage file lock/borrow conflict
+    BorrowConflict,
+}
+
+impl std::fmt::Display for ScrollbackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TempfileCreation(e) => {
+                write!(f, "Failed to create temporary scrollback file: {}", e)
+            }
+            Self::Seek { offset, source } => {
+                write!(f, "Scrollback seek failed at offset {}: {}", offset, source)
+            }
+            Self::Write { bytes, source } => {
+                write!(f, "Scrollback write failed ({} bytes): {}", bytes, source)
+            }
+            Self::Read {
+                offset,
+                bytes,
+                source,
+            } => write!(
+                f,
+                "Scrollback read failed ({} bytes at offset {}): {}",
+                bytes, offset, source
+            ),
+            Self::Serialization(e) => write!(f, "Scrollback chunk serialization failed: {}", e),
+            Self::Deserialization(e) => {
+                write!(f, "Scrollback chunk deserialization failed: {}", e)
+            }
+            Self::OversizedChunk { size, max } => write!(
+                f,
+                "Scrollback chunk size {} exceeds maximum allowed limit {}",
+                size, max
+            ),
+            Self::CorruptedMetadata(msg) => write!(f, "Scrollback metadata corruption: {}", msg),
+            Self::BorrowConflict => write!(f, "Scrollback file buffer borrow conflict"),
+        }
+    }
+}
+
+impl std::error::Error for ScrollbackError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TempfileCreation(e)
+            | Self::Seek { source: e, .. }
+            | Self::Write { source: e, .. }
+            | Self::Read { source: e, .. } => Some(e),
+            Self::Serialization(e) | Self::Deserialization(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistenceState {
+    Active,
+    Disabled,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Row {
@@ -52,8 +141,15 @@ impl Chunk {
     }
 
     pub fn push_row(&mut self, cells: &[Cell], wrapped: bool) {
-        let start = self.cells.len() as u32;
-        let len = cells.len() as u32;
+        let Ok(start) = u32::try_from(self.cells.len()) else {
+            return;
+        };
+        let Ok(len) = u32::try_from(cells.len()) else {
+            return;
+        };
+        if start.checked_add(len).is_none() {
+            return;
+        }
         self.cells.extend_from_slice(cells);
         self.rows.push(RowMeta {
             start,
@@ -81,7 +177,11 @@ impl Chunk {
     pub fn get_row_view(&self, row_offset: usize) -> Option<(&[Cell], bool)> {
         let meta = self.rows.get(row_offset)?;
         let start = meta.start as usize;
-        let end = start + meta.len as usize;
+        let len = meta.len as usize;
+        let end = start.checked_add(len)?;
+        if start > self.cells.len() || end > self.cells.len() {
+            return None;
+        }
         Some((&self.cells[start..end], meta.wrapped))
     }
 }
@@ -210,12 +310,15 @@ pub struct ScrollbackStorage {
     id: u64,
     file: RefCell<File>,
     chunks: Vec<ChunkIndex>,
-    pending_chunk: Chunk,
+    pub(crate) pending_chunk: Chunk,
     local_cache: RefCell<Vec<CachedChunk>>,
     tick_counter: RefCell<u64>,
     serialize_buf: RefCell<Vec<u8>>,
     read_buf: RefCell<Vec<u8>>,
     total_disk_lines: u64,
+    state: PersistenceState,
+    consecutive_failures: usize,
+    last_error: Option<String>,
 }
 
 impl Drop for ScrollbackStorage {
@@ -229,9 +332,23 @@ impl Drop for ScrollbackStorage {
 impl ScrollbackStorage {
     pub fn new() -> Option<Self> {
         let id = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
-        tempfile().ok().map(|f| Self {
+        match tempfile() {
+            Ok(f) => Some(Self::init_with_file(id, f)),
+            Err(e) => {
+                warn!(
+                    "Failed to create temporary file for infinite scrollback persistence: {}. \
+                     Operating in bounded in-memory fallback mode.",
+                    e
+                );
+                None
+            }
+        }
+    }
+
+    fn init_with_file(id: u64, file: File) -> Self {
+        Self {
             id,
-            file: RefCell::new(f),
+            file: RefCell::new(file),
             chunks: Vec::new(),
             pending_chunk: Chunk::new(),
             local_cache: RefCell::new(Vec::with_capacity(CHUNK_CACHE_CAPACITY)),
@@ -239,7 +356,57 @@ impl ScrollbackStorage {
             serialize_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
             read_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
             total_disk_lines: 0,
-        })
+            state: PersistenceState::Active,
+            consecutive_failures: 0,
+            last_error: None,
+        }
+    }
+
+    /// Creates a new storage instance backed by the specified file handle.
+    /// Useful for testing custom storage sinks (such as `/dev/full` or custom mock files).
+    pub fn with_file(file: File) -> Self {
+        let id = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
+        Self::init_with_file(id, file)
+    }
+
+    /// Access the underlying storage file handle.
+    pub fn file(&self) -> &RefCell<File> {
+        &self.file
+    }
+
+    /// Mutable reference to recorded chunk metadata entries.
+    pub fn chunks_mut(&mut self) -> &mut Vec<ChunkIndex> {
+        &mut self.chunks
+    }
+
+    /// Slice view of recorded chunk metadata entries.
+    pub fn chunks(&self) -> &[ChunkIndex] {
+        &self.chunks
+    }
+
+    /// Reads a row directly from disk chunk storage without hitting hot rows.
+    pub fn read_disk_row<R>(
+        &self,
+        chunk_idx: usize,
+        row_offset: usize,
+        f: impl FnOnce(&[Cell], bool) -> R,
+    ) -> Option<R> {
+        self.with_disk_row_slice(chunk_idx, row_offset, f)
+    }
+
+    #[inline(always)]
+    pub fn state(&self) -> PersistenceState {
+        self.state
+    }
+
+    #[inline(always)]
+    pub fn is_active(&self) -> bool {
+        self.state == PersistenceState::Active
+    }
+
+    #[inline(always)]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 
     pub fn trim_memory(&self) {
@@ -257,35 +424,155 @@ impl ScrollbackStorage {
         }
     }
 
-    fn flush_pending_chunk(&mut self) {
+    pub fn flush_pending_chunk(&mut self) -> Result<(), ScrollbackError> {
         if self.pending_chunk.is_empty() {
-            return;
+            return Ok(());
         }
 
-        let line_count = self.pending_chunk.len() as u32;
+        if self.state == PersistenceState::Disabled {
+            return Err(ScrollbackError::CorruptedMetadata(
+                "Disk persistence is disabled".to_string(),
+            ));
+        }
+
+        let line_count = match u32::try_from(self.pending_chunk.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                let err = ScrollbackError::CorruptedMetadata(format!(
+                    "Pending chunk length {} exceeds u32::MAX",
+                    self.pending_chunk.len()
+                ));
+                self.record_flush_failure(&err);
+                return Err(err);
+            }
+        };
+
         let first_line = self.total_disk_lines;
 
+        if self.serialize_buf.try_borrow_mut().is_err() {
+            let err = ScrollbackError::BorrowConflict;
+            self.record_flush_failure(&err);
+            return Err(err);
+        }
         let mut serialize_buf = self.serialize_buf.borrow_mut();
         serialize_buf.clear();
 
-        if let Ok(mut file) = self.file.try_borrow_mut()
-            && let Ok(offset) = file.seek(SeekFrom::End(0))
-            && bincode::serialize_into(&mut *serialize_buf, &self.pending_chunk).is_ok()
-            && file.write_all(&serialize_buf).is_ok()
-        {
-            self.chunks.push(ChunkIndex {
-                first_line,
-                line_count,
-                file_offset: offset,
-                byte_len: serialize_buf.len() as u32,
-            });
-            self.total_disk_lines += line_count as u64;
-            self.pending_chunk.clear();
+        if let Err(e) = bincode::serialize_into(&mut *serialize_buf, &self.pending_chunk) {
+            drop(serialize_buf);
+            let err = ScrollbackError::Serialization(e);
+            error!("Failed to serialize scrollback chunk: {}", err);
+            self.record_flush_failure(&err);
+            return Err(err);
         }
 
+        let serialized_len = serialize_buf.len();
+        if serialized_len == 0 || serialized_len > MAX_SERIALIZED_CHUNK_BYTES {
+            drop(serialize_buf);
+            let err = ScrollbackError::OversizedChunk {
+                size: serialized_len,
+                max: MAX_SERIALIZED_CHUNK_BYTES,
+            };
+            error!("Scrollback chunk serialization invalid size: {}", err);
+            self.record_flush_failure(&err);
+            return Err(err);
+        }
+
+        let byte_len = match u32::try_from(serialized_len) {
+            Ok(len) => len,
+            Err(_) => {
+                drop(serialize_buf);
+                let err = ScrollbackError::OversizedChunk {
+                    size: serialized_len,
+                    max: u32::MAX as usize,
+                };
+                self.record_flush_failure(&err);
+                return Err(err);
+            }
+        };
+
+        if self.file.try_borrow_mut().is_err() {
+            drop(serialize_buf);
+            let err = ScrollbackError::BorrowConflict;
+            self.record_flush_failure(&err);
+            return Err(err);
+        }
+        let mut file = self.file.borrow_mut();
+
+        let offset = match file.seek(SeekFrom::End(0)) {
+            Ok(off) => off,
+            Err(e) => {
+                drop(file);
+                drop(serialize_buf);
+                let err = ScrollbackError::Seek {
+                    offset: 0,
+                    source: e,
+                };
+                error!("Failed to seek to end of scrollback file: {}", err);
+                self.record_flush_failure(&err);
+                return Err(err);
+            }
+        };
+
+        if let Err(e) = file.write_all(&serialize_buf) {
+            drop(file);
+            drop(serialize_buf);
+            let err = ScrollbackError::Write {
+                bytes: serialized_len,
+                source: e,
+            };
+            error!("Failed to write scrollback chunk to disk: {}", err);
+            self.record_flush_failure(&err);
+            return Err(err);
+        }
+
+        drop(file);
         // Release serialization buffer if it grew abnormally large
         if serialize_buf.capacity() > 1024 * 1024 {
             *serialize_buf = Vec::with_capacity(128 * 1024);
+        }
+        drop(serialize_buf);
+
+        // Success: record index, advance total disk lines, clear pending
+        self.chunks.push(ChunkIndex {
+            first_line,
+            line_count,
+            file_offset: offset,
+            byte_len,
+        });
+        self.total_disk_lines = self.total_disk_lines.saturating_add(line_count as u64);
+        self.pending_chunk.clear();
+        self.consecutive_failures = 0;
+
+        Ok(())
+    }
+
+    fn record_flush_failure(&mut self, err: &ScrollbackError) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_error = Some(err.to_string());
+
+        if self.consecutive_failures >= MAX_CONSECUTIVE_FLUSH_FAILURES {
+            self.state = PersistenceState::Disabled;
+            warn!(
+                "Infinite scrollback disk persistence disabled after {} consecutive failures: {}. \
+                 Operating in bounded in-memory fallback mode.",
+                self.consecutive_failures, err
+            );
+        }
+
+        // Cap pending_chunk to MAX_PENDING_CHUNK_ROWS to prevent unbounded memory growth
+        if self.pending_chunk.rows.len() > MAX_PENDING_CHUNK_ROWS {
+            let excess = self.pending_chunk.rows.len() - MAX_PENDING_CHUNK_ROWS;
+            if excess < self.pending_chunk.rows.len() {
+                let removed_cells = self.pending_chunk.rows[excess].start as usize;
+                self.pending_chunk.rows.drain(..excess);
+                self.pending_chunk.cells.drain(..removed_cells);
+                let shift = removed_cells as u32;
+                for meta in &mut self.pending_chunk.rows {
+                    meta.start = meta.start.saturating_sub(shift);
+                }
+            } else {
+                self.pending_chunk.clear();
+            }
         }
     }
 
@@ -335,19 +622,92 @@ impl ScrollbackStorage {
         }
 
         // 3. Cache miss: Read chunk from disk using reusable buffer
-        let chunk_meta = *self.chunks.get(chunk_idx)?;
-        let mut file = self.file.try_borrow_mut().ok()?;
-        file.seek(SeekFrom::Start(chunk_meta.file_offset)).ok()?;
+        let chunk_meta = match self.chunks.get(chunk_idx) {
+            Some(meta) => *meta,
+            None => {
+                error!(
+                    "Scrollback chunk index {} out of range (total chunks: {})",
+                    chunk_idx,
+                    self.chunks.len()
+                );
+                return None;
+            }
+        };
 
-        let mut read_buf = self.read_buf.borrow_mut();
         let needed_len = chunk_meta.byte_len as usize;
+        if needed_len == 0 || needed_len > MAX_SERIALIZED_CHUNK_BYTES {
+            error!(
+                "Corrupted scrollback chunk {} metadata: byte length {} invalid (max: {})",
+                chunk_idx, needed_len, MAX_SERIALIZED_CHUNK_BYTES
+            );
+            return None;
+        }
+
+        let mut file = match self.file.try_borrow_mut() {
+            Ok(f) => f,
+            Err(_) => {
+                error!(
+                    "Borrow conflict accessing scrollback file for chunk {}",
+                    chunk_idx
+                );
+                return None;
+            }
+        };
+
+        if let Err(e) = file.seek(SeekFrom::Start(chunk_meta.file_offset)) {
+            error!(
+                "Scrollback seek failed at offset {} for chunk {}: {}",
+                chunk_meta.file_offset, chunk_idx, e
+            );
+            return None;
+        }
+
+        let mut read_buf = match self.read_buf.try_borrow_mut() {
+            Ok(buf) => buf,
+            Err(_) => {
+                error!(
+                    "Borrow conflict accessing scrollback read buffer for chunk {}",
+                    chunk_idx
+                );
+                return None;
+            }
+        };
+
         if read_buf.len() < needed_len {
             read_buf.resize(needed_len, 0);
         }
-        file.read_exact(&mut read_buf[..needed_len]).ok()?;
 
-        let chunk: Chunk = bincode::deserialize(&read_buf[..needed_len]).ok()?;
-        let (cells, wrapped) = chunk.get_row_view(row_offset)?;
+        if let Err(e) = file.read_exact(&mut read_buf[..needed_len]) {
+            error!(
+                "Scrollback read_exact failed ({} bytes at offset {}) for chunk {}: {}",
+                needed_len, chunk_meta.file_offset, chunk_idx, e
+            );
+            return None;
+        }
+
+        let chunk: Chunk = match bincode::deserialize(&read_buf[..needed_len]) {
+            Ok(c) => c,
+            Err(e) => {
+                error!(
+                    "Scrollback chunk {} deserialization failed: {}",
+                    chunk_idx, e
+                );
+                return None;
+            }
+        };
+
+        let (cells, wrapped) = match chunk.get_row_view(row_offset) {
+            Some(view) => view,
+            None => {
+                error!(
+                    "Scrollback chunk {} row offset {} out of bounds (chunk rows: {})",
+                    chunk_idx,
+                    row_offset,
+                    chunk.rows.len()
+                );
+                return None;
+            }
+        };
         let result = f(cells, wrapped);
         let arc_chunk = Arc::new(chunk);
 
@@ -403,21 +763,67 @@ pub struct Scrollback {
     pub default_bg: Option<Color>,
     hot_rows: VecDeque<Row>,
     storage: Option<ScrollbackStorage>,
+    persistence_state: PersistenceState,
+    last_error: Option<String>,
 }
 
 impl Scrollback {
     pub fn new(max_lines: usize, infinite: bool) -> Self {
+        let (storage, persistence_state, last_error) = if infinite {
+            match ScrollbackStorage::new() {
+                Some(s) => (Some(s), PersistenceState::Active, None),
+                None => (
+                    None,
+                    PersistenceState::Disabled,
+                    Some("Failed to create temporary file for scrollback persistence".to_string()),
+                ),
+            }
+        } else {
+            (None, PersistenceState::Disabled, None)
+        };
+
         Self {
             max_lines,
             infinite,
             default_bg: None,
             hot_rows: VecDeque::new(),
-            storage: if infinite {
-                ScrollbackStorage::new()
-            } else {
-                None
-            },
+            storage,
+            persistence_state,
+            last_error,
         }
+    }
+
+    /// Initializes a scrollback buffer with a pre-configured storage engine.
+    pub fn with_storage(max_lines: usize, storage: ScrollbackStorage) -> Self {
+        Self {
+            max_lines,
+            infinite: true,
+            default_bg: None,
+            hot_rows: VecDeque::new(),
+            persistence_state: storage.state,
+            last_error: storage.last_error.clone(),
+            storage: Some(storage),
+        }
+    }
+
+    /// Mutable access to the underlying storage instance.
+    pub fn storage_mut(&mut self) -> Option<&mut ScrollbackStorage> {
+        self.storage.as_mut()
+    }
+
+    #[inline(always)]
+    pub fn persistence_state(&self) -> PersistenceState {
+        self.persistence_state
+    }
+
+    #[inline(always)]
+    pub fn is_persistence_disabled(&self) -> bool {
+        self.persistence_state == PersistenceState::Disabled
+    }
+
+    #[inline(always)]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 
     /// Releases local cache entries and shrinks memory capacity.
@@ -439,17 +845,22 @@ impl Scrollback {
             trim_trailing_blank_cells(cells, self.default_bg)
         };
 
-        if self.infinite {
-            if self.storage.is_none() {
-                self.storage = ScrollbackStorage::new();
-            }
+        let is_storage_active = self.infinite
+            && self.persistence_state == PersistenceState::Active
+            && self.storage.as_ref().is_some_and(|s| s.is_active());
 
+        if is_storage_active {
             if self.max_lines == 0 {
                 // Directly accumulate in pending chunk when hot RAM buffer limit is 0
                 if let Some(storage) = self.storage.as_mut() {
                     storage.pending_chunk.push_row(target_cells, wrapped);
                     if storage.pending_chunk.len() >= SCROLLBACK_CHUNK_ROWS {
-                        storage.flush_pending_chunk();
+                        if let Err(e) = storage.flush_pending_chunk() {
+                            if storage.state() == PersistenceState::Disabled {
+                                self.persistence_state = PersistenceState::Disabled;
+                                self.last_error = Some(e.to_string());
+                            }
+                        }
                     }
                 }
                 return;
@@ -462,7 +873,12 @@ impl Scrollback {
                         .pending_chunk
                         .push_row(&oldest.cells, oldest.wrapped);
                     if storage.pending_chunk.len() >= SCROLLBACK_CHUNK_ROWS {
-                        storage.flush_pending_chunk();
+                        if let Err(e) = storage.flush_pending_chunk() {
+                            if storage.state() == PersistenceState::Disabled {
+                                self.persistence_state = PersistenceState::Disabled;
+                                self.last_error = Some(e.to_string());
+                            }
+                        }
                     }
                 }
                 // Recycle the popped row's allocation instead of dropping and reallocating
@@ -477,8 +893,14 @@ impl Scrollback {
                 });
             }
         } else {
-            // Finite mode: Recycled ring buffer in RAM
-            if self.hot_rows.len() >= self.max_lines
+            // Finite mode OR Bounded Fallback mode (when infinite storage disabled/failed)
+            let limit = if self.max_lines == 0 {
+                FALLBACK_IN_MEMORY_LIMIT
+            } else {
+                self.max_lines
+            };
+
+            if self.hot_rows.len() >= limit
                 && let Some(mut reused) = self.hot_rows.pop_front()
             {
                 reused.cells.clear();
@@ -495,11 +917,11 @@ impl Scrollback {
     }
 
     pub fn len(&self) -> usize {
-        let storage_lines = self
-            .storage
-            .as_ref()
-            .map_or(0, |s| s.total_disk_lines as usize + s.pending_chunk.len());
-        storage_lines + self.hot_rows.len()
+        let storage_lines = self.storage.as_ref().map_or(0, |s| {
+            s.total_disk_lines
+                .saturating_add(s.pending_chunk.len() as u64) as usize
+        });
+        storage_lines.saturating_add(self.hot_rows.len())
     }
 
     #[inline(always)]
@@ -516,7 +938,7 @@ impl Scrollback {
             if index < total_disk {
                 let chunk_idx = match storage.chunks.binary_search_by(|chunk| {
                     let start = chunk.first_line as usize;
-                    let end = start + chunk.line_count as usize;
+                    let end = start.saturating_add(chunk.line_count as usize);
                     if index < start {
                         std::cmp::Ordering::Greater
                     } else if index >= end {
@@ -529,15 +951,15 @@ impl Scrollback {
                     Err(_) => return None,
                 };
 
-                let chunk = &storage.chunks[chunk_idx];
-                let row_offset = index - chunk.first_line as usize;
+                let chunk = storage.chunks.get(chunk_idx)?;
+                let row_offset = index.saturating_sub(chunk.first_line as usize);
                 return storage.with_disk_row_slice(chunk_idx, row_offset, f);
-            } else if index < total_disk + pending_len {
-                let pending_idx = index - total_disk;
+            } else if index < total_disk.saturating_add(pending_len) {
+                let pending_idx = index.saturating_sub(total_disk);
                 let (cells, wrapped) = storage.pending_chunk.get_row_view(pending_idx)?;
                 return Some(f(cells, wrapped));
             } else {
-                let hot_idx = index - total_disk - pending_len;
+                let hot_idx = index.saturating_sub(total_disk).saturating_sub(pending_len);
                 return self.hot_rows.get(hot_idx).map(|r| f(&r.cells, r.wrapped));
             }
         }
@@ -566,17 +988,55 @@ impl Scrollback {
 
     pub fn clear(&mut self) {
         self.hot_rows.clear();
-        if let Some(storage) = self.storage.as_mut() {
+        if self.infinite {
+            if self.persistence_state == PersistenceState::Disabled || self.storage.is_none() {
+                if let Some(new_storage) = ScrollbackStorage::new() {
+                    self.storage = Some(new_storage);
+                    self.persistence_state = PersistenceState::Active;
+                    self.last_error = None;
+                }
+            } else if let Some(storage) = self.storage.as_mut() {
+                storage.pending_chunk.clear();
+                storage.chunks.clear();
+                storage.local_cache.borrow_mut().clear();
+                if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
+                    global_cache.invalidate_storage(storage.id);
+                }
+                storage.total_disk_lines = 0;
+                storage.consecutive_failures = 0;
+                storage.last_error = None;
+                if let Ok(mut file) = storage.file.try_borrow_mut() {
+                    let _ = file.set_len(0);
+                    let _ = file.seek(SeekFrom::Start(0));
+                }
+            }
+        } else if let Some(storage) = self.storage.as_mut() {
             storage.pending_chunk.clear();
             storage.chunks.clear();
-            storage.local_cache.borrow_mut().clear();
-            if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
-                global_cache.invalidate_storage(storage.id);
-            }
             storage.total_disk_lines = 0;
-            if let Ok(mut file) = storage.file.try_borrow_mut() {
-                let _ = file.set_len(0);
-                let _ = file.seek(SeekFrom::Start(0));
+        }
+    }
+
+    /// Attempts to recover or re-enable disk persistence if it was previously disabled.
+    pub fn try_recover_persistence(&mut self) -> Result<(), ScrollbackError> {
+        if !self.infinite {
+            return Ok(());
+        }
+
+        match ScrollbackStorage::new() {
+            Some(new_storage) => {
+                self.storage = Some(new_storage);
+                self.persistence_state = PersistenceState::Active;
+                self.last_error = None;
+                info!("Infinite scrollback disk persistence recovered with new storage file");
+                Ok(())
+            }
+            None => {
+                let err = ScrollbackError::TempfileCreation(std::io::Error::other(
+                    "Recovery failed: unable to allocate new temporary file",
+                ));
+                self.last_error = Some(err.to_string());
+                Err(err)
             }
         }
     }

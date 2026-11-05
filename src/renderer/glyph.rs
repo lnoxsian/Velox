@@ -487,10 +487,7 @@ impl GlyphCache {
             return Some(g_ref);
         }
 
-        let g_ref = match self.rasterize_glyph(key) {
-            Some(gr) => gr,
-            None => return None,
-        };
+        let g_ref = self.rasterize_glyph(key)?;
 
         if self.atlas.is_full() {
             self.unicode_table.clear();
