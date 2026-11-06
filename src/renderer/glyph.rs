@@ -899,12 +899,8 @@ impl GlyphCache {
             };
         }
         let needed_u32 = (tw * th) as usize;
-        if self.scratch.color_pixels.len() < needed_u32 {
-            self.scratch.color_pixels.resize(needed_u32, 0);
-        } else {
-            self.scratch.color_pixels.truncate(needed_u32);
-            self.scratch.color_pixels.fill(0);
-        }
+        self.scratch.color_pixels.clear();
+        self.scratch.color_pixels.resize(needed_u32, 0);
 
         let scale_x = tw as f32 / w as f32;
         let scale_y = th as f32 / h as f32;
@@ -1016,12 +1012,8 @@ impl GlyphCache {
         width_mult: u8,
     ) -> GlyphRef {
         let needed_alpha = (target_width * self.cell_height) as usize;
-        if self.scratch.alpha_pixels.len() < needed_alpha {
-            self.scratch.alpha_pixels.resize(needed_alpha, 0);
-        } else {
-            self.scratch.alpha_pixels.truncate(needed_alpha);
-            self.scratch.alpha_pixels.fill(0);
-        }
+        self.scratch.alpha_pixels.clear();
+        self.scratch.alpha_pixels.resize(needed_alpha, 0);
 
         let cell_h = self.cell_height as i32;
         let tw = target_width as i32;
@@ -1231,5 +1223,46 @@ mod tests {
         assert_eq!(scratch.alpha_pixels.capacity(), 0);
         // Retained buffer remains allocated
         assert!(scratch.color_pixels.capacity() >= 10 * 1024);
+    }
+
+    #[test]
+    fn test_glyph_scratch_successive_rasterization_isolation() {
+        let mut cache = GlyphCache::try_from_font_family("Monospace", 14.0, 1.0).unwrap();
+        cache.clear();
+
+        // 1. Manually dirty the scratch buffer with non-zero bytes as if a smaller glyph was just rasterized
+        cache.scratch.alpha_pixels = vec![255u8; 100];
+
+        // 2. Rasterize space ' ' (codepoint 32), which has no outline so it must produce zero pixels
+        let g_space = cache
+            .get_or_rasterize(GlyphKey::new(' ', false, false, false))
+            .unwrap();
+        let mask_space = cache.atlas.get_alpha(&g_space);
+
+        assert!(
+            mask_space.iter().all(|&a| a == 0),
+            "Space glyph must have entirely zero alpha pixels without ghost pixels from dirty scratch buffer"
+        );
+
+        // 3. Rasterize 'M', then dirty scratch again and rasterize 'W'
+        let g_m = cache
+            .get_or_rasterize(GlyphKey::new('M', false, false, false))
+            .unwrap();
+        let _ = cache.atlas.get_alpha(&g_m);
+
+        cache.scratch.alpha_pixels = vec![200u8; 50];
+        let g_dot = cache
+            .get_or_rasterize(GlyphKey::new('.', false, false, false))
+            .unwrap();
+        let mask_dot = cache.atlas.get_alpha(&g_dot);
+        // A dot glyph has a tiny footprint at the baseline; top rows must be completely 0
+        let top_row_zeros = mask_dot
+            .iter()
+            .take(g_dot.width as usize * 3)
+            .all(|&a| a == 0);
+        assert!(
+            top_row_zeros,
+            "Top rows of dot glyph must be zero without ghost pixels from prior scratch"
+        );
     }
 }
