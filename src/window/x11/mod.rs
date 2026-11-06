@@ -1,3 +1,4 @@
+pub mod clipboard;
 pub mod icon;
 pub mod keysym;
 pub mod shm;
@@ -9,7 +10,7 @@ use shm::X11Framebuffer;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     self, AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConnectionExt as _, CreateWindowAux,
@@ -32,6 +33,12 @@ pub struct X11Window {
     pub net_wm_name: xproto::Atom,
     pub net_wm_icon_name: xproto::Atom,
     pub utf8_string: xproto::Atom,
+    pub clipboard_atom: xproto::Atom,
+    pub primary_atom: xproto::Atom,
+    pub targets_atom: xproto::Atom,
+    pub velox_selection_atom: xproto::Atom,
+    pub clipboard_provider: Arc<clipboard::X11ClipboardProvider>,
+    pub pending_raw_events: Arc<Mutex<VecDeque<x11rb::protocol::Event>>>,
     pub modifiers: ModifiersState,
     pub is_visible: bool,
     pub root: xproto::Window,
@@ -427,6 +434,10 @@ impl X11Window {
         let net_wm_icon = conn.intern_atom(false, b"_NET_WM_ICON")?.reply()?.atom;
         let net_wm_pid = conn.intern_atom(false, b"_NET_WM_PID")?.reply()?.atom;
         let utf8_string = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+        let clipboard_atom = conn.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+        let targets_atom = conn.intern_atom(false, b"TARGETS")?.reply()?.atom;
+        let primary_atom = AtomEnum::PRIMARY.into();
+        let velox_selection_atom = conn.intern_atom(false, b"_VELOX_SELECTION")?.reply()?.atom;
 
         // Set EWMH & ICCCM Title
         conn.change_property8(
@@ -538,6 +549,19 @@ impl X11Window {
         let (min_keycode, max_keycode, keysyms_per_keycode, keymap) =
             Self::load_keyboard_mapping(&conn);
 
+        let pending_raw_events = Arc::new(Mutex::new(VecDeque::new()));
+        let clipboard_provider = Arc::new(clipboard::X11ClipboardProvider::new(
+            Arc::clone(&conn),
+            window_id,
+            clipboard_atom,
+            primary_atom,
+            targets_atom,
+            utf8_string,
+            velox_selection_atom,
+            Arc::clone(&pending_raw_events),
+        ));
+        crate::clipboard::clipboard::register_provider(clipboard_provider.clone());
+
         Ok(Self {
             conn,
             window_id,
@@ -552,6 +576,12 @@ impl X11Window {
             net_wm_name,
             net_wm_icon_name,
             utf8_string,
+            clipboard_atom,
+            primary_atom,
+            targets_atom,
+            velox_selection_atom,
+            clipboard_provider,
+            pending_raw_events,
             modifiers: ModifiersState::empty(),
             is_visible: false,
             root,
@@ -778,6 +808,15 @@ impl X11Window {
             return Some(event);
         }
 
+        // Process any raw events deferred during synchronous clipboard operations
+        loop {
+            let deferred = self.pending_raw_events.lock().unwrap().pop_front();
+            match deferred {
+                Some(raw_event) => self.handle_raw_event(raw_event),
+                None => break,
+            }
+        }
+
         while let Ok(Some(raw_event)) = self.conn.poll_for_event() {
             self.handle_raw_event(raw_event);
         }
@@ -948,6 +987,66 @@ impl X11Window {
                     self.refresh_keyboard_mapping();
                 }
             }
+            x11rb::protocol::Event::SelectionRequest(ev) => {
+                let success = if ev.target == self.targets_atom {
+                    let targets = [self.targets_atom, self.utf8_string, AtomEnum::STRING.into()];
+                    self.conn
+                        .change_property32(
+                            xproto::PropMode::REPLACE,
+                            ev.requestor,
+                            ev.property,
+                            AtomEnum::ATOM,
+                            &targets,
+                        )
+                        .is_ok()
+                } else if ev.target == self.utf8_string || ev.target == AtomEnum::STRING.into() {
+                    let text = if ev.selection == self.primary_atom {
+                        self.clipboard_provider
+                            .stored_primary
+                            .read()
+                            .unwrap()
+                            .clone()
+                    } else {
+                        self.clipboard_provider
+                            .stored_clipboard
+                            .read()
+                            .unwrap()
+                            .clone()
+                    };
+                    self.conn
+                        .change_property8(
+                            xproto::PropMode::REPLACE,
+                            ev.requestor,
+                            ev.property,
+                            ev.target,
+                            text.as_bytes(),
+                        )
+                        .is_ok()
+                } else {
+                    false
+                };
+
+                let reply_prop = if success {
+                    ev.property
+                } else {
+                    AtomEnum::NONE.into()
+                };
+
+                let notify = xproto::SelectionNotifyEvent {
+                    response_type: xproto::SELECTION_NOTIFY_EVENT,
+                    sequence: 0,
+                    time: ev.time,
+                    requestor: ev.requestor,
+                    selection: ev.selection,
+                    target: ev.target,
+                    property: reply_prop,
+                };
+                let _ = self
+                    .conn
+                    .send_event(false, ev.requestor, EventMask::NO_EVENT, notify);
+                let _ = self.conn.flush();
+            }
+            x11rb::protocol::Event::SelectionClear(_) => {}
             _ => {}
         }
     }
@@ -1099,6 +1198,7 @@ impl Drop for X11Window {
         }
         let _ = self.conn.destroy_window(self.window_id);
         let _ = self.conn.flush();
+        crate::clipboard::clipboard::unregister_provider();
     }
 }
 

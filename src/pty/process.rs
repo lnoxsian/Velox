@@ -51,6 +51,27 @@ pub fn configure_terminal_environment(command: &mut std::process::Command) {
     command.env("COLORTERM", VELOX_COLORTERM);
 }
 
+struct ForkGuard {
+    master_fd: std::os::fd::RawFd,
+    slave_fd: std::os::fd::RawFd,
+    disarmed: bool,
+}
+
+impl Drop for ForkGuard {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            unsafe {
+                if self.master_fd >= 0 {
+                    libc::close(self.master_fd);
+                }
+                if self.slave_fd >= 0 {
+                    libc::close(self.slave_fd);
+                }
+            }
+        }
+    }
+}
+
 pub fn spawn_process(
     shell_path: &str,
     command: Option<&[String]>,
@@ -60,23 +81,52 @@ pub fn spawn_process(
     let master_fd = pty.master.into_raw_fd();
     let slave_fd = pty.slave.into_raw_fd();
 
+    let mut guard = ForkGuard {
+        master_fd,
+        slave_fd,
+        disarmed: false,
+    };
+
     let fork_result = unsafe { nix::unistd::fork() };
     match fork_result {
         Ok(nix::unistd::ForkResult::Child) => {
+            guard.disarmed = true;
             unsafe {
-                libc::setsid();
+                if libc::setsid() < 0 {
+                    libc::_exit(127);
+                }
                 #[cfg(target_os = "linux")]
                 libc::ioctl(slave_fd, libc::TIOCSCTTY, 0);
 
                 let pid = libc::getpid();
                 libc::tcsetpgrp(slave_fd, pid);
 
-                libc::dup2(slave_fd, libc::STDIN_FILENO);
-                libc::dup2(slave_fd, libc::STDOUT_FILENO);
-                libc::dup2(slave_fd, libc::STDERR_FILENO);
+                if libc::dup2(slave_fd, libc::STDIN_FILENO) < 0
+                    || libc::dup2(slave_fd, libc::STDOUT_FILENO) < 0
+                    || libc::dup2(slave_fd, libc::STDERR_FILENO) < 0
+                {
+                    libc::_exit(127);
+                }
 
                 libc::close(master_fd);
-                libc::close(slave_fd);
+                if slave_fd > 2 {
+                    libc::close(slave_fd);
+                }
+
+                // Reset standard Unix signal dispositions to default
+                for &sig in &[
+                    libc::SIGPIPE,
+                    libc::SIGCHLD,
+                    libc::SIGINT,
+                    libc::SIGQUIT,
+                    libc::SIGHUP,
+                    libc::SIGTSTP,
+                ] {
+                    libc::signal(sig, libc::SIG_DFL);
+                }
+                let mut empty_mask: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut empty_mask);
+                libc::sigprocmask(libc::SIG_SETMASK, &empty_mask, std::ptr::null_mut());
 
                 // Close all inherited file descriptors >= 3 so child shells start with a pristine FD table
                 #[cfg(target_os = "linux")]
@@ -140,8 +190,13 @@ pub fn spawn_process(
             }
         }
         Ok(nix::unistd::ForkResult::Parent { child }) => {
-            unsafe {
-                libc::close(slave_fd);
+            guard.disarmed = true;
+            let ret = unsafe { libc::close(slave_fd) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EBADF) {
+                    log::warn!("Failed to close slave_fd {} in parent: {}", slave_fd, err);
+                }
             }
             let child_pid = if child.as_raw() > 0 {
                 Some(child.as_raw() as u32)
@@ -153,7 +208,10 @@ pub fn spawn_process(
                 child_pid,
             })
         }
-        Err(e) => Err(PtyError::Fork(e.to_string())),
+        Err(e) => {
+            // guard will drop and close master_fd and slave_fd
+            Err(PtyError::Fork(e.to_string()))
+        }
     }
 }
 

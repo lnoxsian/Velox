@@ -138,14 +138,26 @@ pub struct ShmSegmentGuard {
 impl Drop for ShmSegmentGuard {
     fn drop(&mut self) {
         if !self.addr.is_null() && self.addr != (-1isize as *mut libc::c_void) {
-            unsafe {
-                libc::shmdt(self.addr);
+            let ret = unsafe { libc::shmdt(self.addr) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINVAL) {
+                    log::warn!("ShmSegmentGuard libc::shmdt failed: {}", err);
+                }
             }
             self.addr = ptr::null_mut();
         }
         if self.shm_id >= 0 {
-            unsafe {
-                libc::shmctl(self.shm_id, libc::IPC_RMID, ptr::null_mut());
+            let ret = unsafe { libc::shmctl(self.shm_id, libc::IPC_RMID, ptr::null_mut()) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINVAL) {
+                    log::warn!(
+                        "ShmSegmentGuard libc::shmctl IPC_RMID failed for id {}: {}",
+                        self.shm_id,
+                        err
+                    );
+                }
             }
             self.shm_id = -1;
         }
@@ -452,14 +464,26 @@ impl X11Framebuffer {
             let _ = conn.shm_detach(seg);
         }
         if !self.shm_addr.is_null() {
-            unsafe {
-                libc::shmdt(self.shm_addr as *mut libc::c_void);
+            let ret = unsafe { libc::shmdt(self.shm_addr as *mut libc::c_void) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINVAL) {
+                    log::warn!("X11Framebuffer cleanup_shm libc::shmdt failed: {}", err);
+                }
             }
             self.shm_addr = ptr::null_mut();
         }
         if self.shm_id >= 0 {
-            unsafe {
-                libc::shmctl(self.shm_id, libc::IPC_RMID, ptr::null_mut());
+            let ret = unsafe { libc::shmctl(self.shm_id, libc::IPC_RMID, ptr::null_mut()) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINVAL) {
+                    log::warn!(
+                        "X11Framebuffer cleanup_shm libc::shmctl IPC_RMID failed for id {}: {}",
+                        self.shm_id,
+                        err
+                    );
+                }
             }
             self.shm_id = -1;
         }
@@ -470,14 +494,26 @@ impl X11Framebuffer {
 impl Drop for X11Framebuffer {
     fn drop(&mut self) {
         if !self.shm_addr.is_null() {
-            unsafe {
-                libc::shmdt(self.shm_addr as *mut libc::c_void);
+            let ret = unsafe { libc::shmdt(self.shm_addr as *mut libc::c_void) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINVAL) {
+                    log::warn!("X11Framebuffer drop libc::shmdt failed: {}", err);
+                }
             }
             self.shm_addr = ptr::null_mut();
         }
         if self.shm_id >= 0 {
-            unsafe {
-                libc::shmctl(self.shm_id, libc::IPC_RMID, ptr::null_mut());
+            let ret = unsafe { libc::shmctl(self.shm_id, libc::IPC_RMID, ptr::null_mut()) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EINVAL) {
+                    log::warn!(
+                        "X11Framebuffer drop libc::shmctl IPC_RMID failed for id {}: {}",
+                        self.shm_id,
+                        err
+                    );
+                }
             }
             self.shm_id = -1;
         }

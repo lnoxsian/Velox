@@ -9,6 +9,7 @@ pub fn default_config() -> Config {
             font_size: 12.0,
             font_scale_multiplier: Some(1.5),
             bold_is_bright: Some(true),
+            line_height: None,
         },
         window: WindowConfig {
             scrollback_limit: Some(2000),

@@ -330,3 +330,165 @@ fn test_software_renderer_draws_full_proportional_grid_cleanly() {
         "Rendered proportional font frame must contain pixels"
     );
 }
+
+#[test]
+fn test_line_height_multiplier_metrics_and_rasterization() {
+    let db = get_system_font_db();
+    let query = fontdb::Query {
+        families: &[fontdb::Family::Monospace],
+        weight: fontdb::Weight::NORMAL,
+        stretch: fontdb::Stretch::Normal,
+        style: fontdb::Style::Normal,
+    };
+    if let Some(font) = velox::font::loader::load_font_face(db, &query) {
+        let scale = PxScale::from(16.0);
+        let m_default = compute_font_cell_metrics(&font, scale);
+        let m_tight =
+            velox::renderer::glyph::compute_font_cell_metrics_with_line_height(&font, scale, 0.85);
+        let m_loose =
+            velox::renderer::glyph::compute_font_cell_metrics_with_line_height(&font, scale, 1.25);
+
+        assert!(
+            m_tight.cell_height < m_default.cell_height,
+            "Tight line_height (0.85) must produce strictly smaller cell_height ({} vs {})",
+            m_tight.cell_height,
+            m_default.cell_height
+        );
+        assert!(
+            m_loose.cell_height > m_default.cell_height,
+            "Loose line_height (1.25) must produce strictly larger cell_height ({} vs {})",
+            m_loose.cell_height,
+            m_default.cell_height
+        );
+        assert_eq!(
+            m_tight.cell_width, m_default.cell_width,
+            "Cell width must be unaffected by line_height"
+        );
+        assert!(
+            m_tight.baseline_y <= m_tight.cell_height as f32,
+            "Baseline Y must stay within tight cell bounds"
+        );
+    }
+
+    // Verify GlyphCache with custom line_height rasterizes cleanly without panic or clipping
+    let mut cache = GlyphCache::try_from_font_family_with_line_height("Monospace", 14.0, 1.5, 0.85)
+        .expect("Create cache with compact line_height");
+    let test_chars = ['A', 'g', 'y', 'Å', 'É', 'W', '@', '%', '_', '|'];
+    for ch in test_chars {
+        let key = GlyphKey::new(ch, false, false, false);
+        let gref = cache.get_or_rasterize(key).expect("Rasterize character");
+        assert_eq!(
+            gref.height, cache.cell_height as u16,
+            "Glyph height must equal compact cell_height"
+        );
+        let mask = cache.atlas.get_alpha(&gref);
+        let non_zero = mask.iter().filter(|&&a| a > 0).count();
+        assert!(
+            non_zero > 0,
+            "Character '{}' must render non-zero pixels under compact line_height",
+            ch
+        );
+    }
+
+    // Dynamic set_line_height
+    cache.set_line_height(1.2);
+    assert_eq!(cache.line_height, 1.2);
+    let gref_loose = cache
+        .get_or_rasterize(GlyphKey::new('M', false, false, false))
+        .unwrap();
+    assert_eq!(gref_loose.height, cache.cell_height as u16);
+}
+
+#[test]
+fn test_devanagari_combining_characters_rasterization_and_rendering() {
+    let default_fg = Color {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+    let default_bg = Color { r: 0, g: 0, b: 0 };
+    let mut grid = Grid::new(30, 2, default_fg, default_bg, 100, true);
+    let devanagari_text = "नमस्ते दुनिया";
+
+    for c in devanagari_text.chars() {
+        grid.put_char(c, default_fg, default_bg, None, CellFlags::empty());
+    }
+
+    // Check cells in row 0
+    let row_cells: Vec<char> = grid.cells[0..grid.cursor.x]
+        .iter()
+        .map(|c| c.character)
+        .collect();
+
+    println!("Devanagari row cells: {:?}", row_cells);
+
+    let mut cache = GlyphCache::try_from_font_family("Monospace", 14.0, 1.0)
+        .expect("Create cache for devanagari test");
+
+    for (i, &ch) in row_cells.iter().enumerate() {
+        let key = GlyphKey::new(ch, false, false, false);
+        let gref = cache
+            .get_or_rasterize(key)
+            .unwrap_or_else(|| panic!("Rasterize failed for cell {} ({:?})", i, ch));
+        if ch != ' ' {
+            let mask = cache.atlas.get_alpha(&gref);
+            let non_zero = mask.iter().filter(|&&a| a > 0).count();
+            assert!(
+                non_zero > 0,
+                "Cell {} with char {:?} (codepoint U+{:04X}) must have non-zero rasterized pixels",
+                i,
+                ch,
+                ch as u32
+            );
+        }
+    }
+
+    // Verify selection text extraction expands combining sequences back to original UTF-8
+    grid.selection.start_selection(0, 0);
+    grid.selection
+        .update_selection(grid.cursor.x.saturating_sub(1), 0);
+    let extracted = grid.extract_selection_text();
+    println!("Extracted text: {:?}", extracted);
+    assert_eq!(
+        extracted, devanagari_text,
+        "Extracted selection text must match original Devanagari string"
+    );
+
+    // Also verify Accents and Zalgo combining text
+    let other_tests = ["á é í ó ú", "Z͑̄͆ͭ̒̅"];
+    for test_str in other_tests {
+        let mut test_grid = Grid::new(40, 2, default_fg, default_bg, 100, true);
+        for c in test_str.chars() {
+            test_grid.put_char(c, default_fg, default_bg, None, CellFlags::empty());
+        }
+        for (i, cell) in test_grid.cells[0..test_grid.cursor.x].iter().enumerate() {
+            let key = GlyphKey::new(cell.character, false, false, false);
+            let gref = cache.get_or_rasterize(key).unwrap_or_else(|| {
+                panic!(
+                    "Rasterize failed for {:?} in {:?}",
+                    cell.character, test_str
+                )
+            });
+            if cell.character != ' ' {
+                let mask = cache.atlas.get_alpha(&gref);
+                let non_zero = mask.iter().filter(|&&a| a > 0).count();
+                assert!(
+                    non_zero > 0,
+                    "Cell {} with char {:?} in {:?} must have non-zero pixels",
+                    i,
+                    cell.character,
+                    test_str
+                );
+            }
+        }
+        test_grid.selection.start_selection(0, 0);
+        test_grid
+            .selection
+            .update_selection(test_grid.cursor.x.saturating_sub(1), 0);
+        let ext = test_grid.extract_selection_text();
+        assert_eq!(
+            ext, test_str,
+            "Extracted text must match original combining string"
+        );
+    }
+}

@@ -44,11 +44,13 @@ pub fn create_window_and_renderer(
 
     let win_width = window.width();
     let win_height = window.height();
+    let line_height = config.line_height().unwrap_or(1.0);
 
-    let renderer = CpuRenderer::try_new(
+    let renderer = CpuRenderer::try_new_with_line_height(
         config.font_family(),
         font_size,
         font_scale_multiplier,
+        line_height,
         &theme,
         win_width,
         win_height,

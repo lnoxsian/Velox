@@ -61,9 +61,17 @@ fn test_distributed_icon_assets_exist_and_are_valid() {
     }
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn compile_build_script() -> PathBuf {
-    let out_dir =
-        std::env::temp_dir().join(format!("velox_test_build_runner_{}", std::process::id()));
+    let count = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let out_dir = std::env::temp_dir().join(format!(
+        "velox_test_build_runner_{}_{}",
+        std::process::id(),
+        count
+    ));
     let _ = fs::create_dir_all(&out_dir);
     let bin_path = out_dir.join("build_script_bin");
 

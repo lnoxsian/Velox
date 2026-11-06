@@ -11,7 +11,7 @@ use crate::terminal::terminal::Terminal;
 use crate::window::PlatformWindow;
 use crate::window::event::{CursorIcon, ModifiersState, PlatformEvent};
 use std::collections::HashMap;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -56,7 +56,7 @@ pub enum CustomEvent {
 #[derive(Clone)]
 pub struct EventLoopProxy {
     sender: Sender<CustomEvent>,
-    wake_fd: RawFd,
+    wake_fd: Option<Arc<OwnedFd>>,
     pub(crate) wake_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -65,12 +65,17 @@ impl EventLoopProxy {
         let (sender, _) = std::sync::mpsc::channel();
         Self {
             sender,
-            wake_fd: -1,
+            wake_fd: None,
             wake_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
     pub fn new(sender: Sender<CustomEvent>, wake_fd: RawFd) -> Self {
+        let wake_fd = if wake_fd >= 0 {
+            Some(Arc::new(unsafe { OwnedFd::from_raw_fd(wake_fd) }))
+        } else {
+            None
+        };
         Self {
             sender,
             wake_fd,
@@ -78,20 +83,44 @@ impl EventLoopProxy {
         }
     }
 
+    pub fn from_owned_fd(sender: Sender<CustomEvent>, wake_fd: Arc<OwnedFd>) -> Self {
+        Self {
+            sender,
+            wake_fd: Some(wake_fd),
+            wake_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
     pub fn send(&self, event: CustomEvent) -> Result<(), std::sync::mpsc::SendError<CustomEvent>> {
         self.sender.send(event)?;
-        if self.wake_fd >= 0
+        if let Some(wfd) = &self.wake_fd
             && !self
                 .wake_pending
                 .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             let val = 1u64;
-            unsafe {
-                libc::write(
-                    self.wake_fd,
-                    &val as *const _ as *const libc::c_void,
-                    std::mem::size_of::<u64>(),
-                );
+            loop {
+                let res = unsafe {
+                    libc::write(
+                        wfd.as_raw_fd(),
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<u64>(),
+                    )
+                };
+                if res >= 0 {
+                    break;
+                }
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                if err.raw_os_error() == Some(libc::EAGAIN)
+                    || err.raw_os_error() == Some(libc::EWOULDBLOCK)
+                {
+                    break;
+                }
+                log::warn!("Failed to write to main loop wake_fd: {}", err);
+                break;
             }
         }
         Ok(())
@@ -1302,7 +1331,7 @@ impl WindowState {
 pub struct App {
     pub(crate) event_loop_proxy: EventLoopProxy,
     pub(crate) event_receiver: Receiver<CustomEvent>,
-    pub(crate) wake_fd: RawFd,
+    pub(crate) wake_fd: Option<Arc<OwnedFd>>,
     pub(crate) modifiers: ModifiersState,
     pub(crate) windows: HashMap<WindowId, WindowState>,
     pub(crate) next_window_id: u64,
@@ -1320,11 +1349,10 @@ impl Drop for App {
         if let Some(mut reactor) = self.pty_reactor.take() {
             reactor.shutdown();
         }
-        if self.wake_fd >= 0 {
-            unsafe {
-                libc::close(self.wake_fd);
-            }
+        if let Some(mut ipc) = self.ipc_listener.take() {
+            ipc.shutdown();
         }
+        self.wake_fd = None;
     }
 }
 
@@ -1335,12 +1363,13 @@ impl App {
         diagnostics: Vec<crate::config::loader::ConfigDiagnostic>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let wake_fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-        if wake_fd < 0 {
+        let wake_raw = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if wake_raw < 0 {
             return Err("Failed to create eventfd for main loop wakeup".into());
         }
+        let wake_fd = Arc::new(unsafe { OwnedFd::from_raw_fd(wake_raw) });
 
-        let proxy = EventLoopProxy::new(sender, wake_fd);
+        let proxy = EventLoopProxy::from_owned_fd(sender, wake_fd.clone());
         let pty_reactor = crate::pty::PtyReactor::new(proxy.clone())?;
         let daemon_mode = options.daemon;
         let single_instance_mode = options.single_instance;
@@ -1348,7 +1377,7 @@ impl App {
         Ok(Self {
             event_loop_proxy: proxy,
             event_receiver: receiver,
-            wake_fd,
+            wake_fd: Some(wake_fd),
             modifiers: ModifiersState::empty(),
             windows: HashMap::new(),
             next_window_id: 1,
@@ -1795,6 +1824,7 @@ impl App {
         self.init()?;
 
         let mut last_idle_prune = std::time::Instant::now();
+        let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
 
         while !self.windows.is_empty() || self.daemon_mode {
             let mut closed_windows = Vec::new();
@@ -2036,10 +2066,20 @@ impl App {
                 ws.window.flush();
             }
 
+            let raw_wake_fd = self.wake_fd.as_ref().map(|f| f.as_raw_fd()).unwrap_or(-1);
+
             // Drain any pending wake_fd signal before sleeping to prevent immediate spurious wakeup
-            let mut wake_buf = [0u8; 8];
-            unsafe {
-                libc::read(self.wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8);
+            if raw_wake_fd >= 0 {
+                let mut wake_buf = [0u8; 8];
+                loop {
+                    let r = unsafe {
+                        libc::read(raw_wake_fd, wake_buf.as_mut_ptr() as *mut libc::c_void, 8)
+                    };
+                    if r >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break;
+                    }
+                }
             }
             self.event_loop_proxy
                 .wake_pending
@@ -2051,12 +2091,14 @@ impl App {
                 continue;
             }
 
-            let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
-            poll_fds.push(libc::pollfd {
-                fd: self.wake_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            });
+            poll_fds.clear();
+            if raw_wake_fd >= 0 {
+                poll_fds.push(libc::pollfd {
+                    fd: raw_wake_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
             for ws in self.windows.values() {
                 poll_fds.push(libc::pollfd {
                     fd: ws.window.as_raw_fd(),
@@ -2065,18 +2107,34 @@ impl App {
                 });
             }
 
-            unsafe {
+            let poll_ret = unsafe {
                 libc::poll(
                     poll_fds.as_mut_ptr(),
                     poll_fds.len() as libc::nfds_t,
                     timeout_ms,
-                );
+                )
+            };
+
+            if poll_ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                log::error!("Main event loop libc::poll error: {}", err);
+                continue;
             }
 
-            if poll_fds[0].revents & libc::POLLIN != 0 {
+            if !poll_fds.is_empty() && raw_wake_fd >= 0 && (poll_fds[0].revents & libc::POLLIN) != 0
+            {
                 let mut buf = [0u8; 8];
-                unsafe {
-                    libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+                loop {
+                    let r = unsafe {
+                        libc::read(raw_wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8)
+                    };
+                    if r >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break;
+                    }
                 }
                 self.event_loop_proxy
                     .wake_pending

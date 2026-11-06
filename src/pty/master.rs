@@ -1,8 +1,14 @@
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, RawFd};
 
 pub struct PtyMaster {
     pub fd: RawFd,
     pub child_pid: Option<u32>,
+}
+
+impl AsRawFd for PtyMaster {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
 }
 
 impl PtyMaster {
@@ -63,11 +69,17 @@ impl PtyMaster {
         if self.fd < 0 {
             return Ok(0);
         }
-        let res = unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if res < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(res as usize)
+        loop {
+            let res =
+                unsafe { libc::read(self.fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if res >= 0 {
+                return Ok(res as usize);
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(err);
         }
     }
 
@@ -129,9 +141,14 @@ impl PtyMaster {
 impl Drop for PtyMaster {
     fn drop(&mut self) {
         if self.fd >= 0 {
-            unsafe {
-                libc::close(self.fd);
+            let ret = unsafe { libc::close(self.fd) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EBADF) {
+                    log::warn!("PtyMaster close fd {} failed: {}", self.fd, err);
+                }
             }
+            self.fd = -1;
         }
     }
 }

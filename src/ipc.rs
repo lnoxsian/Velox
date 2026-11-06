@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -65,8 +65,11 @@ pub fn socket_path() -> PathBuf {
 }
 
 pub fn send_ipc_message(msg: &IpcMessage) -> Result<IpcResponse, String> {
-    let path = socket_path();
-    let mut stream = UnixStream::connect(&path).map_err(|e| e.to_string())?;
+    send_ipc_message_to(&socket_path(), msg)
+}
+
+pub fn send_ipc_message_to(path: &Path, msg: &IpcMessage) -> Result<IpcResponse, String> {
+    let mut stream = UnixStream::connect(path).map_err(|e| e.to_string())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .map_err(|e| e.to_string())?;
@@ -88,6 +91,9 @@ pub fn send_ipc_message(msg: &IpcMessage) -> Result<IpcResponse, String> {
         .read_exact(&mut len_bytes)
         .map_err(|e| e.to_string())?;
     let resp_len = u32::from_be_bytes(len_bytes) as usize;
+    if resp_len == 0 {
+        return Err("IPC response length cannot be zero".to_string());
+    }
     if resp_len > MAX_IPC_PAYLOAD_SIZE {
         return Err(format!(
             "IPC response exceeded max allowed size: {} bytes",
@@ -107,21 +113,36 @@ pub fn send_ipc_message(msg: &IpcMessage) -> Result<IpcResponse, String> {
 pub struct IpcListenerHandle {
     running: Arc<AtomicBool>,
     socket_path: PathBuf,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl IpcListenerHandle {
+    pub fn shutdown(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        let _ = fs::remove_file(&self.socket_path);
+        if let Some(handle) = self.join_handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl Drop for IpcListenerHandle {
     fn drop(&mut self) {
-        self.running.store(false, Ordering::SeqCst);
-        let _ = fs::remove_file(&self.socket_path);
+        self.shutdown();
     }
 }
 
 pub fn start_ipc_server(proxy: EventLoopProxy) -> Result<IpcListenerHandle, String> {
-    let path = socket_path();
+    start_ipc_server_at(proxy, socket_path())
+}
 
+pub fn start_ipc_server_at(
+    proxy: EventLoopProxy,
+    path: PathBuf,
+) -> Result<IpcListenerHandle, String> {
     // Check if a stale socket exists
     if path.exists() {
-        if send_ipc_message(&IpcMessage::Ping).is_ok() {
+        if send_ipc_message_to(&path, &IpcMessage::Ping).is_ok() {
             return Err("An active Velox IPC server is already running.".to_string());
         } else {
             // Remove stale socket
@@ -148,39 +169,43 @@ pub fn start_ipc_server(proxy: EventLoopProxy) -> Result<IpcListenerHandle, Stri
     let running_clone = running.clone();
     let socket_path_clone = path.clone();
 
-    thread::spawn(move || {
-        while running_clone.load(Ordering::SeqCst) {
-            let mut pfd = libc::pollfd {
-                fd: listener.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // Sleep in kernel for up to 1000ms until a client connects or shutdown
-            let ret = unsafe { libc::poll(&mut pfd, 1, 1000) };
-            if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let _ = handle_client_stream(&mut stream, &proxy);
+    let join_handle = thread::Builder::new()
+        .name("velox-ipc".to_string())
+        .spawn(move || {
+            while running_clone.load(Ordering::SeqCst) {
+                let mut pfd = libc::pollfd {
+                    fd: listener.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // Poll in 250ms slices so shutdown is prompt even without wake
+                let ret = unsafe { libc::poll(&mut pfd, 1, 250) };
+                if ret > 0 && (pfd.revents & libc::POLLIN) != 0 {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ = handle_client_stream(&mut stream, &proxy);
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => {
+                            thread::sleep(Duration::from_millis(50));
+                        }
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => {
-                        thread::sleep(Duration::from_millis(100));
+                } else if ret < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EINTR) {
+                        break;
                     }
-                }
-            } else if ret < 0 {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() != Some(libc::EINTR) {
-                    break;
                 }
             }
-        }
-    });
+        })
+        .map_err(|e| format!("Failed to spawn IPC listener thread: {}", e))?;
 
     log::info!("Velox single-instance IPC server listening on {:?}", path);
 
     Ok(IpcListenerHandle {
         running,
         socket_path: socket_path_clone,
+        join_handle: Some(join_handle),
     })
 }
 
@@ -197,6 +222,9 @@ fn handle_client_stream(stream: &mut UnixStream, proxy: &EventLoopProxy) -> Resu
         .read_exact(&mut len_bytes)
         .map_err(|e| e.to_string())?;
     let payload_len = u32::from_be_bytes(len_bytes) as usize;
+    if payload_len == 0 {
+        return Err("IPC payload length cannot be zero".to_string());
+    }
     if payload_len > MAX_IPC_PAYLOAD_SIZE {
         return Err(format!(
             "IPC payload exceeded max allowed size: {} bytes",
@@ -293,17 +321,85 @@ mod tests {
     }
 
     #[test]
-    fn test_ipc_max_payload_rejection() {
-        // Test that receiving a payload_len exceeding MAX_IPC_PAYLOAD_SIZE returns an error without allocating
+    fn test_ipc_zero_length_payload_rejection() {
         let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
-        // Write a 4-byte big-endian length that exceeds MAX_IPC_PAYLOAD_SIZE
-        let excessive_len = (MAX_IPC_PAYLOAD_SIZE + 1) as u32;
-        client.write_all(&excessive_len.to_be_bytes()).unwrap();
+        // Write 4 zero bytes (payload_len = 0)
+        client.write_all(&0u32.to_be_bytes()).unwrap();
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let proxy = EventLoopProxy::new(tx, -1);
         let res = handle_client_stream(&mut server, &proxy);
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("exceeded max allowed size"));
+        assert!(res.unwrap_err().contains("cannot be zero"));
+    }
+
+    #[test]
+    fn test_ipc_u32_max_and_oversized_payload_rejection() {
+        let cases = [
+            u32::MAX,
+            (MAX_IPC_PAYLOAD_SIZE + 1) as u32,
+            (MAX_IPC_PAYLOAD_SIZE * 2) as u32,
+        ];
+        for &oversized in &cases {
+            let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
+            client.write_all(&oversized.to_be_bytes()).unwrap();
+
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let proxy = EventLoopProxy::new(tx, -1);
+            let res = handle_client_stream(&mut server, &proxy);
+            assert!(
+                res.is_err(),
+                "Expected error for oversized len {}",
+                oversized
+            );
+            assert!(
+                res.unwrap_err().contains("exceeded max allowed size"),
+                "Expected size limit error message"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipc_truncated_header_and_body_handling() {
+        // Truncated headers: 1, 2, or 3 bytes written then socket closed
+        for partial_len in 1..4 {
+            let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
+            let partial_bytes = [0u8; 3];
+            client.write_all(&partial_bytes[..partial_len]).unwrap();
+            drop(client); // Close writing side prematurely
+
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let proxy = EventLoopProxy::new(tx, -1);
+            let res = handle_client_stream(&mut server, &proxy);
+            assert!(res.is_err());
+        }
+
+        // Truncated body: declares 500 bytes, sends only 10 bytes then closes
+        {
+            let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
+            let declared_len = 500u32;
+            client.write_all(&declared_len.to_be_bytes()).unwrap();
+            client.write_all(&[42u8; 10]).unwrap();
+            drop(client);
+
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let proxy = EventLoopProxy::new(tx, -1);
+            let res = handle_client_stream(&mut server, &proxy);
+            assert!(res.is_err());
+        }
+    }
+
+    #[test]
+    fn test_ipc_corrupted_bincode_payload_rejection() {
+        let (mut client, mut server) = UnixStream::pair().expect("UnixStream pair");
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0x00, 0xAA, 0x55];
+        let len = garbage.len() as u32;
+        client.write_all(&len.to_be_bytes()).unwrap();
+        client.write_all(&garbage).unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let proxy = EventLoopProxy::new(tx, -1);
+        let res = handle_client_stream(&mut server, &proxy);
+        assert!(res.is_err());
     }
 }

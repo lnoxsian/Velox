@@ -104,6 +104,7 @@ pub struct GlyphCache {
     pub baseline_y: f32,
     pub font_size: f32,
     pub font_scale_multiplier: f32,
+    pub line_height: f32,
     pub atlas: GlyphAtlas,
     pub scratch: GlyphScratch,
     /// Direct lookup table for ASCII 0..127 across 4 styles (regular, bold, italic, bold_italic)
@@ -123,10 +124,15 @@ pub struct FontMetrics {
     pub baseline_y: f32,
 }
 
-pub const SAMPLE_METRIC_GLYPHS: &str = "AQWMH_gyljpq1234567890@#%&ÅÉ";
+pub const SAMPLE_METRIC_GLYPHS: &str = "AQWMH_gyljpq1234567890@#%&";
 
-/// Accurately compute cell dimensions and baseline offset for any font (monospace or proportional).
-pub fn compute_font_cell_metrics(font: &FontArc, scale: PxScale) -> FontMetrics {
+/// Accurately compute cell dimensions and baseline offset for any font (monospace or proportional)
+/// with a configurable line_height multiplier.
+pub fn compute_font_cell_metrics_with_line_height(
+    font: &FontArc,
+    scale: PxScale,
+    line_height: f32,
+) -> FontMetrics {
     let scaled_font = font.as_scaled(scale);
     let adv_a = scaled_font.h_advance(font.glyph_id('A'));
     let adv_i = scaled_font.h_advance(font.glyph_id('i'));
@@ -136,7 +142,6 @@ pub fn compute_font_cell_metrics(font: &FontArc, scale: PxScale) -> FontMetrics 
 
     let ascent = scaled_font.ascent();
     let descent = scaled_font.descent();
-    let line_gap = scaled_font.line_gap().max(0.0);
 
     let mut min_y = -ascent;
     let mut max_y = descent.abs();
@@ -166,18 +171,46 @@ pub fn compute_font_cell_metrics(font: &FontArc, scale: PxScale) -> FontMetrics 
         max_adv.ceil().max(1.0) as u32
     };
 
-    let max_ascent = (-min_y).ceil().max(ascent.ceil());
-    let max_descent = max_y.ceil().max(descent.abs().ceil());
-    let needed_height = (max_ascent + max_descent) as u32;
-    let typo_height = (ascent - descent + line_gap).ceil().max(1.0) as u32;
-    let cell_height = needed_height.max(typo_height);
-    let baseline_y = max_ascent;
+    let typo_height = (ascent - descent).round().max(1.0);
+    let needed_height = (-min_y + max_y).round().max(1.0);
+    let base_height = needed_height.max(typo_height);
+
+    let effective_lh = if line_height > 0.1 && line_height <= 5.0 {
+        line_height
+    } else {
+        1.0
+    };
+
+    let cell_height = (base_height * effective_lh).round().max(1.0) as u32;
+
+    let ascent_ratio = if base_height > 0.0 {
+        (-min_y).max(ascent) / base_height
+    } else {
+        0.75
+    };
+    let baseline_y = (cell_height as f32 * ascent_ratio)
+        .round()
+        .clamp(1.0, cell_height as f32);
 
     FontMetrics {
         cell_width,
         cell_height,
         baseline_y,
     }
+}
+
+/// Accurately compute cell dimensions and baseline offset for any font (monospace or proportional).
+pub fn compute_font_cell_metrics(font: &FontArc, scale: PxScale) -> FontMetrics {
+    compute_font_cell_metrics_with_line_height(font, scale, 1.0)
+}
+
+struct CombiningMarkInfo {
+    outlined: ab_glyph::OutlinedGlyph,
+    is_negative_x: bool,
+    width: f32,
+    height: f32,
+    min_y: f32,
+    min_x: f32,
 }
 
 impl GlyphCache {
@@ -247,6 +280,7 @@ impl GlyphCache {
             baseline_y,
             font_size,
             font_scale_multiplier,
+            line_height: 1.0,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -263,6 +297,20 @@ impl GlyphCache {
         font_family: &str,
         font_size: f32,
         font_scale_multiplier: f32,
+    ) -> Result<Self, crate::font::resolved::FontError> {
+        Self::try_from_font_family_with_line_height(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            1.0,
+        )
+    }
+
+    pub fn try_from_font_family_with_line_height(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        line_height: f32,
     ) -> Result<Self, crate::font::resolved::FontError> {
         let db = crate::font::fallback::get_system_font_db();
         let font_set = crate::font::resolved::ResolvedFontSet::try_resolve(db, font_family)?;
@@ -288,7 +336,12 @@ impl GlyphCache {
 
         let px_size = (font_size * font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
-        let metrics = compute_font_cell_metrics(&font, scale);
+        let effective_lh = if line_height > 0.1 && line_height <= 5.0 {
+            line_height
+        } else {
+            1.0
+        };
+        let metrics = compute_font_cell_metrics_with_line_height(&font, scale, effective_lh);
         let cell_width = metrics.cell_width;
         let cell_height = metrics.cell_height;
         let baseline_y = metrics.baseline_y;
@@ -305,6 +358,7 @@ impl GlyphCache {
             baseline_y,
             font_size,
             font_scale_multiplier,
+            line_height: effective_lh,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -321,6 +375,21 @@ impl GlyphCache {
             .expect("Failed to create GlyphCache from font family")
     }
 
+    pub fn from_font_family_with_line_height(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        line_height: f32,
+    ) -> Self {
+        Self::try_from_font_family_with_line_height(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            line_height,
+        )
+        .expect("Failed to create GlyphCache from font family")
+    }
+
     /// Create a full-featured GlyphCache for a split pane with independent font size.
     /// Reuses already loaded FontArc handles.
     pub fn create_pane_cache(&self, pane_font_size: f32) -> Self {
@@ -328,7 +397,8 @@ impl GlyphCache {
             .round()
             .max(1.0);
         let scale = PxScale::from(px_size);
-        let metrics = compute_font_cell_metrics(&self.font, scale);
+        let metrics =
+            compute_font_cell_metrics_with_line_height(&self.font, scale, self.line_height);
         let cell_width = metrics.cell_width;
         let cell_height = metrics.cell_height;
         let baseline_y = metrics.baseline_y;
@@ -345,6 +415,7 @@ impl GlyphCache {
             baseline_y,
             font_size: pane_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
+            line_height: self.line_height,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -363,7 +434,7 @@ impl GlyphCache {
             .round()
             .max(1.0);
         let scale = PxScale::from(px_size);
-        let metrics = compute_font_cell_metrics(&self.font, scale);
+        let metrics = compute_font_cell_metrics_with_line_height(&self.font, scale, 1.0);
         let cell_width = metrics.cell_width;
         let cell_height = metrics.cell_height;
         let baseline_y = metrics.baseline_y;
@@ -380,6 +451,7 @@ impl GlyphCache {
             baseline_y,
             font_size: tab_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
+            line_height: 1.0,
             atlas: GlyphAtlas::with_capacity(8 * 1024, 0),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -406,7 +478,31 @@ impl GlyphCache {
         self.font_size = font_size;
         let px_size = (font_size * self.font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);
-        let metrics = compute_font_cell_metrics(&self.font, scale);
+        let metrics =
+            compute_font_cell_metrics_with_line_height(&self.font, scale, self.line_height);
+        self.cell_width = metrics.cell_width;
+        self.cell_height = metrics.cell_height;
+        self.baseline_y = metrics.baseline_y;
+
+        self.clear();
+    }
+
+    pub fn set_line_height(&mut self, line_height: f32) {
+        let effective_lh = if line_height > 0.1 && line_height <= 5.0 {
+            line_height
+        } else {
+            1.0
+        };
+        if (self.line_height - effective_lh).abs() < 0.001 {
+            return;
+        }
+        self.line_height = effective_lh;
+        let px_size = (self.font_size * self.font_scale_multiplier)
+            .round()
+            .max(1.0);
+        let scale = PxScale::from(px_size);
+        let metrics =
+            compute_font_cell_metrics_with_line_height(&self.font, scale, self.line_height);
         self.cell_width = metrics.cell_width;
         self.cell_height = metrics.cell_height;
         self.baseline_y = metrics.baseline_y;
@@ -524,12 +620,30 @@ impl GlyphCache {
             self.cell_width
         };
 
-        // Try extracting embedded color PNG glyph if any (e.g., color emojis)
-        let color_extract = self.extract_color_png(key.codepoint);
+        // Check if key.codepoint is a combining character sequence from CombiningRegistry
+        let combining_seq: Option<String> =
+            if ('\u{100000}'..='\u{10ffff}').contains(&key.codepoint) {
+                let reg_idx = (key.codepoint as u32 - 0x100000) as usize;
+                crate::screen::grid::get_combining_registry()
+                    .lock()
+                    .ok()
+                    .and_then(|reg| reg.get_sequence(reg_idx).map(|s| s.to_string()))
+            } else {
+                None
+            };
 
-        let is_pw_sep = is_powerline(key.codepoint);
-        let is_nerd_or_pua = is_nerd_font_or_pua(key.codepoint);
-        let is_box = crate::font::loader::is_box_drawing_or_pipe(key.codepoint);
+        let base_codepoint = if let Some(ref seq) = combining_seq {
+            seq.chars().next().unwrap_or(key.codepoint)
+        } else {
+            key.codepoint
+        };
+
+        // Try extracting embedded color PNG glyph if any (e.g., color emojis)
+        let color_extract = self.extract_color_png(base_codepoint);
+
+        let is_pw_sep = is_powerline(base_codepoint);
+        let is_nerd_or_pua = is_nerd_font_or_pua(base_codepoint);
+        let is_box = crate::font::loader::is_box_drawing_or_pipe(base_codepoint);
 
         let mut glyph_w = 0.0f32;
         let mut glyph_h = 0.0f32;
@@ -543,13 +657,17 @@ impl GlyphCache {
         let mut char_font = &resolved_font.font;
         let mut is_synthetic_italic = resolved_font.synthetic_italic;
 
+        let font_scale = (self.font_size * self.font_scale_multiplier)
+            .round()
+            .max(1.0);
+
         if color_extract.is_none() {
-            let mut char_glyph_id = char_font.glyph_id(key.codepoint);
+            let mut char_glyph_id = char_font.glyph_id(base_codepoint);
             if char_glyph_id.0 == 0
-                && let Some(idx) = self.fallback_manager.find_fallback_for_char(key.codepoint)
+                && let Some(idx) = self.fallback_manager.find_fallback_for_char(base_codepoint)
             {
                 let fallback = &self.fallback_manager.fallbacks[idx];
-                let id = fallback.font.glyph_id(key.codepoint);
+                let id = fallback.font.glyph_id(base_codepoint);
                 if id.0 != 0 {
                     char_font = &fallback.font;
                     char_glyph_id = id;
@@ -560,9 +678,6 @@ impl GlyphCache {
             }
 
             if char_glyph_id.0 != 0 {
-                let font_scale = (self.font_size * self.font_scale_multiplier)
-                    .round()
-                    .max(1.0);
                 let scale: PxScale;
 
                 if is_pw_sep {
@@ -652,34 +767,94 @@ impl GlyphCache {
             }
         }
 
+        let mut combining_marks: smallvec::SmallVec<[CombiningMarkInfo; 4]> =
+            smallvec::SmallVec::new();
+        if let Some(ref seq) = combining_seq {
+            let comb_scale = PxScale::from(font_scale);
+            let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+            for comb_ch in seq.chars().skip(1) {
+                let mut comb_font = &resolved_font.font;
+                let mut comb_glyph_id = comb_font.glyph_id(comb_ch);
+                if comb_glyph_id.0 == 0
+                    && let Some(idx) = self.fallback_manager.find_fallback_for_char(comb_ch)
+                {
+                    comb_font = &self.fallback_manager.fallbacks[idx].font;
+                    comb_glyph_id = comb_font.glyph_id(comb_ch);
+                }
+                if comb_glyph_id.0 != 0
+                    && let Some(comb_outlined) = crate::font::resolved::get_or_create_outlined_glyph(
+                        comb_font,
+                        comb_glyph_id,
+                        comb_scale,
+                        should_shear,
+                    )
+                {
+                    let b = comb_outlined.px_bounds();
+                    combining_marks.push(CombiningMarkInfo {
+                        is_negative_x: b.min.x < 0.0,
+                        width: b.width(),
+                        height: b.height(),
+                        min_y: b.min.y,
+                        min_x: b.min.x,
+                        outlined: comb_outlined,
+                    });
+                }
+            }
+        }
+
+        if !combining_marks.is_empty() {
+            has_outline = true;
+        }
+
         let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box {
             (self.baseline_y * crate::font::resolved::SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
         } else {
             0
         };
 
-        let (x_offset, y_offset) = if !has_outline {
-            (0.0, 0.0)
+        let (x_offset, y_offset, pad_x) = if the_outlined.is_none() {
+            (0.0, 0.0, 0.0)
         } else if is_nerd_or_pua && !is_pw_sep {
             let xo = (glyph_w.ceil().max(base_target_width as f32) - glyph_w) / 2.0;
             let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-            (xo, yo)
+            (xo, yo, 0.0)
         } else if is_pw_sep {
             let xo = (base_target_width as f32 - glyph_w) / 2.0;
             let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-            (xo, yo)
+            (xo, yo, 0.0)
         } else if is_box {
-            (bounds_min_x, self.baseline_y + bounds_min_y)
+            (bounds_min_x, self.baseline_y + bounds_min_y, 0.0)
         } else {
-            let pad_x = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
-            let xo = (pad_x + bounds_min_x).max(0.0);
+            let px = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+            let xo = (px + bounds_min_x).max(0.0);
             let yo = (self.baseline_y + bounds_min_y)
                 .clamp(0.0, (self.cell_height as f32 - glyph_h).max(0.0));
-            (xo, yo)
+            (xo, yo, px)
         };
 
+        let eff_adv = if font_adv > 0.0 {
+            font_adv
+        } else {
+            base_target_width as f32
+        };
+
+        let mut max_needed_w = if the_outlined.is_some() {
+            x_offset + glyph_w
+        } else {
+            base_target_width as f32
+        };
+
+        for cm in &combining_marks {
+            let cx = if cm.is_negative_x {
+                (pad_x + eff_adv + cm.min_x).max(0.0)
+            } else {
+                (pad_x + (eff_adv - cm.width) / 2.0).max(0.0)
+            };
+            max_needed_w = max_needed_w.max(cx + cm.width);
+        }
+
         let needed_w = if has_outline {
-            ((x_offset + glyph_w).ceil() as u32).max(base_target_width)
+            (max_needed_w.ceil() as u32).max(base_target_width)
         } else {
             base_target_width
         };
@@ -696,7 +871,16 @@ impl GlyphCache {
         if let Some((w, h)) = color_extract {
             Some(self.blit_color_glyph(w, h, target_width, width_mult))
         } else {
-            Some(self.blit_alpha_glyph(the_outlined, target_width, x_offset, y_offset, width_mult))
+            Some(self.blit_alpha_glyph(
+                the_outlined,
+                &combining_marks,
+                target_width,
+                x_offset,
+                y_offset,
+                pad_x,
+                eff_adv,
+                width_mult,
+            ))
         }
     }
 
@@ -715,8 +899,12 @@ impl GlyphCache {
             };
         }
         let needed_u32 = (tw * th) as usize;
-        self.scratch.color_pixels.clear();
-        self.scratch.color_pixels.resize(needed_u32, 0);
+        if self.scratch.color_pixels.len() < needed_u32 {
+            self.scratch.color_pixels.resize(needed_u32, 0);
+        } else {
+            self.scratch.color_pixels.truncate(needed_u32);
+            self.scratch.color_pixels.fill(0);
+        }
 
         let scale_x = tw as f32 / w as f32;
         let scale_y = th as f32 / h as f32;
@@ -815,25 +1003,57 @@ impl GlyphCache {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn blit_alpha_glyph(
         &mut self,
         outlined: Option<ab_glyph::OutlinedGlyph>,
+        combining_marks: &[CombiningMarkInfo],
         target_width: u32,
         x_offset: f32,
         y_offset: f32,
+        pad_x: f32,
+        eff_adv: f32,
         width_mult: u8,
     ) -> GlyphRef {
         let needed_alpha = (target_width * self.cell_height) as usize;
-        self.scratch.alpha_pixels.clear();
-        self.scratch.alpha_pixels.resize(needed_alpha, 0);
+        if self.scratch.alpha_pixels.len() < needed_alpha {
+            self.scratch.alpha_pixels.resize(needed_alpha, 0);
+        } else {
+            self.scratch.alpha_pixels.truncate(needed_alpha);
+            self.scratch.alpha_pixels.fill(0);
+        }
+
+        let cell_h = self.cell_height as i32;
+        let tw = target_width as i32;
 
         if let Some(outlined) = outlined {
             let alpha_slice = &mut self.scratch.alpha_pixels;
-            let cell_h = self.cell_height as i32;
-            let tw = target_width as i32;
             outlined.draw(|gx, gy, alpha| {
                 let px = (x_offset + gx as f32).round() as i32;
                 let py = (y_offset + gy as f32).round() as i32;
+
+                if px >= 0 && px < tw && py >= 0 && py < cell_h {
+                    let idx = py as usize * target_width as usize + px as usize;
+                    let a_u8 = (alpha * 255.0).round() as u8;
+                    if a_u8 > alpha_slice[idx] {
+                        alpha_slice[idx] = a_u8;
+                    }
+                }
+            });
+        }
+
+        for cm in combining_marks {
+            let cx = if cm.is_negative_x {
+                (pad_x + eff_adv + cm.min_x).max(0.0)
+            } else {
+                (pad_x + (eff_adv - cm.width) / 2.0).max(0.0)
+            };
+            let cy = (self.baseline_y + cm.min_y)
+                .clamp(0.0, (self.cell_height as f32 - cm.height).max(0.0));
+            let alpha_slice = &mut self.scratch.alpha_pixels;
+            cm.outlined.draw(|gx, gy, alpha| {
+                let px = (cx + gx as f32).round() as i32;
+                let py = (cy + gy as f32).round() as i32;
 
                 if px >= 0 && px < tw && py >= 0 && py < cell_h {
                     let idx = py as usize * target_width as usize + px as usize;

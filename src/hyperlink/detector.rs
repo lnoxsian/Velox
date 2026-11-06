@@ -14,9 +14,11 @@ pub fn open(url: &str) -> std::io::Result<()> {
         // Spawn a background thread to wait for the process to exit.
         // This reaps the child process, preventing it from becoming a zombie,
         // without blocking the main event loop.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
+        let _ = std::thread::Builder::new()
+            .name("velox-url-reaper".to_string())
+            .spawn(move || {
+                let _ = child.wait();
+            });
     }
     #[cfg(any(not(target_os = "linux"), test))]
     {

@@ -344,3 +344,142 @@ fn test_shm_init_guard_drop_cleans_resources() {
         "closing fd must result in EBADF"
     );
 }
+
+#[test]
+fn test_rapid_wayland_resizes_churn_and_pool_invariants() {
+    let mut lifecycle = BufferLifecycleState::<u32>::new(3);
+
+    let resolutions = [
+        (640, 480),
+        (800, 600),
+        (1024, 768),
+        (1920, 1080),
+        (1366, 768),
+        (2560, 1440),
+        (801, 603), // odd dimensions
+        (1280, 720),
+        (1920, 1200),
+        (800, 600),
+    ];
+
+    let mut next_id = 1000u32;
+    let mut compositor_owned: Vec<u32> = Vec::new();
+    let mut active_registered: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for i in 0..1000 {
+        let (w, h) = resolutions[i % resolutions.len()];
+
+        let (action, immediate_destroys) = lifecycle.acquire(w, h);
+
+        // Track immediate destroys
+        for destroyed_id in immediate_destroys {
+            active_registered.remove(&destroyed_id);
+        }
+
+        match action {
+            AcquireAction::AllocateNew => {
+                let id = next_id;
+                next_id += 1;
+                lifecycle.register_new(id, w, h);
+                active_registered.insert(id);
+                lifecycle.submit(&id);
+                compositor_owned.push(id);
+            }
+            AcquireAction::Reuse(id) => {
+                lifecycle.submit(&id);
+                compositor_owned.push(id);
+            }
+            AcquireAction::NoAvailableBuffer => {
+                // Deferral is valid when all 3 buffers are compositor-owned
+                assert_eq!(lifecycle.compositor_owned_count(), 3);
+            }
+        }
+
+        // Active pool count must never exceed max_buffers (3)
+        assert!(
+            lifecycle.active_count() <= 3,
+            "Active buffer count {} exceeded max_buffers 3 on iteration {}",
+            lifecycle.active_count(),
+            i
+        );
+
+        // Simulate intermittent compositor releases (e.g. every other frame)
+        if i % 2 == 0 && !compositor_owned.is_empty() {
+            let rel_idx = (i * 7) % compositor_owned.len();
+            let rel_id = compositor_owned.remove(rel_idx);
+            let rel_action = lifecycle.on_release(&rel_id);
+            match rel_action {
+                ReleaseAction::Destroy => {
+                    active_registered.remove(&rel_id);
+                }
+                ReleaseAction::MakeAvailable => {
+                    assert!(active_registered.contains(&rel_id));
+                }
+                ReleaseAction::Ignored => {}
+            }
+        }
+    }
+
+    // Drain all remaining compositor-owned buffers
+    for id in compositor_owned {
+        let rel_action = lifecycle.on_release(&id);
+        if rel_action == ReleaseAction::Destroy {
+            active_registered.remove(&id);
+        }
+    }
+
+    assert_eq!(
+        lifecycle.compositor_owned_count(),
+        0,
+        "All buffers must be drained from compositor ownership"
+    );
+    assert!(
+        lifecycle.active_count() <= 3,
+        "Active count must stay within pool bounds after drain"
+    );
+}
+
+#[test]
+fn test_compositor_buffer_release_out_of_order_and_delayed_sequencing() {
+    let mut lifecycle = BufferLifecycleState::<u32>::new(3);
+
+    // Acquire and submit 3 buffers at 800x600
+    for id in [1, 2, 3] {
+        let (action, _) = lifecycle.acquire(800, 600);
+        assert_eq!(action, AcquireAction::AllocateNew);
+        lifecycle.register_new(id, 800, 600);
+        lifecycle.submit(&id);
+    }
+    assert_eq!(lifecycle.compositor_owned_count(), 3);
+    assert_eq!(lifecycle.active_count(), 3);
+
+    // Resize to 1024x768: all 3 become retired since they are currently CompositorOwned
+    let (action_res, destroys) = lifecycle.acquire(1024, 768);
+    assert_eq!(action_res, AcquireAction::AllocateNew);
+    assert!(
+        destroys.is_empty(),
+        "Compositor-owned buffers cannot be destroyed immediately"
+    );
+
+    lifecycle.register_new(4, 1024, 768);
+    lifecycle.submit(&4);
+
+    // Verify out-of-order release: release 3 first, then 1, then 2
+    assert_eq!(lifecycle.on_release(&3), ReleaseAction::Destroy);
+    assert_eq!(lifecycle.on_release(&1), ReleaseAction::Destroy);
+    assert_eq!(lifecycle.on_release(&2), ReleaseAction::Destroy);
+
+    // Re-releasing already destroyed buffers must be ignored safely
+    assert_eq!(lifecycle.on_release(&3), ReleaseAction::Ignored);
+    assert_eq!(lifecycle.on_release(&1), ReleaseAction::Ignored);
+    assert_eq!(lifecycle.on_release(&9999), ReleaseAction::Ignored);
+
+    // Release current active buffer 4: it was not retired, so it becomes Available
+    assert_eq!(lifecycle.on_release(&4), ReleaseAction::MakeAvailable);
+    assert_eq!(lifecycle.available_count(), 1);
+    assert_eq!(lifecycle.compositor_owned_count(), 0);
+
+    // Acquiring 1024x768 again reuses buffer 4 without reallocation
+    let (reuse_action, _) = lifecycle.acquire(1024, 768);
+    assert_eq!(reuse_action, AcquireAction::Reuse(4));
+}

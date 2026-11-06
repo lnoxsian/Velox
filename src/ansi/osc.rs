@@ -314,15 +314,20 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                         .collect();
 
                     if !title.is_empty() || !body.is_empty() {
-                        std::thread::spawn(move || {
-                            let _ = std::process::Command::new("notify-send")
-                                .arg(&title)
-                                .arg(&body)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                        });
+                        let _ = std::thread::Builder::new()
+                            .name("velox-notify".to_string())
+                            .spawn(move || {
+                                if let Ok(mut child) = std::process::Command::new("notify-send")
+                                    .arg(&title)
+                                    .arg(&body)
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .spawn()
+                                {
+                                    let _ = child.wait();
+                                }
+                            });
                     }
                 }
             }

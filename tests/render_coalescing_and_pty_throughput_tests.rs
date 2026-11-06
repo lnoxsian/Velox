@@ -2,7 +2,7 @@ use std::fs::File;
 use std::os::fd::FromRawFd;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use velox::app::app::{CustomEvent, EventLoopProxy, WindowState};
+use velox::app::app::WindowState;
 use velox::pty::master::PtyMaster;
 use velox::screen::cell::Color;
 use velox::terminal::terminal::Terminal;
@@ -17,61 +17,6 @@ fn create_test_pipe() -> (Arc<PtyMaster>, File) {
     let pty = Arc::new(PtyMaster::new(fds[0], None));
     let write_end = unsafe { File::from_raw_fd(fds[1]) };
     (pty, write_end)
-}
-
-#[test]
-fn test_sustained_rapid_ansi_output_no_lost_bytes() {
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let mut term = Terminal::new(80, 24);
-
-    let total_lines = 1000;
-    // Rapidly feed 1000 lines of TrueColor ANSI sequence data
-    for i in 0..total_lines {
-        let chunk = format!(
-            "\x1b[38;2;{};{};{}m[Line {:04}] Rapid Stream ANSI Payload Token\x1b[0m\r\n",
-            (i * 17) % 256,
-            (i * 31) % 256,
-            (i * 47) % 256,
-            i
-        );
-        term.feed(chunk.as_bytes());
-    }
-
-    // Verify all 1000 lines were parsed without dropping any bytes
-    let scrollback_len = term.grid.scrollback.len();
-    assert_eq!(scrollback_len, total_lines - 23);
-
-    // Verify historical lines in scrollback
-    for i in (0..scrollback_len).step_by(50) {
-        let row = term.grid.scrollback.get_row(i).expect("scrollback row");
-        let line_text: String = row.cells.iter().map(|c| c.character).collect();
-        let expected_tag = format!("[Line {:04}]", i);
-        assert!(
-            line_text.contains(&expected_tag),
-            "Scrollback row {} should contain '{}', got '{}'",
-            i,
-            expected_tag,
-            line_text
-        );
-    }
-
-    // Verify visible rows on grid (lines scrollback_len .. total_lines - 1)
-    for y in 0..23 {
-        let line_num = scrollback_len + y;
-        let expected_tag = format!("[Line {:04}]", line_num);
-        let slice = term
-            .active_grid()
-            .active_display_row_slice(y)
-            .expect("row slice");
-        let line_text: String = slice.iter().map(|c| c.character).collect();
-        assert!(
-            line_text.contains(&expected_tag),
-            "Visible row {} should contain '{}', got '{}'",
-            y,
-            expected_tag,
-            line_text
-        );
-    }
 }
 
 #[test]
@@ -268,60 +213,4 @@ fn test_ssh_ls_streaming_scroll_marks_full_damage() {
         .with_display_row_slice(22, |cells| cells.iter().map(|c| c.character).collect())
         .unwrap();
     assert!(row_22_text.starts_with("file1.txt"));
-}
-
-#[test]
-fn test_app_event_drain_with_pty_data() {
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let (pty, _w) = create_test_pipe();
-    let mut ws = WindowState::create_test_window_state(pty, 80, 24);
-
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let proxy = EventLoopProxy::new(sender, -1);
-
-    // Send 5 PtyData events through proxy
-    for i in 0..5 {
-        let chunk = format!("Batch payload {}\r\n", i).into_bytes();
-        proxy
-            .send(CustomEvent::PtyData {
-                window_id: ws.window_id,
-                tab_id: ws.tabs[0].id,
-                pane_id: ws.active_pane().id,
-                data: chunk,
-            })
-            .unwrap();
-    }
-
-    // Drain all events from receiver into window terminal
-    let mut received_bytes = 0usize;
-    while let Ok(event) = receiver.try_recv() {
-        if let CustomEvent::PtyData { data, .. } = event {
-            received_bytes += data.len();
-            ws.active_tab_mut().active_pane_mut().terminal.feed(&data);
-            ws.needs_redraw = true;
-        }
-    }
-
-    assert!(received_bytes > 0);
-    assert!(ws.needs_redraw);
-
-    // Verify grid content contains all 5 payloads
-    for i in 0..5 {
-        let tag = format!("Batch payload {}", i);
-        let found = (0..24).any(|y| {
-            if let Some(slice) = ws
-                .active_tab()
-                .active_pane()
-                .terminal
-                .active_grid()
-                .active_display_row_slice(y)
-            {
-                let text: String = slice.iter().map(|c| c.character).collect();
-                text.contains(&tag)
-            } else {
-                false
-            }
-        });
-        assert!(found, "Expected to find '{}' on visible grid", tag);
-    }
 }

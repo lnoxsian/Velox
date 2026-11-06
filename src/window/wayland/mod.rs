@@ -1,3 +1,4 @@
+pub mod clipboard;
 pub mod cursor;
 pub mod keyboard;
 pub mod shm;
@@ -8,11 +9,13 @@ use crate::window::WindowResizeEdge;
 use keyboard::{ActiveKeyRepeat, KeyRepeatConfig, XkbHandler};
 use shm::WaylandBufferPool;
 use std::collections::VecDeque;
+use std::io::Write;
 use std::os::fd::{AsFd, AsRawFd};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_compositor, wl_data_device, wl_data_device_manager, wl_data_offer,
+    wl_data_source, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::xdg::decoration::zv1::client::{
@@ -71,6 +74,16 @@ pub struct WaylandState {
     pub cursor_visible: bool,
     pub pointer_inside: bool,
     pub scroll_accumulator_y: f64,
+    pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    pub data_device: Option<wl_data_device::WlDataDevice>,
+    pub current_selection_offer: Option<wl_data_offer::WlDataOffer>,
+    pub active_offer: Arc<RwLock<Option<wl_data_offer::WlDataOffer>>>,
+    pub active_mime_types: Arc<RwLock<Vec<String>>>,
+    pub current_data_source: Option<wl_data_source::WlDataSource>,
+    pub clipboard_text: Arc<RwLock<String>>,
+    pub primary_text: Arc<RwLock<String>>,
+    pub copy_pending_requests: Arc<Mutex<VecDeque<String>>>,
+    pub last_input_serial: u32,
 }
 
 pub const CSD_TITLE_BAR_HEIGHT: u32 = 38;
@@ -111,6 +124,16 @@ impl WaylandState {
             cursor_visible: true,
             pointer_inside: false,
             scroll_accumulator_y: 0.0,
+            data_device_manager: None,
+            data_device: None,
+            current_selection_offer: None,
+            active_offer: Arc::new(RwLock::new(None)),
+            active_mime_types: Arc::new(RwLock::new(Vec::new())),
+            current_data_source: None,
+            clipboard_text: Arc::new(RwLock::new(String::new())),
+            primary_text: Arc::new(RwLock::new(String::new())),
+            copy_pending_requests: Arc::new(Mutex::new(VecDeque::new())),
+            last_input_serial: 0,
         }
     }
 }
@@ -120,6 +143,7 @@ pub struct WaylandWindow {
     pub event_queue: EventQueue<WaylandState>,
     pub qh: QueueHandle<WaylandState>,
     pub state: WaylandState,
+    pub clipboard_provider: Arc<clipboard::WaylandClipboardProvider>,
 }
 
 impl WaylandWindow {
@@ -195,14 +219,39 @@ impl WaylandWindow {
             }
         }
 
+        if state.data_device.is_none() {
+            if let (Some(seat), Some(mgr)) = (&state.seat, &state.data_device_manager) {
+                state.data_device = Some(mgr.get_data_device(seat, &qh, ()));
+            }
+        }
+
+        let clipboard_provider = Arc::new(clipboard::WaylandClipboardProvider::new(
+            Arc::clone(&state.clipboard_text),
+            Arc::clone(&state.primary_text),
+            Arc::clone(&state.copy_pending_requests),
+            conn.clone(),
+            Arc::clone(&state.active_offer),
+            Arc::clone(&state.active_mime_types),
+        ));
+        crate::clipboard::clipboard::register_provider(clipboard_provider.clone());
+
         Ok(Self {
             conn,
             event_queue,
             qh,
             state,
+            clipboard_provider,
         })
     }
+}
 
+impl Drop for WaylandWindow {
+    fn drop(&mut self) {
+        crate::clipboard::clipboard::unregister_provider();
+    }
+}
+
+impl WaylandWindow {
     pub fn set_title(&self, title: &str) {
         if let Some(toplevel) = &self.state.xdg_toplevel {
             toplevel.set_title(title.to_string());
@@ -386,6 +435,26 @@ impl WaylandWindow {
     }
 
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
+        // Process any pending native clipboard copy requests
+        loop {
+            let pending = self.state.copy_pending_requests.lock().unwrap().pop_front();
+            match pending {
+                Some(_text) => {
+                    if let (Some(mgr), Some(device)) =
+                        (&self.state.data_device_manager, &self.state.data_device)
+                    {
+                        let source = mgr.create_data_source(&self.qh, ());
+                        source.offer("text/plain;charset=utf-8".to_string());
+                        source.offer("text/plain".to_string());
+                        source.offer("UTF8_STRING".to_string());
+                        device.set_selection(Some(&source), self.state.last_input_serial);
+                        self.state.current_data_source = Some(source);
+                    }
+                }
+                None => break,
+            }
+        }
+
         let _ = self.conn.flush();
         if let Some(guard) = self.conn.prepare_read() {
             if let Err(e) = guard.read() {
@@ -455,7 +524,27 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WaylandState {
                     state.wm_base = Some(registry.bind(name, version.min(4), qh, ()));
                 }
                 "wl_seat" => {
-                    state.seat = Some(registry.bind(name, version.min(7), qh, ()));
+                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(name, version.min(7), qh, ());
+                    if state.data_device.is_none() {
+                        if let Some(mgr) = &state.data_device_manager {
+                            state.data_device = Some(mgr.get_data_device(&seat, qh, ()));
+                        }
+                    }
+                    state.seat = Some(seat);
+                }
+                "wl_data_device_manager" => {
+                    let mgr = registry.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
+                        name,
+                        version.min(3),
+                        qh,
+                        (),
+                    );
+                    if state.data_device.is_none() {
+                        if let Some(seat) = &state.seat {
+                            state.data_device = Some(mgr.get_data_device(seat, qh, ()));
+                        }
+                    }
+                    state.data_device_manager = Some(mgr);
                 }
                 "zxdg_decoration_manager_v1" => {
                     state.decoration_manager = Some(registry.bind(name, version.min(1), qh, ()));
@@ -693,6 +782,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 ..
             } => {
                 state.pointer_serial = serial;
+                state.last_input_serial = serial;
                 let s = match btn_state {
                     wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => {
                         ElementState::Pressed
@@ -769,10 +859,12 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                 state.events.push_back(PlatformEvent::Focused(false));
             }
             wl_keyboard::Event::Key {
+                serial,
                 key,
                 state: key_state,
                 ..
             } => {
+                state.last_input_serial = serial;
                 let is_pressed = matches!(
                     key_state,
                     wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
@@ -896,6 +988,82 @@ impl Dispatch<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1, ()> for Way
                     state.use_csd = true;
                     log::info!("Wayland compositor requires client-side decorations (CSD)");
                 }
+            }
+        }
+    }
+}
+
+impl Dispatch<wl_data_device_manager::WlDataDeviceManager, ()> for WaylandState {
+    fn event(
+        _: &mut Self,
+        _: &wl_data_device_manager::WlDataDeviceManager,
+        _: wl_data_device_manager::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_device::WlDataDevice,
+        event: wl_data_device::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_device::Event::Selection { id } => {
+                if let Ok(mut lock) = state.active_offer.write() {
+                    *lock = id.clone();
+                }
+                if let Ok(mut lock) = state.active_mime_types.write() {
+                    lock.clear();
+                }
+                state.current_selection_offer = id;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_source::WlDataSource,
+        event: wl_data_source::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_data_source::Event::Send { mime_type: _, fd } => {
+                let text = state.clipboard_text.read().unwrap().clone();
+                let mut file = std::fs::File::from(fd);
+                let _ = file.write_all(text.as_bytes());
+            }
+            wl_data_source::Event::Cancelled => {
+                state.current_data_source = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &wl_data_offer::WlDataOffer,
+        event: wl_data_offer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_offer::Event::Offer { mime_type } = event {
+            if let Ok(mut lock) = state.active_mime_types.write() {
+                lock.push(mime_type);
             }
         }
     }

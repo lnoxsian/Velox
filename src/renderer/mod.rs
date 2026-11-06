@@ -23,7 +23,9 @@ pub use backend::{RendererInitError, WindowAndRenderer, create_window_and_render
 pub use color::{PackedColor, PrecomputedPalette};
 pub use damage::DamageMap;
 pub use framebuffer::Framebuffer;
-pub use glyph::{GlyphCache, GlyphKey};
+pub use glyph::{
+    GlyphCache, GlyphKey, compute_font_cell_metrics, compute_font_cell_metrics_with_line_height,
+};
 
 pub mod software {
     pub use super::*;
@@ -256,10 +258,11 @@ const CIRCLE_24PX_SCANLINES: [CircleRow; 25] = [
 
 impl CpuRenderer {
     #[allow(clippy::too_many_arguments)]
-    pub fn try_new(
+    pub fn try_new_with_line_height(
         font_family: &str,
         font_size: f32,
         font_scale_multiplier: f32,
+        line_height: f32,
         theme: &Theme,
         width: u32,
         height: u32,
@@ -267,8 +270,12 @@ impl CpuRenderer {
         opacity: f32,
     ) -> Result<Self, crate::font::resolved::FontError> {
         let font_size = font_size.max(1.0);
-        let glyph_cache =
-            GlyphCache::try_from_font_family(font_family, font_size, font_scale_multiplier)?;
+        let glyph_cache = GlyphCache::try_from_font_family_with_line_height(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            line_height,
+        )?;
         let tab_glyph_cache = glyph_cache.create_tab_cache(font_size);
         let framebuffer = Framebuffer::new(width, height);
         let opacity = opacity.clamp(0.0, 1.0);
@@ -307,6 +314,56 @@ impl CpuRenderer {
             scratch_resolved: Vec::new(),
             stats: RenderStats::default(),
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        theme: &Theme,
+        width: u32,
+        height: u32,
+        bold_is_bright: bool,
+        opacity: f32,
+    ) -> Result<Self, crate::font::resolved::FontError> {
+        Self::try_new_with_line_height(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            1.0,
+            theme,
+            width,
+            height,
+            bold_is_bright,
+            opacity,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_line_height(
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        line_height: f32,
+        theme: &Theme,
+        width: u32,
+        height: u32,
+        bold_is_bright: bool,
+        opacity: f32,
+    ) -> Self {
+        Self::try_new_with_line_height(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            line_height,
+            theme,
+            width,
+            height,
+            bold_is_bright,
+            opacity,
+        )
+        .expect("Failed to initialize CpuRenderer")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -400,6 +457,17 @@ impl CpuRenderer {
 
     pub fn set_tab_font_size(&mut self, font_size: f32) {
         self.tab_glyph_cache.update_font_size(font_size);
+    }
+
+    pub fn set_line_height(&mut self, line_height: f32) {
+        self.glyph_cache.set_line_height(line_height);
+        self.default_cell_height = self.glyph_cache.cell_height as f32;
+        let rows = (self.viewport_height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
+        self.damage.resize(rows);
+        self.damage.mark_all();
+        crate::diagnostics::ResizeStats::record_pane_state_clear();
+        self.pane_states.clear();
+        self.last_target_ptr = 0;
     }
 
     /// Full memory cleanup: compacts glyph atlas, unloads fallback fonts, and shrinks scratch buffers.

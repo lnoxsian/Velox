@@ -936,19 +936,45 @@ impl Scrollback {
             let pending_len = storage.pending_chunk.len();
 
             if index < total_disk {
-                let chunk_idx = match storage.chunks.binary_search_by(|chunk| {
+                // O(1) Fast-Path: when chunks have uniform SCROLLBACK_CHUNK_ROWS sizing
+                let guessed_idx = index / SCROLLBACK_CHUNK_ROWS;
+                let chunk_idx = if let Some(chunk) = storage.chunks.get(guessed_idx) {
                     let start = chunk.first_line as usize;
                     let end = start.saturating_add(chunk.line_count as usize);
-                    if index < start {
-                        std::cmp::Ordering::Greater
-                    } else if index >= end {
-                        std::cmp::Ordering::Less
+                    if index >= start && index < end {
+                        guessed_idx
                     } else {
-                        std::cmp::Ordering::Equal
+                        // Fallback to binary search for non-uniform chunks
+                        match storage.chunks.binary_search_by(|c| {
+                            let s = c.first_line as usize;
+                            let e = s.saturating_add(c.line_count as usize);
+                            if index < s {
+                                std::cmp::Ordering::Greater
+                            } else if index >= e {
+                                std::cmp::Ordering::Less
+                            } else {
+                                std::cmp::Ordering::Equal
+                            }
+                        }) {
+                            Ok(idx) => idx,
+                            Err(_) => return None,
+                        }
                     }
-                }) {
-                    Ok(idx) => idx,
-                    Err(_) => return None,
+                } else {
+                    match storage.chunks.binary_search_by(|c| {
+                        let s = c.first_line as usize;
+                        let e = s.saturating_add(c.line_count as usize);
+                        if index < s {
+                            std::cmp::Ordering::Greater
+                        } else if index >= e {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    }) {
+                        Ok(idx) => idx,
+                        Err(_) => return None,
+                    }
                 };
 
                 let chunk = storage.chunks.get(chunk_idx)?;

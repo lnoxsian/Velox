@@ -284,12 +284,15 @@ impl Drop for XkbHandler {
         if let Some(lib) = &self.lib {
             if !self.state.is_null() {
                 unsafe { (lib.xkb_state_unref)(self.state) };
+                self.state = std::ptr::null_mut();
             }
             if !self.keymap.is_null() {
                 unsafe { (lib.xkb_keymap_unref)(self.keymap) };
+                self.keymap = std::ptr::null_mut();
             }
             if !self.ctx.is_null() {
                 unsafe { (lib.xkb_context_unref)(self.ctx) };
+                self.ctx = std::ptr::null_mut();
             }
         }
     }

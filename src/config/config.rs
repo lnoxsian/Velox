@@ -19,6 +19,8 @@ pub struct FontConfig {
     pub font_scale_multiplier: Option<f32>,
     #[serde(default)]
     pub bold_is_bright: Option<bool>,
+    #[serde(default)]
+    pub line_height: Option<f32>,
 }
 
 impl Default for FontConfig {
@@ -28,6 +30,7 @@ impl Default for FontConfig {
             font_size: default_font_size(),
             font_scale_multiplier: Some(1.5),
             bold_is_bright: Some(true),
+            line_height: None,
         }
     }
 }
@@ -324,6 +327,12 @@ pub struct Config {
     pub(crate) bold_is_bright_legacy: Option<bool>,
     #[serde(
         default,
+        rename = "line_height",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) line_height_legacy: Option<f32>,
+    #[serde(
+        default,
         rename = "scrollback_limit",
         skip_serializing_if = "Option::is_none"
     )]
@@ -489,6 +498,10 @@ impl Config {
 
     pub fn bold_is_bright(&self) -> Option<bool> {
         self.font.bold_is_bright.or(self.bold_is_bright_legacy)
+    }
+
+    pub fn line_height(&self) -> Option<f32> {
+        self.font.line_height.or(self.line_height_legacy)
     }
 
     pub fn scrollback_limit(&self) -> Option<usize> {
@@ -668,6 +681,16 @@ impl Config {
                 diags.push(ConfigDiagnostic {
                     severity: DiagnosticSeverity::Warning,
                     message: format!("Invalid font_scale_multiplier ({fsm}); defaulting to 1.5"),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+        if let Some(lh) = self.line_height() {
+            if lh <= 0.1 || lh > 5.0 || lh.is_nan() || lh.is_infinite() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!("Invalid line_height ({lh}); defaulting to 1.0"),
                     line: None,
                     col: None,
                 });
@@ -1201,5 +1224,31 @@ mod tests {
         assert_eq!(default_cfg.fps_limit(), None);
         let serialized = toml::to_string_pretty(&default_cfg).unwrap();
         assert!(!serialized.contains("fps_limit"));
+    }
+
+    #[test]
+    fn test_config_line_height_parsing_and_diagnostics() {
+        let toml_valid = r#"
+            [font]
+            line_height = 0.9
+        "#;
+        let cfg: Config = toml::from_str(toml_valid).unwrap();
+        assert_eq!(cfg.line_height(), Some(0.9));
+        assert!(cfg.validate().is_empty());
+
+        let toml_legacy = r#"
+            line_height = 1.15
+        "#;
+        let cfg_legacy: Config = toml::from_str(toml_legacy).unwrap();
+        assert_eq!(cfg_legacy.line_height(), Some(1.15));
+
+        let toml_invalid = r#"
+            [font]
+            line_height = -0.5
+        "#;
+        let cfg_invalid: Config = toml::from_str(toml_invalid).unwrap();
+        let diags = cfg_invalid.validate();
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("Invalid line_height"));
     }
 }

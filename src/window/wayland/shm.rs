@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::os::unix::io::{BorrowedFd, RawFd};
 use wayland_client::backend::ObjectId;
@@ -50,8 +51,8 @@ pub struct BufferLifecycleState<Id: Clone + Eq + std::hash::Hash> {
     pub max_buffers: usize,
     pub width: u32,
     pub height: u32,
-    pub active_buffers: Vec<BufferSlot<Id>>,
-    pub retired_buffers: Vec<BufferSlot<Id>>,
+    pub active_buffers: SmallVec<[BufferSlot<Id>; 4]>,
+    pub retired_buffers: SmallVec<[BufferSlot<Id>; 4]>,
 }
 
 impl<Id: Clone + Eq + std::hash::Hash> BufferLifecycleState<Id> {
@@ -60,8 +61,8 @@ impl<Id: Clone + Eq + std::hash::Hash> BufferLifecycleState<Id> {
             max_buffers: max_buffers.max(1),
             width: 0,
             height: 0,
-            active_buffers: Vec::with_capacity(max_buffers),
-            retired_buffers: Vec::new(),
+            active_buffers: SmallVec::new(),
+            retired_buffers: SmallVec::new(),
         }
     }
 
@@ -364,14 +365,24 @@ impl Drop for ShmBufferInitGuard {
             pool.destroy();
         }
         if !self.mem.is_null() && self.mem != libc::MAP_FAILED {
-            unsafe {
-                libc::munmap(self.mem, self.size_bytes);
+            let ret = unsafe { libc::munmap(self.mem, self.size_bytes) };
+            if ret < 0 {
+                log::warn!(
+                    "ShmBufferInitGuard munmap failed: {}",
+                    std::io::Error::last_os_error()
+                );
             }
+            self.mem = std::ptr::null_mut();
         }
         if self.fd >= 0 {
-            unsafe {
-                libc::close(self.fd);
+            let ret = unsafe { libc::close(self.fd) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EBADF) {
+                    log::warn!("ShmBufferInitGuard close fd {} failed: {}", self.fd, err);
+                }
             }
+            self.fd = -1;
         }
     }
 }
@@ -489,16 +500,28 @@ impl WaylandShmBuffer {
 
 impl Drop for WaylandShmBuffer {
     fn drop(&mut self) {
-        unsafe {
-            if !self.mem.is_null() && self.mem != (libc::MAP_FAILED as *mut u32) {
-                libc::munmap(self.mem as *mut libc::c_void, self.size_bytes);
-            }
-            if self.fd >= 0 {
-                libc::close(self.fd);
-            }
-        }
         self.buffer.destroy();
         self.pool.destroy();
+        if !self.mem.is_null() && self.mem != (libc::MAP_FAILED as *mut u32) {
+            let ret = unsafe { libc::munmap(self.mem as *mut libc::c_void, self.size_bytes) };
+            if ret < 0 {
+                log::warn!(
+                    "WaylandShmBuffer munmap failed: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+            self.mem = std::ptr::null_mut();
+        }
+        if self.fd >= 0 {
+            let ret = unsafe { libc::close(self.fd) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EBADF) {
+                    log::warn!("WaylandShmBuffer close fd {} failed: {}", self.fd, err);
+                }
+            }
+            self.fd = -1;
+        }
     }
 }
 

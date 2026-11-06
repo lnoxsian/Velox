@@ -2,11 +2,28 @@ use crate::app::app::{CustomEvent, EventLoopProxy, WindowId};
 use crate::pty::buffer_pool::{PTY_BUFFER_SIZE, acquire_pty_buffer, recycle_pty_buffer};
 use crate::pty::master::PtyMaster;
 use std::collections::{HashMap, VecDeque};
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
+
+struct EpollFdGuard(RawFd);
+
+impl Drop for EpollFdGuard {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            let ret = unsafe { libc::close(self.0) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EBADF) {
+                    log::warn!("Failed to close epoll_fd {}: {}", self.0, err);
+                }
+            }
+            self.0 = -1;
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneKey {
@@ -39,7 +56,7 @@ pub enum ReactorCommand {
 #[derive(Clone)]
 pub struct PtyReactorHandle {
     command_tx: Sender<ReactorCommand>,
-    wake_fd: RawFd,
+    wake_fd: Option<Arc<OwnedFd>>,
     wake_pending: Arc<AtomicBool>,
     is_stopped: Arc<AtomicBool>,
 }
@@ -49,7 +66,7 @@ impl PtyReactorHandle {
         let (command_tx, _) = channel();
         Self {
             command_tx,
-            wake_fd: -1,
+            wake_fd: None,
             wake_pending: Arc::new(AtomicBool::new(false)),
             is_stopped: Arc::new(AtomicBool::new(true)),
         }
@@ -107,17 +124,38 @@ impl PtyReactorHandle {
     }
 
     fn send_command(&self, cmd: ReactorCommand) -> Result<(), String> {
+        if self.is_stopped.load(Ordering::Acquire) {
+            return Err("Reactor is stopped".to_string());
+        }
         self.command_tx
             .send(cmd)
             .map_err(|e| format!("Failed to send reactor command: {}", e))?;
-        if self.wake_fd >= 0 && !self.wake_pending.swap(true, Ordering::AcqRel) {
+        if let Some(wfd) = &self.wake_fd
+            && !self.wake_pending.swap(true, Ordering::AcqRel)
+        {
             let val = 1u64;
-            unsafe {
-                libc::write(
-                    self.wake_fd,
-                    &val as *const _ as *const libc::c_void,
-                    std::mem::size_of::<u64>(),
-                );
+            loop {
+                let res = unsafe {
+                    libc::write(
+                        wfd.as_raw_fd(),
+                        &val as *const _ as *const libc::c_void,
+                        std::mem::size_of::<u64>(),
+                    )
+                };
+                if res >= 0 {
+                    break;
+                }
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                if err.raw_os_error() == Some(libc::EAGAIN)
+                    || err.raw_os_error() == Some(libc::EWOULDBLOCK)
+                {
+                    break;
+                }
+                log::warn!("Failed to write to reactor wake_fd: {}", err);
+                break;
             }
         }
         Ok(())
@@ -126,7 +164,7 @@ impl PtyReactorHandle {
 
 pub struct PtyReactor {
     handle: PtyReactorHandle,
-    wake_fd: RawFd,
+    wake_fd: Option<Arc<OwnedFd>>,
     is_stopped: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<()>>,
 }
@@ -145,28 +183,24 @@ impl PtyReactor {
                 std::io::Error::last_os_error()
             ));
         }
+        let mut epoll_guard = EpollFdGuard(epoll_fd);
 
-        let wake_fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if wake_fd < 0 {
-            unsafe {
-                libc::close(epoll_fd);
-            }
+        let wake_raw = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if wake_raw < 0 {
             return Err(format!(
                 "eventfd failed: {}",
                 std::io::Error::last_os_error()
             ));
         }
+        let wake_fd = Arc::new(unsafe { OwnedFd::from_raw_fd(wake_raw) });
 
         let mut ev = libc::epoll_event {
             events: libc::EPOLLIN as u32,
-            u64: wake_fd as u64,
+            u64: wake_fd.as_raw_fd() as u64,
         };
-        let res = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, wake_fd, &mut ev) };
+        let res =
+            unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_ADD, wake_fd.as_raw_fd(), &mut ev) };
         if res < 0 {
-            unsafe {
-                libc::close(wake_fd);
-                libc::close(epoll_fd);
-            }
             return Err(format!(
                 "Failed to register wake_fd with epoll: {}",
                 std::io::Error::last_os_error()
@@ -178,13 +212,17 @@ impl PtyReactor {
         let is_stopped_clone = is_stopped.clone();
         let wake_pending = Arc::new(AtomicBool::new(false));
         let wake_pending_clone = wake_pending.clone();
+        let wake_fd_clone = wake_fd.clone();
+
+        let thread_epoll_fd = epoll_guard.0;
+        epoll_guard.0 = -1; // Disarm caller guard: thread now owns epoll_fd
 
         let join_handle = thread::Builder::new()
             .name("velox-pty-reactor".to_string())
             .spawn(move || {
                 run_reactor_loop(
-                    epoll_fd,
-                    wake_fd,
+                    thread_epoll_fd,
+                    wake_fd_clone,
                     command_rx,
                     proxy,
                     wake_pending_clone,
@@ -193,22 +231,21 @@ impl PtyReactor {
             })
             .map_err(|e| {
                 unsafe {
-                    libc::close(wake_fd);
-                    libc::close(epoll_fd);
+                    libc::close(thread_epoll_fd);
                 }
                 format!("Failed to spawn PTY reactor thread: {}", e)
             })?;
 
         let handle = PtyReactorHandle {
             command_tx,
-            wake_fd,
+            wake_fd: Some(wake_fd.clone()),
             wake_pending,
             is_stopped: is_stopped.clone(),
         };
 
         Ok(Self {
             handle,
-            wake_fd,
+            wake_fd: Some(wake_fd),
             is_stopped,
             join_handle: Some(join_handle),
         })
@@ -242,11 +279,11 @@ impl PtyReactor {
         }
 
         let _ = self.handle.command_tx.send(ReactorCommand::Shutdown);
-        if self.wake_fd >= 0 {
+        if let Some(wfd) = &self.wake_fd {
             let val = 1u64;
             unsafe {
                 libc::write(
-                    self.wake_fd,
+                    wfd.as_raw_fd(),
                     &val as *const _ as *const libc::c_void,
                     std::mem::size_of::<u64>(),
                 );
@@ -257,12 +294,7 @@ impl PtyReactor {
             let _ = handle.join();
         }
 
-        if self.wake_fd >= 0 {
-            unsafe {
-                libc::close(self.wake_fd);
-            }
-            self.wake_fd = -1;
-        }
+        self.wake_fd = None;
     }
 }
 
@@ -281,19 +313,26 @@ fn set_epoll_out_interest(epoll_fd: RawFd, fd: RawFd, enable: bool) {
         events,
         u64: fd as u64,
     };
-    unsafe {
-        libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut ep_event);
+    let ret = unsafe { libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_MOD, fd, &mut ep_event) };
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EBADF) && err.raw_os_error() != Some(libc::ENOENT) {
+            log::warn!("epoll_ctl MOD failed for fd {}: {}", fd, err);
+        }
     }
 }
 
 fn run_reactor_loop(
     epoll_fd: RawFd,
-    wake_fd: RawFd,
+    wake_fd: Arc<OwnedFd>,
     command_rx: Receiver<ReactorCommand>,
     proxy: EventLoopProxy,
     wake_pending: Arc<AtomicBool>,
     is_stopped: Arc<AtomicBool>,
 ) {
+    let _epoll_guard = EpollFdGuard(epoll_fd);
+    let wake_raw_fd = wake_fd.as_raw_fd();
+
     let mut fds: HashMap<RawFd, Registration> = HashMap::new();
     let mut key_to_fd: HashMap<PaneKey, RawFd> = HashMap::new();
     let mut write_buffers: HashMap<RawFd, VecDeque<u8>> = HashMap::new();
@@ -322,11 +361,17 @@ fn run_reactor_loop(
             let ev = events[i];
             let fd = ev.u64 as RawFd;
 
-            if fd == wake_fd {
+            if fd == wake_raw_fd {
                 // Drain wake_fd
                 let mut buf = [0u8; 8];
-                unsafe {
-                    libc::read(wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+                loop {
+                    let r = unsafe {
+                        libc::read(wake_raw_fd, buf.as_mut_ptr() as *mut libc::c_void, 8)
+                    };
+                    if r >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        break;
+                    }
                 }
                 wake_pending.store(false, Ordering::Release);
 
@@ -344,7 +389,7 @@ fn run_reactor_loop(
                                 tab_id,
                                 pane_id,
                             };
-                            let pty_fd = pty.fd;
+                            let pty_fd = pty.as_raw_fd();
                             if pty_fd < 0 {
                                 continue;
                             }
@@ -684,9 +729,14 @@ fn run_reactor_loop(
         }
     }
     unsafe {
-        libc::epoll_ctl(epoll_fd, libc::EPOLL_CTL_DEL, wake_fd, std::ptr::null_mut());
-        libc::close(epoll_fd);
+        libc::epoll_ctl(
+            epoll_fd,
+            libc::EPOLL_CTL_DEL,
+            wake_raw_fd,
+            std::ptr::null_mut(),
+        );
     }
+    // _epoll_guard automatically closes epoll_fd on drop!
 }
 
 #[cfg(test)]

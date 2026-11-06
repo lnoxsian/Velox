@@ -87,6 +87,20 @@ pub fn get_combining_registry() -> &'static Mutex<CombiningRegistry> {
     COMBINING_REGISTRY.get_or_init(|| Mutex::new(CombiningRegistry::new()))
 }
 
+#[inline]
+pub fn append_cell_char_to_string(c: char, out: &mut String) {
+    if ('\u{100000}'..='\u{10ffff}').contains(&c) {
+        let reg_idx = (c as u32 - 0x100000) as usize;
+        if let Ok(registry) = get_combining_registry().lock() {
+            if let Some(seq) = registry.get_sequence(reg_idx) {
+                out.push_str(seq);
+                return;
+            }
+        }
+    }
+    out.push(c);
+}
+
 pub struct Grid {
     pub width: usize,
     pub height: usize,
@@ -499,7 +513,7 @@ impl Grid {
         for r in start_r..=end_r {
             let _ = self.with_row_cells(r, |cells| {
                 for c in cells {
-                    out.push(c.character);
+                    append_cell_char_to_string(c.character, out);
                 }
                 for _ in cells.len()..self.width {
                     out.push(' ');
@@ -541,7 +555,7 @@ impl Grid {
                 text.clear();
                 let _ = self.with_row_cells(abs_row, |cells| {
                     for c in cells {
-                        text.push(c.character);
+                        append_cell_char_to_string(c.character, &mut text);
                     }
                 });
                 crate::hyperlink::detector::is_url_at(&text, col)
@@ -587,7 +601,7 @@ impl Grid {
             let mut text = String::with_capacity(self.width);
             let _ = self.with_row_cells(abs_row, |cells| {
                 for c in cells {
-                    text.push(c.character);
+                    append_cell_char_to_string(c.character, &mut text);
                 }
             });
 
@@ -904,26 +918,28 @@ impl Grid {
                 }
                 if idx < self.cells.len() {
                     let base_char = self.cells[idx].character;
+                    let mut seq = String::with_capacity(8);
                     if ('\u{100000}'..='\u{10ffff}').contains(&base_char) {
                         let reg_idx = (base_char as u32 - 0x100000) as usize;
-                        if let Ok(mut registry) = get_combining_registry().lock() {
-                            registry.append_to_entry(reg_idx, c);
+                        if let Ok(registry) = get_combining_registry().lock() {
+                            if let Some(s) = registry.get_sequence(reg_idx) {
+                                seq.push_str(s);
+                            }
                         }
                     } else {
-                        let mut seq = String::with_capacity(8);
                         seq.push(base_char);
-                        seq.push(c);
-                        let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
-                            if let Some(id) = registry.get_or_insert(&seq) {
-                                char::from_u32(0x100000 + id).unwrap_or(base_char)
-                            } else {
-                                base_char
-                            }
+                    }
+                    seq.push(c);
+                    let new_char = if let Ok(mut registry) = get_combining_registry().lock() {
+                        if let Some(id) = registry.get_or_insert(&seq) {
+                            char::from_u32(0x100000 + id).unwrap_or(base_char)
                         } else {
                             base_char
-                        };
-                        self.cells[idx].character = new_char;
-                    }
+                        }
+                    } else {
+                        base_char
+                    };
+                    self.cells[idx].character = new_char;
                 }
             }
             self.damage.mark_dirty(self.cursor.y);
@@ -1340,7 +1356,7 @@ impl Grid {
                     }
                     if let Some(last) = last_col {
                         for x in start_col..=last {
-                            result.push(cells[x].character);
+                            append_cell_char_to_string(cells[x].character, &mut result);
                         }
                     }
                 });
@@ -1364,7 +1380,7 @@ impl Grid {
                             }
                             if let Some(last) = last_col {
                                 for x in start_col..=last {
-                                    result.push(row_cells[x].character);
+                                    append_cell_char_to_string(row_cells[x].character, &mut result);
                                 }
                             }
                         }
