@@ -875,6 +875,8 @@ impl WindowState {
                             bounds_w: sep.bounds_w,
                             bounds_h: sep.bounds_h,
                         });
+                        self.needs_redraw = true;
+                        self.content_dirty = true;
                         return;
                     }
                 }

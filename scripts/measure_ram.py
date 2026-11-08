@@ -7,8 +7,11 @@ usage of the Velox binary (or any specified command) on Linux using /proc metric
 import sys
 import os
 import time
+import datetime
 import subprocess
 import signal
+import csv
+import shutil
 
 def parse_proc_status(pid):
     """Read memory metrics in KiB from /proc/<pid>/status."""
@@ -80,6 +83,100 @@ def parse_proc_smaps_rollup(pid):
 def format_mb(kb):
     return f"{kb / 1024.0:.2f} MB ({kb:,} KB)"
 
+def parse_cli_args(argv):
+    custom_csv = None
+    no_csv = False
+    clean_args = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-h", "--help"):
+            print("Usage: ./scripts/measure_ram.py [--profile PROFILE] [--csv [FILE]] [--no-csv] [ARGS...]")
+            print("       ./scripts/measure_ram.py [release|debug|dev] [ARGS...]")
+            print("\nMonitors real-time RSS, PSS, and peak memory usage of Velox.")
+            print("\nOptions:")
+            print("  --csv [FILE]      Export continuous time-series performance report to CSV (default: performance/ram/performance_report_ram_<datetime>.csv)")
+            print("  --no-csv          Disable automatic CSV export")
+            sys.exit(0)
+        elif arg == "--no-csv":
+            no_csv = True
+            i += 1
+        elif arg == "--csv":
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                custom_csv = argv[i + 1]
+                i += 2
+            else:
+                custom_csv = ""
+                i += 1
+        elif arg.startswith("--csv="):
+            custom_csv = arg.split("=", 1)[1]
+            i += 1
+        else:
+            clean_args.append(arg)
+            i += 1
+    return custom_csv, no_csv, clean_args
+
+def export_ram_csv(
+    cmd,
+    duration,
+    samples,
+    custom_path=None,
+):
+    """
+    Export continuous time-series RAM metrics to CSV format.
+    Defaults to performance/ram/performance_report_ram_<datetime>.csv in the repo root.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_dir = os.path.join(project_root, "performance", "ram")
+    os.makedirs(default_dir, exist_ok=True)
+
+    now = datetime.datetime.now()
+    dt_str = now.strftime("%Y%m%d_%H%M%S")
+
+    if custom_path:
+        out_path = custom_path
+        out_dir = os.path.dirname(os.path.abspath(out_path))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+    else:
+        out_path = os.path.join(default_dir, f"performance_report_ram_{dt_str}.csv")
+
+    fieldnames = [
+        "timestamp",
+        "elapsed_time_sec",
+        "rss_mb",
+        "pss_mb",
+        "vmsize_mb",
+        "anon_mb",
+        "file_mb",
+        "shmem_mb",
+        "peak_rss_mb",
+        "rss_kb",
+        "pss_kb",
+        "vmsize_kb",
+    ]
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for s in samples:
+            writer.writerow({
+                "timestamp": s.get("timestamp", ""),
+                "elapsed_time_sec": s.get("elapsed_time_sec", 0.0),
+                "rss_mb": s.get("rss_mb", 0.0),
+                "pss_mb": s.get("pss_mb", 0.0),
+                "vmsize_mb": s.get("vmsize_mb", 0.0),
+                "anon_mb": s.get("anon_mb", 0.0),
+                "file_mb": s.get("file_mb", 0.0),
+                "shmem_mb": s.get("shmem_mb", 0.0),
+                "peak_rss_mb": s.get("peak_rss_mb", 0.0),
+                "rss_kb": s.get("rss_kb", 0),
+                "pss_kb": s.get("pss_kb", 0),
+                "vmsize_kb": s.get("vmsize_kb", 0),
+            })
+
+    return out_path
+
 def resolve_binary(args):
     """Resolve binary path and remaining arguments from CLI input."""
     if args and args[0] in ("-h", "--help"):
@@ -143,7 +240,8 @@ def resolve_binary(args):
     return cmd
 
 def main():
-    cmd = resolve_binary(sys.argv[1:])
+    custom_csv, no_csv, remaining_args = parse_cli_args(sys.argv[1:])
+    cmd = resolve_binary(remaining_args)
 
     print("=" * 65)
     print(f"  Velox RAM Usage Profiler")
@@ -191,12 +289,24 @@ def main():
             peak_pss = max(peak_pss, pss)
             peak_vmsize = max(peak_vmsize, vmsize)
 
+            now_time = time.time()
+            elapsed_sec = now_time - start_time
+
             samples.append({
-                "time": time.time() - start_time,
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "elapsed_time_sec": round(elapsed_sec, 3),
+                "rss_mb": round(rss / 1024.0, 2),
+                "pss_mb": round(pss / 1024.0, 2) if smaps else 0.0,
+                "vmsize_mb": round(vmsize / 1024.0, 2),
+                "anon_mb": round(status["rss_anon_kb"] / 1024.0, 2),
+                "file_mb": round(status["rss_file_kb"] / 1024.0, 2),
+                "shmem_mb": round(status["rss_shmem_kb"] / 1024.0, 2),
+                "peak_rss_mb": round(peak_rss / 1024.0, 2),
                 "rss_kb": rss,
                 "pss_kb": pss,
                 "vmsize_kb": vmsize,
                 "anon_kb": status["rss_anon_kb"],
+                "time": elapsed_sec,
             })
 
             # Live single-line status
@@ -238,6 +348,18 @@ def main():
         print("  Process exited immediately. No samples recorded.")
 
     print("=" * 65)
+
+    if not no_csv:
+        try:
+            out_file = export_ram_csv(
+                cmd=cmd,
+                duration=duration,
+                samples=samples,
+                custom_path=custom_csv if custom_csv else None,
+            )
+            print(f"\n[+] Exported CSV performance report to '{out_file}'.")
+        except Exception as e:
+            print(f"\n[X] Failed to export CSV: {e}")
 
 if __name__ == "__main__":
     main()

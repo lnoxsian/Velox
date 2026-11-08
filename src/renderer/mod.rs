@@ -47,6 +47,7 @@ use std::time::Instant;
 
 use ahash::AHashMap;
 
+#[derive(Clone, Copy)]
 pub struct CpuPaneRenderData<'a> {
     pub pane_id: PaneId,
     pub rect: PaneRect,
@@ -122,6 +123,7 @@ pub struct CpuRenderer {
     prev_opacity: f32,
     prev_dim: f32,
     prev_tab_bar_hash: u64,
+    prev_separators_hash: u64,
     last_target_ptr: usize,
     pub csd_height: u32,
     pub prev_csd_hash: u64,
@@ -308,6 +310,7 @@ impl CpuRenderer {
             prev_opacity: opacity,
             prev_dim: 0.0,
             prev_tab_bar_hash: 0,
+            prev_separators_hash: 0,
             last_target_ptr: 0,
             csd_height: 0,
             prev_csd_hash: 0,
@@ -771,6 +774,39 @@ impl CpuRenderer {
                 h ^ (tb.is_new_tab_hovered as u64)
             })
             .unwrap_or(0)
+    }
+
+    fn compute_separators_hash(
+        separators: &[SeparatorRenderData],
+        active_color: u32,
+        inactive_color: u32,
+    ) -> u64 {
+        if separators.is_empty() {
+            return 0;
+        }
+        let mut h: u64 = separators.len() as u64;
+        h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(active_color as u64);
+        h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(inactive_color as u64);
+
+        for sep in separators {
+            h = h.wrapping_mul(0x9e3779b97f4a7c15);
+            h ^= sep.rect.split_id;
+            h ^= ((sep.is_active as u64) << 1)
+                | ((sep.is_hovered as u64) << 2)
+                | ((sep.is_dragging as u64) << 3)
+                | (((sep.rect.direction == SplitDirection::Vertical) as u64) << 4);
+
+            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.x.to_bits() as u64);
+            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.y.to_bits() as u64);
+            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.width.to_bits() as u64);
+            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.height.to_bits() as u64);
+
+            if let Some((start, end)) = sep.active_segment {
+                h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(start.to_bits() as u64);
+                h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(end.to_bits() as u64);
+            }
+        }
+        h
     }
 
     fn ensure_pane_glyph_caches(&mut self, panes: &[CpuPaneRenderData]) {
@@ -1359,91 +1395,75 @@ impl CpuRenderer {
     fn render_separators(
         &mut self,
         separators: &[SeparatorRenderData],
-        separator_color_override: Option<crate::screen::cell::Color>,
-        active_separator_color_override: Option<crate::screen::cell::Color>,
+        active_color: u32,
+        inactive_color: u32,
     ) {
-        let active_color = active_separator_color_override
-            .map(|c| PackedColor::from_color(c).to_u32())
-            .unwrap_or(self.palette.tab_accent);
-        let inactive_color = separator_color_override
-            .map(|c| PackedColor::from_color(c).to_u32())
-            .unwrap_or(self.palette.ansi_colors[8]);
-
         for sep in separators {
-            let sep_x = sep.rect.x as u32;
-            let sep_y = sep.rect.y as u32;
-            let sep_w = sep.rect.width as u32;
-            let sep_h = sep.rect.height as u32;
+            let sep_x0 = sep.rect.x.round() as u32;
+            let sep_x1 = (sep.rect.x + sep.rect.width).round() as u32;
+            let sep_w = sep_x1.saturating_sub(sep_x0);
+
+            let sep_y0 = sep.rect.y.round() as u32;
+            let sep_y1 = (sep.rect.y + sep.rect.height).round() as u32;
+            let sep_h = sep_y1.saturating_sub(sep_y0);
+
+            if sep_w == 0 || sep_h == 0 {
+                continue;
+            }
 
             if sep.is_dragging || sep.is_hovered {
                 self.framebuffer
-                    .fill_span(sep_x, sep_y, sep_w, sep_h, active_color);
+                    .fill_span(sep_x0, sep_y0, sep_w, sep_h, active_color);
             } else if let Some((start, end)) = sep.active_segment {
                 match sep.rect.direction {
                     SplitDirection::Vertical => {
-                        if start > sep.rect.y + 0.5 {
-                            self.framebuffer.fill_span(
-                                sep_x,
-                                sep_y,
-                                sep_w,
-                                (start - sep.rect.y) as u32,
-                                inactive_color,
-                            );
+                        let seg_start = (start.round() as u32).clamp(sep_y0, sep_y1);
+                        let seg_end = (end.round() as u32).clamp(seg_start, sep_y1);
+
+                        let top_h = seg_start.saturating_sub(sep_y0);
+                        if top_h > 0 {
+                            self.framebuffer
+                                .fill_span(sep_x0, sep_y0, sep_w, top_h, inactive_color);
                         }
-                        if end > start + 0.5 {
-                            self.framebuffer.fill_span(
-                                sep_x,
-                                start as u32,
-                                sep_w,
-                                (end - start) as u32,
-                                active_color,
-                            );
+
+                        let active_h = seg_end.saturating_sub(seg_start);
+                        if active_h > 0 {
+                            self.framebuffer
+                                .fill_span(sep_x0, seg_start, sep_w, active_h, active_color);
                         }
-                        let bottom_y = sep.rect.y + sep.rect.height;
-                        if bottom_y > end + 0.5 {
-                            self.framebuffer.fill_span(
-                                sep_x,
-                                end as u32,
-                                sep_w,
-                                (bottom_y - end) as u32,
-                                inactive_color,
-                            );
+
+                        let bot_h = sep_y1.saturating_sub(seg_end);
+                        if bot_h > 0 {
+                            self.framebuffer
+                                .fill_span(sep_x0, seg_end, sep_w, bot_h, inactive_color);
                         }
                     }
                     SplitDirection::Horizontal => {
-                        if start > sep.rect.x + 0.5 {
-                            self.framebuffer.fill_span(
-                                sep_x,
-                                sep_y,
-                                (start - sep.rect.x) as u32,
-                                sep_h,
-                                inactive_color,
-                            );
+                        let seg_start = (start.round() as u32).clamp(sep_x0, sep_x1);
+                        let seg_end = (end.round() as u32).clamp(seg_start, sep_x1);
+
+                        let left_w = seg_start.saturating_sub(sep_x0);
+                        if left_w > 0 {
+                            self.framebuffer
+                                .fill_span(sep_x0, sep_y0, left_w, sep_h, inactive_color);
                         }
-                        if end > start + 0.5 {
-                            self.framebuffer.fill_span(
-                                start as u32,
-                                sep_y,
-                                (end - start) as u32,
-                                sep_h,
-                                active_color,
-                            );
+
+                        let active_w = seg_end.saturating_sub(seg_start);
+                        if active_w > 0 {
+                            self.framebuffer
+                                .fill_span(seg_start, sep_y0, active_w, sep_h, active_color);
                         }
-                        let right_x = sep.rect.x + sep.rect.width;
-                        if right_x > end + 0.5 {
-                            self.framebuffer.fill_span(
-                                end as u32,
-                                sep_y,
-                                (right_x - end) as u32,
-                                sep_h,
-                                inactive_color,
-                            );
+
+                        let right_w = sep_x1.saturating_sub(seg_end);
+                        if right_w > 0 {
+                            self.framebuffer
+                                .fill_span(seg_end, sep_y0, right_w, sep_h, inactive_color);
                         }
                     }
                 }
             } else {
                 self.framebuffer
-                    .fill_span(sep_x, sep_y, sep_w, sep_h, inactive_color);
+                    .fill_span(sep_x0, sep_y0, sep_w, sep_h, inactive_color);
             }
         }
     }
@@ -2203,12 +2223,26 @@ impl CpuRenderer {
         let blink_changed = blink_on != self.prev_blink_on;
         self.prev_blink_on = blink_on;
 
-        // 4. Tab bar dirty check
+        let active_color = active_separator_color_override
+            .map(|c| PackedColor::from_color(c).to_u32())
+            .unwrap_or(self.palette.tab_accent);
+        let inactive_color = separator_color_override
+            .map(|c| PackedColor::from_color(c).to_u32())
+            .unwrap_or(self.palette.ansi_colors[8]);
+
+        // 4. Tab bar & Separators dirty check
         let new_tab_bar_hash = Self::compute_tab_bar_hash(tab_bar_info);
         let tab_bar_dirty = new_tab_bar_hash != self.prev_tab_bar_hash;
 
+        let new_separators_hash = Self::compute_separators_hash(
+            separators,
+            active_color,
+            inactive_color,
+        );
+        let separators_dirty = new_separators_hash != self.prev_separators_hash;
+
         let force_redraw =
-            self.damage.full_redraw || any_pane_damage || blink_changed || tab_bar_dirty;
+            self.damage.full_redraw || any_pane_damage || blink_changed || tab_bar_dirty || separators_dirty;
 
         if !force_redraw && !self.damage.has_damage() {
             if let Some(buf) = target_buffer {
@@ -2253,10 +2287,19 @@ impl CpuRenderer {
         if !separators.is_empty() {
             self.render_separators(
                 separators,
-                separator_color_override,
-                active_separator_color_override,
+                active_color,
+                inactive_color,
             );
+            if separators_dirty || self.damage.full_redraw {
+                for sep in separators {
+                    let y0 = sep.rect.y.round() as u32;
+                    let y1 = (sep.rect.y + sep.rect.height).round() as u32;
+                    min_damaged_y = min_damaged_y.min(y0);
+                    max_damaged_y = max_damaged_y.max(y1);
+                }
+            }
         }
+        self.prev_separators_hash = new_separators_hash;
 
         // 8. Render Tab Bar
         if let Some(tab_bar) = tab_bar_info {

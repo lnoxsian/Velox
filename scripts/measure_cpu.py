@@ -27,17 +27,19 @@ Usage:
     # Run with a custom shell command inside Velox:
     ./scripts/measure_cpu.py -e "bash -c 'for i in {1..1000}; do echo \$i; done'"
 
-    # Export full metrics and comparison table to JSON and Markdown:
-    ./scripts/measure_cpu.py --all-profiles --json cpu_report.json --markdown
+    # Export full metrics and comparison table to CSV, JSON, and Markdown:
+    ./scripts/measure_cpu.py --all-profiles --csv --markdown
 """
 
 import sys
 import os
 import time
+import datetime
 import subprocess
 import signal
 import argparse
 import json
+import csv
 import shutil
 import math
 from typing import Dict, List, Optional, Any, Tuple
@@ -385,6 +387,7 @@ def run_single_profile(
 
     samples_cpu_pct: List[float] = []
     samples_rss_mb: List[float] = []
+    samples_timeline: List[Dict[str, Any]] = []
     peak_threads = 1
     final_threads_map = {}
 
@@ -418,11 +421,19 @@ def run_single_profile(
             cur_status = parse_proc_status(pid)
             delta_wall = now - prev_time
 
+            instant_cpu_pct = 0.0
+            instant_user_pct = 0.0
+            instant_sys_pct = 0.0
+
             if prev_stat and delta_wall > 0:
-                delta_ticks = (cur_stat["utime"] - prev_stat["utime"]) + (cur_stat["stime"] - prev_stat["stime"])
+                delta_user_ticks = cur_stat["utime"] - prev_stat["utime"]
+                delta_sys_ticks = cur_stat["stime"] - prev_stat["stime"]
+                delta_ticks = delta_user_ticks + delta_sys_ticks
                 delta_cpu_sec = delta_ticks / float(CLK_TCK)
                 # Instantaneous CPU % on a single pinned core (max 100%)
                 instant_cpu_pct = (delta_cpu_sec / delta_wall) * 100.0
+                instant_user_pct = (delta_user_ticks / float(CLK_TCK) / delta_wall) * 100.0
+                instant_sys_pct = (delta_sys_ticks / float(CLK_TCK) / delta_wall) * 100.0
                 samples_cpu_pct.append(instant_cpu_pct)
 
             peak_threads = max(peak_threads, cur_stat["num_threads"])
@@ -433,6 +444,27 @@ def run_single_profile(
                 last_valid_status = cur_status
                 rss_mb = cur_status["vm_rss_kb"] / 1024.0
                 samples_rss_mb.append(rss_mb)
+            else:
+                rss_mb = 0.0
+
+            avg_cpu_so_far = sum(samples_cpu_pct) / len(samples_cpu_pct) if samples_cpu_pct else 0.0
+
+            vol_sw = (cur_status["voluntary_ctxt_switches"] - initial_status["voluntary_ctxt_switches"]) if (cur_status and initial_status) else 0
+            nonvol_sw = (cur_status["nonvoluntary_ctxt_switches"] - initial_status["nonvoluntary_ctxt_switches"]) if (cur_status and initial_status) else 0
+
+            samples_timeline.append({
+                "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "target_label": label,
+                "elapsed_time_sec": round(elapsed_wall, 3),
+                "cpu_pct": round(instant_cpu_pct, 2),
+                "user_cpu_pct": round(instant_user_pct, 2),
+                "system_cpu_pct": round(instant_sys_pct, 2),
+                "avg_cpu_pct": round(avg_cpu_so_far, 2),
+                "rss_mb": round(rss_mb, 2),
+                "thread_count": cur_stat["num_threads"] if cur_stat else 1,
+                "vol_ctxt_switches": max(0, vol_sw),
+                "nonvol_ctxt_switches": max(0, nonvol_sw),
+            })
 
             # Periodically poll per-thread stats
             cur_threads = parse_thread_metrics(pid)
@@ -549,6 +581,7 @@ def run_single_profile(
         "peak_threads": peak_threads,
         "threads": threads_summary,
         "samples_cpu_pct": samples_cpu_pct,
+        "timeline": samples_timeline,
     }
 
 def print_single_summary(result: Dict[str, Any], cpu_info: Dict[str, Any]):
@@ -687,6 +720,67 @@ def print_comparison_table(results: List[Dict[str, Any]], cpu_info: Dict[str, An
 
     print("=" * line_w + "\n")
 
+def export_cpu_csv(
+    results: List[Dict[str, Any]],
+    cpu_info: Dict[str, Any],
+    custom_path: Optional[str] = None,
+) -> str:
+    """
+    Export continuous time-series benchmark metrics to CSV format.
+    Defaults to performance/cpu/performance_report_cpu_<datetime>.csv in the repo root.
+    """
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_dir = os.path.join(project_root, "performance", "cpu")
+    os.makedirs(default_dir, exist_ok=True)
+
+    now = datetime.datetime.now()
+    dt_str = now.strftime("%Y%m%d_%H%M%S")
+
+    if custom_path:
+        out_path = custom_path
+        out_dir = os.path.dirname(os.path.abspath(out_path))
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+    else:
+        out_path = os.path.join(default_dir, f"performance_report_cpu_{dt_str}.csv")
+
+    fieldnames = [
+        "timestamp",
+        "target_label",
+        "elapsed_time_sec",
+        "cpu_pct",
+        "user_cpu_pct",
+        "system_cpu_pct",
+        "avg_cpu_pct",
+        "rss_mb",
+        "thread_count",
+        "vol_ctxt_switches",
+        "nonvol_ctxt_switches",
+    ]
+
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for r in results:
+            timeline = r.get("timeline", [])
+            for entry in timeline:
+                writer.writerow({
+                    "timestamp": entry["timestamp"],
+                    "target_label": entry["target_label"],
+                    "elapsed_time_sec": entry["elapsed_time_sec"],
+                    "cpu_pct": entry["cpu_pct"],
+                    "user_cpu_pct": entry["user_cpu_pct"],
+                    "system_cpu_pct": entry["system_cpu_pct"],
+                    "avg_cpu_pct": entry["avg_cpu_pct"],
+                    "rss_mb": entry["rss_mb"],
+                    "thread_count": entry["thread_count"],
+                    "vol_ctxt_switches": entry["vol_ctxt_switches"],
+                    "nonvol_ctxt_switches": entry["nonvol_ctxt_switches"],
+                })
+
+    return out_path
+
 def main():
     parser = argparse.ArgumentParser(
         description="Single-Core CPU Usage Profiler & Benchmark for Velox",
@@ -763,6 +857,20 @@ def main():
         default=None,
         metavar="FILE",
         help="Export raw measurement results and summary to specified JSON file",
+    )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        nargs="?",
+        const="",
+        default=None,
+        metavar="FILE",
+        help="Export continuous time-series CSV performance report to specified file (default: performance/cpu/performance_report_cpu_<datetime>.csv)",
+    )
+    parser.add_argument(
+        "--no-csv",
+        action="store_true",
+        help="Disable automatic CSV performance report export",
     )
 
     args = parser.parse_args()
@@ -844,6 +952,15 @@ def main():
             print(colorize(f"[+] Exported benchmark metrics to '{args.json}'.", COLOR_GREEN))
         except Exception as e:
             print(colorize(f"[X] Failed to export JSON: {e}", COLOR_RED))
+
+    # CSV Export (enabled by default unless --no-csv is provided)
+    if not args.no_csv and results:
+        try:
+            csv_target = args.csv if args.csv else None
+            out_file = export_cpu_csv(results, cpu_info, custom_path=csv_target)
+            print(colorize(f"[+] Exported CSV performance report to '{out_file}'.", COLOR_GREEN))
+        except Exception as e:
+            print(colorize(f"[X] Failed to export CSV: {e}", COLOR_RED))
 
 if __name__ == "__main__":
     main()

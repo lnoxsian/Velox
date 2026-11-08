@@ -1892,3 +1892,196 @@ fn test_narrow_pane_text_duplication() {
         );
     }
 }
+
+#[test]
+fn test_split_separator_damage_and_focus_switching() {
+    let mut p1 = create_test_pane(1, 40, 24);
+    let mut p2 = create_test_pane(2, 40, 24);
+    let theme = p1.terminal.theme.clone();
+    p2.terminal.theme = theme.clone();
+    let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 800, 600, false, 1.0);
+
+    let rect1 = PaneRect {
+        pane_id: 1,
+        x: 0.0,
+        y: 0.0,
+        width: 398.0,
+        height: 600.0,
+        padding_x: 8.0,
+        padding_y: 4.0,
+        cols: 40,
+        rows: 24,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+    let rect2 = PaneRect {
+        pane_id: 2,
+        x: 402.0,
+        y: 0.0,
+        width: 398.0,
+        height: 600.0,
+        padding_x: 8.0,
+        padding_y: 4.0,
+        cols: 40,
+        rows: 24,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    };
+    let sep = SeparatorRect {
+        split_id: 1,
+        direction: SplitDirection::Vertical,
+        x: 398.0,
+        y: 0.0,
+        width: 4.0,
+        height: 600.0,
+        bounds_x: 0.0,
+        bounds_y: 0.0,
+        bounds_w: 800.0,
+        bounds_h: 600.0,
+    };
+
+    let mut target_buf = vec![0u32; 800 * 600];
+    let active_color = Color { r: 50, g: 150, b: 250 };
+    let inactive_color = Color { r: 80, g: 80, b: 80 };
+    let active_u32 = velox::renderer::color::PackedColor::from_color(active_color).to_u32();
+    let inactive_u32 = velox::renderer::color::PackedColor::from_color(inactive_color).to_u32();
+
+    // Frame 1: Pane 1 active, separator active segment is full height
+    let pane1_frame1 = CpuPaneRenderData {
+        pane_id: 1,
+        rect: rect1,
+        cells: &p1.terminal.grid.cells,
+        grid: &p1.terminal.grid,
+        font_size: p1.font_size,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: true,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+    let pane2_frame1 = CpuPaneRenderData {
+        pane_id: 2,
+        rect: rect2,
+        cells: &p2.terminal.grid.cells,
+        grid: &p2.terminal.grid,
+        font_size: p2.font_size,
+        theme: &theme,
+        bold_is_bright: false,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: false,
+    };
+    let sep_frame1 = SeparatorRenderData {
+        rect: sep,
+        is_active: true,
+        active_segment: Some((0.0, 600.0)),
+        is_hovered: false,
+        is_dragging: false,
+    };
+
+    let dmg1 = renderer.render_splits(
+        &[pane1_frame1, pane2_frame1],
+        &[sep_frame1],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target_buf),
+        None,
+        Some(inactive_color),
+        Some(active_color),
+    );
+    assert!(dmg1.is_some(), "Frame 1 must damage");
+    assert_eq!(target_buf[300 * 800 + 400], active_u32, "Separator must be active color");
+
+    // Clear damage
+    p1.terminal.active_grid_mut().clear_damage();
+    p2.terminal.active_grid_mut().clear_damage();
+
+    // Frame 2: Hover separator with NO pane changes and NO text damage
+    let pane1_frame2 = CpuPaneRenderData {
+        pane_id: 1,
+        rect: rect1,
+        cells: &p1.terminal.grid.cells,
+        grid: &p1.terminal.grid,
+        font_size: p1.font_size,
+        theme: &theme,
+        bold_is_bright: true,
+        cursor_visible: true,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: true,
+    };
+    let pane2_frame2 = CpuPaneRenderData {
+        pane_id: 2,
+        rect: rect2,
+        cells: &p2.terminal.grid.cells,
+        grid: &p2.terminal.grid,
+        font_size: p2.font_size,
+        theme: &theme,
+        bold_is_bright: false,
+        cursor_visible: false,
+        cursor_shape: CursorShape::Block,
+        display_cursor_x: 0,
+        is_active: false,
+    };
+    let sep_frame2 = SeparatorRenderData {
+        rect: sep,
+        is_active: true,
+        active_segment: Some((0.0, 600.0)),
+        is_hovered: true,
+        is_dragging: false,
+    };
+
+    let dmg2 = renderer.render_splits(
+        &[pane1_frame2.clone(), pane2_frame2.clone()],
+        &[sep_frame2],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target_buf),
+        None,
+        Some(inactive_color),
+        Some(active_color),
+    );
+    assert!(
+        dmg2.is_some(),
+        "Hovering separator must trigger damage even when panes have no damage"
+    );
+    let rect2_dmg = dmg2.unwrap();
+    assert_eq!(rect2_dmg.y, 0);
+    assert_eq!(rect2_dmg.height, 600);
+
+    // Frame 3: Segment changes from full height to partial height [0.0, 300.0]
+    let sep_frame3 = SeparatorRenderData {
+        rect: sep,
+        is_active: true,
+        active_segment: Some((0.0, 300.0)),
+        is_hovered: false,
+        is_dragging: false,
+    };
+    let dmg3 = renderer.render_splits(
+        &[pane1_frame2, pane2_frame2],
+        &[sep_frame3],
+        1.0,
+        0.0,
+        true,
+        Some(&mut target_buf),
+        None,
+        Some(inactive_color),
+        Some(active_color),
+    );
+    assert!(
+        dmg3.is_some(),
+        "Separator active segment change must trigger damage"
+    );
+    assert_eq!(target_buf[150 * 800 + 400], active_u32, "Top segment must be active color");
+    assert_eq!(target_buf[450 * 800 + 400], inactive_u32, "Bottom segment must be inactive color");
+
+    // Verify no gap at boundary (y = 299, 300) across all separator columns (398..402)
+    for x in 398..402 {
+        assert_eq!(target_buf[299 * 800 + x], active_u32, "Row 299 must be active with no gap");
+        assert_eq!(target_buf[300 * 800 + x], inactive_u32, "Row 300 must be inactive with no gap");
+    }
+}
