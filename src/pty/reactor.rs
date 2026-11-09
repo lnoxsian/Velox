@@ -1,5 +1,8 @@
 use crate::app::app::{CustomEvent, EventLoopProxy, WindowId};
-use crate::pty::buffer_pool::{PTY_BUFFER_SIZE, acquire_pty_buffer, recycle_pty_buffer};
+use crate::pty::buffer_pool::{
+    PTY_BUFFER_SIZE, SMALL_PTY_BUFFER_SIZE, acquire_pty_buffer, acquire_pty_buffer_for_len,
+    recycle_pty_buffer,
+};
 use crate::pty::master::PtyMaster;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -624,9 +627,9 @@ fn run_reactor_loop(
                 {
                     let pty = &reg.pty;
 
-                    // Batch read repeatedly until EAGAIN / EWOULDBLOCK.
-                    // Reads directly into the pooled 64KB buffer slice, eliminating intermediate scratch buffer copies.
-                    let mut batch = acquire_pty_buffer();
+                    // Adaptive batch read: start with small 4KB buffer for prompt / interactive latency,
+                    // expanding seamlessly to 64KB on bulk throughput streams.
+                    let mut batch = acquire_pty_buffer_for_len(SMALL_PTY_BUFFER_SIZE);
                     let mut offset = 0;
                     let mut exit_detected = false;
 
@@ -639,16 +642,23 @@ fn run_reactor_loop(
                             }
                             Ok(n) => {
                                 offset += n;
-                                if offset >= PTY_BUFFER_SIZE {
-                                    let send_buf = batch;
-                                    let _ = proxy.send(CustomEvent::PtyData {
-                                        window_id: key.window_id,
-                                        tab_id: key.tab_id,
-                                        pane_id: key.pane_id,
-                                        data: send_buf,
-                                    });
-                                    batch = acquire_pty_buffer();
-                                    offset = 0;
+                                if offset >= batch.len() {
+                                    if batch.len() < PTY_BUFFER_SIZE {
+                                        let mut large = acquire_pty_buffer();
+                                        large[..offset].copy_from_slice(&batch[..offset]);
+                                        recycle_pty_buffer(batch);
+                                        batch = large;
+                                    } else {
+                                        let send_buf = batch;
+                                        let _ = proxy.send(CustomEvent::PtyData {
+                                            window_id: key.window_id,
+                                            tab_id: key.tab_id,
+                                            pane_id: key.pane_id,
+                                            data: send_buf,
+                                        });
+                                        batch = acquire_pty_buffer();
+                                        offset = 0;
+                                    }
                                 }
                             }
                             Err(e)

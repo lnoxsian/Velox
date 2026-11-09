@@ -38,6 +38,10 @@ harness = false
 name = "memory_benchmark"
 harness = false
 
+[[bench]]
+name = "pty_startup"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"

@@ -28,12 +28,16 @@ WORKLOAD ?=
 ARGS ?=
 
 .PHONY: all build release optimized-release run run-release run-optimized-release check test clean update lint \
-	update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
+	bootstrap update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
 	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-optimized-release cpu-debug cpu-compare cpu-benchmark \
 	palette generate-icons install install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
 
 # Default target
 all: build
+
+# Bootstrap development environment and install dependencies
+bootstrap:
+	@bash scripts/bootstrap_velox.sh $(ARGS)
 
 # Generate multi-resolution icon assets
 generate-icons:
@@ -254,6 +258,7 @@ list:
 	@printf "\n\033[1;36mVelox v$(VERSION) - Available Makefile Targets\033[0m\n\n"
 	@printf "\033[1mUsage:\033[0m make \033[36m<target>\033[0m [\033[33mVARIABLE=value\033[0m...]\n\n"
 	@printf "\033[1;32mBuilding & Compilation:\033[0m\n"
+	@printf "  \033[36m%-25s\033[0m %s\n" "bootstrap" "Install dev tools, libraries, compilers, and packaging utilities"
 	@printf "  \033[36m%-25s\033[0m %s\n" "build" "Build binary in debug mode (generates icons first)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build binary in release mode (fat LTO, codegen-units=1, stripped)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "generate-icons" "Generate multi-resolution icon assets"

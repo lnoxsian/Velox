@@ -1,8 +1,7 @@
 use crate::pty::master::PtyMaster;
-use nix::pty::openpty;
+use nix::pty::{Winsize, openpty};
 use std::ffi::CString;
 use std::os::fd::IntoRawFd;
-use std::os::unix::process::CommandExt;
 
 #[derive(Debug)]
 pub enum PtyError {
@@ -51,9 +50,58 @@ pub fn configure_terminal_environment(command: &mut std::process::Command) {
     command.env("COLORTERM", VELOX_COLORTERM);
 }
 
+pub fn build_terminal_env_cstrings() -> (Vec<CString>, Vec<*const libc::c_char>) {
+    use std::os::unix::ffi::OsStrExt;
+    let mut env_map: std::collections::HashMap<std::ffi::OsString, std::ffi::OsString> =
+        std::env::vars_os().collect();
+    env_map.insert("TERM".into(), VELOX_TERM.into());
+    env_map.insert("COLORTERM".into(), VELOX_COLORTERM.into());
+
+    let mut env_cstrings = Vec::with_capacity(env_map.len());
+    for (k, v) in env_map {
+        let mut bytes = k.as_bytes().to_vec();
+        bytes.push(b'=');
+        bytes.extend_from_slice(v.as_bytes());
+        if let Ok(cs) = CString::new(bytes) {
+            env_cstrings.push(cs);
+        }
+    }
+    let mut envp_ptrs: Vec<*const libc::c_char> =
+        env_cstrings.iter().map(|s| s.as_ptr()).collect();
+    envp_ptrs.push(std::ptr::null());
+    (env_cstrings, envp_ptrs)
+}
+
+pub fn resolve_executable_in_path(program: &str) -> Option<String> {
+    let p = std::path::Path::new(program);
+    if p.is_absolute() {
+        if p.exists() {
+            return Some(program.to_string());
+        }
+        return None;
+    }
+    if program.contains('/') {
+        if p.exists() {
+            return Some(program.to_string());
+        }
+        return None;
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
 struct ForkGuard {
     master_fd: std::os::fd::RawFd,
     slave_fd: std::os::fd::RawFd,
+    err_read_fd: std::os::fd::RawFd,
+    err_write_fd: std::os::fd::RawFd,
     disarmed: bool,
 }
 
@@ -67,6 +115,12 @@ impl Drop for ForkGuard {
                 if self.slave_fd >= 0 {
                     libc::close(self.slave_fd);
                 }
+                if self.err_read_fd >= 0 {
+                    libc::close(self.err_read_fd);
+                }
+                if self.err_write_fd >= 0 {
+                    libc::close(self.err_write_fd);
+                }
             }
         }
     }
@@ -77,13 +131,78 @@ pub fn spawn_process(
     command: Option<&[String]>,
     working_directory: Option<&str>,
 ) -> Result<PtyMaster, PtyError> {
-    let pty = openpty(None, None).map_err(|e| PtyError::Fork(e.to_string()))?;
+    spawn_process_with_size(shell_path, command, working_directory, None)
+}
+
+pub fn spawn_process_with_size(
+    shell_path: &str,
+    command: Option<&[String]>,
+    working_directory: Option<&str>,
+    initial_size: Option<(u16, u16)>,
+) -> Result<PtyMaster, PtyError> {
+    // 1. Pre-build argument CStrings in parent before fork
+    let (prog_cstring, argv_cstrings) = if let Some(args) = command
+        && !args.is_empty()
+    {
+        let prog = resolve_executable_in_path(&args[0]).unwrap_or_else(|| args[0].clone());
+        let prog_cs = CString::new(prog.as_bytes()).map_err(|e| PtyError::Fork(e.to_string()))?;
+        let mut argv = Vec::with_capacity(args.len());
+        for arg in args {
+            argv.push(CString::new(arg.as_bytes()).map_err(|e| PtyError::Fork(e.to_string()))?);
+        }
+        (prog_cs, argv)
+    } else {
+        let prog =
+            resolve_executable_in_path(shell_path).unwrap_or_else(|| shell_path.to_string());
+        let prog_cs = CString::new(prog.as_bytes()).map_err(|e| PtyError::Fork(e.to_string()))?;
+        let argv = vec![prog_cs.clone()];
+        (prog_cs, argv)
+    };
+    let mut argv_ptrs: Vec<*const libc::c_char> = argv_cstrings.iter().map(|s| s.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+
+    // 2. Pre-build environment CStrings in parent before fork
+    let (_env_cstrings, envp_ptrs) = build_terminal_env_cstrings();
+
+    // 3. Pre-resolve working directory in parent
+    let c_dir = working_directory
+        .filter(|d| std::path::Path::new(d).is_dir())
+        .and_then(|d| CString::new(d.as_bytes()).ok());
+    let home_cstring = std::env::var("HOME").ok().and_then(|h| CString::new(h.as_bytes()).ok());
+
+    // 4. Create PTY with initial geometry if requested
+    let pty = if let Some((cols, rows)) = initial_size {
+        let ws = Winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        openpty(Some(&ws), None).map_err(|e| PtyError::Fork(e.to_string()))?
+    } else {
+        openpty(None, None).map_err(|e| PtyError::Fork(e.to_string()))?
+    };
     let master_fd = pty.master.into_raw_fd();
     let slave_fd = pty.slave.into_raw_fd();
+
+    // 5. Create O_CLOEXEC sync pipe for synchronous error reporting
+    let mut err_pipe = [-1, -1];
+    let pipe_res = unsafe { libc::pipe2(err_pipe.as_mut_ptr(), libc::O_CLOEXEC) };
+    if pipe_res != 0 {
+        unsafe {
+            libc::close(master_fd);
+            libc::close(slave_fd);
+        }
+        return Err(PtyError::Fork(std::io::Error::last_os_error().to_string()));
+    }
+    let err_read_fd = err_pipe[0];
+    let err_write_fd = err_pipe[1];
 
     let mut guard = ForkGuard {
         master_fd,
         slave_fd,
+        err_read_fd,
+        err_write_fd,
         disarmed: false,
     };
 
@@ -92,7 +211,11 @@ pub fn spawn_process(
         Ok(nix::unistd::ForkResult::Child) => {
             guard.disarmed = true;
             unsafe {
+                libc::close(err_read_fd);
+
                 if libc::setsid() < 0 {
+                    let err = libc::__errno_location().read();
+                    let _ = libc::write(err_write_fd, &err as *const _ as *const libc::c_void, 4);
                     libc::_exit(127);
                 }
                 #[cfg(target_os = "linux")]
@@ -105,6 +228,8 @@ pub fn spawn_process(
                     || libc::dup2(slave_fd, libc::STDOUT_FILENO) < 0
                     || libc::dup2(slave_fd, libc::STDERR_FILENO) < 0
                 {
+                    let err = libc::__errno_location().read();
+                    let _ = libc::write(err_write_fd, &err as *const _ as *const libc::c_void, 4);
                     libc::_exit(127);
                 }
 
@@ -128,76 +253,105 @@ pub fn spawn_process(
                 libc::sigemptyset(&mut empty_mask);
                 libc::sigprocmask(libc::SIG_SETMASK, &empty_mask, std::ptr::null_mut());
 
-                // Close all inherited file descriptors >= 3 so child shells start with a pristine FD table
+                if let Some(ref dir) = c_dir {
+                    if libc::chdir(dir.as_ptr()) != 0 {
+                        if let Some(ref home) = home_cstring {
+                            let _ = libc::chdir(home.as_ptr());
+                        }
+                    }
+                } else if let Some(ref home) = home_cstring {
+                    let _ = libc::chdir(home.as_ptr());
+                }
+
+                // Preserve err_write_fd on descriptor 3 with FD_CLOEXEC
+                if err_write_fd != 3 {
+                    libc::dup2(err_write_fd, 3);
+                    libc::close(err_write_fd);
+                }
+                let f_flags = libc::fcntl(3, libc::F_GETFD, 0);
+                if f_flags >= 0 {
+                    libc::fcntl(3, libc::F_SETFD, f_flags | libc::FD_CLOEXEC);
+                }
+
+                // Close all inherited file descriptors >= 4
                 #[cfg(target_os = "linux")]
                 {
-                    if libc::syscall(libc::SYS_close_range, 3, libc::c_uint::MAX, 0) != 0 {
+                    if libc::syscall(libc::SYS_close_range, 4, libc::c_uint::MAX, 0) != 0 {
                         let max_fd =
                             libc::sysconf(libc::_SC_OPEN_MAX).clamp(256, 4096) as libc::c_int;
-                        for fd in 3..max_fd {
+                        for fd in 4..max_fd {
                             libc::close(fd);
                         }
                     }
                 }
 
-                if let Some(dir) = working_directory {
-                    if let Ok(c_dir) = CString::new(dir) {
-                        if libc::chdir(c_dir.as_ptr()) != 0 {
-                            let home = libc::getenv(c"HOME".as_ptr());
-                            if !home.is_null() {
-                                libc::chdir(home);
-                            }
-                        }
-                    }
-                } else {
-                    let home = libc::getenv(c"HOME".as_ptr());
-                    if !home.is_null() {
-                        libc::chdir(home);
-                    }
-                }
-            }
+                libc::execve(prog_cstring.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
 
-            let program: &str = if let Some(args) = command {
-                if !args.is_empty() {
-                    &args[0]
-                } else {
-                    shell_path
-                }
-            } else {
-                shell_path
-            };
-
-            let mut cmd = if let Some(args) = command {
-                if !args.is_empty() {
-                    let mut c = std::process::Command::new(&args[0]);
-                    if args.len() > 1 {
-                        c.args(&args[1..]);
-                    }
-                    c
-                } else {
-                    std::process::Command::new(shell_path)
-                }
-            } else {
-                std::process::Command::new(shell_path)
-            };
-
-            configure_terminal_environment(&mut cmd);
-
-            let err = cmd.exec();
-            eprintln!("exec failed for '{}': {}", program, err);
-            unsafe {
+                // If execve returned, write exact errno to sync pipe and exit
+                let err = libc::__errno_location().read();
+                let _ = libc::write(3, &err as *const _ as *const libc::c_void, 4);
                 libc::_exit(127);
             }
         }
         Ok(nix::unistd::ForkResult::Parent { child }) => {
-            guard.disarmed = true;
+            unsafe {
+                libc::close(err_write_fd);
+            }
+            guard.err_write_fd = -1;
+
             let ret = unsafe { libc::close(slave_fd) };
+            guard.slave_fd = -1;
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() != Some(libc::EBADF) {
                     log::warn!("Failed to close slave_fd {} in parent: {}", slave_fd, err);
                 }
             }
+
+            // Check if child reported an exec error synchronously
+            let mut err_code = 0i32;
+            let n = unsafe {
+                libc::read(
+                    err_read_fd,
+                    &mut err_code as *mut _ as *mut libc::c_void,
+                    std::mem::size_of::<i32>(),
+                )
+            };
+            unsafe {
+                libc::close(err_read_fd);
+            }
+            guard.err_read_fd = -1;
+
+            if n > 0 {
+                // Child failed to execute: reap child process immediately to prevent zombies
+                let mut status = 0;
+                unsafe {
+                    libc::waitpid(child.as_raw(), &mut status, 0);
+                    libc::close(master_fd);
+                }
+                guard.master_fd = -1;
+                return Err(PtyError::Fork(format!(
+                    "exec failed with errno {} ({})",
+                    err_code,
+                    std::io::Error::from_raw_os_error(err_code)
+                )));
+            }
+
+            // Disarm guard: child process successfully executed
+            guard.disarmed = true;
+
+            // Set O_NONBLOCK and FD_CLOEXEC on master_fd immediately
+            unsafe {
+                let fl = libc::fcntl(master_fd, libc::F_GETFL, 0);
+                if fl >= 0 {
+                    libc::fcntl(master_fd, libc::F_SETFL, fl | libc::O_NONBLOCK);
+                }
+                let fd_fl = libc::fcntl(master_fd, libc::F_GETFD, 0);
+                if fd_fl >= 0 {
+                    libc::fcntl(master_fd, libc::F_SETFD, fd_fl | libc::FD_CLOEXEC);
+                }
+            }
+
             let child_pid = if child.as_raw() > 0 {
                 Some(child.as_raw() as u32)
             } else {
@@ -209,7 +363,7 @@ pub fn spawn_process(
             })
         }
         Err(e) => {
-            // guard will drop and close master_fd and slave_fd
+            // guard will drop and close master_fd, slave_fd, err_read_fd, err_write_fd
             Err(PtyError::Fork(e.to_string()))
         }
     }
@@ -266,13 +420,36 @@ pub fn spawn_terminal_pty(
     command: Option<&[String]>,
     working_directory: Option<&str>,
 ) -> Result<PtyMaster, PtyError> {
+    spawn_terminal_pty_with_size(shell_path, command, working_directory, None)
+}
+
+/// Spawns a terminal shell process with initial window size and layered fallbacks:
+/// 1. Resolved executable shell + validated working directory
+/// 2. Resolved executable shell + $HOME directory
+/// 3. Standard /bin/sh + $HOME directory
+pub fn spawn_terminal_pty_with_size(
+    shell_path: &str,
+    command: Option<&[String]>,
+    working_directory: Option<&str>,
+    initial_size: Option<(u16, u16)>,
+) -> Result<PtyMaster, PtyError> {
     let resolved_shell = resolve_executable_shell(shell_path);
     let home = std::env::var("HOME").ok();
-    let effective_dir = working_directory.or(home.as_deref());
+    let effective_dir = if let Some(dir) = working_directory {
+        if std::path::Path::new(dir).is_dir() {
+            Some(dir)
+        } else {
+            home.as_deref().filter(|h| std::path::Path::new(h).is_dir())
+        }
+    } else {
+        home.as_deref().filter(|h| std::path::Path::new(h).is_dir())
+    };
 
-    spawn_process(&resolved_shell, command, effective_dir)
-        .or_else(|_| spawn_process(&resolved_shell, command, home.as_deref()))
-        .or_else(|_| spawn_process("/bin/sh", command, home.as_deref()))
+    spawn_process_with_size(&resolved_shell, command, effective_dir, initial_size)
+        .or_else(|_| {
+            spawn_process_with_size(&resolved_shell, command, home.as_deref(), initial_size)
+        })
+        .or_else(|_| spawn_process_with_size("/bin/sh", command, home.as_deref(), initial_size))
 }
 
 #[cfg(test)]

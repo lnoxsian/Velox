@@ -5,7 +5,7 @@ use crate::cli::CliOptions;
 use crate::config::config::Config;
 use crate::ipc::{IpcListenerHandle, start_ipc_server};
 use crate::pty::master::PtyMaster;
-use crate::pty::process::spawn_terminal_pty;
+use crate::pty::process::spawn_terminal_pty_with_size;
 use crate::renderer::{CpuPaneRenderData, CpuRenderer, SeparatorRenderData};
 use crate::terminal::terminal::Terminal;
 use crate::window::PlatformWindow;
@@ -722,9 +722,13 @@ impl WindowState {
         let rows = ((avail_h as u32) / self.base_cell_height.max(1)).max(1);
 
         let cwd = self.active_pane().current_working_directory();
-        let pty_spawn = spawn_terminal_pty(&self.shell_path, None, cwd.as_deref());
+        let pty_spawn = spawn_terminal_pty_with_size(
+            &self.shell_path,
+            None,
+            cwd.as_deref(),
+            Some((cols as u16, rows as u16)),
+        );
         let pty_master = Arc::new(pty_spawn.ok()?);
-        let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::with_config(cols as usize, rows as usize, &self.config);
         terminal.set_cell_dimensions(self.base_cell_width, self.base_cell_height);
@@ -885,10 +889,19 @@ impl WindowState {
 
         let was_visible = self.tab_bar.is_visible(self.tabs.len());
 
-        let pty_spawn = spawn_terminal_pty(
+        let tab_font_size = self.default_font_size;
+        if (self.current_font_size - tab_font_size).abs() > 0.01 {
+            self.current_font_size = tab_font_size;
+            self.set_renderer_font_size(tab_font_size);
+        }
+
+        let (cols, rows) = self.recalculate_grid_size();
+
+        let pty_spawn = spawn_terminal_pty_with_size(
             &self.shell_path,
             command.as_deref(),
             working_directory.as_deref(),
+            Some((cols as u16, rows as u16)),
         );
 
         let pty_master = match pty_spawn {
@@ -902,15 +915,6 @@ impl WindowState {
                     .unwrap_or(0);
             }
         };
-
-        let tab_font_size = self.default_font_size;
-        if (self.current_font_size - tab_font_size).abs() > 0.01 {
-            self.current_font_size = tab_font_size;
-            self.set_renderer_font_size(tab_font_size);
-        }
-
-        let (cols, rows) = self.recalculate_grid_size();
-        let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::with_config(cols as usize, rows as usize, &self.config);
         terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
@@ -1470,19 +1474,17 @@ impl App {
 
         let working_directory = working_directory.or_else(|| config.working_directory());
 
-        let pty_spawn = spawn_terminal_pty(
+        let pty_spawn = spawn_terminal_pty_with_size(
             &shell_path,
             command.as_deref(),
             working_directory.as_deref(),
+            Some((cols as u16, rows as u16)),
         );
 
         let pty_master = Arc::new(
             pty_spawn
                 .map_err(|e| format!("Failed to spawn shell process after fallbacks: {}", e))?,
         );
-        pty_master
-            .resize(cols as u16, rows as u16)
-            .map_err(|e| format!("Failed to resize PTY: {}", e))?;
 
         let window_id = self.next_window_id;
         self.next_window_id += 1;

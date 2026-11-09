@@ -8,6 +8,7 @@ pub use buffer_pool::{
     get_pty_buffer_pool, recycle_pty_buffer,
 };
 pub use process::{
-    VELOX_COLORTERM, VELOX_TERM, configure_terminal_environment, spawn_process, spawn_terminal_pty,
+    VELOX_COLORTERM, VELOX_TERM, configure_terminal_environment, spawn_process,
+    spawn_process_with_size, spawn_terminal_pty, spawn_terminal_pty_with_size,
 };
 pub use reactor::{PtyReactor, PtyReactorHandle};

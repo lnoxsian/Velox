@@ -1,5 +1,7 @@
+use std::io::Write;
 use std::os::fd::{AsRawFd, RawFd};
 
+#[derive(Debug)]
 pub struct PtyMaster {
     pub fd: RawFd,
     pub child_pid: Option<u32>,
@@ -20,6 +22,14 @@ impl PtyMaster {
     }
 
     pub fn new(fd: RawFd, child_pid: Option<u32>) -> Self {
+        if fd >= 0 {
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD, 0);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
+            }
+        }
         Self { fd, child_pid }
     }
 
@@ -28,13 +38,36 @@ impl PtyMaster {
             return None;
         }
         let pgid = unsafe { libc::tcgetpgrp(self.fd) };
-        if pgid < 0 {
+        if pgid <= 0 {
             return None;
         }
-        let comm_path = format!("/proc/{}/comm", pgid);
-        std::fs::read_to_string(comm_path)
-            .ok()
-            .map(|s| s.trim().to_string())
+        let mut path_buf = [0u8; 32];
+        let mut cursor = std::io::Cursor::new(&mut path_buf[..]);
+        let _ = write!(cursor, "/proc/{}/comm\0", pgid);
+        let fd = unsafe {
+            libc::open(
+                path_buf.as_ptr() as *const libc::c_char,
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return None;
+        }
+
+        let mut buf = [0u8; 64];
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        unsafe {
+            libc::close(fd);
+        }
+
+        if n > 0 {
+            let s = std::str::from_utf8(&buf[..n as usize]).ok()?;
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        None
     }
 
     pub fn get_foreground_process_cwd(&self) -> Option<String> {
@@ -43,23 +76,37 @@ impl PtyMaster {
         }
         let pgid = unsafe { libc::tcgetpgrp(self.fd) };
         if pgid > 0 {
-            let cwd_link = format!("/proc/{}/cwd", pgid);
-            if let Ok(path) = std::fs::read_link(cwd_link) {
-                if let Some(s) = path.to_str() {
-                    if path.is_dir() {
-                        return Some(s.to_string());
-                    }
-                }
+            if let Some(cwd) = Self::read_proc_cwd(pgid as u32) {
+                return Some(cwd);
             }
         }
         if let Some(child_pid) = self.child_pid {
-            let cwd_link = format!("/proc/{}/cwd", child_pid);
-            if let Ok(path) = std::fs::read_link(cwd_link) {
-                if let Some(s) = path.to_str() {
-                    if path.is_dir() {
-                        return Some(s.to_string());
-                    }
-                }
+            if let Some(cwd) = Self::read_proc_cwd(child_pid) {
+                return Some(cwd);
+            }
+        }
+        None
+    }
+
+    fn read_proc_cwd(pid: u32) -> Option<String> {
+        let mut path_buf = [0u8; 32];
+        let mut cursor = std::io::Cursor::new(&mut path_buf[..]);
+        let _ = write!(cursor, "/proc/{}/cwd\0", pid);
+
+        let mut link_buf = [0u8; 4096];
+        let len = unsafe {
+            libc::readlink(
+                path_buf.as_ptr() as *const libc::c_char,
+                link_buf.as_mut_ptr() as *mut libc::c_char,
+                link_buf.len() - 1,
+            )
+        };
+        if len > 0 {
+            link_buf[len as usize] = 0;
+            let s = std::str::from_utf8(&link_buf[..len as usize]).ok()?;
+            let p = std::path::Path::new(s);
+            if p.is_dir() {
+                return Some(s.to_string());
             }
         }
         None
