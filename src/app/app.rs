@@ -27,6 +27,19 @@ pub struct DraggingSeparator {
     pub bounds_h: f32,
 }
 
+/// State tracking for an active mouse tab drag-and-rearrange operation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DraggingTab {
+    /// The current slot index of the tab being dragged in `ws.tabs`.
+    pub current_index: usize,
+    /// Horizontal cursor position (pixels) when the left mouse button was pressed.
+    pub start_x: f32,
+    /// Relative horizontal offset (pixels) within the tab from its left edge (`mouse_x - tab_x`).
+    pub offset_in_tab: f32,
+    /// Latch indicating if the cursor has exceeded the minimum jitter drag threshold (6px).
+    pub has_dragged: bool,
+}
+
 pub enum CustomEvent {
     PtyData {
         window_id: WindowId,
@@ -199,6 +212,7 @@ pub struct WindowState {
     pub tab_bar_dirty: bool,
     pub tab_bar_render_cache: Option<TabBarRenderInfo>,
     pub dragging_separator: Option<DraggingSeparator>,
+    pub dragging_tab: Option<DraggingTab>,
     pub hovered_separator: Option<SplitId>,
     pub separator_size: f32,
     pub min_cols: usize,
@@ -294,6 +308,7 @@ impl WindowState {
             tab_bar_dirty: false,
             tab_bar_render_cache: None,
             dragging_separator: None,
+            dragging_tab: None,
             hovered_separator: None,
             separator_size: 4.0,
             min_cols: 10,
@@ -423,6 +438,38 @@ impl WindowState {
     pub fn write_to_active_pane(&self, data: Vec<u8>) {
         let active_id = self.active_pane().id;
         self.write_to_pane(active_id, data);
+    }
+
+    /// Paste text from the clipboard into the active pane.
+    ///
+    /// Retrieves text using `clipboard::paste()`, formats it according to
+    /// bracketed paste mode and newline normalization, resets scroll offset if
+    /// `scroll_on_keystroke` is set, writes the bytes to the active pane's PTY,
+    /// marks interaction, updates `last_key_instant` for zero-latency frame bypass,
+    /// and triggers a redraw.
+    pub fn paste_clipboard(&mut self) -> bool {
+        let text = crate::clipboard::clipboard::paste();
+        if !text.is_empty() {
+            let formatted = self.active_pane().terminal.format_paste(&text);
+            if self.active_pane().terminal.scroll_on_keystroke {
+                self.active_pane_mut()
+                    .terminal
+                    .active_grid_mut()
+                    .scroll_offset = 0;
+            }
+            self.write_to_active_pane(formatted.into_bytes());
+            self.last_key_instant = std::time::Instant::now();
+            self.mark_interaction();
+            self.needs_redraw = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline(always)]
+    pub fn paste(&mut self) -> bool {
+        self.paste_clipboard()
     }
 
     #[inline(always)]
@@ -1035,14 +1082,22 @@ impl WindowState {
         }
     }
 
+    /// Reorders a tab from slot `from` to slot `to`.
+    ///
+    /// Updates the active tab index, marks the tab bar cache dirty, resets the cached render
+    /// info, updates `last_resize_instant` for zero-latency frame timing, marks all renderer damage,
+    /// and flags the active panes as dirty for immediate presentation across all display backends.
     pub fn move_tab(&mut self, from: usize, to: usize) {
         if from < self.tabs.len() && to < self.tabs.len() && from != to {
             let tab = self.tabs.remove(from);
             self.tabs.insert(to, tab);
             self.active_tab_index = to;
             self.tab_bar_dirty = true;
+            self.tab_bar_render_cache = None;
             self.needs_redraw = true;
             self.content_dirty = true;
+            self.last_resize_instant = std::time::Instant::now();
+            self.renderer.damage.mark_all();
             for pane in self.tabs[to].tree.panes_mut() {
                 pane.terminal.active_grid_mut().mark_all_dirty();
             }
@@ -1580,6 +1635,7 @@ impl App {
             tab_bar_dirty: true,
             tab_bar_render_cache: None,
             dragging_separator: None,
+            dragging_tab: None,
             hovered_separator: None,
             separator_size,
             min_cols,
@@ -1765,15 +1821,8 @@ impl App {
                 {
                     let tab = &mut ws.tabs[tab_idx];
                     if let Some(pane) = tab.tree.find_pane_mut(pane_id) {
-                        let immediate_exit =
-                            pane.created_at.elapsed() < std::time::Duration::from_millis(1500);
-                        if pane.hold || immediate_exit {
-                            pane.hold = true;
-                            let title = if immediate_exit {
-                                "[Process failed to start]"
-                            } else {
-                                "[Process exited]"
-                            };
+                        if pane.hold {
+                            let title = "[Process exited]";
                             pane.current_title = title.to_string();
                             if tab.active_pane_id == pane_id {
                                 tab.current_title = title.to_string();
@@ -1858,6 +1907,7 @@ impl App {
                                 ws.is_mouse_down = false;
                                 ws.mouse_down_pane_id = None;
                                 ws.dragging_separator = None;
+                                ws.dragging_tab = None;
                                 ws.cursor_blink_on = true;
                                 ws.release_memory();
                             } else {
@@ -2198,5 +2248,86 @@ mod tests {
         assert!(!WindowState::compute_cursor_visibility(
             true, 1, true, true, true
         ));
+    }
+
+    #[test]
+    fn test_pty_exit_without_hold_closes_window_cleanly() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let proxy = EventLoopProxy::new(sender, -1);
+        let mut app = App {
+            event_loop_proxy: proxy,
+            event_receiver: receiver,
+            wake_fd: None,
+            modifiers: ModifiersState::empty(),
+            windows: HashMap::new(),
+            next_window_id: 2,
+            daemon_mode: false,
+            single_instance_mode: false,
+            ipc_listener: None,
+            initial_options: None,
+            pty_reactor: None,
+            config: Config::default(),
+            config_diagnostics: Vec::new(),
+        };
+
+        let ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        let tab_id = ws.tabs[0].id;
+        let pane_id = ws.tabs[0].active_pane_id;
+        app.windows.insert(ws.window_id, ws);
+
+        assert_eq!(app.windows.len(), 1);
+
+        // When a shell exits (e.g. user typed 'exit'), PtyExit arrives
+        app.handle_custom_event(CustomEvent::PtyExit {
+            window_id: 1,
+            tab_id,
+            pane_id,
+        });
+
+        // The window should close cleanly without being held or falsely labeled as failed to start
+        assert!(
+            app.windows.is_empty(),
+            "Window must close upon child process exit when hold is false"
+        );
+    }
+
+    #[test]
+    fn test_pty_exit_with_hold_retains_window_and_updates_title() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let proxy = EventLoopProxy::new(sender, -1);
+        let mut app = App {
+            event_loop_proxy: proxy,
+            event_receiver: receiver,
+            wake_fd: None,
+            modifiers: ModifiersState::empty(),
+            windows: HashMap::new(),
+            next_window_id: 2,
+            daemon_mode: false,
+            single_instance_mode: false,
+            ipc_listener: None,
+            initial_options: None,
+            pty_reactor: None,
+            config: Config::default(),
+            config_diagnostics: Vec::new(),
+        };
+
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        ws.tabs[0].active_pane_mut().hold = true;
+        let tab_id = ws.tabs[0].id;
+        let pane_id = ws.tabs[0].active_pane_id;
+        app.windows.insert(ws.window_id, ws);
+
+        assert_eq!(app.windows.len(), 1);
+
+        app.handle_custom_event(CustomEvent::PtyExit {
+            window_id: 1,
+            tab_id,
+            pane_id,
+        });
+
+        // Window remains open and title updates to "[Process exited]"
+        assert_eq!(app.windows.len(), 1);
+        let ws = app.windows.get(&1).unwrap();
+        assert_eq!(ws.tabs[0].current_title, "[Process exited]");
     }
 }

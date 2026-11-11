@@ -812,3 +812,182 @@ fn test_split_pane_inherits_parent_pane_cwd() {
         "Newly split pane must inherit parent pane's working directory"
     );
 }
+
+fn create_test_pty_pipe() -> (std::sync::Arc<velox::pty::master::PtyMaster>, std::os::fd::OwnedFd) {
+    let mut fds = [0; 2];
+    unsafe {
+        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+        let flags = libc::fcntl(fds[0], libc::F_GETFL);
+        libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK);
+        use std::os::fd::FromRawFd;
+        let read_end = std::os::fd::OwnedFd::from_raw_fd(fds[0]);
+        let pty = std::sync::Arc::new(velox::pty::master::PtyMaster::new(fds[1], None));
+        (pty, read_end)
+    }
+}
+
+#[test]
+fn test_tab_mouse_drag_and_reorder() {
+    let (pty, _read_end) = create_test_pty_pipe();
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    ws.tabs[0].current_title = "Tab 0".to_string();
+
+    // Create Tab 1 and Tab 2
+    let (pty1, _) = create_test_pty_pipe();
+    let tab1 = Tab::new(
+        1,
+        pty1,
+        Terminal::new(80, 24),
+        None,
+        "Tab 1".to_string(),
+        false,
+        14.0,
+    );
+    ws.tabs.push(tab1);
+
+    let (pty2, _) = create_test_pty_pipe();
+    let tab2 = Tab::new(
+        2,
+        pty2,
+        Terminal::new(80, 24),
+        None,
+        "Tab 2".to_string(),
+        false,
+        14.0,
+    );
+    ws.tabs.push(tab2);
+
+    assert_eq!(ws.tabs.len(), 3);
+    assert_eq!(ws.tabs[0].current_title, "Tab 0");
+    assert_eq!(ws.tabs[1].current_title, "Tab 1");
+    assert_eq!(ws.tabs[2].current_title, "Tab 2");
+
+    // Click Tab 0 at x = 50.0, y = 10.0 (inside tab bar)
+    ws.mouse_x = 50.0;
+    ws.mouse_y = 10.0;
+    ws.handle_mouse_input(
+        velox::window::event::ElementState::Pressed,
+        velox::window::event::MouseButton::Left,
+        velox::window::event::ModifiersState::empty(),
+    );
+
+    assert!(ws.is_mouse_down);
+    let dragging = ws.dragging_tab.expect("dragging_tab should be set on left click");
+    assert_eq!(dragging.current_index, 0);
+    assert_eq!(dragging.start_x, 50.0);
+    assert_eq!(dragging.offset_in_tab, 50.0);
+    assert!(!dragging.has_dragged);
+
+    // Slight jitter move (dx = 2px <= 6px threshold) -> should not drag yet
+    ws.handle_cursor_moved((52.0, 10.0), velox::window::event::ModifiersState::empty());
+    assert!(!ws.dragging_tab.unwrap().has_dragged);
+    assert_eq!(ws.tabs[0].current_title, "Tab 0");
+
+    // Drag to x = 350.0 (slot 1) -> moves Tab 0 to index 1
+    ws.handle_cursor_moved((350.0, 10.0), velox::window::event::ModifiersState::empty());
+    assert!(ws.dragging_tab.unwrap().has_dragged);
+    assert_eq!(ws.dragging_tab.unwrap().current_index, 1);
+    assert_eq!(ws.tabs[0].current_title, "Tab 1");
+    assert_eq!(ws.tabs[1].current_title, "Tab 0");
+    assert_eq!(ws.tabs[2].current_title, "Tab 2");
+    assert_eq!(ws.active_tab_index, 1);
+
+    // Drag further to x = 650.0 (slot 2) -> moves Tab 0 to index 2
+    ws.handle_cursor_moved((650.0, 10.0), velox::window::event::ModifiersState::empty());
+    assert_eq!(ws.dragging_tab.unwrap().current_index, 2);
+    assert_eq!(ws.tabs[0].current_title, "Tab 1");
+    assert_eq!(ws.tabs[1].current_title, "Tab 2");
+    assert_eq!(ws.tabs[2].current_title, "Tab 0");
+    assert_eq!(ws.active_tab_index, 2);
+
+    // Drag back to x = 50.0 (slot 0) -> moves Tab 0 back to index 0
+    ws.handle_cursor_moved((50.0, 10.0), velox::window::event::ModifiersState::empty());
+    assert_eq!(ws.dragging_tab.unwrap().current_index, 0);
+    assert_eq!(ws.tabs[0].current_title, "Tab 0");
+    assert_eq!(ws.tabs[1].current_title, "Tab 1");
+    assert_eq!(ws.tabs[2].current_title, "Tab 2");
+    assert_eq!(ws.active_tab_index, 0);
+
+    // Release mouse button -> drag commits cleanly
+    ws.handle_mouse_input(
+        velox::window::event::ElementState::Released,
+        velox::window::event::MouseButton::Left,
+        velox::window::event::ModifiersState::empty(),
+    );
+    assert!(!ws.is_mouse_down);
+    assert!(ws.dragging_tab.is_none());
+    assert_eq!(ws.tabs[0].current_title, "Tab 0");
+    assert_eq!(ws.tabs[1].current_title, "Tab 1");
+    assert_eq!(ws.tabs[2].current_title, "Tab 2");
+
+    // Continuous incremental drag from right to left:
+    // Click on Tab 2 at x = 600.0 (Tab 2 slot is [512..768])
+    ws.handle_cursor_moved((600.0, 10.0), velox::window::event::ModifiersState::empty());
+    ws.handle_mouse_input(
+        velox::window::event::ElementState::Pressed,
+        velox::window::event::MouseButton::Left,
+        velox::window::event::ModifiersState::empty(),
+    );
+    assert_eq!(ws.active_tab_index, 2);
+    assert_eq!(ws.dragging_tab.unwrap().current_index, 2);
+
+    // Incrementally move cursor to the left by 5px steps down to 100.0
+    let mut curr_x = 600.0f64;
+    while curr_x >= 100.0 {
+        curr_x -= 5.0;
+        ws.handle_cursor_moved((curr_x, 10.0), velox::window::event::ModifiersState::empty());
+    }
+
+    // Tab 2 has smoothly moved from index 2 to index 0
+    assert_eq!(ws.dragging_tab.unwrap().current_index, 0);
+    assert_eq!(ws.tabs[0].current_title, "Tab 2");
+    assert_eq!(ws.tabs[1].current_title, "Tab 0");
+    assert_eq!(ws.tabs[2].current_title, "Tab 1");
+    assert_eq!(ws.active_tab_index, 0);
+
+    ws.handle_mouse_input(
+        velox::window::event::ElementState::Released,
+        velox::window::event::MouseButton::Left,
+        velox::window::event::ModifiersState::empty(),
+    );
+    assert!(ws.dragging_tab.is_none());
+    assert_eq!(ws.tabs[0].current_title, "Tab 2");
+}
+
+#[test]
+fn test_tab_close_button_click_does_not_start_drag() {
+    let (pty, _read_end) = create_test_pty_pipe();
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+    ws.tabs[0].current_title = "Tab 0".to_string();
+
+    let (pty1, _) = create_test_pty_pipe();
+    let tab1 = Tab::new(
+        1,
+        pty1,
+        Terminal::new(80, 24),
+        None,
+        "Tab 1".to_string(),
+        false,
+        14.0,
+    );
+    ws.tabs.push(tab1);
+
+    assert_eq!(ws.tabs.len(), 2);
+    let win_w = ws.window.width() as f32;
+    let tab_w = ws.tab_bar.tab_width(win_w, ws.tabs.len());
+
+    // Position over close button '×' of Tab 0: close button is near tab_w - 14
+    let close_x = tab_w - 14.0;
+    ws.mouse_x = close_x as f64;
+    ws.mouse_y = 10.0;
+
+    ws.handle_mouse_input(
+        velox::window::event::ElementState::Pressed,
+        velox::window::event::MouseButton::Left,
+        velox::window::event::ModifiersState::empty(),
+    );
+
+    // Tab 0 should be closed and dragging_tab must NOT be initiated
+    assert_eq!(ws.tabs.len(), 1);
+    assert!(ws.dragging_tab.is_none());
+}

@@ -783,6 +783,15 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
             } => {
                 state.pointer_serial = serial;
                 state.last_input_serial = serial;
+                if let Some(PlatformEvent::CursorMoved { x, y }) = state.events.back_mut() {
+                    *x = state.mouse_x;
+                    *y = state.mouse_y;
+                } else {
+                    state.events.push_back(PlatformEvent::CursorMoved {
+                        x: state.mouse_x,
+                        y: state.mouse_y,
+                    });
+                }
                 let s = match btn_state {
                     wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => {
                         ElementState::Pressed

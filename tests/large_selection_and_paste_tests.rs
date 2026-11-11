@@ -106,3 +106,85 @@ fn test_damage_map_large_selection_clamping_efficiency() {
         "update_selection clamping must be O(1) per update"
     );
 }
+
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn create_test_pty_pipe() -> (std::sync::Arc<velox::pty::master::PtyMaster>, std::os::fd::OwnedFd) {
+    let mut fds = [0; 2];
+    unsafe {
+        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+        let flags = libc::fcntl(fds[0], libc::F_GETFL);
+        libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK);
+        use std::os::fd::FromRawFd;
+        let read_end = std::os::fd::OwnedFd::from_raw_fd(fds[0]);
+        let pty = std::sync::Arc::new(velox::pty::master::PtyMaster::new(fds[1], None));
+        (pty, read_end)
+    }
+}
+
+fn read_pty_output(fd: &std::os::fd::OwnedFd) -> Vec<u8> {
+    use std::os::fd::AsRawFd;
+    let mut buf = [0u8; 1024];
+    let n = unsafe {
+        libc::read(
+            fd.as_raw_fd(),
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+        )
+    };
+    if n > 0 {
+        buf[..n as usize].to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+#[test]
+fn test_paste_middle_click() {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    velox::clipboard::clipboard::unregister_provider();
+    let (pty, read_end) = create_test_pty_pipe();
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+
+    velox::clipboard::clipboard::copy("middle_click_payload".to_string());
+    ws.handle_mouse_input(
+        velox::window::event::ElementState::Pressed,
+        velox::window::event::MouseButton::Middle,
+        velox::window::event::ModifiersState::empty(),
+    );
+    assert_eq!(read_pty_output(&read_end), b"middle_click_payload");
+}
+
+#[test]
+fn test_paste_ctrl_shift_v() {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    velox::clipboard::clipboard::unregister_provider();
+    let (pty, read_end) = create_test_pty_pipe();
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+
+    velox::clipboard::clipboard::copy("ctrl_shift_v_payload".to_string());
+    let handled = ws.handle_keyboard_input(
+        &velox::window::event::Key::Character("v".to_string()),
+        Some("v"),
+        velox::window::event::ModifiersState::CONTROL | velox::window::event::ModifiersState::SHIFT,
+    );
+    assert!(handled);
+    assert_eq!(read_pty_output(&read_end), b"ctrl_shift_v_payload");
+}
+
+#[test]
+fn test_paste_shift_insert() {
+    let _lock = TEST_MUTEX.lock().unwrap();
+    velox::clipboard::clipboard::unregister_provider();
+    let (pty, read_end) = create_test_pty_pipe();
+    let mut ws = velox::app::app::WindowState::create_test_window_state(pty, 80, 24);
+
+    velox::clipboard::clipboard::copy("shift_insert_payload".to_string());
+    let handled = ws.handle_keyboard_input(
+        &velox::window::event::Key::Named(velox::window::event::NamedKey::Insert),
+        None,
+        velox::window::event::ModifiersState::SHIFT,
+    );
+    assert!(handled);
+    assert_eq!(read_pty_output(&read_end), b"shift_insert_payload");
+}

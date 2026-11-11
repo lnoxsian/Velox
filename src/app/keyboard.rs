@@ -73,22 +73,10 @@ impl WindowState {
                         return false;
                     }
                     Key::Named(NamedKey::Insert) => {
-                        let text = crate::clipboard::clipboard::paste();
-                        if !text.is_empty() {
-                            let formatted = self.active_pane().terminal.format_paste(&text);
-                            if self.active_pane().terminal.scroll_on_keystroke {
-                                self.active_pane_mut()
-                                    .terminal
-                                    .active_grid_mut()
-                                    .scroll_offset = 0;
-                            }
-                            self.write_to_active_pane(formatted.into_bytes());
-                            self.last_key_instant = std::time::Instant::now();
-                            self.mark_interaction();
+                        if self.paste_clipboard() {
                             if self.hide_mouse_on_typing {
                                 self.hide_mouse();
                             }
-                            self.needs_redraw = true;
                             log::debug!("Velox shortcut: paste (Shift+Insert)");
                             return true;
                         }
@@ -231,22 +219,10 @@ impl WindowState {
                                 return false;
                             }
                             b'v' => {
-                                let text = crate::clipboard::clipboard::paste();
-                                if !text.is_empty() {
-                                    let formatted = self.active_pane().terminal.format_paste(&text);
-                                    if self.active_pane().terminal.scroll_on_keystroke {
-                                        self.active_pane_mut()
-                                            .terminal
-                                            .active_grid_mut()
-                                            .scroll_offset = 0;
-                                    }
-                                    self.write_to_active_pane(formatted.into_bytes());
-                                    self.last_key_instant = std::time::Instant::now();
-                                    self.mark_interaction();
+                                if self.paste_clipboard() {
                                     if self.hide_mouse_on_typing {
                                         self.hide_mouse();
                                     }
-                                    self.needs_redraw = true;
                                     log::debug!("Velox shortcut: paste");
                                     return true;
                                 }

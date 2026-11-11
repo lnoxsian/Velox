@@ -2035,7 +2035,7 @@ fn test_split_separator_damage_and_focus_switching() {
     };
 
     let dmg2 = renderer.render_splits(
-        &[pane1_frame2.clone(), pane2_frame2.clone()],
+        &[pane1_frame2, pane2_frame2],
         &[sep_frame2],
         1.0,
         0.0,

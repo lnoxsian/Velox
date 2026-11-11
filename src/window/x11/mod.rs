@@ -916,6 +916,15 @@ impl X11Window {
                     self.events
                         .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
                 }
+                if let Some(PlatformEvent::CursorMoved { x, y }) = self.events.back_mut() {
+                    *x = ev.event_x as f64;
+                    *y = ev.event_y as f64;
+                } else {
+                    self.events.push_back(PlatformEvent::CursorMoved {
+                        x: ev.event_x as f64,
+                        y: ev.event_y as f64,
+                    });
+                }
                 match ev.detail {
                     4 => self
                         .events
@@ -947,6 +956,15 @@ impl X11Window {
                 if self.modifiers != old_mods {
                     self.events
                         .push_back(PlatformEvent::ModifiersChanged(self.modifiers));
+                }
+                if let Some(PlatformEvent::CursorMoved { x, y }) = self.events.back_mut() {
+                    *x = ev.event_x as f64;
+                    *y = ev.event_y as f64;
+                } else {
+                    self.events.push_back(PlatformEvent::CursorMoved {
+                        x: ev.event_x as f64,
+                        y: ev.event_y as f64,
+                    });
                 }
                 match ev.detail {
                     1 => self.events.push_back(PlatformEvent::MouseInput {

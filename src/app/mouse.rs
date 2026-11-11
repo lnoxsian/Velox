@@ -1,4 +1,4 @@
-use crate::app::app::{DraggingSeparator, WindowState};
+use crate::app::app::{DraggingSeparator, DraggingTab, WindowState};
 use crate::app::split::SplitDirection;
 use crate::app::tab::TabBarHitResult;
 use crate::window::event::{ElementState, ModifiersState, MouseButton};
@@ -249,6 +249,50 @@ impl WindowState {
             } else {
                 self.dragging_separator = None;
                 self.last_separator_drag_sync = None;
+            }
+        }
+
+        // ── 1.5 Tab Dragging ─────────────────────────────────────────────────
+        if let Some(mut dragging) = self.dragging_tab {
+            if self.is_mouse_down {
+                let tab_count = self.tabs.len();
+                if tab_count > 1 {
+                    let drag_distance = ((self.mouse_x as f32) - dragging.start_x).abs();
+                    if drag_distance > 6.0 {
+                        dragging.has_dragged = true;
+                    }
+
+                    if dragging.has_dragged {
+                        self.last_resize_instant = std::time::Instant::now();
+                        let win_w = self.window.width() as f32;
+                        let tab_w = self.tab_bar.tab_width(win_w, tab_count);
+                        if tab_w > 0.0 {
+                            // Target slot based on the dragged tab's midpoint:
+                            // guarantees natural, symmetric swap thresholds regardless of click offset.
+                            let dragged_center_x =
+                                (self.mouse_x as f32) - dragging.offset_in_tab + (tab_w * 0.5);
+                            let target_slot =
+                                (dragged_center_x / tab_w).floor() as isize;
+                            let target_index =
+                                target_slot.clamp(0, (tab_count - 1) as isize) as usize;
+
+                            if target_index != dragging.current_index {
+                                self.move_tab(dragging.current_index, target_index);
+                                dragging.current_index = target_index;
+                            }
+                        }
+                    }
+                }
+
+                if self.tab_bar.set_hover(Some(dragging.current_index), None, false) {
+                    self.tab_bar_dirty = true;
+                    self.needs_redraw = true;
+                }
+                self.dragging_tab = Some(dragging);
+                self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
+                return;
+            } else {
+                self.dragging_tab = None;
             }
         }
 
@@ -803,7 +847,21 @@ impl WindowState {
                 match hit {
                     TabBarHitResult::Tab(idx) => {
                         if button == MouseButton::Left {
+                            self.is_mouse_down = true;
                             self.switch_tab(idx);
+                            let win_w = self.window.width() as f32;
+                            let tab_w = self.tab_bar.tab_width(win_w, self.tabs.len());
+                            let offset_in_tab = if tab_w > 0.0 {
+                                ((self.mouse_x as f32) - (idx as f32) * tab_w).clamp(0.0, tab_w)
+                            } else {
+                                0.0
+                            };
+                            self.dragging_tab = Some(DraggingTab {
+                                current_index: idx,
+                                start_x: self.mouse_x as f32,
+                                offset_in_tab,
+                                has_dragged: false,
+                            });
                         } else if button == MouseButton::Middle {
                             self.close_tab(idx);
                         }
@@ -1037,28 +1095,8 @@ impl WindowState {
                 MouseButton::Middle => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 1;
-                    let mut text = crate::clipboard::clipboard::primary_selection();
-                    if text.is_empty() {
-                        text = crate::clipboard::clipboard::paste();
-                    }
-                    if !text.is_empty() {
-                        let formatted = {
-                            let tab = self.active_tab_mut();
-                            if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
-                                let scroll_on_keystroke = pane.terminal.scroll_on_keystroke;
-                                let f = pane.terminal.format_paste(&text);
-                                if scroll_on_keystroke {
-                                    pane.terminal.active_grid_mut().scroll_offset = 0;
-                                }
-                                Some(f)
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(formatted) = formatted {
-                            self.write_to_pane(clicked_pane_id, formatted.into_bytes());
-                            self.needs_redraw = true;
-                        }
+                    if self.paste_clipboard() {
+                        log::debug!("Velox mouse: paste (Middle Click)");
                     }
                 }
                 MouseButton::Right => {
@@ -1113,6 +1151,18 @@ impl WindowState {
                 self.sync_active_tab_layout();
                 self.needs_redraw = true;
                 self.content_dirty = true;
+                return;
+            }
+
+            if let Some(dragging) = self.dragging_tab.take() {
+                if dragging.has_dragged {
+                    self.tab_bar_dirty = true;
+                    self.tab_bar_render_cache = None;
+                    self.needs_redraw = true;
+                    self.content_dirty = true;
+                    self.last_resize_instant = std::time::Instant::now();
+                    self.renderer.damage.mark_all();
+                }
                 return;
             }
 

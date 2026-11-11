@@ -39,7 +39,7 @@ src/
 │   └── mouse.rs            # Mouse clicks, drags, selections & tab interactions
 ├── clipboard/              # System clipboard integration
 │   ├── mod.rs
-│   └── clipboard.rs        # Wayland (wl-clipboard), X11 (xclip/xsel) & OSC-52
+│   └── clipboard.rs        # Native Wayland & X11 clipboard integration & OSC-52
 ├── config/                 # TOML configuration engine
 │   ├── mod.rs
 │   ├── config.rs           # Config data structures & serde definitions
