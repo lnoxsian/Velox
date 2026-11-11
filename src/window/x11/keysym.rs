@@ -3,7 +3,7 @@ use crate::window::event::{Key, KeypadKey, NamedKey};
 /// Converts a standard X11 keysym to a portable `Key` and optional text string.
 pub fn keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
     match keysym {
-        0xff08 => (Some(Key::Named(NamedKey::Backspace)), None),
+        0xff08 | 0x08 | 0x7f => (Some(Key::Named(NamedKey::Backspace)), None),
         0xff09 => (Some(Key::Named(NamedKey::Tab)), Some("\t".to_string())),
         0xfe20 => (Some(Key::Named(NamedKey::Tab)), None), // XK_ISO_Left_Tab (Shift+Tab)
         0xff0d => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),

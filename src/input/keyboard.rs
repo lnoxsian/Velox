@@ -83,7 +83,9 @@ pub fn translate_key(
                 Key::Named(NamedKey::Tab) if kitty_mod > 1 || report_all => {
                     return Some(xterm_mod_seq(b"\x1b[9;", kitty_mod, b"u"));
                 }
-                Key::Named(NamedKey::Backspace) if kitty_mod > 1 || report_all => {
+                Key::Named(NamedKey::Backspace)
+                    if report_all || has_ctrl || has_alt || has_super =>
+                {
                     return Some(xterm_mod_seq(b"\x1b[127;", kitty_mod, b"u"));
                 }
                 Key::Named(NamedKey::Escape) if kitty_mod > 1 || report_all => {
@@ -182,6 +184,7 @@ pub fn translate_key(
         && !has_super
         && let Some(t) = text
         && !t.is_empty()
+        && !matches!(key, Key::Named(NamedKey::Backspace))
     {
         if has_alt {
             let mut escaped = SmallVec::<[u8; 16]>::with_capacity(1 + t.len());
@@ -954,5 +957,141 @@ mod tests {
             0,
         );
         assert_eq!(ctrl_kp_enter.as_deref(), Some(&[10][..]));
+    }
+
+    #[test]
+    fn test_backspace_with_modifiers_and_kitty() {
+        // Plain Backspace -> 0x7f (DEL)
+        let bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::empty(),
+            false,
+            false,
+            0,
+        );
+        assert_eq!(bs.as_deref(), Some(&[127][..]));
+
+        // Shift + Backspace (e.g. typing capitalized text) -> 0x7f (DEL)
+        let shift_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(shift_bs.as_deref(), Some(&[127][..]));
+
+        // Shift + Backspace with text="\x08" from XKB/Wayland must still return 0x7f (not ASCII 8)
+        let shift_bs_xkb = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            Some("\x08"),
+            ModifiersState::SHIFT,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(shift_bs_xkb.as_deref(), Some(&[127][..]));
+
+        // Alt + Backspace -> ESC DEL (\x1b \x7f)
+        let alt_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::ALT,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(alt_bs.as_deref(), Some(&[27, 127][..]));
+
+        // Shift + Alt + Backspace -> ESC DEL (\x1b \x7f)
+        let shift_alt_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SHIFT | ModifiersState::ALT,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(shift_alt_bs.as_deref(), Some(&[27, 127][..]));
+
+        // Ctrl + Backspace -> ASCII BS (0x08)
+        let ctrl_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(ctrl_bs.as_deref(), Some(&[8][..]));
+
+        // Shift + Ctrl + Backspace -> ASCII BS (0x08)
+        let shift_ctrl_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SHIFT | ModifiersState::CONTROL,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(shift_ctrl_bs.as_deref(), Some(&[8][..]));
+
+        // Super + Backspace and Super + Shift + Backspace -> 0x7f (DEL)
+        let super_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SUPER,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(super_bs.as_deref(), Some(&[127][..]));
+
+        let super_shift_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SUPER | ModifiersState::SHIFT,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(super_shift_bs.as_deref(), Some(&[127][..]));
+
+        // Kitty disambiguate mode (kitty_flags = 1):
+        // Shift alone on Backspace falls back to standard 0x7f to avoid breaking shells
+        let kitty_shift_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            false,
+            1,
+        );
+        assert_eq!(kitty_shift_bs.as_deref(), Some(&[127][..]));
+
+        // Kitty disambiguate mode with Ctrl: encodes CSI 127;5u
+        let kitty_ctrl_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::CONTROL,
+            false,
+            false,
+            1,
+        );
+        assert_eq!(kitty_ctrl_bs.as_deref(), Some(&b"\x1b[127;5u"[..]));
+
+        // Kitty report_all mode (kitty_flags = 8):
+        // Explicitly reports all modified keys as CSI-u escape codes
+        let kitty_report_shift_bs = translate_key(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SHIFT,
+            false,
+            false,
+            8,
+        );
+        assert_eq!(kitty_report_shift_bs.as_deref(), Some(&b"\x1b[127;2u"[..]));
     }
 }

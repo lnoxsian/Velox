@@ -1181,7 +1181,11 @@ impl X11Window {
             0
         };
         let mut keysym = self.keysym_for_keycode(keycode, col);
-        if keysym == 0 {
+        if keysym_col0 == 0xff08 || keysym_col0 == 0x08 || keysym_col0 == 0x7f {
+            // Prevent Shift+Backspace or other modifier combinations on Backspace from
+            // resolving to Delete (0xffff) or any alternate keysym in XKB keymaps.
+            keysym = 0xff08;
+        } else if keysym == 0 {
             keysym = keysym_col0;
         }
         if keysym == 0 {
@@ -1368,6 +1372,26 @@ mod tests {
                             );
                             assert_eq!(key_both, Some(Key::Character("a".to_string())));
                             assert_eq!(text_both, Some("a".to_string()));
+                            break;
+                        }
+                    }
+
+                    // Test Backspace key with Shift and Modifiers maintains Backspace
+                    for keycode in win.min_keycode..=win.max_keycode {
+                        let idx = (keycode - win.min_keycode) as usize * win.keysyms_per_keycode;
+                        if idx < keymap.len() && (keymap[idx] == 0xff08 || keymap[idx] == 0x08) {
+                            let (key_plain, _) = win.lookup_key(keycode, 0u16.into());
+                            assert_eq!(key_plain, Some(Key::Named(crate::window::NamedKey::Backspace)));
+
+                            let (key_shift, _) =
+                                win.lookup_key(keycode, ModMask::SHIFT.bits().into());
+                            assert_eq!(key_shift, Some(Key::Named(crate::window::NamedKey::Backspace)));
+
+                            let (key_shift_lock, _) = win.lookup_key(
+                                keycode,
+                                (ModMask::SHIFT.bits() | ModMask::LOCK.bits()).into(),
+                            );
+                            assert_eq!(key_shift_lock, Some(Key::Named(crate::window::NamedKey::Backspace)));
                             break;
                         }
                     }

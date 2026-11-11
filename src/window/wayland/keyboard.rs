@@ -243,7 +243,10 @@ impl XkbHandler {
             if sym == 0xfe20 {
                 modifiers.insert(ModifiersState::SHIFT);
             }
-            if text.is_none() && xkb_text.is_some() {
+            if text.is_none()
+                && xkb_text.is_some()
+                && !matches!(key, Some(Key::Named(NamedKey::Backspace)))
+            {
                 text = xkb_text;
             }
             if key.is_none()
@@ -543,7 +546,7 @@ fn letter(c: char, shift: bool) -> (Option<Key>, Option<String>) {
 /// Translates XKB keysym to `Key` and optional printable text string.
 pub fn xkb_keysym_to_key(keysym: u32) -> (Option<Key>, Option<String>) {
     match keysym {
-        0xff08 => (Some(Key::Named(NamedKey::Backspace)), None),
+        0xff08 | 0x08 | 0x7f => (Some(Key::Named(NamedKey::Backspace)), None),
         0xff09 => (Some(Key::Named(NamedKey::Tab)), Some("\t".to_string())),
         0xfe20 => (Some(Key::Named(NamedKey::Tab)), None), // XK_ISO_Left_Tab (Shift+Tab)
         0xff0d => (Some(Key::Named(NamedKey::Enter)), Some("\r".to_string())),

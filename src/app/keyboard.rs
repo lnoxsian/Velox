@@ -879,4 +879,37 @@ mod tests {
         assert!(ws.mouse_hidden);
         assert!(!ws.window.is_cursor_visible());
     }
+
+    #[test]
+    fn test_backspace_with_shift_erases_backward() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // When user types capitalized text and hits Backspace with Shift held down:
+        let handled = ws.handle_keyboard_input(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::SHIFT,
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[127]);
+
+        // When Backspace arrives with XKB text "\x08", it must still write 0x7f (DEL) to erase
+        let handled = ws.handle_keyboard_input(
+            &Key::Named(NamedKey::Backspace),
+            Some("\x08"),
+            ModifiersState::SHIFT,
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[127]);
+
+        // Alt + Backspace writes ESC DEL
+        let handled = ws.handle_keyboard_input(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::ALT,
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), &[27, 127]);
+    }
 }
