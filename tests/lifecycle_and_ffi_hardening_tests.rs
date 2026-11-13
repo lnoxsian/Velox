@@ -291,3 +291,47 @@ fn test_spawn_process_terminal_execution() {
         String::from_utf8_lossy(&accumulated)
     );
 }
+
+#[test]
+fn test_immediate_shell_exit_terminates_without_hang() {
+    let pty = spawn_process(
+        "/bin/sh",
+        Some(&[
+            "sh".to_string(),
+            "-c".to_string(),
+            "exit 0".to_string(),
+        ]),
+        None,
+    )
+    .expect("Spawn process with immediate exit");
+
+    assert!(pty.as_raw_fd() >= 0);
+    assert!(pty.child_pid.is_some());
+
+    let mut buf = [0u8; 64];
+    let start = Instant::now();
+    let mut saw_eof = false;
+
+    while start.elapsed() < Duration::from_secs(2) {
+        match pty.read(&mut buf) {
+            Ok(0) => {
+                saw_eof = true;
+                break;
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                // On Linux, reading from a PTY master when child exits yields EIO or EOF
+                if e.raw_os_error() == Some(libc::EIO) {
+                    saw_eof = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        saw_eof,
+        "Immediate exit must produce EOF or EIO within 2 seconds without hanging"
+    );
+}

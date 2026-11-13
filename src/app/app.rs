@@ -2330,4 +2330,49 @@ mod tests {
         let ws = app.windows.get(&1).unwrap();
         assert_eq!(ws.tabs[0].current_title, "[Process exited]");
     }
+
+    #[test]
+    fn test_rapid_window_open_and_immediate_exit() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let proxy = EventLoopProxy::new(sender, -1);
+        let mut app = App {
+            event_loop_proxy: proxy,
+            event_receiver: receiver,
+            wake_fd: None,
+            modifiers: ModifiersState::empty(),
+            windows: HashMap::new(),
+            next_window_id: 2,
+            daemon_mode: false,
+            single_instance_mode: false,
+            ipc_listener: None,
+            initial_options: None,
+            pty_reactor: None,
+            config: Config::default(),
+            config_diagnostics: Vec::new(),
+        };
+
+        // Rapidly create and exit 5 windows in succession
+        for wid in 1..=5 {
+            let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+            ws.window_id = wid;
+            let tab_id = ws.tabs[0].id;
+            let pane_id = ws.tabs[0].active_pane_id;
+            app.windows.insert(wid, ws);
+
+            assert_eq!(app.windows.len(), 1);
+
+            // Immediate exit simulation
+            app.handle_custom_event(CustomEvent::PtyExit {
+                window_id: wid,
+                tab_id,
+                pane_id,
+            });
+
+            assert!(
+                app.windows.is_empty(),
+                "Rapid exit cycle {} must close window cleanly without hang",
+                wid
+            );
+        }
+    }
 }
