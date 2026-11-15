@@ -157,3 +157,38 @@ fn test_damage_map_large_selection_clamping_efficiency() {
         "update_selection clamping must be O(1) per update"
     );
 }
+
+#[test]
+fn test_clipboard_browser_unicode_and_middle_click_paste() {
+    use velox::clipboard::clipboard::{
+        copy, copy_primary, get_internal_clipboard, get_internal_primary, middle_click_paste,
+        paste, primary_selection,
+    };
+
+    // 1. Simulate copying a web URL from a browser with UTF-8 / symbols
+    let browser_text = "https://example.com/search?q=rust+terminal+🦀+日本語&tag=✨";
+    copy(browser_text.to_string());
+
+    assert_eq!(get_internal_clipboard(), browser_text);
+    assert_eq!(get_internal_primary(), browser_text);
+
+    // Verify paste retrieves the exact Unicode browser string
+    let pasted = paste();
+    assert_eq!(pasted, browser_text);
+
+    // 2. Simulate mouse selecting a word in the terminal (PRIMARY ONLY)
+    let terminal_selection = "ls -la /tmp";
+    copy_primary(terminal_selection.to_string());
+
+    // PRIMARY must update to the terminal selection
+    assert_eq!(get_internal_primary(), terminal_selection);
+    assert_eq!(primary_selection(), terminal_selection);
+
+    // CLIPBOARD must NOT be overwritten by mouse selection, preserving the browser text!
+    assert_eq!(get_internal_clipboard(), browser_text);
+    assert_eq!(paste(), browser_text);
+
+    // 3. Middle click paste should choose the primary selection when active
+    let mid = middle_click_paste();
+    assert_eq!(mid, terminal_selection);
+}

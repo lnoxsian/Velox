@@ -1291,7 +1291,12 @@ impl Grid {
             return String::new();
         }
 
-        let ((min_x, min_y), (max_x, max_y)) = self.selection.normalized_bounds();
+        let is_block = self.selection.mode == crate::screen::selection::SelectionMode::Block;
+        let ((min_x, min_y), (max_x, max_y)) = if is_block {
+            self.selection.block_bounds()
+        } else {
+            self.selection.normalized_bounds()
+        };
         let history_len = self.scrollback.len();
         let total_lines = history_len + self.height;
 
@@ -1312,11 +1317,16 @@ impl Grid {
                 result.push('\n');
             }
 
-            let start_col = if y == min_y { min_x } else { 0 };
-            let end_col = if y == max_y {
-                max_x.min(self.width.saturating_sub(1))
+            let (start_col, end_col) = if is_block {
+                (min_x, max_x.min(self.width.saturating_sub(1)))
             } else {
-                self.width.saturating_sub(1)
+                let s = if y == min_y { min_x } else { 0 };
+                let e = if y == max_y {
+                    max_x.min(self.width.saturating_sub(1))
+                } else {
+                    self.width.saturating_sub(1)
+                };
+                (s, e)
             };
 
             if start_col > end_col {
@@ -1420,8 +1430,10 @@ impl Grid {
             self.selection.end_x = end_col;
             self.selection.end_y = abs_y;
             self.selection.active = true;
+            self.selection.mode = crate::screen::selection::SelectionMode::Normal;
         } else {
             self.selection.start_selection(col, abs_y);
+            self.selection.mode = crate::screen::selection::SelectionMode::Normal;
         }
     }
 
@@ -1440,6 +1452,7 @@ impl Grid {
         self.selection.end_x = self.width.saturating_sub(1);
         self.selection.end_y = abs_y;
         self.selection.active = true;
+        self.selection.mode = crate::screen::selection::SelectionMode::Line;
     }
 }
 
@@ -1685,6 +1698,43 @@ mod tests {
         grid.selection.update_selection(5, 9);
         let text_grid = grid.extract_selection_text();
         assert_eq!(text_grid, "line-7\nline-8\nline-9");
+    }
+
+    #[test]
+    fn test_extract_selection_text_block_mode() {
+        let fg = Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let bg = Color { r: 0, g: 0, b: 0 };
+        let mut grid = Grid::new(20, 4, fg, bg, 10, false);
+
+        // Put lines:
+        // "ABCDEF"
+        // "123456"
+        // "UVWXYZ"
+        for c in "ABCDEF".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+        grid.cursor.y = 1;
+        grid.cursor.x = 0;
+        for c in "123456".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+        grid.cursor.y = 2;
+        grid.cursor.x = 0;
+        for c in "UVWXYZ".chars() {
+            grid.put_char(c, fg, bg, None, CellFlags::empty());
+        }
+
+        // Block select columns 2..4, rows 0..2
+        grid.selection.mode = crate::screen::selection::SelectionMode::Block;
+        grid.selection.start_selection(2, 0);
+        grid.selection.update_selection(4, 2);
+
+        let text = grid.extract_selection_text();
+        assert_eq!(text, "CDE\n345\nWXY");
     }
 
     #[test]

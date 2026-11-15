@@ -149,8 +149,14 @@ impl PrecomputedPalette {
 
         // Bold-bright: remap base 8 ANSI colors to bright variants (8..15) using bold_bright_map
         if bold_is_bright && cell.flags.contains(CellFlags::BOLD) {
+            let fg_u32 = ((cell_fg_color.r as u32) << 16)
+                | ((cell_fg_color.g as u32) << 8)
+                | (cell_fg_color.b as u32);
             for i in 0..8 {
-                if cell_fg_color == ansi_colors[i] {
+                let ansi_u32 = ((ansi_colors[i].r as u32) << 16)
+                    | ((ansi_colors[i].g as u32) << 8)
+                    | (ansi_colors[i].b as u32);
+                if fg_u32 == ansi_u32 {
                     cell_fg_raw = ansi_colors[bold_bright_map[i] as usize];
                     break;
                 }
@@ -233,6 +239,32 @@ impl PrecomputedPalette {
         fg
     }
 
+    /// Resolve the effective foreground and background `u32` pixel colors for a cell using the pane's theme and default background with precomputed luminance.
+    #[inline(always)]
+    pub fn resolve_cell_colors_pane_cached(
+        &self,
+        cell: &Cell,
+        is_inverted: bool,
+        bold_is_bright: bool,
+        dim: f32,
+        pane_theme: &Theme,
+        default_pane_bg: u32,
+        lum_bg: u16,
+    ) -> (u32, u32) {
+        Self::resolve_cell_colors_internal(
+            cell,
+            is_inverted,
+            bold_is_bright,
+            dim,
+            &pane_theme.ansi_colors,
+            &self.bold_bright_map,
+            pane_theme.default_fg,
+            pane_theme.default_bg,
+            lum_bg,
+            default_pane_bg,
+        )
+    }
+
     /// Resolve the effective foreground and background `u32` pixel colors for a cell using the pane's theme and default background.
     #[inline(always)]
     pub fn resolve_cell_colors_pane(
@@ -249,17 +281,14 @@ impl PrecomputedPalette {
         } else {
             calc_luminance(pane_theme.default_bg)
         };
-        Self::resolve_cell_colors_internal(
+        self.resolve_cell_colors_pane_cached(
             cell,
             is_inverted,
             bold_is_bright,
             dim,
-            &pane_theme.ansi_colors,
-            &self.bold_bright_map,
-            pane_theme.default_fg,
-            pane_theme.default_bg,
-            lum_bg,
+            pane_theme,
             default_pane_bg,
+            lum_bg,
         )
     }
 

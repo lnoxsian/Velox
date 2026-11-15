@@ -203,6 +203,51 @@ fn send_mouse_report(
     }
 }
 
+fn send_batched_mouse_report(
+    pty: &crate::pty::master::PtyMaster,
+    proto: MouseProtocol,
+    btn_code: usize,
+    col_idx: usize,
+    row_idx: usize,
+    pixel_x: usize,
+    pixel_y: usize,
+    is_release: bool,
+    count: usize,
+) {
+    if count == 0 {
+        return;
+    }
+    let mut single_buf = [0u8; 64];
+    let written = format_mouse_report(
+        proto,
+        btn_code,
+        col_idx,
+        row_idx,
+        pixel_x,
+        pixel_y,
+        is_release,
+        &mut single_buf,
+    );
+    if written > 0 {
+        let single = &single_buf[..written];
+        let total_bytes = written * count;
+        if total_bytes <= 512 {
+            let mut batch_buf = [0u8; 512];
+            for i in 0..count {
+                let start = i * written;
+                batch_buf[start..start + written].copy_from_slice(single);
+            }
+            let _ = pty.write(&batch_buf[..total_bytes]);
+        } else {
+            let mut batch_vec = Vec::with_capacity(total_bytes);
+            for _ in 0..count {
+                batch_vec.extend_from_slice(single);
+            }
+            let _ = pty.write(&batch_vec);
+        }
+    }
+}
+
 impl WindowState {
     pub fn handle_cursor_moved(&mut self, position: (f64, f64), modifiers: ModifiersState) {
         self.mark_interaction();
@@ -320,6 +365,10 @@ impl WindowState {
                     if let Some(pane) = tab.tree.find_pane_mut(drag_pane_id) {
                         let active_grid = pane.terminal.active_grid_mut();
                         if active_grid.selection.active {
+                            if modifiers.alt_key() {
+                                active_grid.selection.mode =
+                                    crate::screen::selection::SelectionMode::Block;
+                            }
                             let abs_y = active_grid.display_row_to_abs(row_idx);
                             active_grid.selection.update_selection(col_idx, abs_y);
                             self.needs_redraw = true;
@@ -595,18 +644,17 @@ impl WindowState {
                         };
                         let (pixel_x, pixel_y) =
                             pane_pixel_coords(&pane_rect, self.mouse_x, self.mouse_y);
-                        for _ in 0..lines.abs() {
-                            send_mouse_report(
-                                &pane.pty_master,
-                                proto,
-                                btn,
-                                col_idx,
-                                row_idx,
-                                pixel_x,
-                                pixel_y,
-                                false,
-                            );
-                        }
+                        send_batched_mouse_report(
+                            &pane.pty_master,
+                            proto,
+                            btn,
+                            col_idx,
+                            row_idx,
+                            pixel_x,
+                            pixel_y,
+                            false,
+                            lines.unsigned_abs() as usize,
+                        );
                         return true;
                     } else if pane.terminal.is_alt_screen {
                         let key_seq: &[u8] = if lines > 0 {
@@ -620,8 +668,22 @@ impl WindowState {
                         } else {
                             b"\x1b[B"
                         };
-                        for _ in 0..lines.abs() {
-                            let _ = pane.pty_master.write(key_seq);
+                        let count = lines.unsigned_abs() as usize;
+                        let key_len = key_seq.len();
+                        let total_bytes = key_len * count;
+                        if total_bytes <= 128 {
+                            let mut batch_buf = [0u8; 128];
+                            for i in 0..count {
+                                let start = i * key_len;
+                                batch_buf[start..start + key_len].copy_from_slice(key_seq);
+                            }
+                            let _ = pane.pty_master.write(&batch_buf[..total_bytes]);
+                        } else {
+                            let mut batch_vec = Vec::with_capacity(total_bytes);
+                            for _ in 0..count {
+                                batch_vec.extend_from_slice(key_seq);
+                            }
+                            let _ = pane.pty_master.write(&batch_vec);
                         }
                         return true;
                     } else {
@@ -918,6 +980,13 @@ impl WindowState {
 
                             match click_count {
                                 1 => {
+                                    if modifiers.alt_key() {
+                                        active_grid.selection.mode =
+                                            crate::screen::selection::SelectionMode::Block;
+                                    } else {
+                                        active_grid.selection.mode =
+                                            crate::screen::selection::SelectionMode::Normal;
+                                    }
                                     if modifiers.shift_key() && active_grid.selection.active {
                                         active_grid.selection.update_selection(col_idx, y_offset);
                                     } else {
@@ -928,14 +997,24 @@ impl WindowState {
                                     active_grid.select_word_at(col_idx, y_offset);
                                     let text = active_grid.extract_selection_text();
                                     if !text.is_empty() {
-                                        crate::clipboard::clipboard::copy(text);
+                                        crate::clipboard::clipboard::copy_primary(text.clone());
+                                        self.window.claim_primary();
+                                        if self.copy_on_select {
+                                            crate::clipboard::clipboard::copy(text);
+                                            self.window.claim_clipboard();
+                                        }
                                     }
                                 }
                                 3 => {
                                     active_grid.select_line_at(y_offset);
                                     let text = active_grid.extract_selection_text();
                                     if !text.is_empty() {
-                                        crate::clipboard::clipboard::copy(text);
+                                        crate::clipboard::clipboard::copy_primary(text.clone());
+                                        self.window.claim_primary();
+                                        if self.copy_on_select {
+                                            crate::clipboard::clipboard::copy(text);
+                                            self.window.claim_clipboard();
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -948,10 +1027,7 @@ impl WindowState {
                 MouseButton::Middle => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 1;
-                    let mut text = crate::clipboard::clipboard::primary_selection();
-                    if text.is_empty() {
-                        text = crate::clipboard::clipboard::paste();
-                    }
+                    let text = crate::clipboard::clipboard::middle_click_paste();
                     if !text.is_empty() {
                         let formatted = {
                             let tab = self.active_tab_mut();
@@ -975,12 +1051,36 @@ impl WindowState {
                 MouseButton::Right => {
                     self.is_mouse_down = true;
                     self.last_mouse_button = 2;
-                    let tab = self.active_tab_mut();
-                    if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
-                        let active_grid = pane.terminal.active_grid_mut();
-                        if active_grid.selection.active {
-                            active_grid.selection.active = false;
-                            self.needs_redraw = true;
+                    let is_putty = self.putty_paste_style;
+                    if is_putty {
+                        let text = crate::clipboard::clipboard::middle_click_paste();
+                        if !text.is_empty() {
+                            let formatted = {
+                                let tab = self.active_tab_mut();
+                                if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
+                                    let scroll_on_keystroke = pane.terminal.scroll_on_keystroke;
+                                    let f = pane.terminal.format_paste(&text);
+                                    if scroll_on_keystroke {
+                                        pane.terminal.active_grid_mut().scroll_offset = 0;
+                                    }
+                                    Some(f)
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(formatted) = formatted {
+                                self.write_to_pane(clicked_pane_id, formatted.into_bytes());
+                                self.needs_redraw = true;
+                            }
+                        }
+                    } else {
+                        let tab = self.active_tab_mut();
+                        if let Some(pane) = tab.tree.find_pane_mut(clicked_pane_id) {
+                            let active_grid = pane.terminal.active_grid_mut();
+                            if active_grid.selection.active {
+                                active_grid.selection.active = false;
+                                self.needs_redraw = true;
+                            }
                         }
                     }
                 }
@@ -1116,7 +1216,12 @@ impl WindowState {
                         } else {
                             let text = active_grid.extract_selection_text();
                             if !text.is_empty() {
-                                crate::clipboard::clipboard::copy(text);
+                                crate::clipboard::clipboard::copy_primary(text.clone());
+                                self.window.claim_primary();
+                                if self.copy_on_select {
+                                    crate::clipboard::clipboard::copy(text);
+                                    self.window.claim_clipboard();
+                                }
                             }
                         }
                     }

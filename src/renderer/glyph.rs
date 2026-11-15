@@ -416,20 +416,27 @@ impl GlyphCache {
             return Some(g_ref);
         }
 
+        // Enforce glyph atlas memory ceiling before allocating new glyph in atlas
+        let estimated_size = (self.cell_width * self.cell_height * 8) as usize;
+        if self.atlas.total_bytes().saturating_add(estimated_size)
+            >= crate::renderer::atlas::MAX_ATLAS_BYTES
+        {
+            self.unicode_table.clear();
+            self.unicode_previous.clear();
+            self.atlas.clear();
+            self.ascii_table = [None; 512];
+            self.preload_common_glyphs();
+            if let Some(g_ref) = self.get(key) {
+                return Some(g_ref);
+            }
+        }
+
         let g_ref = self.rasterize_glyph(key)?;
 
         if let Some(idx) = key.ascii_index() {
             self.ascii_table[idx] = Some(g_ref);
         } else {
-            if self.atlas.is_full() {
-                self.unicode_table.clear();
-                self.unicode_previous.clear();
-                self.atlas.clear();
-                self.ascii_table = [None; 512];
-                self.preload_common_glyphs();
-                // Re-rasterize the requested key if it was flushed
-                return self.get_or_rasterize(key);
-            } else if self.unicode_table.len() >= self.max_unicode_entries {
+            if self.unicode_table.len() >= self.max_unicode_entries {
                 // Generational eviction: drop previous generation, current generation becomes previous
                 self.unicode_previous = std::mem::take(&mut self.unicode_table);
             }

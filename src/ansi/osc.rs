@@ -172,20 +172,27 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
         // OSC 52: Clipboard read / write
         // Format: OSC 52 ; target ; data
         "52" if params.len() >= 2 => {
+            if !terminal.osc52_clipboard {
+                return;
+            }
+
             let (target_str, data_bytes) = if params.len() >= 3 {
                 (std::str::from_utf8(params[1]).unwrap_or("c"), params[2])
             } else {
                 ("c", params[1])
             };
 
-            // Limit data_bytes length to 10 MB to prevent DOS / unbounded allocation
-            if data_bytes.len() > 10 * 1024 * 1024 {
+            // Limit data_bytes length to configured maximum (default 10 MB) to prevent DOS / unbounded allocation
+            if data_bytes.len() > terminal.osc52_max_size {
                 return;
             }
 
             let data_str = std::str::from_utf8(data_bytes).unwrap_or("").trim();
 
             if data_str == "?" {
+                if !terminal.osc52_allow_read {
+                    return;
+                }
                 // Clipboard query request from shell/app
                 let text = if target_str.contains('p') {
                     crate::clipboard::clipboard::primary_selection()
@@ -200,7 +207,11 @@ pub fn handle_osc(params: &[&[u8]], terminal: &mut Terminal) {
                 if let Some(decoded) = crate::clipboard::clipboard::base64_decode(data_str)
                     && let Ok(text) = String::from_utf8(decoded)
                 {
-                    crate::clipboard::clipboard::copy(text);
+                    if target_str.contains('p') && !target_str.contains('c') {
+                        crate::clipboard::clipboard::copy_primary(text);
+                    } else {
+                        crate::clipboard::clipboard::copy(text);
+                    }
                 }
             }
         }

@@ -80,6 +80,12 @@ impl GlyphAtlas {
         self.total_bytes() >= MAX_ATLAS_BYTES
     }
 
+    /// Check if atlas can fit additional bytes without exceeding the memory ceiling.
+    #[inline(always)]
+    pub fn can_fit(&self, additional_bytes: usize) -> bool {
+        self.total_bytes().saturating_add(additional_bytes) <= MAX_ATLAS_BYTES
+    }
+
     /// Insert an 8-bit alpha mask into the contiguous atlas buffer.
     pub fn insert_alpha(
         &mut self,

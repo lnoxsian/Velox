@@ -1,3 +1,11 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectionMode {
+    #[default]
+    Normal,
+    Block,
+    Line,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     pub start_x: usize,
@@ -5,6 +13,7 @@ pub struct Selection {
     pub end_x: usize,
     pub end_y: usize,
     pub active: bool,
+    pub mode: SelectionMode,
 }
 
 impl Selection {
@@ -15,11 +24,13 @@ impl Selection {
             end_x: 0,
             end_y: 0,
             active: false,
+            mode: SelectionMode::Normal,
         }
     }
 
     pub fn clear(&mut self) {
         self.active = false;
+        self.mode = SelectionMode::Normal;
     }
 
     #[inline]
@@ -47,6 +58,14 @@ impl Selection {
         } else {
             ((self.end_x, self.end_y), (self.start_x, self.start_y))
         }
+    }
+
+    pub fn block_bounds(&self) -> ((usize, usize), (usize, usize)) {
+        let min_x = self.start_x.min(self.end_x);
+        let max_x = self.start_x.max(self.end_x);
+        let min_y = self.start_y.min(self.end_y);
+        let max_y = self.start_y.max(self.end_y);
+        ((min_x, min_y), (max_x, max_y))
     }
 
     #[cfg(test)]
@@ -80,8 +99,13 @@ impl Selection {
             return false;
         }
 
-        let ((min_x, min_y), (max_x, max_y)) = self.normalized_bounds();
-        Self::contains_coords(min_x, min_y, max_x, max_y, x, y)
+        if self.mode == SelectionMode::Block {
+            let ((min_x, min_y), (max_x, max_y)) = self.block_bounds();
+            x >= min_x && x <= max_x && y >= min_y && y <= max_y
+        } else {
+            let ((min_x, min_y), (max_x, max_y)) = self.normalized_bounds();
+            Self::contains_coords(min_x, min_y, max_x, max_y, x, y)
+        }
     }
 }
 
@@ -110,5 +134,24 @@ mod tests {
         assert!(single_click.is_empty());
         assert!(!sel.contains(1, 5));
         assert!(!sel.contains(9, 5));
+    }
+
+    #[test]
+    fn test_block_selection_mode() {
+        let mut sel = Selection::new();
+        sel.mode = SelectionMode::Block;
+        sel.start_selection(5, 2);
+        sel.update_selection(10, 6);
+
+        assert_eq!(sel.block_bounds(), ((5, 2), (10, 6)));
+        assert!(sel.contains(5, 2));
+        assert!(sel.contains(10, 6));
+        assert!(sel.contains(7, 4));
+
+        // Outside rectangle
+        assert!(!sel.contains(4, 3));
+        assert!(!sel.contains(11, 3));
+        assert!(!sel.contains(7, 1));
+        assert!(!sel.contains(7, 7));
     }
 }

@@ -31,6 +31,17 @@ impl PtyBufferPool {
     }
 
     #[inline]
+    pub fn acquire_capacity(&self) -> Vec<u8> {
+        if let Ok(mut lock) = self.pool.lock()
+            && let Some(mut buf) = lock.pop()
+        {
+            buf.clear();
+            return buf;
+        }
+        Vec::with_capacity(PTY_BUFFER_SIZE)
+    }
+
+    #[inline]
     pub fn acquire_for_len(&self, len: usize) -> Vec<u8> {
         if len <= SMALL_PTY_BUFFER_SIZE {
             if let Ok(mut lock) = self.small_pool.lock()
@@ -91,6 +102,11 @@ pub fn get_pty_buffer_pool() -> &'static PtyBufferPool {
 #[inline(always)]
 pub fn acquire_pty_buffer() -> Vec<u8> {
     get_pty_buffer_pool().acquire()
+}
+
+#[inline(always)]
+pub fn acquire_pty_capacity() -> Vec<u8> {
+    get_pty_buffer_pool().acquire_capacity()
 }
 
 #[inline(always)]

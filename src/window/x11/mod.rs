@@ -9,7 +9,7 @@ use shm::X11Framebuffer;
 use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
-use x11rb::connection::Connection;
+use x11rb::connection::{Connection, RequestConnection};
 use x11rb::protocol::xproto::{
     self, AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConnectionExt as _, CreateWindowAux,
     EventMask, VisualClass, WindowClass,
@@ -31,6 +31,9 @@ pub struct X11Window {
     pub net_wm_name: xproto::Atom,
     pub net_wm_icon_name: xproto::Atom,
     pub utf8_string: xproto::Atom,
+    pub clipboard_atom: xproto::Atom,
+    pub targets_atom: xproto::Atom,
+    pub text_atom: xproto::Atom,
     pub modifiers: ModifiersState,
     pub is_visible: bool,
     pub root: xproto::Window,
@@ -384,12 +387,15 @@ impl X11Window {
 
         conn.create_gc(gc, window_id, &xproto::CreateGCAux::new())?;
 
-        // Intern atoms for window properties
+        // Intern atoms for window properties and clipboard selections
         let net_wm_name = conn.intern_atom(false, b"_NET_WM_NAME")?.reply()?.atom;
         let net_wm_icon_name = conn.intern_atom(false, b"_NET_WM_ICON_NAME")?.reply()?.atom;
         let net_wm_icon = conn.intern_atom(false, b"_NET_WM_ICON")?.reply()?.atom;
         let net_wm_pid = conn.intern_atom(false, b"_NET_WM_PID")?.reply()?.atom;
         let utf8_string = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+        let clipboard_atom = conn.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+        let targets_atom = conn.intern_atom(false, b"TARGETS")?.reply()?.atom;
+        let text_atom = conn.intern_atom(false, b"TEXT")?.reply()?.atom;
 
         // Set EWMH & ICCCM Title
         conn.change_property8(
@@ -515,6 +521,9 @@ impl X11Window {
             net_wm_name,
             net_wm_icon_name,
             utf8_string,
+            clipboard_atom,
+            targets_atom,
+            text_atom,
             modifiers: ModifiersState::empty(),
             is_visible: false,
             root,
@@ -708,6 +717,26 @@ impl X11Window {
         let _ = self.conn.flush();
     }
 
+    pub fn claim_clipboard(&self) {
+        crate::clipboard::clipboard::set_owns_clipboard(true);
+        let _ = self.conn.set_selection_owner(
+            self.window_id,
+            self.clipboard_atom,
+            xproto::Time::CURRENT_TIME,
+        );
+        let _ = self.conn.flush();
+    }
+
+    pub fn claim_primary(&self) {
+        crate::clipboard::clipboard::set_owns_primary(true);
+        let _ = self.conn.set_selection_owner(
+            self.window_id,
+            AtomEnum::PRIMARY.into(),
+            xproto::Time::CURRENT_TIME,
+        );
+        let _ = self.conn.flush();
+    }
+
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
         if let Some(event) = self.events.pop_front() {
             return Some(event);
@@ -882,6 +911,103 @@ impl X11Window {
                 {
                     self.refresh_keyboard_mapping();
                 }
+            }
+            x11rb::protocol::Event::SelectionRequest(ev) => {
+                let target_property = if ev.property == 0 {
+                    ev.target
+                } else {
+                    ev.property
+                };
+
+                let mut success = false;
+                if ev.target == self.targets_atom {
+                    let supported_targets = [
+                        self.targets_atom,
+                        self.utf8_string,
+                        u32::from(AtomEnum::STRING),
+                        self.text_atom,
+                    ];
+                    if self
+                        .conn
+                        .change_property32(
+                            xproto::PropMode::REPLACE,
+                            ev.requestor,
+                            target_property,
+                            AtomEnum::ATOM,
+                            &supported_targets,
+                        )
+                        .is_ok()
+                    {
+                        success = true;
+                    }
+                } else if ev.target == self.utf8_string
+                    || ev.target == u32::from(AtomEnum::STRING)
+                    || ev.target == self.text_atom
+                {
+                    let text = if ev.selection == self.clipboard_atom {
+                        crate::clipboard::clipboard::get_internal_clipboard()
+                    } else if ev.selection == u32::from(AtomEnum::PRIMARY) {
+                        crate::clipboard::clipboard::get_internal_primary()
+                    } else {
+                        String::new()
+                    };
+
+                    let format_atom = if ev.target == u32::from(AtomEnum::STRING) {
+                        AtomEnum::STRING.into()
+                    } else {
+                        self.utf8_string
+                    };
+
+                    // Clamp to maximum request bytes to avoid overflowing X11 protocol packet limit
+                    let max_bytes = self.conn.maximum_request_bytes().saturating_sub(1024).max(64 * 1024);
+                    let bytes = text.as_bytes();
+                    let payload = if bytes.len() > max_bytes {
+                        let mut end = max_bytes;
+                        while end > 0 && !text.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        &bytes[..end]
+                    } else {
+                        bytes
+                    };
+
+                    if self
+                        .conn
+                        .change_property8(
+                            xproto::PropMode::REPLACE,
+                            ev.requestor,
+                            target_property,
+                            format_atom,
+                            payload,
+                        )
+                        .is_ok()
+                    {
+                        success = true;
+                    }
+                }
+
+                let response_property = if success { target_property } else { 0 };
+                let notify = xproto::SelectionNotifyEvent {
+                    response_type: xproto::SELECTION_NOTIFY_EVENT,
+                    sequence: 0,
+                    time: ev.time,
+                    requestor: ev.requestor,
+                    selection: ev.selection,
+                    target: ev.target,
+                    property: response_property,
+                };
+                let _ = self
+                    .conn
+                    .send_event(false, ev.requestor, EventMask::NO_EVENT, notify);
+                let _ = self.conn.flush();
+            }
+            x11rb::protocol::Event::SelectionClear(ev) => {
+                if ev.selection == self.clipboard_atom {
+                    crate::clipboard::clipboard::notify_external_clipboard_claimed();
+                } else if ev.selection == u32::from(AtomEnum::PRIMARY) {
+                    crate::clipboard::clipboard::notify_external_primary_claimed();
+                }
+                log::debug!("X11 selection clear: {}", ev.selection);
             }
             _ => {}
         }

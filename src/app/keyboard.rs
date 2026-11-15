@@ -187,33 +187,16 @@ impl WindowState {
                             b'c' => {
                                 let active_pane = self.active_pane();
                                 let active_grid = active_pane.terminal.active_grid();
-                                let text = if active_grid.selection.active
-                                    && !active_grid.selection.is_empty()
+                                if active_grid.selection.active && !active_grid.selection.is_empty()
                                 {
-                                    active_grid.extract_selection_text()
-                                } else {
-                                    let lines: Vec<String> = (0..active_grid.height)
-                                        .map(|y| {
-                                            (0..active_grid.width)
-                                                .map(|x| {
-                                                    active_grid.cells[y * active_grid.width + x]
-                                                        .character
-                                                })
-                                                .collect::<String>()
-                                                .trim_end()
-                                                .to_string()
-                                        })
-                                        .collect();
-                                    if let Some(idx) = lines.iter().rposition(|l| !l.is_empty()) {
-                                        lines[..=idx].join("\n")
-                                    } else {
-                                        String::new()
+                                    let text = active_grid.extract_selection_text();
+                                    if !text.is_empty() {
+                                        crate::clipboard::clipboard::copy(text);
+                                        self.window.claim_clipboard();
+                                        self.window.claim_primary();
                                     }
-                                };
-                                if !text.is_empty() {
-                                    crate::clipboard::clipboard::copy(text);
                                 }
-                                log::debug!("Velox shortcut: copy");
+                                log::debug!("Velox shortcut: copy (Ctrl+Shift+C)");
                                 return false;
                             }
                             b'v' => {
@@ -258,6 +241,25 @@ impl WindowState {
                 }
 
                 match logical_key {
+                    Key::Named(NamedKey::Insert) => {
+                        let text = crate::clipboard::clipboard::paste();
+                        if !text.is_empty() {
+                            let formatted = self.active_pane().terminal.format_paste(&text);
+                            if self.active_pane().terminal.scroll_on_keystroke {
+                                self.active_pane_mut()
+                                    .terminal
+                                    .active_grid_mut()
+                                    .scroll_offset = 0;
+                            }
+                            self.write_to_active_pane(formatted.into_bytes());
+                            self.last_key_instant = std::time::Instant::now();
+                            self.mark_interaction();
+                            self.needs_redraw = true;
+                            log::debug!("Velox shortcut: paste (Ctrl+Shift+Insert)");
+                            return true;
+                        }
+                        return false;
+                    }
                     Key::Named(NamedKey::Tab) => {
                         self.prev_tab();
                         log::debug!("Velox shortcut: prev tab (Ctrl+Shift+Tab)");
@@ -293,27 +295,13 @@ impl WindowState {
                 if matches!(logical_key, Key::Named(NamedKey::Insert)) {
                     let active_pane = self.active_pane();
                     let active_grid = active_pane.terminal.active_grid();
-                    let text = if active_grid.selection.active && !active_grid.selection.is_empty()
-                    {
-                        active_grid.extract_selection_text()
-                    } else {
-                        let lines: Vec<String> = (0..active_grid.height)
-                            .map(|y| {
-                                (0..active_grid.width)
-                                    .map(|x| active_grid.cells[y * active_grid.width + x].character)
-                                    .collect::<String>()
-                                    .trim_end()
-                                    .to_string()
-                            })
-                            .collect();
-                        if let Some(idx) = lines.iter().rposition(|l| !l.is_empty()) {
-                            lines[..=idx].join("\n")
-                        } else {
-                            String::new()
+                    if active_grid.selection.active && !active_grid.selection.is_empty() {
+                        let text = active_grid.extract_selection_text();
+                        if !text.is_empty() {
+                            crate::clipboard::clipboard::copy(text);
+                            self.window.claim_clipboard();
+                            self.window.claim_primary();
                         }
-                    };
-                    if !text.is_empty() {
-                        crate::clipboard::clipboard::copy(text);
                     }
                     log::debug!("Velox shortcut: copy (Ctrl+Insert)");
                     return false;

@@ -136,10 +136,7 @@ pub fn spawn_process(
             } else {
                 None
             };
-            Ok(PtyMaster {
-                fd: master_fd,
-                child_pid,
-            })
+            Ok(PtyMaster::new(master_fd, child_pid))
         }
         Err(e) => Err(PtyError::Fork(e.to_string())),
     }

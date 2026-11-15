@@ -133,13 +133,21 @@ impl GlobalScrollbackCache {
     pub fn get(&mut self, storage_id: u64, chunk_idx: usize) -> Option<Arc<Chunk>> {
         self.tick = self.tick.wrapping_add(1);
         let tick = self.tick;
-        if let Some(c) = self
+        if let Some(pos) = self
             .chunks
-            .iter_mut()
-            .find(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
+            .iter()
+            .position(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
         {
-            c.access_tick = tick;
-            return Some(Arc::clone(&c.chunk));
+            if pos > 0 {
+                let mut c = self.chunks.remove(pos);
+                c.access_tick = tick;
+                let chunk = Arc::clone(&c.chunk);
+                self.chunks.insert(0, c);
+                return Some(chunk);
+            } else {
+                self.chunks[0].access_tick = tick;
+                return Some(Arc::clone(&self.chunks[0].chunk));
+            }
         }
         None
     }
@@ -148,30 +156,29 @@ impl GlobalScrollbackCache {
         let chunk = chunk.into();
         self.tick = self.tick.wrapping_add(1);
         let tick = self.tick;
-        if let Some(c) = self
+        if let Some(pos) = self
             .chunks
-            .iter_mut()
-            .find(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
+            .iter()
+            .position(|c| c.storage_id == storage_id && c.chunk_idx == chunk_idx)
         {
+            let mut c = self.chunks.remove(pos);
             c.chunk = chunk;
             c.access_tick = tick;
+            self.chunks.insert(0, c);
             return;
         }
-        if self.chunks.len() >= self.max_chunks
-            && let Some((oldest_idx, _)) = self
-                .chunks
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, c)| c.access_tick)
-        {
-            self.chunks.swap_remove(oldest_idx);
+        if self.chunks.len() >= self.max_chunks {
+            self.chunks.pop();
         }
-        self.chunks.push(GlobalCachedChunk {
-            storage_id,
-            chunk_idx,
-            chunk,
-            access_tick: tick,
-        });
+        self.chunks.insert(
+            0,
+            GlobalCachedChunk {
+                storage_id,
+                chunk_idx,
+                chunk,
+                access_tick: tick,
+            },
+        );
     }
 
     pub fn invalidate_storage(&mut self, storage_id: u64) {
@@ -307,8 +314,14 @@ impl ScrollbackStorage {
         {
             let mut cache = self.local_cache.borrow_mut();
             if let Some(pos) = cache.iter().position(|c| c.chunk_id == chunk_idx) {
-                cache[pos].access_tick = tick;
-                let (cells, wrapped) = cache[pos].chunk.get_row_view(row_offset)?;
+                if pos > 0 {
+                    let mut item = cache.remove(pos);
+                    item.access_tick = tick;
+                    cache.insert(0, item);
+                } else {
+                    cache[0].access_tick = tick;
+                }
+                let (cells, wrapped) = cache[0].chunk.get_row_view(row_offset)?;
                 return Some(f(cells, wrapped));
             }
         }
@@ -320,17 +333,17 @@ impl ScrollbackStorage {
             let (cells, wrapped) = chunk.get_row_view(row_offset)?;
             let result = f(cells, wrapped);
             let mut cache = self.local_cache.borrow_mut();
-            if cache.len() >= CHUNK_CACHE_CAPACITY
-                && let Some((oldest_idx, _)) =
-                    cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
-            {
-                cache.swap_remove(oldest_idx);
+            if cache.len() >= CHUNK_CACHE_CAPACITY {
+                cache.pop();
             }
-            cache.push(CachedChunk {
-                chunk_id: chunk_idx,
-                chunk,
-                access_tick: tick,
-            });
+            cache.insert(
+                0,
+                CachedChunk {
+                    chunk_id: chunk_idx,
+                    chunk,
+                    access_tick: tick,
+                },
+            );
             return Some(result);
         }
 
@@ -357,17 +370,17 @@ impl ScrollbackStorage {
         }
 
         let mut cache = self.local_cache.borrow_mut();
-        if cache.len() >= CHUNK_CACHE_CAPACITY
-            && let Some((oldest_idx, _)) =
-                cache.iter().enumerate().min_by_key(|(_, c)| c.access_tick)
-        {
-            cache.swap_remove(oldest_idx);
+        if cache.len() >= CHUNK_CACHE_CAPACITY {
+            cache.pop();
         }
-        cache.push(CachedChunk {
-            chunk_id: chunk_idx,
-            chunk: arc_chunk,
-            access_tick: tick,
-        });
+        cache.insert(
+            0,
+            CachedChunk {
+                chunk_id: chunk_idx,
+                chunk: arc_chunk,
+                access_tick: tick,
+            },
+        );
 
         // Release read buffer if it grew abnormally large
         if read_buf.capacity() > 1024 * 1024 {

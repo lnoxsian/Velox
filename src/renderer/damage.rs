@@ -66,9 +66,18 @@ impl DamageMap {
         if self.full_redraw || !self.dirty_indices.is_empty() {
             return true;
         }
-        let slice = self.dirty_rows.as_slice();
-        let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
-        prefix.iter().any(|&d| d) || words.iter().any(|&w| w != 0) || suffix.iter().any(|&d| d)
+        #[cfg(debug_assertions)]
+        {
+            let slice = self.dirty_rows.as_slice();
+            let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
+            if prefix.iter().any(|&d| d)
+                || words.iter().any(|&w| w != 0)
+                || suffix.iter().any(|&d| d)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Mark old and new cursor rows dirty if cursor position moved.

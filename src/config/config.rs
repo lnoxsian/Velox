@@ -71,6 +71,22 @@ pub struct WindowConfig {
     pub csd_theme: Option<String>,
     #[serde(default)]
     pub decorations: Option<WindowDecorationsConfig>,
+    #[serde(default)]
+    pub copy_on_select: Option<bool>,
+    #[serde(default)]
+    pub putty_paste_style: Option<bool>,
+    #[serde(default)]
+    pub clipboard_history_limit: Option<usize>,
+    #[serde(default)]
+    pub osc52_clipboard: Option<bool>,
+    #[serde(default)]
+    pub osc52_allow_read: Option<bool>,
+    #[serde(default)]
+    pub osc52_max_size: Option<usize>,
+    #[serde(default)]
+    pub middle_click_paste_primary: Option<bool>,
+    #[serde(default)]
+    pub save_primary_to_history: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

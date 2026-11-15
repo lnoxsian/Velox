@@ -123,6 +123,7 @@ pub struct CpuRenderer {
     pub csd_height: u32,
     pub prev_csd_hash: u64,
     pub scratch_resolved: Vec<ResolvedCell>,
+    pub scratch_dirty_rows: Vec<bool>,
     pub stats: RenderStats,
 }
 
@@ -302,6 +303,7 @@ impl CpuRenderer {
             csd_height: 0,
             prev_csd_hash: 0,
             scratch_resolved: Vec::new(),
+            scratch_dirty_rows: Vec::new(),
             stats: RenderStats::default(),
         })
     }
@@ -532,7 +534,11 @@ impl CpuRenderer {
         };
 
         let current_selection = if is_row_in_selection {
-            let sel_range = if sel_min_abs_y == sel_max_abs_y {
+            let sel_range = if grid.selection.mode == crate::screen::selection::SelectionMode::Block {
+                let left = grid.selection.start_x.min(grid.selection.end_x);
+                let right = grid.selection.start_x.max(grid.selection.end_x);
+                (left, right)
+            } else if sel_min_abs_y == sel_max_abs_y {
                 (sel_min_x, sel_max_x)
             } else if abs_row == sel_min_abs_y {
                 (sel_min_x, grid.width)
@@ -1200,7 +1206,7 @@ impl CpuRenderer {
         separators: &[SeparatorRenderData],
         separator_color_override: Option<crate::screen::cell::Color>,
         active_separator_color_override: Option<crate::screen::cell::Color>,
-    ) {
+    ) -> Option<(u32, u32)> {
         let active_color = active_separator_color_override
             .map(|c| PackedColor::from_color(c).to_u32())
             .unwrap_or(self.palette.tab_accent);
@@ -1208,11 +1214,17 @@ impl CpuRenderer {
             .map(|c| PackedColor::from_color(c).to_u32())
             .unwrap_or(self.palette.ansi_colors[8]);
 
+        let mut min_y = u32::MAX;
+        let mut max_y = 0u32;
+
         for sep in separators {
             let sep_x = sep.rect.x as u32;
             let sep_y = sep.rect.y as u32;
             let sep_w = sep.rect.width as u32;
             let sep_h = sep.rect.height as u32;
+
+            min_y = min_y.min(sep_y);
+            max_y = max_y.max(sep_y + sep_h);
 
             if sep.is_dragging || sep.is_hovered {
                 self.framebuffer
@@ -1285,6 +1297,11 @@ impl CpuRenderer {
                     .fill_span(sep_x, sep_y, sep_w, sep_h, inactive_color);
             }
         }
+        if min_y < max_y {
+            Some((min_y, max_y))
+        } else {
+            None
+        }
     }
 
     fn render_single_pane(
@@ -1327,6 +1344,11 @@ impl CpuRenderer {
         } else {
             let alpha = (opacity * 255.0).round() as u8;
             PackedColor::from_premultiplied(pane.theme.default_bg, alpha).to_u32()
+        };
+        let pane_bg_lum = if pane.theme.default_bg == self.palette.raw_default_bg {
+            self.palette.default_bg_luminance
+        } else {
+            crate::renderer::color::calc_luminance(pane.theme.default_bg)
         };
 
         let state = self.pane_states.entry(pane.pane_id).or_default();
@@ -1424,53 +1446,60 @@ impl CpuRenderer {
                 dirty_rows.push(y);
             }
         } else {
-            let mut is_dirty = [false; 256];
-            let mut heap_is_dirty = if grid_h > 256 {
-                vec![false; grid_h]
-            } else {
-                Vec::new()
-            };
-            let dirty_map: &mut [bool] = if grid_h <= 256 {
-                &mut is_dirty[..grid_h]
-            } else {
-                &mut heap_is_dirty[..grid_h]
+            if self.scratch_dirty_rows.len() < grid_h {
+                self.scratch_dirty_rows.resize(grid_h, false);
+            }
+            let dirty_map = &mut self.scratch_dirty_rows[..grid_h];
+
+            let add_dirty = |r: usize,
+                             dirty_rows: &mut smallvec::SmallVec<[usize; 64]>,
+                             dirty_map: &mut [bool]| {
+                if r < grid_h && !dirty_map[r] {
+                    dirty_map[r] = true;
+                    dirty_rows.push(r);
+                }
             };
 
-            let mut mark_damage = |dirty_indices: &[usize], dirty_rows: &[bool]| {
-                if !dirty_indices.is_empty() {
-                    for &r in dirty_indices {
-                        if r < grid_h {
-                            dirty_map[r] = true;
-                        }
-                    }
-                } else {
-                    for (idx, &is_d) in dirty_rows.iter().enumerate() {
-                        if is_d && idx < grid_h {
-                            dirty_map[idx] = true;
-                        }
+            let g_indices = grid.damage.dirty_indices();
+            if !g_indices.is_empty() {
+                for &r in g_indices {
+                    add_dirty(r, &mut dirty_rows, dirty_map);
+                }
+            } else {
+                for (idx, &is_d) in grid.damage.dirty_rows.iter().enumerate() {
+                    if is_d {
+                        add_dirty(idx, &mut dirty_rows, dirty_map);
                     }
                 }
-            };
-            mark_damage(grid.damage.dirty_indices(), &grid.damage.dirty_rows);
-            mark_damage(self.damage.dirty_indices(), &self.damage.dirty_rows);
+            }
+
+            let r_indices = self.damage.dirty_indices();
+            if !r_indices.is_empty() {
+                for &r in r_indices {
+                    add_dirty(r, &mut dirty_rows, dirty_map);
+                }
+            } else {
+                for (idx, &is_d) in self.damage.dirty_rows.iter().enumerate() {
+                    if is_d {
+                        add_dirty(idx, &mut dirty_rows, dirty_map);
+                    }
+                }
+            }
+
             if can_scroll_optimize {
                 if grid_h > 0 {
-                    dirty_map[grid_h - 1] = true;
+                    add_dirty(grid_h - 1, &mut dirty_rows, dirty_map);
                 }
                 if grid.cursor.y < grid_h {
-                    dirty_map[grid.cursor.y] = true;
+                    add_dirty(grid.cursor.y, &mut dirty_rows, dirty_map);
                 }
             }
             if state.last_cursor_info != current_cursor_info {
                 if let Some((_, _, old_y, _)) = state.last_cursor_info {
-                    if old_y < grid_h {
-                        dirty_map[old_y] = true;
-                    }
+                    add_dirty(old_y, &mut dirty_rows, dirty_map);
                 }
                 if let Some((_, _, new_y, _)) = current_cursor_info {
-                    if new_y < grid_h {
-                        dirty_map[new_y] = true;
-                    }
+                    add_dirty(new_y, &mut dirty_rows, dirty_map);
                 }
             }
             if state.last_selection_bounds != selection_bounds {
@@ -1492,7 +1521,7 @@ impl CpuRenderer {
                     let start_y = min_abs.saturating_sub(vis_min);
                     let end_y = (max_abs.saturating_sub(vis_min) + 1).min(grid_h);
                     for y in start_y..end_y {
-                        dirty_map[y] = true;
+                        add_dirty(y, &mut dirty_rows, dirty_map);
                     }
                 }
             }
@@ -1509,16 +1538,19 @@ impl CpuRenderer {
                                 .unwrap_or(false)
                             });
                         if has_blink {
-                            dirty_map[y] = true;
+                            add_dirty(y, &mut dirty_rows, dirty_map);
                         }
                     }
                 }
             }
 
-            for y in 0..grid_h {
-                if dirty_map[y] {
-                    dirty_rows.push(y);
-                }
+            // Reset only dirty rows back to false in scratch buffer
+            for &r in &dirty_rows {
+                dirty_map[r] = false;
+            }
+
+            if dirty_rows.len() > 1 {
+                dirty_rows.sort_unstable();
             }
         }
 
@@ -1617,13 +1649,14 @@ impl CpuRenderer {
                     let is_reverse = cell.flags.contains(CellFlags::REVERSE);
                     let is_inverted = is_selected ^ is_reverse;
 
-                    let (mut fg, mut bg) = palette.resolve_cell_colors_pane(
+                    let (mut fg, mut bg) = palette.resolve_cell_colors_pane_cached(
                         cell,
                         is_inverted,
                         pane.bold_is_bright,
                         pane_effective_dim,
                         pane.theme,
                         default_pane_bg,
+                        pane_bg_lum,
                     );
 
                     let is_cursor = is_cursor_row && col == pane.display_cursor_x;
@@ -2090,11 +2123,14 @@ impl CpuRenderer {
 
         // 7. Render Separators
         if !separators.is_empty() {
-            self.render_separators(
+            if let Some((s_min, s_max)) = self.render_separators(
                 separators,
                 separator_color_override,
                 active_separator_color_override,
-            );
+            ) {
+                min_damaged_y = min_damaged_y.min(s_min);
+                max_damaged_y = max_damaged_y.max(s_max);
+            }
         }
 
         // 8. Render Tab Bar
@@ -2112,8 +2148,26 @@ impl CpuRenderer {
         if let Some(buf) = target_buffer
             && buf.len() == self.framebuffer.pixels.len()
         {
-            buf.copy_from_slice(self.framebuffer.as_slice());
-            self.last_target_ptr = buf.as_ptr() as usize;
+            let current_ptr = buf.as_ptr() as usize;
+            let is_persistent = current_ptr == self.last_target_ptr;
+            if is_persistent && !self.damage.full_redraw && min_damaged_y < max_damaged_y {
+                let stride = self.framebuffer.stride;
+                let start_row = (min_damaged_y as usize).min(self.framebuffer.height as usize);
+                let end_row = (max_damaged_y as usize).min(self.framebuffer.height as usize);
+                if start_row < end_row {
+                    let start_idx = start_row * stride;
+                    let end_idx = (end_row * stride).min(buf.len());
+                    if start_idx < end_idx {
+                        buf[start_idx..end_idx]
+                            .copy_from_slice(&self.framebuffer.as_slice()[start_idx..end_idx]);
+                    }
+                }
+                self.stats.damage_present_count += 1;
+            } else {
+                buf.copy_from_slice(self.framebuffer.as_slice());
+                self.last_target_ptr = current_ptr;
+                self.stats.full_present_count += 1;
+            }
         }
 
         self.damage.clear();

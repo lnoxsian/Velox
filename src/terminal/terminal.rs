@@ -141,6 +141,9 @@ pub struct Terminal {
     pub alt_kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
     pub kitty_keyboard_flags: u16,
     pub kitty_keyboard_stack: smallvec::SmallVec<[u16; 8]>,
+    pub osc52_clipboard: bool,
+    pub osc52_allow_read: bool,
+    pub osc52_max_size: usize,
 }
 
 impl Terminal {
@@ -239,6 +242,9 @@ impl Terminal {
             alt_kitty_keyboard_stack: smallvec::SmallVec::new(),
             kitty_keyboard_flags: 0,
             kitty_keyboard_stack: smallvec::SmallVec::new(),
+            osc52_clipboard: true,
+            osc52_allow_read: true,
+            osc52_max_size: 10 * 1024 * 1024,
         }
     }
 
@@ -315,6 +321,15 @@ impl Terminal {
             }
 
             let b = bytes[i];
+            if b == 0 {
+                if slice_start < i {
+                    out.push_str(&text[slice_start..i]);
+                }
+                i += 1;
+                slice_start = i;
+                continue;
+            }
+
             if b == b'\r' {
                 if slice_start < i {
                     out.push_str(&text[slice_start..i]);
@@ -1182,6 +1197,11 @@ mod tests {
         assert_eq!(
             term.format_paste("evil\x1b[201~payload"),
             "\x1b[200~evilpayload\x1b[201~"
+        );
+        // Test NUL byte stripping
+        assert_eq!(
+            term.format_paste("hello\0world\0!"),
+            "\x1b[200~helloworld!\x1b[201~"
         );
 
         // Disable bracketed paste mode via CSI ? 2004 l

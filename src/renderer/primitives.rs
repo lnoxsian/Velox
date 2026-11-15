@@ -1323,7 +1323,16 @@ fn render_box_drawing(
             true
         }
         '╲' => {
-            draw_diagonal_line(px, py, cell_w, cell_h, t_light, DiagonalType::Backslash, fg, fb);
+            draw_diagonal_line(
+                px,
+                py,
+                cell_w,
+                cell_h,
+                t_light,
+                DiagonalType::Backslash,
+                fg,
+                fb,
+            );
             true
         }
         '╳' => {
@@ -1579,7 +1588,11 @@ mod tests {
             fb.clear(0);
             let handled = try_render_primitive(c, px, py, cell_w, cell_h, fg, &mut fb);
             assert!(handled, "Character {} must be handled", c);
-            assert!(fb.pixels.contains(&fg), "Character {} must render full-color pixels", c);
+            assert!(
+                fb.pixels.contains(&fg),
+                "Character {} must render full-color pixels",
+                c
+            );
 
             // 1. Every row within [py, py + cell_h) must have rendered pixels (no gaps / dotted appearance)
             for y in py..(py + cell_h) {
@@ -1611,7 +1624,9 @@ mod tests {
                         assert!(
                             x >= px && x < px + cell_w && y >= py && y < py + cell_h,
                             "Character {} drew pixel outside cell at ({}, {})",
-                            c, x, y
+                            c,
+                            x,
+                            y
                         );
                     }
                 }
@@ -1633,7 +1648,13 @@ mod tests {
                         assert!(
                             connected,
                             "Character {} has disconnected step between row {} and {}: [{}, {}] vs [{}, {}]",
-                            c, y - 1, y, p_min, p_max, min_x, max_x
+                            c,
+                            y - 1,
+                            y,
+                            p_min,
+                            p_max,
+                            min_x,
+                            max_x
                         );
                     }
                     prev_min_x = Some(min_x);
@@ -1667,14 +1688,22 @@ mod tests {
                 for y in 5..(5 + ch) {
                     let has_pixel = (5..(5 + cw))
                         .any(|x| fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0);
-                    assert!(has_pixel, "Char {} at size {}x{} has empty row at y={}", c, cw, ch, y);
+                    assert!(
+                        has_pixel,
+                        "Char {} at size {}x{} has empty row at y={}",
+                        c, cw, ch, y
+                    );
                 }
 
                 // Every col must have at least one pixel when cw > 0
                 for x in 5..(5 + cw) {
                     let has_pixel = (5..(5 + ch))
                         .any(|y| fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0);
-                    assert!(has_pixel, "Char {} at size {}x{} has empty col at x={}", c, cw, ch, x);
+                    assert!(
+                        has_pixel,
+                        "Char {} at size {}x{} has empty col at x={}",
+                        c, cw, ch, x
+                    );
                 }
             }
         }

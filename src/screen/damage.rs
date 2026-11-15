@@ -133,15 +133,21 @@ impl DamageTracker {
 
     #[inline(always)]
     pub fn has_damage(&self) -> bool {
-        if self.full_redraw {
+        if self.full_redraw || !self.dirty_indices.is_empty() {
             return true;
         }
-        if !self.dirty_indices.is_empty() {
-            return true;
+        #[cfg(debug_assertions)]
+        {
+            let slice = self.dirty_rows.as_slice();
+            let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
+            if prefix.iter().any(|&d| d)
+                || words.iter().any(|&w| w != 0)
+                || suffix.iter().any(|&d| d)
+            {
+                return true;
+            }
         }
-        let slice = self.dirty_rows.as_slice();
-        let (prefix, words, suffix) = unsafe { slice.align_to::<usize>() };
-        prefix.iter().any(|&d| d) || words.iter().any(|&w| w != 0) || suffix.iter().any(|&d| d)
+        false
     }
 }
 

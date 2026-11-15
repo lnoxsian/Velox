@@ -79,6 +79,14 @@ pub fn blit_alpha_glyph_clipped(
         let src_slice = &mask[src_row..src_row + max_x];
         let dst_slice = &mut pixels[dst_row..dst_row + max_x];
 
+        if src_slice.iter().all(|&a| a == 0) {
+            continue;
+        }
+        if src_slice.iter().all(|&a| a == 255) {
+            dst_slice.fill(fg);
+            continue;
+        }
+
         for (dst_pix, &alpha) in dst_slice.iter_mut().zip(src_slice.iter()) {
             if alpha == 0 {
                 continue;
@@ -147,6 +155,14 @@ pub fn blit_alpha_glyph_clipped_opaque(
 
         let src_slice = &mask[src_row..src_row + max_x];
         let dst_slice = &mut pixels[dst_row..dst_row + max_x];
+
+        if src_slice.iter().all(|&a| a == 0) {
+            continue;
+        }
+        if src_slice.iter().all(|&a| a == 255) {
+            dst_slice.fill(fg);
+            continue;
+        }
 
         for (dst_pix, &alpha) in dst_slice.iter_mut().zip(src_slice.iter()) {
             if alpha == 0 {

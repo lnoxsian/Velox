@@ -1,12 +1,44 @@
 use crate::app::app::{CustomEvent, EventLoopProxy, WindowId};
-use crate::pty::buffer_pool::{PTY_BUFFER_SIZE, acquire_pty_buffer, recycle_pty_buffer};
+use crate::pty::buffer_pool::{PTY_BUFFER_SIZE, acquire_pty_capacity, recycle_pty_buffer};
 use crate::pty::master::PtyMaster;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::{self, JoinHandle};
+
+thread_local! {
+    static REACTOR_BUF_CACHE: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
+}
+
+#[inline(always)]
+fn acquire_reactor_buffer() -> Vec<u8> {
+    if let Some(mut buf) = REACTOR_BUF_CACHE.with(|cache| cache.borrow_mut().pop()) {
+        buf.clear();
+        buf
+    } else {
+        acquire_pty_capacity()
+    }
+}
+
+#[inline(always)]
+fn recycle_reactor_buffer(mut buf: Vec<u8>) {
+    buf.clear();
+    let to_recycle_global = REACTOR_BUF_CACHE.with(|cache| {
+        let mut c = cache.borrow_mut();
+        if c.len() < 4 {
+            c.push(buf);
+            None
+        } else {
+            Some(buf)
+        }
+    });
+    if let Some(buf) = to_recycle_global {
+        recycle_pty_buffer(buf);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneKey {
@@ -518,21 +550,32 @@ fn run_reactor_loop(
                     let pty = &reg.pty;
 
                     // Batch read repeatedly until EAGAIN / EWOULDBLOCK.
-                    // Reads directly into the pooled 64KB buffer slice, eliminating intermediate scratch buffer copies.
-                    let mut batch = acquire_pty_buffer();
-                    let mut offset = 0;
+                    // Reads directly into the pooled 64KB buffer slice, eliminating intermediate scratch buffer copies and zero-fill.
+                    let mut batch = acquire_reactor_buffer();
                     let mut exit_detected = false;
 
                     loop {
-                        match pty.read(&mut batch[offset..]) {
+                        let remaining = PTY_BUFFER_SIZE.saturating_sub(batch.len());
+                        if remaining == 0 {
+                            let send_buf = batch;
+                            let _ = proxy.send(CustomEvent::PtyData {
+                                window_id: key.window_id,
+                                tab_id: key.tab_id,
+                                pane_id: key.pane_id,
+                                data: send_buf,
+                            });
+                            batch = acquire_reactor_buffer();
+                            continue;
+                        }
+
+                        match pty.read_into_vec(&mut batch, remaining) {
                             Ok(0) => {
                                 // EOF
                                 exit_detected = true;
                                 break;
                             }
-                            Ok(n) => {
-                                offset += n;
-                                if offset >= PTY_BUFFER_SIZE {
+                            Ok(_) => {
+                                if batch.len() >= PTY_BUFFER_SIZE {
                                     let send_buf = batch;
                                     let _ = proxy.send(CustomEvent::PtyData {
                                         window_id: key.window_id,
@@ -540,8 +583,7 @@ fn run_reactor_loop(
                                         pane_id: key.pane_id,
                                         data: send_buf,
                                     });
-                                    batch = acquire_pty_buffer();
-                                    offset = 0;
+                                    batch = acquire_reactor_buffer();
                                 }
                             }
                             Err(e)
@@ -566,8 +608,7 @@ fn run_reactor_loop(
                         }
                     }
 
-                    if offset > 0 {
-                        batch.truncate(offset);
+                    if !batch.is_empty() {
                         let _ = proxy.send(CustomEvent::PtyData {
                             window_id: key.window_id,
                             tab_id: key.tab_id,
@@ -575,7 +616,7 @@ fn run_reactor_loop(
                             data: batch,
                         });
                     } else {
-                        recycle_pty_buffer(batch);
+                        recycle_reactor_buffer(batch);
                     }
 
                     if !exit_detected

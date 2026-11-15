@@ -1,186 +1,102 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
+use super::manager::ClipboardManager;
 
+/// Copy text to the system CLIPBOARD (and PRIMARY) selection.
+#[inline(always)]
 pub fn copy(text: String) {
-    if text.is_empty() {
-        return;
-    }
-    let text_bytes = text.into_bytes();
-
-    std::thread::spawn(move || {
-        // Try wl-copy (Wayland) first
-        if let Ok(mut child) = Command::new("wl-copy")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&text_bytes);
-            }
-            if let Ok(status) = child.wait()
-                && status.success()
-            {
-                // Also update Wayland primary selection if possible
-                if let Ok(mut pchild) = Command::new("wl-copy")
-                    .arg("--primary")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    if let Some(mut pstdin) = pchild.stdin.take() {
-                        let _ = pstdin.write_all(&text_bytes);
-                    }
-                    let _ = pchild.wait();
-                }
-                return;
-            }
-        }
-
-        // Try xclip (X11)
-        if let Ok(mut child) = Command::new("xclip")
-            .arg("-selection")
-            .arg("clipboard")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&text_bytes);
-            }
-            if let Ok(status) = child.wait()
-                && status.success()
-            {
-                // Also update primary selection
-                if let Ok(mut pchild) = Command::new("xclip")
-                    .arg("-selection")
-                    .arg("primary")
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    if let Some(mut pstdin) = pchild.stdin.take() {
-                        let _ = pstdin.write_all(&text_bytes);
-                    }
-                    let _ = pchild.wait();
-                }
-                return;
-            }
-        }
-
-        // Try xsel (X11 fallback)
-        if let Ok(mut child) = Command::new("xsel")
-            .arg("--clipboard")
-            .arg("--input")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(&text_bytes);
-            }
-            let _ = child.wait();
-
-            // Also copy to primary with xsel
-            if let Ok(mut pchild) = Command::new("xsel")
-                .arg("--primary")
-                .arg("--input")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
-                if let Some(mut pstdin) = pchild.stdin.take() {
-                    let _ = pstdin.write_all(&text_bytes);
-                }
-                let _ = pchild.wait();
-            }
-        }
-    });
+    ClipboardManager::global().copy(text);
 }
 
+/// Copy text to PRIMARY selection only (used for terminal mouse drag/click selection).
+/// Does not overwrite CLIPBOARD, preserving text copied from browsers or other applications.
+#[inline(always)]
+pub fn copy_primary(text: String) {
+    ClipboardManager::global().copy_primary(text);
+}
+
+/// Retrieve text from system CLIPBOARD selection (Ctrl+Shift+V / Shift+Insert).
+#[inline(always)]
 pub fn paste() -> String {
-    // 1. Try wl-paste
-    if let Ok(output) = Command::new("wl-paste").arg("--no-newline").output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && !text.is_empty()
-    {
-        return text;
-    }
-
-    // 2. Try xclip
-    if let Ok(output) = Command::new("xclip")
-        .arg("-selection")
-        .arg("clipboard")
-        .arg("-o")
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && !text.is_empty()
-    {
-        return text;
-    }
-
-    // 3. Try xsel
-    if let Ok(output) = Command::new("xsel")
-        .arg("--clipboard")
-        .arg("--output")
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && !text.is_empty()
-    {
-        return text;
-    }
-
-    // Fall back to primary selection if clipboard is empty
-    primary_selection()
+    ClipboardManager::global().paste()
 }
 
+/// Retrieve text from system PRIMARY selection (mouse highlight/selection).
+#[inline(always)]
 pub fn primary_selection() -> String {
-    // 1. Try wl-paste --primary
-    if let Ok(output) = Command::new("wl-paste")
-        .arg("--primary")
-        .arg("--no-newline")
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && !text.is_empty()
-    {
-        return text;
-    }
+    ClipboardManager::global().primary_selection()
+}
 
-    // 2. Try xclip -selection primary
-    if let Ok(output) = Command::new("xclip")
-        .arg("-selection")
-        .arg("primary")
-        .arg("-o")
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && !text.is_empty()
-    {
-        return text;
-    }
+/// Retrieve the appropriate text for middle-click paste.
+/// By default, follows Terminator-style timestamp comparison (choosing latest action between CLIPBOARD and PRIMARY),
+/// or strict standard Linux behavior (preferring PRIMARY, falling back to CLIPBOARD if PRIMARY is empty) when enabled.
+#[inline(always)]
+pub fn middle_click_paste() -> String {
+    ClipboardManager::global().middle_click_paste()
+}
 
-    // 3. Try xsel --primary
-    if let Ok(output) = Command::new("xsel")
-        .arg("--primary")
-        .arg("--output")
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && !text.is_empty()
-    {
-        return text;
-    }
+/// Configure whether middle-click paste strictly prefers PRIMARY (falling back to CLIPBOARD if empty).
+#[inline(always)]
+pub fn set_middle_click_prefers_primary(prefer: bool) {
+    ClipboardManager::global().set_middle_click_prefers_primary(prefer);
+}
 
-    String::new()
+/// Configure whether PRIMARY selections (mouse highlighting) are saved to the clipboard history ring.
+#[inline(always)]
+pub fn set_save_primary_to_history(save: bool) {
+    ClipboardManager::global().set_save_primary_to_history(save);
+}
+
+/// Retrieve all text entries currently stored in the clipboard history ring (newest first).
+#[inline(always)]
+pub fn get_history() -> Vec<String> {
+    ClipboardManager::global().get_history()
+}
+
+/// Clear all entries from the clipboard history ring.
+#[inline(always)]
+pub fn clear_history() {
+    ClipboardManager::global().clear_history();
+}
+
+/// Set the maximum number of items retained in the clipboard history ring.
+#[inline(always)]
+pub fn set_history_limit(limit: usize) {
+    ClipboardManager::global().set_history_limit(limit);
+}
+
+/// In-process internal clipboard value (used for headless/container fallbacks and diagnostics).
+#[inline(always)]
+pub fn get_internal_clipboard() -> String {
+    ClipboardManager::global().get_internal_clipboard()
+}
+
+/// In-process internal primary value (used for headless/container fallbacks and diagnostics).
+#[inline(always)]
+pub fn get_internal_primary() -> String {
+    ClipboardManager::global().get_internal_primary()
+}
+
+/// Mark whether the current window holds ownership of the system clipboard selection.
+#[inline(always)]
+pub fn set_owns_clipboard(owns: bool) {
+    ClipboardManager::global().set_owns_clipboard(owns);
+}
+
+/// Mark whether the current window holds ownership of the system primary selection.
+#[inline(always)]
+pub fn set_owns_primary(owns: bool) {
+    ClipboardManager::global().set_owns_primary(owns);
+}
+
+/// Notify that an external client claimed the system CLIPBOARD selection.
+#[inline(always)]
+pub fn notify_external_clipboard_claimed() {
+    ClipboardManager::global().notify_external_clipboard_claimed();
+}
+
+/// Notify that an external client claimed the system PRIMARY selection.
+#[inline(always)]
+pub fn notify_external_primary_claimed() {
+    ClipboardManager::global().notify_external_primary_claimed();
 }
 
 // Custom lightweight Base64 helper for OSC 52
@@ -233,10 +149,24 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let mut buf = Vec::with_capacity(input.len() * 3 / 4);
     let mut val = 0u32;
     let mut valb = -8i32;
+    let mut padding_seen = false;
+    let mut pad_count = 0;
 
     for &byte in input.as_bytes() {
-        if byte == b'=' || byte == b'\r' || byte == b'\n' || byte == b' ' {
+        if byte == b'\r' || byte == b'\n' || byte == b' ' || byte == b'\t' {
             continue;
+        }
+        if byte == b'=' {
+            padding_seen = true;
+            pad_count += 1;
+            if pad_count > 2 {
+                return None;
+            }
+            continue;
+        }
+        if padding_seen {
+            // Non-padding character encountered after padding started
+            return None;
         }
         let code = table[byte as usize];
         if code == 255 {
@@ -250,4 +180,50 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
         }
     }
     Some(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_internal_clipboard_fallback() {
+        let manager = ClipboardManager::new(50);
+        manager.copy("test_velox_internal_copy".to_string());
+        assert_eq!(manager.get_internal_clipboard(), "test_velox_internal_copy");
+        assert_eq!(manager.get_internal_primary(), "test_velox_internal_copy");
+
+        manager.copy_primary("test_primary_only".to_string());
+        assert_eq!(manager.get_internal_primary(), "test_primary_only");
+        // Ensure copy_primary did not overwrite internal clipboard
+        assert_eq!(manager.get_internal_clipboard(), "test_velox_internal_copy");
+    }
+
+    #[test]
+    fn test_history_ring() {
+        let manager = ClipboardManager::new(3);
+        manager.copy("item 1".to_string());
+        manager.copy("item 2".to_string());
+        manager.copy("item 3".to_string());
+        manager.copy("item 4".to_string());
+
+        let hist = manager.get_history();
+        assert_eq!(hist.len(), 3);
+        assert_eq!(hist[0], "item 4");
+        assert_eq!(hist[1], "item 3");
+        assert_eq!(hist[2], "item 2");
+    }
+
+    #[test]
+    fn test_base64_encode_decode_roundtrip() {
+        let data = b"Hello, World! 1234567890 \xf0\x9f\x91\x8d";
+        let encoded = base64_encode(data);
+        let decoded = base64_decode(&encoded).expect("base64_decode failed");
+        assert_eq!(decoded, data);
+
+        // Reject invalid padding
+        assert!(base64_decode("SGVsbG8=== ").is_none());
+        assert!(base64_decode("=SGVsbG8=").is_none());
+        assert!(base64_decode("SGVsbG8=A").is_none());
+    }
 }

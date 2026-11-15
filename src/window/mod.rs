@@ -219,6 +219,28 @@ impl PlatformWindow {
     }
 
     #[inline]
+    pub fn claim_clipboard(&self) {
+        match self {
+            Self::X11(w) => w.claim_clipboard(),
+            Self::Wayland(w) => w.claim_clipboard(),
+            Self::Dummy { .. } => {
+                crate::clipboard::clipboard::set_owns_clipboard(true);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn claim_primary(&self) {
+        match self {
+            Self::X11(w) => w.claim_primary(),
+            Self::Wayland(w) => w.claim_primary(),
+            Self::Dummy { .. } => {
+                crate::clipboard::clipboard::set_owns_primary(true);
+            }
+        }
+    }
+
+    #[inline]
     pub fn set_visible(&mut self, visible: bool) {
         match self {
             Self::X11(w) => w.set_visible(visible),

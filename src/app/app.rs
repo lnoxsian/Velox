@@ -144,6 +144,13 @@ pub struct WindowState {
     pub cursor_blink_on: bool,
     pub last_cursor_blink: std::time::Instant,
     pub hide_mouse_on_typing: bool,
+    pub copy_on_select: bool,
+    pub putty_paste_style: bool,
+    pub osc52_clipboard: bool,
+    pub osc52_allow_read: bool,
+    pub osc52_max_size: usize,
+    pub middle_click_paste_primary: bool,
+    pub save_primary_to_history: bool,
     pub opacity: f32,
     pub window_dim: f32,
     pub shell_path: String,
@@ -235,6 +242,13 @@ impl WindowState {
             cursor_blink_on: true,
             last_cursor_blink: now,
             hide_mouse_on_typing: false,
+            copy_on_select: false,
+            putty_paste_style: false,
+            osc52_clipboard: true,
+            osc52_allow_read: true,
+            osc52_max_size: 10 * 1024 * 1024,
+            middle_click_paste_primary: false,
+            save_primary_to_history: false,
             opacity: 1.0,
             window_dim: 0.0,
             shell_path: "/bin/sh".to_string(),
@@ -640,6 +654,9 @@ impl WindowState {
         let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::new(cols as usize, rows as usize);
+        terminal.osc52_clipboard = self.osc52_clipboard;
+        terminal.osc52_allow_read = self.osc52_allow_read;
+        terminal.osc52_max_size = self.osc52_max_size;
         terminal.set_cell_dimensions(self.base_cell_width, self.base_cell_height);
 
         let _ = self
@@ -826,6 +843,9 @@ impl WindowState {
         let _ = pty_master.resize(cols as u16, rows as u16);
 
         let mut terminal = Terminal::new(cols as usize, rows as usize);
+        terminal.osc52_clipboard = self.osc52_clipboard;
+        terminal.osc52_allow_read = self.osc52_allow_read;
+        terminal.osc52_max_size = self.osc52_max_size;
         terminal.set_cell_dimensions(self.cell_width(), self.cell_height());
         let initial_title = custom_title.clone().unwrap_or_else(|| "velox".to_string());
 
@@ -1308,6 +1328,15 @@ impl App {
         let scroll_multiplier = config.scroll_multiplier().unwrap_or(1.0);
         let cursor_blink_enabled = config.cursor_blink().unwrap_or(true);
         let hide_mouse_on_typing = config.hide_mouse_on_typing().unwrap_or(true);
+        if let Some(limit) = config.window.clipboard_history_limit {
+            crate::clipboard::clipboard::set_history_limit(limit);
+        }
+        if let Some(prefer_primary) = config.window.middle_click_paste_primary {
+            crate::clipboard::clipboard::set_middle_click_prefers_primary(prefer_primary);
+        }
+        if let Some(save_prim) = config.window.save_primary_to_history {
+            crate::clipboard::clipboard::set_save_primary_to_history(save_prim);
+        }
         let detected_refresh_rate = window.detect_refresh_rate();
         let fps_limit = config.fps_limit().or(detected_refresh_rate).or(Some(120));
 
@@ -1333,7 +1362,10 @@ impl App {
         let cols = ((avail_w as u32) / base_cell_width.max(1)).max(1);
         let rows = ((avail_h as u32) / base_cell_height.max(1)).max(1);
 
-        let terminal = Terminal::new(cols as usize, rows as usize);
+        let mut terminal = Terminal::new(cols as usize, rows as usize);
+        terminal.osc52_clipboard = config.window.osc52_clipboard.unwrap_or(true);
+        terminal.osc52_allow_read = config.window.osc52_allow_read.unwrap_or(true);
+        terminal.osc52_max_size = config.window.osc52_max_size.unwrap_or(10 * 1024 * 1024);
 
         let shell_path = config
             .shell
@@ -1429,6 +1461,13 @@ impl App {
             cursor_blink_on: true,
             last_cursor_blink: std::time::Instant::now(),
             hide_mouse_on_typing,
+            copy_on_select: config.window.copy_on_select.unwrap_or(false),
+            putty_paste_style: config.window.putty_paste_style.unwrap_or(false),
+            osc52_clipboard: config.window.osc52_clipboard.unwrap_or(true),
+            osc52_allow_read: config.window.osc52_allow_read.unwrap_or(true),
+            osc52_max_size: config.window.osc52_max_size.unwrap_or(10 * 1024 * 1024),
+            middle_click_paste_primary: config.window.middle_click_paste_primary.unwrap_or(false),
+            save_primary_to_history: config.window.save_primary_to_history.unwrap_or(false),
             opacity: config.opacity(),
             window_dim: config.window_dim(),
             shell_path,

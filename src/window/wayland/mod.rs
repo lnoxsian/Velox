@@ -242,6 +242,16 @@ impl WaylandWindow {
     }
 
     #[inline]
+    pub fn claim_clipboard(&self) {
+        crate::clipboard::clipboard::set_owns_clipboard(true);
+    }
+
+    #[inline]
+    pub fn claim_primary(&self) {
+        crate::clipboard::clipboard::set_owns_primary(true);
+    }
+
+    #[inline]
     pub fn set_visible(&mut self, _visible: bool) {}
 
     #[inline]

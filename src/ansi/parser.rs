@@ -2,6 +2,9 @@ use crate::ansi::state::ParserState;
 use crate::screen::cell::CellFlags;
 use smallvec::SmallVec;
 
+pub const MAX_OSC_BUFFER_LEN: usize = 65536; // 64 KiB bound
+pub const MAX_DCS_BUFFER_LEN: usize = 4096; // 4 KiB bound
+
 pub struct AnsiParser {
     pub state: ParserState,
     pub params: SmallVec<[u16; 8]>,
@@ -159,7 +162,7 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 } else if byte == 0x1b {
                     self.state = ParserState::OscEscape;
-                } else {
+                } else if self.osc_buf.len() < MAX_OSC_BUFFER_LEN {
                     self.osc_buf.push(byte);
                 }
             }
@@ -179,7 +182,7 @@ impl AnsiParser {
                     self.state = ParserState::Ground;
                 } else if byte == 0x1b {
                     self.state = ParserState::DcsEscape;
-                } else {
+                } else if self.dcs_buf.len() < MAX_DCS_BUFFER_LEN {
                     self.dcs_buf.push(byte);
                 }
             }
@@ -432,7 +435,13 @@ impl AnsiParser {
             return;
         }
         {
-            let params: SmallVec<[&[u8]; 8]> = self.osc_buf.split(|&b| b == b';').collect();
+            let mut params: SmallVec<[&[u8]; 8]> = SmallVec::new();
+            for part in self.osc_buf.split(|&b| b == b';') {
+                params.push(part);
+                if params.len() == 16 {
+                    break;
+                }
+            }
             crate::ansi::osc::handle_osc(&params, terminal);
         }
         self.osc_buf.clear();
