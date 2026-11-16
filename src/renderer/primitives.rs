@@ -1587,7 +1587,11 @@ fn draw_diagonal_line(
     let stroke_w = (t_light as f32).max(1.0) * 1.5;
     let radius = stroke_w / 2.0;
 
-    let max_x = (px + cell_w).min(fb.width);
+    // Extend horizontal reach at cell boundaries so adjacent diagonal characters
+    // connect seamlessly with full anti-aliased stroke thickness across rows without a gap.
+    let x_extend = ((radius + 0.5) * len / h).ceil() as u32;
+    let min_x = px.saturating_sub(x_extend);
+    let max_x = (px + cell_w + x_extend).min(fb.width);
     let max_y = (py + cell_h).min(fb.height);
     let stride = fb.stride;
     let pixels = fb.as_mut_slice();
@@ -1597,9 +1601,9 @@ fn draw_diagonal_line(
         let y_rel = dy as f32 + 0.5;
         let row_offset = (y as usize) * stride;
 
-        for x in px..max_x {
-            let dx = x - px;
-            let x_rel = dx as f32 + 0.5;
+        for x in min_x..max_x {
+            let dx = x as f32 - px as f32;
+            let x_rel = dx + 0.5;
 
             let dist = match diag_type {
                 DiagonalType::Slash => (h * x_rel + w * y_rel - w * h).abs() * inv_len,
@@ -1735,14 +1739,25 @@ mod tests {
                 );
             }
 
-            // 3. No pixels must be drawn outside the cell bounds
+            // 3. Pixels must strictly stay within vertical cell bounds [py, py + cell_h)
+            // and within the continuous anti-aliased horizontal extent [px - x_extend, px + cell_w + x_extend)
+            let stroke_w = (cell_w / 10).max(1) as f32 * 1.5;
+            let radius = stroke_w / 2.0;
+            let x_extend = ((radius + 0.5) * (cell_w as f32).hypot(cell_h as f32) / (cell_h as f32)).ceil() as u32;
             for y in 0..fb.height {
                 for x in 0..fb.width {
                     let pixel = fb.pixels[(y as usize) * fb.stride + (x as usize)];
                     if pixel != 0 {
                         assert!(
-                            x >= px && x < px + cell_w && y >= py && y < py + cell_h,
-                            "Character {} drew pixel outside cell at ({}, {})",
+                            y >= py && y < py + cell_h,
+                            "Character {} drew pixel outside cell vertical bounds at ({}, {})",
+                            c,
+                            x,
+                            y
+                        );
+                        assert!(
+                            x >= px.saturating_sub(x_extend) && x < px + cell_w + x_extend,
+                            "Character {} drew pixel outside cell horizontal extent at ({}, {})",
                             c,
                             x,
                             y
@@ -1864,7 +1879,42 @@ mod tests {
             "Diagonal must continue seamlessly at exact left boundary of cell 1"
         );
 
-        // 2. Test centered symmetry for Cross '╳'
+        // Gap elimination check: adjacent rows across boundary must share columns (no checkerboard diagonal gap)
+        let all_row_prev: Vec<u32> = (0..(2 * cw))
+            .filter(|&x| fb.pixels[((ch - 1) as usize) * fb.stride + (x as usize)] != 0)
+            .collect();
+        let all_row_next: Vec<u32> = (0..(2 * cw))
+            .filter(|&x| fb.pixels[(ch as usize) * fb.stride + (x as usize)] != 0)
+            .collect();
+        let has_column_overlap = all_row_prev.iter().any(|x| all_row_next.contains(x));
+        assert!(
+            has_column_overlap,
+            "Diagonal line across cell 0 and cell 1 must have overlapping columns between row {} and {} to eliminate visual gap",
+            ch - 1,
+            ch
+        );
+
+        // 2. Test seamless straight diagonal line across two cells for Slash '╱'
+        fb.clear(0);
+        // Cell 0 at row 1, col 0 (0, ch); Cell 1 at row 0, col 1 (cw, 0)
+        try_render_primitive('╱', 0, ch, cw, ch, fg, &mut fb);
+        try_render_primitive('╱', cw, 0, cw, ch, fg, &mut fb);
+
+        let slash_row_prev: Vec<u32> = (0..(2 * cw))
+            .filter(|&x| fb.pixels[((ch - 1) as usize) * fb.stride + (x as usize)] != 0)
+            .collect();
+        let slash_row_next: Vec<u32> = (0..(2 * cw))
+            .filter(|&x| fb.pixels[(ch as usize) * fb.stride + (x as usize)] != 0)
+            .collect();
+        let slash_overlap = slash_row_prev.iter().any(|x| slash_row_next.contains(x));
+        assert!(
+            slash_overlap,
+            "Slash '╱' across cells must have overlapping columns between row {} and {} to eliminate visual gap",
+            ch - 1,
+            ch
+        );
+
+        // 3. Test centered symmetry for Cross '╳'
         fb.clear(0);
         try_render_primitive('╳', 0, 0, cw, ch, fg, &mut fb);
 
