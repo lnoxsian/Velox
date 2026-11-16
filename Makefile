@@ -53,6 +53,8 @@ release:
 
 # Alias for backward compatibility
 optimized-release: release
+	@mkdir -p target/optimized-release
+	@cp -f target/release/velox target/optimized-release/velox
 
 # Run the project (debug mode)
 run:

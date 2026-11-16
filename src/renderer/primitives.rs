@@ -705,14 +705,6 @@ fn draw_box_arms(
     let half_tl = t_light / 2;
     let half_th = t_heavy / 2;
 
-    let d_off_x = (cell_w / 5).max(t_light + 1);
-    let d_off_y = (cell_h / 5).max(t_light + 1);
-
-    let y_d_top = (mid_y.saturating_sub(d_off_y)).saturating_sub(half_tl);
-    let y_d_bot = (mid_y + d_off_y).saturating_sub(half_tl);
-    let x_d_left = (mid_x.saturating_sub(d_off_x)).saturating_sub(half_tl);
-    let x_d_right = (mid_x + d_off_x).saturating_sub(half_tl);
-
     let y_s_light = mid_y.saturating_sub(half_tl);
     let x_s_light = mid_x.saturating_sub(half_tl);
     let y_s_heavy = mid_y.saturating_sub(half_th);
@@ -727,6 +719,14 @@ fn draw_box_arms(
         || right == LineStyle::Double;
 
     if has_double {
+        let d_off_x = (cell_w / 5).max(t_light + 1);
+        let d_off_y = (cell_h / 5).max(t_light + 1);
+
+        let y_d_top = (mid_y.saturating_sub(d_off_y)).saturating_sub(half_tl);
+        let y_d_bot = (mid_y + d_off_y).saturating_sub(half_tl);
+        let x_d_left = (mid_x.saturating_sub(d_off_x)).saturating_sub(half_tl);
+        let x_d_right = (mid_x + d_off_x).saturating_sub(half_tl);
+
         match (up, down, left, right) {
             // Pure double
             (LineStyle::None, LineStyle::None, LineStyle::Double, LineStyle::Double) => {
@@ -1277,36 +1277,51 @@ fn draw_box_arms(
         return;
     }
 
+    // Fast-path: straight horizontal and vertical lines (spans full cell in 1 fill_span call)
+    match (up, down, left, right) {
+        (LineStyle::None, LineStyle::None, LineStyle::Heavy, LineStyle::Heavy) => {
+            fb.fill_span(px, y_s_heavy, cell_w, t_heavy, fg);
+            return;
+        }
+        (LineStyle::None, LineStyle::None, LineStyle::Light, LineStyle::Light) => {
+            fb.fill_span(px, y_s_light, cell_w, t_light, fg);
+            return;
+        }
+        (LineStyle::Heavy, LineStyle::Heavy, LineStyle::None, LineStyle::None) => {
+            fb.fill_span(x_s_heavy, py, t_heavy, cell_h, fg);
+            return;
+        }
+        (LineStyle::Light, LineStyle::Light, LineStyle::None, LineStyle::None) => {
+            fb.fill_span(x_s_light, py, t_light, cell_h, fg);
+            return;
+        }
+        _ => {}
+    }
+
     // Single / Heavy lines
-    let center_t = if up == LineStyle::Heavy
-        || down == LineStyle::Heavy
-        || left == LineStyle::Heavy
-        || right == LineStyle::Heavy
-    {
-        t_heavy
-    } else {
-        t_light
+    let has_v = up != LineStyle::None || down != LineStyle::None;
+    let has_h = left != LineStyle::None || right != LineStyle::None;
+
+    let (v_x_start, v_x_end) = match (up, down) {
+        (LineStyle::Heavy, _) | (_, LineStyle::Heavy) => (x_s_heavy, x_s_heavy + t_heavy),
+        (LineStyle::Light, _) | (_, LineStyle::Light) => (x_s_light, x_s_light + t_light),
+        _ => (mid_x, mid_x),
     };
-    let center_half = center_t / 2;
+
+    let (h_y_start, h_y_end) = match (left, right) {
+        (LineStyle::Heavy, _) | (_, LineStyle::Heavy) => (y_s_heavy, y_s_heavy + t_heavy),
+        (LineStyle::Light, _) | (_, LineStyle::Light) => (y_s_light, y_s_light + t_light),
+        _ => (mid_y, mid_y),
+    };
 
     // Up arm
     match up {
         LineStyle::Light => {
-            let y_end =
-                if down != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                    mid_y + center_half + 1
-                } else {
-                    mid_y
-                };
+            let y_end = if has_h { h_y_end } else { mid_y };
             fb.fill_span(x_s_light, py, t_light, y_end.saturating_sub(py), fg);
         }
         LineStyle::Heavy => {
-            let y_end =
-                if down != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                    mid_y + center_half + 1
-                } else {
-                    mid_y
-                };
+            let y_end = if has_h { h_y_end } else { mid_y };
             fb.fill_span(x_s_heavy, py, t_heavy, y_end.saturating_sub(py), fg);
         }
         _ => {}
@@ -1315,12 +1330,7 @@ fn draw_box_arms(
     // Down arm
     match down {
         LineStyle::Light => {
-            let y_start =
-                if up != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                    mid_y.saturating_sub(center_half)
-                } else {
-                    mid_y
-                };
+            let y_start = if has_h { h_y_start } else { mid_y };
             fb.fill_span(
                 x_s_light,
                 y_start,
@@ -1330,12 +1340,7 @@ fn draw_box_arms(
             );
         }
         LineStyle::Heavy => {
-            let y_start =
-                if up != LineStyle::None || left != LineStyle::None || right != LineStyle::None {
-                    mid_y.saturating_sub(center_half)
-                } else {
-                    mid_y
-                };
+            let y_start = if has_h { h_y_start } else { mid_y };
             fb.fill_span(
                 x_s_heavy,
                 y_start,
@@ -1350,21 +1355,11 @@ fn draw_box_arms(
     // Left arm
     match left {
         LineStyle::Light => {
-            let x_end =
-                if right != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                    mid_x + center_half + 1
-                } else {
-                    mid_x
-                };
+            let x_end = if has_v { v_x_end } else { mid_x };
             fb.fill_span(px, y_s_light, x_end.saturating_sub(px), t_light, fg);
         }
         LineStyle::Heavy => {
-            let x_end =
-                if right != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                    mid_x + center_half + 1
-                } else {
-                    mid_x
-                };
+            let x_end = if has_v { v_x_end } else { mid_x };
             fb.fill_span(px, y_s_heavy, x_end.saturating_sub(px), t_heavy, fg);
         }
         _ => {}
@@ -1373,12 +1368,7 @@ fn draw_box_arms(
     // Right arm
     match right {
         LineStyle::Light => {
-            let x_start =
-                if left != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                    mid_x.saturating_sub(center_half)
-                } else {
-                    mid_x
-                };
+            let x_start = if has_v { v_x_start } else { mid_x };
             fb.fill_span(
                 x_start,
                 y_s_light,
@@ -1388,12 +1378,7 @@ fn draw_box_arms(
             );
         }
         LineStyle::Heavy => {
-            let x_start =
-                if left != LineStyle::None || up != LineStyle::None || down != LineStyle::None {
-                    mid_x.saturating_sub(center_half)
-                } else {
-                    mid_x
-                };
+            let x_start = if has_v { v_x_start } else { mid_x };
             fb.fill_span(
                 x_start,
                 y_s_heavy,
@@ -2057,5 +2042,267 @@ mod tests {
         assert_eq!(fb.pixels[y_top * fb.stride + cw as usize], fg);
         assert_eq!(fb.pixels[y_bot * fb.stride + (cw as usize - 1)], fg);
         assert_eq!(fb.pixels[y_bot * fb.stride + cw as usize], fg);
+    }
+
+    #[test]
+    fn test_bold_box_alignment_and_no_jutting_pixels() {
+        let fg = 0xFFFFFFFF;
+        let test_sizes: &[(u32, u32)] = &[(8, 16), (10, 20), (12, 24), (11, 21), (14, 28)];
+
+        for &(cw, ch) in test_sizes {
+            let t_light = (cw / 10).max(1);
+            let t_heavy = if cw <= t_light {
+                cw
+            } else {
+                (t_light * 2).clamp(t_light + 1, cw)
+            };
+            let mid_x = cw / 2;
+            let mid_y = ch / 2;
+            let x_s_heavy = mid_x.saturating_sub(t_heavy / 2);
+            let y_s_heavy = mid_y.saturating_sub(t_heavy / 2);
+
+            let max_valid_x = x_s_heavy + t_heavy - 1;
+            let max_valid_y = y_s_heavy + t_heavy - 1;
+
+            // 1. Top-right corner ┓
+            let mut fb = Framebuffer::new(cw, ch);
+            assert!(try_render_primitive('┓', 0, 0, cw, ch, fg, &mut fb));
+            for y in 0..ch {
+                for x in 0..cw {
+                    if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
+                        assert!(
+                            x <= max_valid_x,
+                            "┓ jutting out to the right: x={} > {}",
+                            x, max_valid_x
+                        );
+                    }
+                }
+            }
+
+            // 2. Bottom-left corner ┗
+            fb.clear(0);
+            assert!(try_render_primitive('┗', 0, 0, cw, ch, fg, &mut fb));
+            for y in 0..ch {
+                for x in 0..cw {
+                    if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
+                        assert!(
+                            y <= max_valid_y,
+                            "┗ jutting out to the bottom: y={} > {}",
+                            y, max_valid_y
+                        );
+                    }
+                }
+            }
+
+            // 3. Bottom-right corner ┛
+            fb.clear(0);
+            assert!(try_render_primitive('┛', 0, 0, cw, ch, fg, &mut fb));
+            for y in 0..ch {
+                for x in 0..cw {
+                    if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
+                        assert!(
+                            x <= max_valid_x,
+                            "┛ jutting out to the right: x={} > {}",
+                            x, max_valid_x
+                        );
+                        assert!(
+                            y <= max_valid_y,
+                            "┛ jutting out to the bottom: y={} > {}",
+                            y, max_valid_y
+                        );
+                    }
+                }
+            }
+
+            // 4. Right tee ┫
+            fb.clear(0);
+            assert!(try_render_primitive('┫', 0, 0, cw, ch, fg, &mut fb));
+            for y in 0..ch {
+                for x in 0..cw {
+                    if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
+                        assert!(x <= max_valid_x, "┫ jutting out to the right: x={} > {}", x, max_valid_x);
+                    }
+                }
+            }
+
+            // 5. Bottom tee ┻
+            fb.clear(0);
+            assert!(try_render_primitive('┻', 0, 0, cw, ch, fg, &mut fb));
+            for y in 0..ch {
+                for x in 0..cw {
+                    if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
+                        assert!(y <= max_valid_y, "┻ jutting out to the bottom: y={} > {}", y, max_valid_y);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_bold_box_closed_loop_flush_edges() {
+        let fg = 0xFFFFFFFF;
+        let test_sizes: &[(u32, u32)] = &[(10, 20), (12, 24), (11, 21), (14, 28)];
+
+        for &(cw, ch) in test_sizes {
+            let t_light = (cw / 10).max(1);
+            let t_heavy = if cw <= t_light {
+                cw
+            } else {
+                (t_light * 2).clamp(t_light + 1, cw)
+            };
+            let mid_x = cw / 2;
+            let mid_y = ch / 2;
+            let x_s_heavy = mid_x.saturating_sub(t_heavy / 2);
+            let y_s_heavy = mid_y.saturating_sub(t_heavy / 2);
+
+            let expected_right_edge = 2 * cw + x_s_heavy + t_heavy - 1;
+            let expected_bottom_edge = 2 * ch + y_s_heavy + t_heavy - 1;
+            let expected_top_edge = y_s_heavy;
+            let expected_left_edge = x_s_heavy;
+
+            let mut fb = Framebuffer::new(cw * 3, ch * 3);
+
+            // Render 3x3 bold box:
+            // ┏ ━ ┓
+            // ┃   ┃
+            // ┗ ━ ┛
+            assert!(try_render_primitive('┏', 0, 0, cw, ch, fg, &mut fb));
+            assert!(try_render_primitive('━', cw, 0, cw, ch, fg, &mut fb));
+            assert!(try_render_primitive('┓', cw * 2, 0, cw, ch, fg, &mut fb));
+
+            assert!(try_render_primitive('┃', 0, ch, cw, ch, fg, &mut fb));
+            assert!(try_render_primitive('┃', cw * 2, ch, cw, ch, fg, &mut fb));
+
+            assert!(try_render_primitive('┗', 0, ch * 2, cw, ch, fg, &mut fb));
+            assert!(try_render_primitive('━', cw, ch * 2, cw, ch, fg, &mut fb));
+            assert!(try_render_primitive('┛', cw * 2, ch * 2, cw, ch, fg, &mut fb));
+
+            // Verify entire bounding box: no pixels outside expected edges
+            for y in 0..(ch * 3) {
+                for x in 0..(cw * 3) {
+                    if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
+                        assert!(
+                            x >= expected_left_edge,
+                            "Pixel jutting out to left at ({}, {}), min allowed is {}",
+                            x, y, expected_left_edge
+                        );
+                        assert!(
+                            x <= expected_right_edge,
+                            "Pixel jutting out to right at ({}, {}), max allowed is {}",
+                            x, y, expected_right_edge
+                        );
+                        assert!(
+                            y >= expected_top_edge,
+                            "Pixel jutting out to top at ({}, {}), min allowed is {}",
+                            x, y, expected_top_edge
+                        );
+                        assert!(
+                            y <= expected_bottom_edge,
+                            "Pixel jutting out to bottom at ({}, {}), max allowed is {}",
+                            x, y, expected_bottom_edge
+                        );
+                    }
+                }
+            }
+
+            // Verify the right column (at cw * 2) has a flush vertical edge:
+            // Every row occupied by the right border (from expected_top_edge to expected_bottom_edge)
+            // must have its rightmost pixel exactly at expected_right_edge
+            for y in expected_top_edge..=expected_bottom_edge {
+                let rightmost = (0..(cw * 3))
+                    .rev()
+                    .find(|&x| fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0);
+                assert_eq!(
+                    rightmost,
+                    Some(expected_right_edge),
+                    "Right edge at row {} should be flush at {}, but got {:?}",
+                    y, expected_right_edge, rightmost
+                );
+            }
+
+            // Verify the bottom row (at ch * 2) has a flush horizontal edge:
+            // Every col occupied by the bottom border (from expected_left_edge to expected_right_edge)
+            // must have its bottommost pixel exactly at expected_bottom_edge
+            for x in expected_left_edge..=expected_right_edge {
+                let bottommost = (0..(ch * 3))
+                    .rev()
+                    .find(|&y| fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0);
+                assert_eq!(
+                    bottommost,
+                    Some(expected_bottom_edge),
+                    "Bottom edge at col {} should be flush at {}, but got {:?}",
+                    x, expected_bottom_edge, bottommost
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_straight_line_fastpath_matches_split_arms() {
+        let fg = 0xFFFFFFFF;
+        let test_sizes: &[(u32, u32)] = &[(8, 16), (10, 20), (11, 21), (12, 24), (14, 28)];
+
+        for &(cw, ch) in test_sizes {
+            let t_light = (cw / 10).max(1);
+            let t_heavy = if cw <= t_light {
+                cw
+            } else {
+                (t_light * 2).clamp(t_light + 1, cw)
+            };
+            let mid_x = cw / 2;
+            let mid_y = ch / 2;
+            let x_s_heavy = mid_x.saturating_sub(t_heavy / 2);
+            let y_s_heavy = mid_y.saturating_sub(t_heavy / 2);
+            let x_s_light = mid_x.saturating_sub(t_light / 2);
+            let y_s_light = mid_y.saturating_sub(t_light / 2);
+
+            // 1. Horizontal heavy ━
+            let mut fb_fast = Framebuffer::new(cw, ch);
+            let mut fb_split = Framebuffer::new(cw, ch);
+            assert!(try_render_primitive('━', 0, 0, cw, ch, fg, &mut fb_fast));
+            fb_split.fill_span(0, y_s_heavy, mid_x, t_heavy, fg);
+            fb_split.fill_span(mid_x, y_s_heavy, cw.saturating_sub(mid_x), t_heavy, fg);
+            assert_eq!(
+                fb_fast.pixels, fb_split.pixels,
+                "Horizontal heavy fastpath must match split arms at {}x{}",
+                cw, ch
+            );
+
+            // 2. Horizontal light ─
+            fb_fast.clear(0);
+            fb_split.clear(0);
+            assert!(try_render_primitive('─', 0, 0, cw, ch, fg, &mut fb_fast));
+            fb_split.fill_span(0, y_s_light, mid_x, t_light, fg);
+            fb_split.fill_span(mid_x, y_s_light, cw.saturating_sub(mid_x), t_light, fg);
+            assert_eq!(
+                fb_fast.pixels, fb_split.pixels,
+                "Horizontal light fastpath must match split arms at {}x{}",
+                cw, ch
+            );
+
+            // 3. Vertical heavy ┃
+            fb_fast.clear(0);
+            fb_split.clear(0);
+            assert!(try_render_primitive('┃', 0, 0, cw, ch, fg, &mut fb_fast));
+            fb_split.fill_span(x_s_heavy, 0, t_heavy, mid_y, fg);
+            fb_split.fill_span(x_s_heavy, mid_y, t_heavy, ch.saturating_sub(mid_y), fg);
+            assert_eq!(
+                fb_fast.pixels, fb_split.pixels,
+                "Vertical heavy fastpath must match split arms at {}x{}",
+                cw, ch
+            );
+
+            // 4. Vertical light │
+            fb_fast.clear(0);
+            fb_split.clear(0);
+            assert!(try_render_primitive('│', 0, 0, cw, ch, fg, &mut fb_fast));
+            fb_split.fill_span(x_s_light, 0, t_light, mid_y, fg);
+            fb_split.fill_span(x_s_light, mid_y, t_light, ch.saturating_sub(mid_y), fg);
+            assert_eq!(
+                fb_fast.pixels, fb_split.pixels,
+                "Vertical light fastpath must match split arms at {}x{}",
+                cw, ch
+            );
+        }
     }
 }
