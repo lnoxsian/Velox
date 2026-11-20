@@ -46,7 +46,7 @@ pub fn create_window_and_renderer(
     let win_height = window.height();
     let line_height = config.line_height().unwrap_or(1.0);
 
-    let renderer = CpuRenderer::try_new_with_line_height(
+    let mut renderer = CpuRenderer::try_new_with_line_height(
         config.font_family(),
         font_size,
         font_scale_multiplier,
@@ -58,6 +58,10 @@ pub fn create_window_and_renderer(
         opacity,
     )
     .map_err(RendererInitError::Font)?;
+
+    if let Some(nfs) = config.nerd_font_scale() {
+        renderer.set_nerd_font_scale(nfs);
+    }
 
     log::info!(
         "Zero-C pure-Rust CPU software renderer initialized successfully ({}x{}).",

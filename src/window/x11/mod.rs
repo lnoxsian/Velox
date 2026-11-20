@@ -549,6 +549,25 @@ impl X11Window {
         let (min_keycode, max_keycode, keysyms_per_keycode, keymap) =
             Self::load_keyboard_mapping(&conn);
 
+        // Enable XKB detectable auto-repeat so the X server generates clean KeyPress events
+        // without synthetic interleaving KeyRelease events during hold-to-repeat.
+        {
+            use x11rb::protocol::xkb::{self, ConnectionExt as _};
+            if let Ok(reply) = conn.xkb_use_extension(1, 0)
+                && let Ok(reply) = reply.reply()
+                && reply.supported
+            {
+                let _ = conn.xkb_per_client_flags(
+                    xkb::ID::USE_CORE_KBD.into(),
+                    xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT,
+                    xkb::PerClientFlag::DETECTABLE_AUTO_REPEAT,
+                    xkb::BoolCtrl::default(),
+                    xkb::BoolCtrl::default(),
+                    xkb::BoolCtrl::default(),
+                );
+            }
+        }
+
         let pending_raw_events = Arc::new(Mutex::new(VecDeque::new()));
         let clipboard_provider = Arc::new(clipboard::X11ClipboardProvider::new(
             Arc::clone(&conn),
@@ -733,7 +752,12 @@ impl X11Window {
         }
     }
 
-    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<crate::window::DamageRect>) {
+    pub fn present_frame(
+        &mut self,
+        src_pixels: &[u32],
+        src_stride: usize,
+        damage: Option<crate::window::DamageRect>,
+    ) {
         let Some(rect) = damage else {
             return;
         };
@@ -753,24 +777,49 @@ impl X11Window {
             return;
         }
 
-        let stride = self.width as usize;
-        let start_px = (damaged_y as usize) * stride;
-        let num_px = (damaged_h as usize) * stride;
-        let end_px = (start_px + num_px).min(src_pixels.len());
-
+        let dest_stride = self.width as usize;
         let dest = self.fb.pixels_mut();
-        if start_px < dest.len() && end_px <= dest.len() && end_px <= src_pixels.len() {
-            dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
+
+        if src_stride == dest_stride {
+            let start_px = (damaged_y as usize) * dest_stride;
+            let num_px = (damaged_h as usize) * dest_stride;
+            let end_px = (start_px + num_px).min(src_pixels.len());
+
+            if start_px < dest.len() && end_px <= dest.len() && end_px <= src_pixels.len() {
+                dest[start_px..end_px].copy_from_slice(&src_pixels[start_px..end_px]);
+            }
+
+            self.fb.present_damaged(
+                &self.conn,
+                self.window_id,
+                self.gc,
+                self.visual,
+                damaged_y,
+                damaged_h,
+            );
+        } else {
+            // Source stride does not match destination window stride (e.g. during resize transitions).
+            // Copy row-by-row with bounds clipping so pixels never shear diagonally!
+            let copy_w = src_stride.min(dest_stride);
+            for row in 0..self.height as usize {
+                let src_start = row * src_stride;
+                let dst_start = row * dest_stride;
+                if src_start + copy_w <= src_pixels.len() && dst_start + copy_w <= dest.len() {
+                    dest[dst_start..dst_start + copy_w]
+                        .copy_from_slice(&src_pixels[src_start..src_start + copy_w]);
+                }
+            }
+
+            self.fb.present_damaged(
+                &self.conn,
+                self.window_id,
+                self.gc,
+                self.visual,
+                0,
+                self.height,
+            );
         }
 
-        self.fb.present_damaged(
-            &self.conn,
-            self.window_id,
-            self.gc,
-            self.visual,
-            damaged_y,
-            damaged_h,
-        );
         let _ = self.conn.flush();
     }
 
@@ -818,6 +867,22 @@ impl X11Window {
         }
 
         while let Ok(Some(raw_event)) = self.conn.poll_for_event() {
+            if let x11rb::protocol::Event::KeyRelease(ref rel_ev) = raw_event {
+                // If detectable auto-repeat is unavailable, the X server generates an artificial
+                // KeyRelease event immediately preceding each auto-repeat KeyPress with identical timestamp.
+                if let Ok(Some(next_raw)) = self.conn.poll_for_event() {
+                    if let x11rb::protocol::Event::KeyPress(ref press_ev) = next_raw {
+                        if press_ev.detail == rel_ev.detail && press_ev.time == rel_ev.time {
+                            // Suppress artificial auto-repeat KeyRelease and dispatch only the KeyPress
+                            self.handle_raw_event(next_raw);
+                            continue;
+                        }
+                    }
+                    self.handle_raw_event(raw_event);
+                    self.handle_raw_event(next_raw);
+                    continue;
+                }
+            }
             self.handle_raw_event(raw_event);
         }
 
@@ -1286,7 +1351,7 @@ mod tests {
                     width: win.width,
                     height: win.height,
                 });
-                win.present_frame(&frame, damage);
+                win.present_frame(&frame, win.width as usize, damage);
                 win.set_visible(true);
                 assert!(win.is_visible);
             }

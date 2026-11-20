@@ -150,6 +150,7 @@ font_family = "ComicShannsMono Nerd Font"
 font_scale_multiplier = 1.5
 font_size = 11.0
 bold_is_bright = true
+nerd_font_scale = 1.0          # Multiplier for Nerd Font / PUA glyphs (0.1 to 3.0, default: 1.0)
 
 [window]
 scrollback_limit = 2000

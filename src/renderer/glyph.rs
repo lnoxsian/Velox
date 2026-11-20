@@ -105,6 +105,7 @@ pub struct GlyphCache {
     pub font_size: f32,
     pub font_scale_multiplier: f32,
     pub line_height: f32,
+    pub nerd_font_scale: f32,
     pub atlas: GlyphAtlas,
     pub scratch: GlyphScratch,
     /// Direct lookup table for ASCII 0..127 across 4 styles (regular, bold, italic, bold_italic)
@@ -281,6 +282,7 @@ impl GlyphCache {
             font_size,
             font_scale_multiplier,
             line_height: 1.0,
+            nerd_font_scale: 1.0,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -359,6 +361,7 @@ impl GlyphCache {
             font_size,
             font_scale_multiplier,
             line_height: effective_lh,
+            nerd_font_scale: 1.0,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -416,6 +419,7 @@ impl GlyphCache {
             font_size: pane_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
             line_height: self.line_height,
+            nerd_font_scale: self.nerd_font_scale,
             atlas: GlyphAtlas::new(),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -452,6 +456,7 @@ impl GlyphCache {
             font_size: tab_font_size,
             font_scale_multiplier: self.font_scale_multiplier,
             line_height: 1.0,
+            nerd_font_scale: self.nerd_font_scale,
             atlas: GlyphAtlas::with_capacity(8 * 1024, 0),
             scratch: GlyphScratch::new(),
             ascii_table: [None; 512],
@@ -507,6 +512,19 @@ impl GlyphCache {
         self.cell_height = metrics.cell_height;
         self.baseline_y = metrics.baseline_y;
 
+        self.clear();
+    }
+
+    pub fn set_nerd_font_scale(&mut self, scale: f32) {
+        let effective = if scale >= 0.1 && scale <= 3.0 {
+            scale
+        } else {
+            1.0
+        };
+        if (self.nerd_font_scale - effective).abs() < 0.001 {
+            return;
+        }
+        self.nerd_font_scale = effective;
         self.clear();
     }
 
@@ -703,9 +721,19 @@ impl GlyphCache {
                     if let Some(outlined) = char_font.outline_glyph(probe_glyph) {
                         let bounds = outlined.px_bounds();
                         let ph = bounds.height();
-                        if ph > self.cell_height as f32 && ph > 0.0 {
-                            let sh = self.cell_height as f32 / ph;
-                            scale = PxScale::from(font_scale * sh);
+                        let pw = bounds.width();
+                        if ph > 0.0 && pw > 0.0 {
+                            let base_target_h = (font_scale * 0.90)
+                                .min(self.cell_height as f32 * 0.85);
+                            let target_h = (base_target_h * self.nerd_font_scale)
+                                .min(self.cell_height as f32)
+                                .round()
+                                .max(1.0);
+                            let max_w = base_target_width as f32 * 2.0;
+                            let sh = target_h / ph;
+                            let sw = max_w / pw;
+                            let fit = sh.min(sw).min(3.0).max(0.05);
+                            scale = PxScale::from(font_scale * fit);
                         } else {
                             scale = PxScale::from(font_scale);
                         }

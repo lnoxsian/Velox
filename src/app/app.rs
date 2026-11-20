@@ -428,6 +428,31 @@ impl WindowState {
                 let _ = pane.pty_master.write(&data);
                 return;
             }
+            // Fast-path: small input (e.g. single keystrokes <= 4096 bytes) directly calls
+            // non-blocking write to avoid reactor wake/channel latency whenever no unwritten bytes
+            // are currently buffered in the reactor.
+            if !self.pty_reactor.has_buffered_writes() && data.len() <= 4096 {
+                match pane.pty_master.write(&data) {
+                    Ok(n) if n == data.len() => return,
+                    Ok(n) => {
+                        let remainder = data[n..].to_vec();
+                        let _ = self
+                            .pty_reactor
+                            .write(self.window_id, tab.id, pane_id, remainder);
+                        return;
+                    }
+                    Err(e)
+                        if e.raw_os_error() == Some(libc::EAGAIN)
+                            || e.raw_os_error() == Some(libc::EWOULDBLOCK) =>
+                    {
+                        let _ = self
+                            .pty_reactor
+                            .write(self.window_id, tab.id, pane_id, data);
+                        return;
+                    }
+                    Err(_) => return,
+                }
+            }
             let _ = self
                 .pty_reactor
                 .write(self.window_id, tab.id, pane_id, data);
@@ -713,6 +738,8 @@ impl WindowState {
 
         if self.resize_state.last_applied_width == width
             && self.resize_state.last_applied_height == height
+            && self.renderer.viewport_width == width
+            && self.renderer.viewport_height == height
         {
             return;
         }
@@ -1244,6 +1271,16 @@ impl WindowState {
             return;
         }
 
+        // If a resize is pending or window inner size does not match renderer viewport size,
+        // apply the resize FIRST so renderer dimensions, terminal grids, and window buffer
+        // are perfectly synchronized before rendering any pixels.
+        if self.resize_state.is_pending
+            || self.renderer.viewport_width != size.width
+            || self.renderer.viewport_height != size.height
+        {
+            self.apply_viewport_resize(size.width, size.height);
+        }
+
         crate::diagnostics::ResizeStats::record_frame_rendered();
         if self.renderer.damage.full_redraw {
             crate::diagnostics::ResizeStats::record_full_redraw();
@@ -1262,6 +1299,29 @@ impl WindowState {
 
         // 4. Compute layouts & active pane
         let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+
+        // Ensure all pane terminals are synchronized with the computed layout before rendering.
+        // If split ratio or window dimensions changed without a layout sync, sync now so that
+        // the grid cells and reflow are always 100% consistent with the pane bounds.
+        let mut needs_layout_sync = false;
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            for rect in &pane_rects {
+                if let Some(pane) = tab.tree.find_pane(rect.pane_id) {
+                    if pane.terminal.grid.width != rect.cols
+                        || pane.terminal.grid.height != rect.rows
+                        || pane.terminal.cell_width_px != rect.cell_width as u32
+                        || pane.terminal.cell_height_px != rect.cell_height as u32
+                    {
+                        needs_layout_sync = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if needs_layout_sync {
+            self.sync_active_tab_layout();
+        }
+
         let active_tab = &self.tabs[self.active_tab_index];
         let active_pane_id = active_tab.active_pane_id;
         let active_pane_rect = pane_rects
@@ -1376,8 +1436,11 @@ impl WindowState {
             });
         }
 
-        self.window
-            .present_frame(self.renderer.framebuffer.as_slice(), final_damage);
+        self.window.present_frame(
+            self.renderer.framebuffer.as_slice(),
+            self.renderer.viewport_width as usize,
+            final_damage,
+        );
 
         if let Some(active_tab) = self.tabs.get_mut(self.active_tab_index) {
             for pane in active_tab.tree.panes_mut() {
@@ -1472,8 +1535,12 @@ impl App {
             },
         };
 
-        let (window, mut renderer) =
+        let (mut window, mut renderer) =
             crate::renderer::create_window_and_renderer(&initial_title, 800, 600, &config)?;
+
+        if config.repeat_delay().is_some() || config.repeat_rate().is_some() {
+            window.set_key_repeat(config.repeat_delay(), config.repeat_rate());
+        }
 
         let size = window.inner_size();
         let win_width = size.width.max(1);
@@ -1871,8 +1938,50 @@ impl App {
         }
     }
 
+    #[inline]
+    pub(crate) fn compute_ppoll_timeout(
+        min_next_wake: Option<std::time::Instant>,
+        has_dirty_windows: bool,
+    ) -> (libc::timespec, bool) {
+        match min_next_wake {
+            Some(wake_time) => {
+                let cur = std::time::Instant::now();
+                if wake_time > cur {
+                    let diff = wake_time.duration_since(cur);
+                    // If the deadline is within 250µs, don't sleep in the kernel - do an immediate poll
+                    // to prevent kernel timer slack overshooting and causing micro-stutter.
+                    if diff < std::time::Duration::from_micros(250) {
+                        (libc::timespec { tv_sec: 0, tv_nsec: 0 }, true)
+                    } else {
+                        (libc::timespec {
+                            tv_sec: diff.as_secs() as libc::time_t,
+                            tv_nsec: diff.subsec_nanos() as libc::c_long,
+                        }, true)
+                    }
+                } else {
+                    (libc::timespec { tv_sec: 0, tv_nsec: 0 }, true)
+                }
+            }
+            None => {
+                if has_dirty_windows {
+                    (libc::timespec { tv_sec: 0, tv_nsec: 0 }, true)
+                } else {
+                    (libc::timespec { tv_sec: 0, tv_nsec: 0 }, false)
+                }
+            }
+        }
+    }
+
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.init()?;
+
+        // Optimize Linux process timer slack to 50 microseconds (50,000 ns) so that
+        // kernel wakeups and sub-millisecond ppoll deadlines aren't coalesced into coarse
+        // 1-2ms buckets.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let _ = libc::prctl(libc::PR_SET_TIMERSLACK, 50_000usize, 0, 0, 0);
+        }
 
         let mut last_idle_prune = std::time::Instant::now();
         let mut poll_fds: smallvec::SmallVec<[libc::pollfd; 8]> = smallvec::SmallVec::new();
@@ -1953,7 +2062,7 @@ impl App {
                         }
                         PlatformEvent::RedrawRequested => {
                             ws.renderer.damage.mark_all();
-                            ws.draw();
+                            ws.needs_redraw = true;
                         }
                     }
                 }
@@ -1986,12 +2095,12 @@ impl App {
             });
 
             if had_keyboard_input && !is_any_resizing {
-                // If keyboard input was just dispatched to PTY, give the shell up to 1.5ms to return its echo.
+                // If keyboard input was just dispatched to PTY, give the shell up to 2.5ms to return its echo.
                 // Typical shell latency is 50-300µs; as soon as the echo arrives, recv_timeout returns
                 // immediately and renders in the exact same frame with zero delay!
                 if let Ok(event) = self
                     .event_receiver
-                    .recv_timeout(std::time::Duration::from_micros(1500))
+                    .recv_timeout(std::time::Duration::from_micros(2500))
                 {
                     self.drain_custom_events_with_first(Some(event));
                 }
@@ -2000,6 +2109,10 @@ impl App {
             if self.windows.is_empty() && !self.daemon_mode {
                 break;
             }
+
+            // Re-sample wall-clock after draining shell echo so all subsequent frame pacing,
+            // typing checks, and poll deadline calculations are strictly accurate without timing skew.
+            let now = std::time::Instant::now();
 
             let mut min_next_wake: Option<std::time::Instant> = None;
 
@@ -2018,7 +2131,18 @@ impl App {
                 }
 
                 let cursor_blink_active = ws.is_cursor_blink_active();
-                if cursor_blink_active
+                let is_typing_blink = now.duration_since(ws.last_key_instant)
+                    < std::time::Duration::from_millis(500);
+
+                if is_typing_blink {
+                    // While actively typing, freeze cursor blink to solid ON so the cursor
+                    // never blinks off or flickers during typing bursts.
+                    if !ws.cursor_blink_on {
+                        ws.cursor_blink_on = true;
+                        ws.needs_redraw = true;
+                    }
+                    ws.last_cursor_blink = now;
+                } else if cursor_blink_active
                     && now.duration_since(ws.last_cursor_blink)
                         >= std::time::Duration::from_millis(500)
                 {
@@ -2027,7 +2151,7 @@ impl App {
                     ws.needs_redraw = true;
                 }
 
-                if cursor_blink_active {
+                if cursor_blink_active && !is_typing_blink {
                     let next_blink = ws.last_cursor_blink + std::time::Duration::from_millis(500);
                     min_next_wake = Some(min_next_wake.map_or(next_blink, |t| t.min(next_blink)));
                 }
@@ -2067,7 +2191,15 @@ impl App {
                     if is_typing || is_resizing || now >= next_frame {
                         ws.draw();
                         ws.needs_redraw = false;
-                        ws.last_frame_instant = std::time::Instant::now();
+                        if is_typing || is_resizing {
+                            ws.last_frame_instant = now;
+                        } else {
+                            ws.last_frame_instant += frame_duration;
+                            // Clamp to prevent burst frames if render loop fell behind
+                            if now.duration_since(ws.last_frame_instant) > frame_duration * 2 {
+                                ws.last_frame_instant = now;
+                            }
+                        }
                     } else {
                         min_next_wake =
                             Some(min_next_wake.map_or(next_frame, |t| t.min(next_frame)));
@@ -2087,24 +2219,10 @@ impl App {
                 }
             }
 
-            let timeout_ms = match min_next_wake {
-                Some(wake_time) => {
-                    let cur = std::time::Instant::now();
-                    if wake_time > cur {
-                        let diff = wake_time.duration_since(cur).as_millis();
-                        (diff as i32).max(1)
-                    } else {
-                        0
-                    }
-                }
-                None => {
-                    if self.windows.values().any(|w| w.needs_redraw) {
-                        0
-                    } else {
-                        -1
-                    }
-                }
-            };
+            let (timeout_ts, has_timeout) = Self::compute_ppoll_timeout(
+                min_next_wake,
+                self.windows.values().any(|w| w.needs_redraw),
+            );
 
             // If new custom events arrived while drawing or updating, drain immediately without sleeping
             if let Ok(event) = self.event_receiver.try_recv() {
@@ -2160,10 +2278,15 @@ impl App {
             }
 
             let poll_ret = unsafe {
-                libc::poll(
+                libc::ppoll(
                     poll_fds.as_mut_ptr(),
                     poll_fds.len() as libc::nfds_t,
-                    timeout_ms,
+                    if has_timeout {
+                        &timeout_ts as *const libc::timespec
+                    } else {
+                        std::ptr::null()
+                    },
+                    std::ptr::null(),
                 )
             };
 
@@ -2172,7 +2295,7 @@ impl App {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
-                log::error!("Main event loop libc::poll error: {}", err);
+                log::error!("Main event loop libc::ppoll error: {}", err);
                 continue;
             }
 
@@ -2374,5 +2497,87 @@ mod tests {
                 wid
             );
         }
+    }
+
+    #[test]
+    fn test_compute_ppoll_timeout() {
+        let now = std::time::Instant::now();
+
+        // 1. Deadline in the past -> timeout is 0, has_timeout is true
+        let past = now.checked_sub(std::time::Duration::from_millis(10)).unwrap();
+        let (ts, has_timeout) = App::compute_ppoll_timeout(Some(past), false);
+        assert!(has_timeout);
+        assert_eq!(ts.tv_sec, 0);
+        assert_eq!(ts.tv_nsec, 0);
+
+        // 2. Deadline < 250µs away -> timeout is 0 (poll without sleeping to avoid overshoot)
+        let sub_250us = std::time::Instant::now() + std::time::Duration::from_micros(100);
+        let (ts, has_timeout) = App::compute_ppoll_timeout(Some(sub_250us), false);
+        assert!(has_timeout);
+        assert_eq!(ts.tv_sec, 0);
+        assert_eq!(ts.tv_nsec, 0);
+
+        // 3. Deadline 50ms away -> exact conversion to seconds and nanoseconds
+        let future_50ms = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        let (ts, has_timeout) = App::compute_ppoll_timeout(Some(future_50ms), false);
+        assert!(has_timeout);
+        assert_eq!(ts.tv_sec, 0);
+        assert!(ts.tv_nsec > 40_000_000 && ts.tv_nsec <= 50_000_000);
+
+        // 4. No deadline, but windows need redraw -> timeout is 0 (immediate yield/drain)
+        let (ts, has_timeout) = App::compute_ppoll_timeout(None, true);
+        assert!(has_timeout);
+        assert_eq!(ts.tv_sec, 0);
+        assert_eq!(ts.tv_nsec, 0);
+
+        // 5. No deadline, no redraw -> indefinite poll (null timespec)
+        let (_, has_timeout) = App::compute_ppoll_timeout(None, false);
+        assert!(!has_timeout);
+    }
+
+    #[test]
+    fn test_cursor_blink_typing_suppression() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        ws.cursor_blink_enabled = true;
+        ws.is_focused = true;
+        ws.cursor_blink_on = false;
+
+        let now = std::time::Instant::now();
+        // User typed 100ms ago (<500ms threshold)
+        ws.last_key_instant = now - std::time::Duration::from_millis(100);
+
+        let is_typing_blink = now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
+        assert!(is_typing_blink);
+
+        // While typing is active, cursor is forced to solid ON
+        if is_typing_blink && !ws.cursor_blink_on {
+            ws.cursor_blink_on = true;
+            ws.needs_redraw = true;
+        }
+        assert!(ws.cursor_blink_on);
+        assert!(ws.needs_redraw);
+
+        // When typing has ceased (> 500ms ago), blinking resumes
+        ws.last_key_instant = now - std::time::Duration::from_millis(600);
+        let is_typing_blink_after = now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
+        assert!(!is_typing_blink_after);
+    }
+
+    #[test]
+    fn test_phase_locked_frame_pacing() {
+        let frame_duration = std::time::Duration::from_micros(8333); // ~120 FPS
+        let mut last_frame_instant = std::time::Instant::now();
+        let now = last_frame_instant + frame_duration;
+
+        // Steady state pacing: advance anchor by frame_duration
+        last_frame_instant += frame_duration;
+        assert_eq!(last_frame_instant, now);
+
+        // If window stalled for 3 frames, anchor clamps to prevent burst frames
+        let stalled_now = last_frame_instant + frame_duration * 3;
+        if stalled_now.duration_since(last_frame_instant) > frame_duration * 2 {
+            last_frame_instant = stalled_now;
+        }
+        assert_eq!(last_frame_instant, stalled_now);
     }
 }

@@ -217,6 +217,9 @@ pub fn load_from_str(contents: &str) -> (Config, Vec<ConfigDiagnostic>) {
         if let Some(lh) = table.get("line_height").and_then(|v| v.as_float()) {
             cfg.font.line_height = Some(lh as f32);
         }
+        if let Some(nfs) = table.get("nerd_font_scale").and_then(|v| v.as_float()) {
+            cfg.font.nerd_font_scale = Some(nfs as f32);
+        }
         if let Some(op) = table.get("opacity").and_then(|v| v.as_float()) {
             cfg.window.opacity = Some(op as f32);
         }

@@ -32,6 +32,7 @@ impl std::error::Error for FontError {}
 pub const STANDARD_MONOSPACE_FAMILIES: &[&str] = &[
     "monospace",
     "DejaVu Sans Mono",
+    "DejaVuSansM Nerd Font",
     "Liberation Mono",
     "Noto Sans Mono",
     "Ubuntu Mono",
@@ -49,11 +50,29 @@ pub const STANDARD_MONOSPACE_FAMILIES: &[&str] = &[
     "Source Code Pro",
     "JetBrains Mono",
     "Hack",
+    "Hack Nerd Font",
     "MesloLGS NF",
     "ComicShannsMono Nerd Font",
     "Droid Sans Mono",
     "FreeMono",
 ];
+
+pub fn normalize_family_name(s: &str) -> String {
+    let mut norm = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            norm.push(c.to_ascii_lowercase());
+        }
+    }
+    if norm.ends_with("nf") {
+        norm.truncate(norm.len() - 2);
+        norm.push_str("nerdfont");
+    }
+    if norm.starts_with("dejavusansmono") {
+        norm = norm.replacen("dejavusansmono", "dejavusansm", 1);
+    }
+    norm
+}
 
 /// Resolves a single font family candidate from the database, handling generic CSS keywords,
 /// exact name queries, case-insensitive scanning, and qualifier-stripped name variants.
@@ -128,7 +147,36 @@ fn resolve_single_candidate(
         }
     }
 
-    // 4. Qualifier-stripped scan (e.g. "ubuntu non mono" -> "ubuntu")
+    // 4. Normalized face scan (handling spacing, punctuation, and Nerd Font abbreviations like "NF" / "DejaVuSansM")
+    let norm_candidate = normalize_family_name(trimmed);
+    if !norm_candidate.is_empty() {
+        for face in db.faces() {
+            if face.style == fontdb::Style::Normal && face.weight == fontdb::Weight::NORMAL {
+                for (fam, _) in &face.families {
+                    let norm_fam = normalize_family_name(fam);
+                    if norm_fam == norm_candidate
+                        && let Some(font) = crate::font::loader::load_font_face_by_id(db, face.id)
+                    {
+                        return Some((font, face.id, fam.clone()));
+                    }
+                }
+            }
+        }
+        for face in db.faces() {
+            if face.style == fontdb::Style::Normal {
+                for (fam, _) in &face.families {
+                    let norm_fam = normalize_family_name(fam);
+                    if norm_fam == norm_candidate
+                        && let Some(font) = crate::font::loader::load_font_face_by_id(db, face.id)
+                    {
+                        return Some((font, face.id, fam.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Qualifier-stripped scan (e.g. "ubuntu non mono" -> "ubuntu")
     let lower = trimmed.to_ascii_lowercase();
     let cleaned = lower
         .replace("non mono", "")

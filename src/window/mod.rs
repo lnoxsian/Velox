@@ -193,10 +193,10 @@ impl PlatformWindow {
     }
 
     #[inline]
-    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<DamageRect>) {
+    pub fn present_frame(&mut self, src_pixels: &[u32], src_stride: usize, damage: Option<DamageRect>) {
         match self {
-            Self::X11(w) => w.present_frame(src_pixels, damage),
-            Self::Wayland(w) => w.present_frame(src_pixels, damage),
+            Self::X11(w) => w.present_frame(src_pixels, src_stride, damage),
+            Self::Wayland(w) => w.present_frame(src_pixels, src_stride, damage),
             Self::Dummy { .. } => {}
         }
     }
@@ -215,6 +215,14 @@ impl PlatformWindow {
         match self {
             Self::X11(_) | Self::Dummy { .. } => None,
             Self::Wayland(w) => w.next_wake_time(),
+        }
+    }
+
+    #[inline]
+    pub fn set_key_repeat(&mut self, delay_ms: Option<u64>, rate_cps: Option<u32>) {
+        match self {
+            Self::Wayland(w) => w.set_key_repeat(delay_ms, rate_cps),
+            Self::X11(_) | Self::Dummy { .. } => {}
         }
     }
 

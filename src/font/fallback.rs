@@ -342,13 +342,17 @@ impl FallbackManager {
         if is_symbol_or_pua {
             let nerd_families = [
                 "Symbols Nerd Font",
-                "Symbols Nerd Font Mono",
+                "DejaVuSansM Nerd Font",
                 "MesloLGS NF",
                 "JetBrainsMono Nerd Font",
                 "Hack Nerd Font",
                 "FiraCode Nerd Font",
-                "DejaVu Sans",
+                "Ubuntu Nerd Font",
+                "Symbols Nerd Font Mono",
+                "DejaVuSansM Nerd Font Mono",
+                "Hack Nerd Font Mono",
                 "Noto Sans Symbols",
+                "DejaVu Sans",
             ];
 
             for family in &nerd_families {
@@ -405,7 +409,27 @@ impl FallbackManager {
             }
         }
 
-        // 7. General scan across system font faces for any matching glyph outline
+        // 7. General scan across system font faces for any matching glyph outline.
+        // For symbols and PUA, prefer non-mono faces first to avoid selecting tiny mono icons.
+        if is_symbol_or_pua {
+            for face in db.faces() {
+                let is_mono_named = face
+                    .families
+                    .iter()
+                    .any(|(f, _)| f.ends_with("Mono") || f.ends_with(" NFM"));
+                if !is_mono_named
+                    && let fontdb::Source::File(path) = &face.source
+                    && !self.loaded_paths.contains(path)
+                    && let Ok(storage) = FontStorage::from_file(path).map(Arc::new)
+                    && let Ok(font) = create_font_arc(Arc::clone(&storage), face.index)
+                    && font.glyph_id(c).0 != 0
+                {
+                    let idx = self.insert_fallback(path.clone(), face.index, font, storage);
+                    return Some(idx);
+                }
+            }
+        }
+
         for face in db.faces() {
             if let fontdb::Source::File(path) = &face.source
                 && !self.loaded_paths.contains(path)

@@ -57,6 +57,8 @@ pub struct WaylandState {
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub xkb_handler: XkbHandler,
     pub repeat_config: Option<KeyRepeatConfig>,
+    pub repeat_rate_override: Option<i32>,
+    pub repeat_delay_override: Option<i32>,
     pub active_repeat: Option<ActiveKeyRepeat>,
     pub buffer_pool: WaylandBufferPool,
     pub has_deferred_frame: bool,
@@ -106,7 +108,9 @@ impl WaylandState {
             pointer: None,
             keyboard: None,
             xkb_handler: XkbHandler::new(),
-            repeat_config: None,
+            repeat_config: Some(KeyRepeatConfig { rate: 25, delay: 400 }),
+            repeat_rate_override: None,
+            repeat_delay_override: None,
             active_repeat: None,
             buffer_pool: WaylandBufferPool::new(3),
             has_deferred_frame: false,
@@ -370,7 +374,12 @@ impl WaylandWindow {
         self.state.events.push_back(PlatformEvent::CloseRequested);
     }
 
-    pub fn present_frame(&mut self, src_pixels: &[u32], damage: Option<crate::window::DamageRect>) {
+    pub fn present_frame(
+        &mut self,
+        src_pixels: &[u32],
+        src_stride: usize,
+        damage: Option<crate::window::DamageRect>,
+    ) {
         let Some(rect) = damage else {
             return;
         };
@@ -411,18 +420,40 @@ impl WaylandWindow {
             return;
         }
 
-        let dest = buf.pixels_mut();
-        let copy_len = dest.len().min(src_pixels.len());
-        dest[..copy_len].copy_from_slice(&src_pixels[..copy_len]);
-
         use wayland_client::Proxy;
         let buffer_id = buf.buffer.id();
         let wl_buf_clone = buf.buffer.clone();
 
-        if let Some(surface) = &self.state.surface {
-            surface.attach(Some(&wl_buf_clone), 0, 0);
-            surface.damage_buffer(0, damaged_y as i32, width as i32, damaged_h as i32);
-            surface.commit();
+        let dest_stride = width as usize;
+        let dest = buf.pixels_mut();
+
+        if src_stride == dest_stride {
+            let copy_len = dest.len().min(src_pixels.len());
+            dest[..copy_len].copy_from_slice(&src_pixels[..copy_len]);
+
+            if let Some(surface) = &self.state.surface {
+                surface.attach(Some(&wl_buf_clone), 0, 0);
+                surface.damage_buffer(0, damaged_y as i32, width as i32, damaged_h as i32);
+                surface.commit();
+            }
+        } else {
+            // Source stride does not match destination surface stride.
+            // Copy row-by-row with bounds clipping so pixels never shear diagonally!
+            let copy_w = src_stride.min(dest_stride);
+            for row in 0..height as usize {
+                let src_start = row * src_stride;
+                let dst_start = row * dest_stride;
+                if src_start + copy_w <= src_pixels.len() && dst_start + copy_w <= dest.len() {
+                    dest[dst_start..dst_start + copy_w]
+                        .copy_from_slice(&src_pixels[src_start..src_start + copy_w]);
+                }
+            }
+
+            if let Some(surface) = &self.state.surface {
+                surface.attach(Some(&wl_buf_clone), 0, 0);
+                surface.damage_buffer(0, 0, width as i32, height as i32);
+                surface.commit();
+            }
         }
 
         self.state.buffer_pool.submit(&buffer_id);
@@ -432,6 +463,28 @@ impl WaylandWindow {
     #[inline]
     pub fn next_wake_time(&self) -> Option<Instant> {
         self.state.active_repeat.as_ref().map(|r| r.next_deadline)
+    }
+
+    pub fn set_key_repeat(&mut self, delay_ms: Option<u64>, rate_cps: Option<u32>) {
+        if let Some(delay) = delay_ms {
+            self.state.repeat_delay_override = Some(delay.max(1) as i32);
+        }
+        if let Some(rate) = rate_cps {
+            self.state.repeat_rate_override = Some(rate.max(1) as i32);
+        }
+        if let Some(cfg) = &mut self.state.repeat_config {
+            if let Some(delay) = self.state.repeat_delay_override {
+                cfg.delay = delay;
+            }
+            if let Some(rate) = self.state.repeat_rate_override {
+                cfg.rate = rate;
+            }
+        } else if self.state.repeat_delay_override.is_some() || self.state.repeat_rate_override.is_some() {
+            self.state.repeat_config = Some(KeyRepeatConfig {
+                rate: self.state.repeat_rate_override.unwrap_or(25),
+                delay: self.state.repeat_delay_override.unwrap_or(400),
+            });
+        }
     }
 
     pub fn poll_event(&mut self) -> Option<PlatformEvent> {
@@ -754,10 +807,15 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                         cm.hide_cursor(serial, pointer);
                     }
                 }
-                state.events.push_back(PlatformEvent::CursorMoved {
-                    x: surface_x,
-                    y: surface_y,
-                });
+                if let Some(PlatformEvent::CursorMoved { x, y }) = state.events.back_mut() {
+                    *x = surface_x;
+                    *y = surface_y;
+                } else {
+                    state.events.push_back(PlatformEvent::CursorMoved {
+                        x: surface_x,
+                        y: surface_y,
+                    });
+                }
             }
             wl_pointer::Event::Leave { .. } => {
                 state.pointer_inside = false;
@@ -770,10 +828,15 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
             } => {
                 state.mouse_x = surface_x;
                 state.mouse_y = surface_y;
-                state.events.push_back(PlatformEvent::CursorMoved {
-                    x: surface_x,
-                    y: surface_y,
-                });
+                if let Some(PlatformEvent::CursorMoved { x, y }) = state.events.back_mut() {
+                    *x = surface_x;
+                    *y = surface_y;
+                } else {
+                    state.events.push_back(PlatformEvent::CursorMoved {
+                        x: surface_x,
+                        y: surface_y,
+                    });
+                }
             }
             wl_pointer::Event::Button {
                 serial,
@@ -954,7 +1017,17 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
             }
             wl_keyboard::Event::RepeatInfo { rate, delay } => {
                 if rate > 0 && delay > 0 {
-                    state.repeat_config = Some(KeyRepeatConfig { rate, delay });
+                    let effective_rate = state.repeat_rate_override.unwrap_or(rate);
+                    let effective_delay = state.repeat_delay_override.unwrap_or(delay);
+                    state.repeat_config = Some(KeyRepeatConfig {
+                        rate: effective_rate,
+                        delay: effective_delay,
+                    });
+                } else if state.repeat_rate_override.is_some() || state.repeat_delay_override.is_some() {
+                    state.repeat_config = Some(KeyRepeatConfig {
+                        rate: state.repeat_rate_override.unwrap_or(25),
+                        delay: state.repeat_delay_override.unwrap_or(400),
+                    });
                 } else {
                     state.repeat_config = None;
                     state.active_repeat = None;

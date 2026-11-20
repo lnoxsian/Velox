@@ -28,6 +28,7 @@ WORKLOAD ?=
 ARGS ?=
 
 .PHONY: all build release optimized-release run run-release run-optimized-release check test clean update lint \
+	build-velox release-velox optimized-release-velox build-config release-config optimized-release-config run-config run-config-release \
 	bootstrap update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
 	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-optimized-release cpu-debug cpu-compare cpu-benchmark \
 	palette generate-icons install install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
@@ -55,17 +56,52 @@ release:
 optimized-release: release
 	@mkdir -p target/optimized-release
 	@cp -f target/release/velox target/optimized-release/velox
+	@if [ -f target/release/velox-config ]; then cp -f target/release/velox-config target/optimized-release/velox-config; fi
+
+# Build only the Velox terminal in debug mode
+build-velox:
+	cargo build --bin velox
+
+# Build only the Velox terminal in release mode
+release-velox:
+	cargo build --release --bin velox
+
+# Build only the Velox terminal in release mode and stage into target/optimized-release
+optimized-release-velox: release-velox
+	@mkdir -p target/optimized-release
+	@cp -f target/release/velox target/optimized-release/velox
+
+# Build only the velox-config CLI tool in debug mode
+build-config:
+	cargo build --bin velox-config
+
+# Build only the velox-config CLI tool in release mode
+release-config:
+	cargo build --release --bin velox-config
+
+# Build only the velox-config CLI tool in release mode and stage into target/optimized-release
+optimized-release-config: release-config
+	@mkdir -p target/optimized-release
+	@cp -f target/release/velox-config target/optimized-release/velox-config
 
 # Run the project (debug mode)
 run:
-	cargo run
+	cargo run --bin velox
 
 # Run the project in release mode
 run-release:
-	cargo run --release
+	cargo run --release --bin velox
 
 # Alias for backward compatibility
 run-optimized-release: run-release
+
+# Run velox-config in debug mode
+run-config:
+	cargo run --bin velox-config
+
+# Run velox-config in release mode
+run-config-release:
+	cargo run --release --bin velox-config
 
 # Check the project for compilation errors
 check:
@@ -132,10 +168,12 @@ install-completions:
 install: release install-desktop install-icons install-completions
 	install -d $(BINDIR)
 	install -m 755 target/release/velox $(BINDIR)/velox
+	if [ -f "target/release/velox-config" ]; then install -m 755 target/release/velox-config $(BINDIR)/velox-config; fi
 
 # Uninstall Velox binary, desktop entry, icons, and shell completions
 uninstall:
 	rm -f $(BINDIR)/velox
+	rm -f $(BINDIR)/velox-config
 	rm -f $(APPDIR)/io.github.lnoxsian.Velox.desktop
 	@for size in $(ICON_SIZES); do \
 		rm -f $(ICONDIR)/$$size/apps/io.github.lnoxsian.Velox.png; \
@@ -261,13 +299,22 @@ list:
 	@printf "\033[1mUsage:\033[0m make \033[36m<target>\033[0m [\033[33mVARIABLE=value\033[0m...]\n\n"
 	@printf "\033[1;32mBuilding & Compilation:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bootstrap" "Install dev tools, libraries, compilers, and packaging utilities"
-	@printf "  \033[36m%-25s\033[0m %s\n" "build" "Build binary in debug mode (generates icons first)"
-	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build binary in release mode (fat LTO, codegen-units=1, stripped)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "build" "Build all binaries in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build all binaries in release mode (fat LTO, codegen-units=1, stripped)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release" "Build and stage all release binaries in target/optimized-release"
+	@printf "  \033[36m%-25s\033[0m %s\n" "build-velox" "Build only Velox terminal in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release-velox" "Build only Velox terminal in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release-velox" "Build and stage only Velox terminal in target/optimized-release"
+	@printf "  \033[36m%-25s\033[0m %s\n" "build-config" "Build only velox-config CLI in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release-config" "Build only velox-config CLI in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release-config" "Build and stage only velox-config in target/optimized-release"
 	@printf "  \033[36m%-25s\033[0m %s\n" "generate-icons" "Generate multi-resolution icon assets"
 	@printf "  \033[36m%-25s\033[0m %s\n" "clean" "Remove target/ and dist/ artifacts"
 	@printf "\n\033[1;32mRunning:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "run" "Run Velox in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "run-release" "Run Velox in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "run-config" "Run velox-config in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "run-config-release" "Run velox-config in release mode"
 	@printf "\n\033[1;32mTesting & Quality:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "check" "Type-check code without compiling binary"
 	@printf "  \033[36m%-25s\033[0m %s\n" "test" "Run full test suite (unit + integration tests)"

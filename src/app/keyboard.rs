@@ -912,4 +912,28 @@ mod tests {
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), &[27, 127]);
     }
+
+    #[test]
+    fn test_single_key_press_uniform_and_consistent() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // A single key press produces exactly one single byte (no pair repetition)
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("a".to_string()),
+            Some("a"),
+            ModifiersState::empty(),
+        );
+        assert!(handled);
+        assert_eq!(read_pty_output(&read_end), b"a");
+
+        // Subsequent single keystrokes remain uniform and consistent
+        let handled2 = ws.handle_keyboard_input(
+            &Key::Character("b".to_string()),
+            Some("b"),
+            ModifiersState::empty(),
+        );
+        assert!(handled2);
+        assert_eq!(read_pty_output(&read_end), b"b");
+    }
 }

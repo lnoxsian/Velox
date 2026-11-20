@@ -12,7 +12,7 @@ While Velox supports full customization through its TOML configuration file, man
 ### 1.2 Core Requirements
 - **Integrated Packaging:** Ships as a secondary binary (`velox-config`) within the main Velox repository.
 - **Zero Duplication:** Reuses Velox's existing `Config`, `FontConfig`, `WindowConfig`, `ConfigColors`, `TabsConfig`, and `PanesConfig` types directly from `velox::config`.
-- **Inline Terminal Experience:** Employs interactive arrow-key menus (`inquire`) directly in the terminal stream without capturing or clearing the entire terminal screen.
+- **Inline Interactive Terminal Experience:** Employs clean interactive arrow-key menus (`inquire`) directly in the normal terminal stream without capturing or clearing the entire terminal screen.
 - **Direct Hex Color Workflow:** Gives users full control to input hex codes for all 16 ANSI colors and foreground/background colors, with preset themes available as a fallback.
 - **Live Visual Validation:** Displays 24-bit TrueColor ANSI swatches next to hex inputs and offers steppers for numeric bounds.
 - **Safe Persistence:** Loads existing user configuration if present, and creates an automatic backup (`config.toml.bak`) before saving updates.
@@ -37,11 +37,11 @@ path = "src/bin/velox-config.rs"
 ### Module Dependencies
 Because `velox-config.rs` is part of the `velox` crate workspace, it directly imports:
 - `velox::config::{Config, FontConfig, WindowConfig, ConfigColors, TabsConfig, PanesConfig, TabBarVisibility}`
-- `velox::config::loader::get_config_path`
+- `velox::config::loader::config_path`
 - Built-in theme presets embedded from `assets/velox_terminal_themes/*.toml`
 
 ### Third-Party Crates Required
-- `inquire = "0.7"` (Interactive prompts: `Select`, `Text`, `Confirm`, `CustomType`)
+- **None!** (Uses 0 additional crates; built entirely with the Rust standard library and Velox's existing `nix` dependency).
 
 ---
 
@@ -115,11 +115,12 @@ Displays all 18 color entries with their current value and a 24-bit TrueColor sq
 
 | Setting | Field | Input Type / Control | Default | Constraints / Behavior |
 | :--- | :--- | :--- | :--- | :--- |
-| **Font Family** | `font_family` | Searchable/Filterable List + Custom Input | `"monospace"` | Curated popular fonts (Fira Code, JetBrains Mono, Hack, Cascadia Code, Source Code Pro, monospace) + detected system monospace fonts + manual text entry |
+| **Font Family** | `font_family` | Scrollable List + Monospace Toggle + Name Search + Custom Input | `"monospace"` | Shows all installed system fonts with a toggle for 'Monospace only' vs 'All fonts' + name keyword search filter ('nerd', 'code', 'sans', etc.) + manual text entry |
 | **Font Size** | `font_size` | Stepper (`+0.5` / `-0.5`) + Direct Float | `14.0` | Range: `6.0` to `72.0` pt |
 | **Scale Multiplier** | `font_scale_multiplier` | Stepper (`+0.1` / `-0.1`) + Direct Float | `1.5` | Range: `1.0` to `3.0` |
 | **Bold is Bright** | `bold_is_bright` | Toggle `[ON / OFF]` | `true` | Boolean toggle |
-| **Line Height** | `line_height` | Stepper (`+0.1` / `-0.1`) + Direct Float | `None` | Option to specify line height multiplier or keep at default |
+| **Line Height** | `line_height` | Stepper (`+0.05` / `-0.05`) + Direct Float | `None` | Option to specify line height multiplier or keep at default |
+| **Nerd Font Glyph Size** | `nerd_font_scale` | Stepper (`+0.05` / `-0.05`) + Direct Float | `None` (1.0) | Range: `0.2` to `3.0` (default 1.0x). Scale multiplier for Nerd Font symbols/glyphs |
 
 ---
 

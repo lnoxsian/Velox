@@ -62,6 +62,7 @@ pub struct PtyReactorHandle {
     wake_fd: Option<Arc<OwnedFd>>,
     wake_pending: Arc<AtomicBool>,
     is_stopped: Arc<AtomicBool>,
+    has_buffered_writes: Arc<AtomicBool>,
 }
 
 impl PtyReactorHandle {
@@ -72,7 +73,13 @@ impl PtyReactorHandle {
             wake_fd: None,
             wake_pending: Arc::new(AtomicBool::new(false)),
             is_stopped: Arc::new(AtomicBool::new(true)),
+            has_buffered_writes: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    #[inline(always)]
+    pub fn has_buffered_writes(&self) -> bool {
+        self.has_buffered_writes.load(Ordering::Acquire)
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -220,6 +227,9 @@ impl PtyReactor {
         let thread_epoll_fd = epoll_guard.0;
         epoll_guard.0 = -1; // Disarm caller guard: thread now owns epoll_fd
 
+        let has_buffered_writes = Arc::new(AtomicBool::new(false));
+        let has_buffered_writes_clone = has_buffered_writes.clone();
+
         let join_handle = thread::Builder::new()
             .name("velox-pty-reactor".to_string())
             .spawn(move || {
@@ -230,6 +240,7 @@ impl PtyReactor {
                     proxy,
                     wake_pending_clone,
                     is_stopped_clone,
+                    has_buffered_writes_clone,
                 );
             })
             .map_err(|e| {
@@ -244,6 +255,7 @@ impl PtyReactor {
             wake_fd: Some(wake_fd.clone()),
             wake_pending,
             is_stopped: is_stopped.clone(),
+            has_buffered_writes,
         };
 
         Ok(Self {
@@ -332,6 +344,7 @@ fn run_reactor_loop(
     proxy: EventLoopProxy,
     wake_pending: Arc<AtomicBool>,
     is_stopped: Arc<AtomicBool>,
+    has_buffered_writes: Arc<AtomicBool>,
 ) {
     let _epoll_guard = EpollFdGuard(epoll_fd);
     let wake_raw_fd = wake_fd.as_raw_fd();
@@ -478,6 +491,9 @@ fn run_reactor_loop(
                                 }
                                 fds.remove(&pty_fd);
                                 write_buffers.remove(&pty_fd);
+                                if write_buffers.is_empty() {
+                                    has_buffered_writes.store(false, Ordering::Release);
+                                }
                             }
                         }
                         ReactorCommand::Write {
@@ -537,6 +553,9 @@ fn run_reactor_loop(
                                         fds.remove(&pty_fd);
                                         key_to_fd.remove(&key);
                                         write_buffers.remove(&pty_fd);
+                                        if write_buffers.is_empty() {
+                                            has_buffered_writes.store(false, Ordering::Release);
+                                        }
 
                                         let _ = proxy.send(CustomEvent::PtyExit {
                                             window_id: key.window_id,
@@ -545,10 +564,12 @@ fn run_reactor_loop(
                                         });
                                     } else if written < data.len() {
                                         queue.extend(&data[written..]);
+                                        has_buffered_writes.store(true, Ordering::Release);
                                         set_epoll_out_interest(epoll_fd, pty_fd, true);
                                     }
                                 } else {
                                     queue.extend(data);
+                                    has_buffered_writes.store(true, Ordering::Release);
                                     set_epoll_out_interest(epoll_fd, pty_fd, true);
                                 }
                             }
@@ -605,6 +626,9 @@ fn run_reactor_loop(
                             fds.remove(&fd);
                             key_to_fd.remove(&key);
                             write_buffers.remove(&fd);
+                            if write_buffers.is_empty() {
+                                has_buffered_writes.store(false, Ordering::Release);
+                            }
 
                             let _ = proxy.send(CustomEvent::PtyExit {
                                 window_id: key.window_id,
@@ -614,6 +638,9 @@ fn run_reactor_loop(
                             continue;
                         } else if queue.is_empty() {
                             write_buffers.remove(&fd);
+                            if write_buffers.is_empty() {
+                                has_buffered_writes.store(false, Ordering::Release);
+                            }
                             set_epoll_out_interest(epoll_fd, fd, false);
                         }
                     } else {
@@ -1007,5 +1034,14 @@ mod tests {
             received, test_data,
             "Async write queue must deliver burst data completely and losslessly"
         );
+    }
+
+    #[test]
+    fn test_reactor_has_buffered_writes_tracking() {
+        let (sender, _receiver) = channel();
+        let proxy = EventLoopProxy::new(sender, -1);
+        let reactor = PtyReactor::new(proxy).expect("PtyReactor::new failed");
+        let handle = reactor.handle();
+        assert!(!handle.has_buffered_writes(), "Initially no buffered writes");
     }
 }

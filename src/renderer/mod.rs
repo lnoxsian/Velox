@@ -473,6 +473,17 @@ impl CpuRenderer {
         self.last_target_ptr = 0;
     }
 
+    pub fn set_nerd_font_scale(&mut self, scale: f32) {
+        self.glyph_cache.set_nerd_font_scale(scale);
+        for cache in self.pane_glyph_caches.values_mut() {
+            cache.set_nerd_font_scale(scale);
+        }
+        self.damage.mark_all();
+        crate::diagnostics::ResizeStats::record_pane_state_clear();
+        self.pane_states.clear();
+        self.last_target_ptr = 0;
+    }
+
     /// Full memory cleanup: compacts glyph atlas, unloads fallback fonts, and shrinks scratch buffers.
     pub fn release_memory(&mut self) {
         self.glyph_cache.release_memory();

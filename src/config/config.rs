@@ -21,6 +21,8 @@ pub struct FontConfig {
     pub bold_is_bright: Option<bool>,
     #[serde(default)]
     pub line_height: Option<f32>,
+    #[serde(default)]
+    pub nerd_font_scale: Option<f32>,
 }
 
 impl Default for FontConfig {
@@ -31,6 +33,7 @@ impl Default for FontConfig {
             font_scale_multiplier: Some(1.5),
             bold_is_bright: Some(true),
             line_height: None,
+            nerd_font_scale: None,
         }
     }
 }
@@ -46,6 +49,10 @@ pub struct WindowConfig {
     pub scroll_multiplier: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps_limit: Option<u32>,
+    #[serde(default)]
+    pub repeat_delay: Option<u64>,
+    #[serde(default)]
+    pub repeat_rate: Option<u32>,
     #[serde(default)]
     pub padding_x: Option<f32>,
     #[serde(default)]
@@ -333,6 +340,12 @@ pub struct Config {
     pub(crate) line_height_legacy: Option<f32>,
     #[serde(
         default,
+        rename = "nerd_font_scale",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) nerd_font_scale_legacy: Option<f32>,
+    #[serde(
+        default,
         rename = "scrollback_limit",
         skip_serializing_if = "Option::is_none"
     )]
@@ -504,6 +517,10 @@ impl Config {
         self.font.line_height.or(self.line_height_legacy)
     }
 
+    pub fn nerd_font_scale(&self) -> Option<f32> {
+        self.font.nerd_font_scale.or(self.nerd_font_scale_legacy)
+    }
+
     pub fn scrollback_limit(&self) -> Option<usize> {
         self.window
             .scrollback_limit
@@ -524,6 +541,14 @@ impl Config {
 
     pub fn fps_limit(&self) -> Option<u32> {
         self.window.fps_limit.or(self.fps_limit_legacy)
+    }
+
+    pub fn repeat_delay(&self) -> Option<u64> {
+        self.window.repeat_delay
+    }
+
+    pub fn repeat_rate(&self) -> Option<u32> {
+        self.window.repeat_rate
     }
 
     pub fn working_directory(&self) -> Option<String> {
@@ -691,6 +716,16 @@ impl Config {
                 diags.push(ConfigDiagnostic {
                     severity: DiagnosticSeverity::Warning,
                     message: format!("Invalid line_height ({lh}); defaulting to 1.0"),
+                    line: None,
+                    col: None,
+                });
+            }
+        }
+        if let Some(nfs) = self.nerd_font_scale() {
+            if nfs <= 0.1 || nfs > 3.0 || nfs.is_nan() || nfs.is_infinite() {
+                diags.push(ConfigDiagnostic {
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!("Invalid nerd_font_scale ({nfs}); defaulting to 1.0"),
                     line: None,
                     col: None,
                 });
@@ -1250,5 +1285,31 @@ mod tests {
         let diags = cfg_invalid.validate();
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("Invalid line_height"));
+    }
+
+    #[test]
+    fn test_config_nerd_font_scale_parsing_and_diagnostics() {
+        let toml_valid = r#"
+            [font]
+            nerd_font_scale = 1.25
+        "#;
+        let cfg: Config = toml::from_str(toml_valid).unwrap();
+        assert_eq!(cfg.nerd_font_scale(), Some(1.25));
+        assert!(cfg.validate().is_empty());
+
+        let toml_legacy = r#"
+            nerd_font_scale = 0.85
+        "#;
+        let cfg_legacy: Config = toml::from_str(toml_legacy).unwrap();
+        assert_eq!(cfg_legacy.nerd_font_scale(), Some(0.85));
+
+        let toml_invalid = r#"
+            [font]
+            nerd_font_scale = 5.0
+        "#;
+        let cfg_invalid: Config = toml::from_str(toml_invalid).unwrap();
+        let diags = cfg_invalid.validate();
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("Invalid nerd_font_scale"));
     }
 }

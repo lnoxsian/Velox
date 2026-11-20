@@ -231,17 +231,9 @@ impl WindowState {
                 let tab = self.active_tab_mut();
                 if tab.tree.set_split_ratio(dragging.split_id, ratio) {
                     let now = std::time::Instant::now();
-                    let should_sync = match self.last_separator_drag_sync {
-                        Some(last) => {
-                            now.duration_since(last) >= std::time::Duration::from_millis(8)
-                        }
-                        None => true,
-                    };
-                    if should_sync {
-                        self.last_resize_instant = now;
-                        self.sync_active_tab_layout();
-                        self.last_separator_drag_sync = Some(now);
-                    }
+                    self.last_resize_instant = now;
+                    self.sync_active_tab_layout();
+                    self.last_separator_drag_sync = Some(now);
                     self.needs_redraw = true;
                     self.content_dirty = true;
                 }

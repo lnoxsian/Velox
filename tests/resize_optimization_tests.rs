@@ -486,3 +486,35 @@ fn test_10_renderer_safety() {
         &mut small_target,
     );
 }
+
+#[test]
+fn test_horizontal_narrowing_grid_integrity() {
+    let mut term = Terminal::new(80, 24);
+    let original_text = "R00: abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ====";
+    let line = format!("{}\r\n", original_text);
+    term.feed(line.as_bytes());
+
+    let initial_row: String = (0..80)
+        .map(|x| term.active_grid().cells[x].character)
+        .collect();
+    assert_eq!(initial_row.trim_end(), original_text);
+
+    // Narrow horizontally from 80 down to 70 cols
+    term.resize(70, 24);
+    let row0: String = (0..70)
+        .map(|x| term.active_grid().cells[x].character)
+        .collect();
+    let row1: String = (0..70)
+        .map(|x| term.active_grid().cells[70 + x].character)
+        .collect();
+    let reconstructed = format!("{}{}", row0.trim_end(), row1.trim_end());
+    assert_eq!(reconstructed, original_text);
+
+    // Widen back to 80 cols - text unrolls cleanly without duplication
+    term.resize(80, 24);
+    let restored_row: String = (0..80)
+        .map(|x| term.active_grid().cells[x].character)
+        .collect();
+    assert_eq!(restored_row.trim_end(), original_text);
+}
+

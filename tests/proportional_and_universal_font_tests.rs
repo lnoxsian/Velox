@@ -492,3 +492,149 @@ fn test_devanagari_combining_characters_rasterization_and_rendering() {
         );
     }
 }
+
+
+#[test]
+fn test_nerd_font_sizes_are_consistent_across_fonts() {
+    let db = get_system_font_db();
+
+    // 1. Verify aliases for DejaVu Nerd Font resolve correctly
+    let (_font_arc1, _, name1) = velox::font::resolved::resolve_regular_font(db, "DejaVuSansM Nerd Font")
+        .expect("Resolve DejaVuSansM Nerd Font");
+    assert_eq!(name1, "DejaVuSansM Nerd Font");
+
+    let (_font_arc2, _, name2) = velox::font::resolved::resolve_regular_font(db, "DejaVuSansMono Nerd Font")
+        .expect("Resolve DejaVuSansMono Nerd Font alias");
+    assert_eq!(name2, "DejaVuSansM Nerd Font");
+
+    let (_font_arc3, _, name3) = velox::font::resolved::resolve_regular_font(db, "DejaVu Sans Mono Nerd Font")
+        .expect("Resolve DejaVu Sans Mono Nerd Font alias");
+    assert_eq!(name3, "DejaVuSansM Nerd Font");
+
+    let fonts = [
+        "DejaVuSansM Nerd Font",
+        "DejaVuSansM Nerd Font Mono",
+        "DejaVuSansMono Nerd Font",
+        "Hack Nerd Font",
+        "ComicShannsMono Nerd Font",
+        "Ubuntu Mono",
+        "monospace",
+    ];
+
+    let test_icons = [
+        '\u{e702}', // git
+        '\u{f07b}', // folder
+        '\u{f489}', // terminal
+        '\u{f015}', // home
+    ];
+
+    for font_name in &fonts {
+        let mut cache = match GlyphCache::try_from_font_family(font_name, 16.0, 1.0) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        for &icon in &test_icons {
+            let key = GlyphKey::new(icon, false, false, false);
+            let gref = cache
+                .get_or_rasterize(key)
+                .unwrap_or_else(|| panic!("Rasterize icon U+{:04X} in font {}", icon as u32, font_name));
+
+            let mask = cache.atlas.get_alpha(&gref);
+            let w = gref.width as usize;
+            let h = gref.height as usize;
+            let mut min_y = h;
+            let mut max_y = 0;
+            let mut count = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    if mask[y * w + x] > 0 {
+                        count += 1;
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
+                }
+            }
+            let bbox_h = if count > 0 { max_y.saturating_sub(min_y) + 1 } else { 0 };
+
+            // Nerd font icons must be prominent and consistent (at least 12px for size 16, never tiny like 8px)
+            assert!(
+                bbox_h >= 12,
+                "Icon U+{:04X} in font '{}' is too small: bbox_h={}, active_px={}, cell_height={}",
+                icon as u32, font_name, bbox_h, count, cache.cell_height
+            );
+        }
+    }
+}
+
+#[test]
+fn test_nerd_font_scale_multiplier_controls_glyph_size() {
+    let font_name = "DejaVuSansM Nerd Font";
+    let mut cache = match GlyphCache::try_from_font_family(font_name, 16.0, 1.0) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let icon = '\u{e702}'; // git icon
+    let key = GlyphKey::new(icon, false, false, false);
+
+    let get_bbox_h = |c: &GlyphCache, gr: &velox::renderer::atlas::GlyphRef| -> usize {
+        let mask = c.atlas.get_alpha(gr);
+        let w = gr.width as usize;
+        let h = gr.height as usize;
+        let mut min_y = h;
+        let mut max_y = 0;
+        let mut count = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if mask[y * w + x] > 0 {
+                    count += 1;
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        if count > 0 { max_y.saturating_sub(min_y) + 1 } else { 0 }
+    };
+
+    // 1. Default scale (1.0)
+    let gref_default = cache.get_or_rasterize(key).expect("Rasterize icon at 1.0");
+    let h_default = get_bbox_h(&cache, &gref_default);
+
+    // 2. Smaller scale (0.5)
+    cache.set_nerd_font_scale(0.5);
+    assert_eq!(cache.nerd_font_scale, 0.5);
+    let gref_small = cache.get_or_rasterize(key).expect("Rasterize icon at 0.5");
+    let h_small = get_bbox_h(&cache, &gref_small);
+
+    // 3. Larger scale (1.2)
+    cache.set_nerd_font_scale(1.2);
+    assert_eq!(cache.nerd_font_scale, 1.2);
+    let gref_large = cache.get_or_rasterize(key).expect("Rasterize icon at 1.2");
+    let h_large = get_bbox_h(&cache, &gref_large);
+
+    assert!(
+        h_small < h_default,
+        "Smaller scale (0.5) must produce shorter glyph height than default (1.0): {} vs {}",
+        h_small,
+        h_default
+    );
+    assert!(
+        h_large >= h_default,
+        "Larger scale (1.2) must produce glyph height >= default (1.0): {} vs {}",
+        h_large,
+        h_default
+    );
+
+    // 4. Invalid scale clamping / defaulting
+    cache.set_nerd_font_scale(50.0);
+    assert_eq!(cache.nerd_font_scale, 1.0, "Out-of-range scale must default to 1.0");
+
+    // 5. CpuRenderer set_nerd_font_scale integration
+    let theme = velox::theme::theme::Theme::default();
+    let mut renderer = velox::renderer::CpuRenderer::new(
+        font_name, 16.0, 1.0, &theme, 800, 600, true, 1.0,
+    );
+    renderer.set_nerd_font_scale(1.15);
+    assert_eq!(renderer.glyph_cache.nerd_font_scale, 1.15);
+}
