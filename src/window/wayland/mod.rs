@@ -52,7 +52,8 @@ pub struct WaylandState {
     pub decoration_manager: Option<zxdg_decoration_manager_v1::ZxdgDecorationManagerV1>,
     pub toplevel_decoration: Option<zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1>,
     pub use_csd: bool,
-    pub pointer_serial: u32,
+    pub pointer_enter_serial: u32,
+    pub pointer_button_serial: u32,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub xkb_handler: XkbHandler,
@@ -79,6 +80,9 @@ pub struct WaylandState {
     pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
     pub data_device: Option<wl_data_device::WlDataDevice>,
     pub current_selection_offer: Option<wl_data_offer::WlDataOffer>,
+    pub current_dnd_offer: Option<wl_data_offer::WlDataOffer>,
+    pub pending_offer: Option<wl_data_offer::WlDataOffer>,
+    pub pending_mime_types: Vec<String>,
     pub active_offer: Arc<RwLock<Option<wl_data_offer::WlDataOffer>>>,
     pub active_mime_types: Arc<RwLock<Vec<String>>>,
     pub current_data_source: Option<wl_data_source::WlDataSource>,
@@ -104,11 +108,15 @@ impl WaylandState {
             decoration_manager: None,
             toplevel_decoration: None,
             use_csd: true,
-            pointer_serial: 0,
+            pointer_enter_serial: 0,
+            pointer_button_serial: 0,
             pointer: None,
             keyboard: None,
             xkb_handler: XkbHandler::new(),
-            repeat_config: Some(KeyRepeatConfig { rate: 25, delay: 400 }),
+            repeat_config: Some(KeyRepeatConfig {
+                rate: 25,
+                delay: 400,
+            }),
             repeat_rate_override: None,
             repeat_delay_override: None,
             active_repeat: None,
@@ -131,6 +139,9 @@ impl WaylandState {
             data_device_manager: None,
             data_device: None,
             current_selection_offer: None,
+            current_dnd_offer: None,
+            pending_offer: None,
+            pending_mime_types: Vec::new(),
             active_offer: Arc::new(RwLock::new(None)),
             active_mime_types: Arc::new(RwLock::new(Vec::new())),
             current_data_source: None,
@@ -252,6 +263,40 @@ impl WaylandWindow {
 impl Drop for WaylandWindow {
     fn drop(&mut self) {
         crate::clipboard::clipboard::unregister_provider();
+        if let Some(offer) = self.state.current_selection_offer.take() {
+            offer.destroy();
+        }
+        if let Some(dnd) = self.state.current_dnd_offer.take() {
+            dnd.destroy();
+        }
+        if let Some(pending) = self.state.pending_offer.take() {
+            pending.destroy();
+        }
+        if let Some(source) = self.state.current_data_source.take() {
+            source.destroy();
+        }
+        if let Some(data_device) = self.state.data_device.take() {
+            data_device.release();
+        }
+        if let Some(pointer) = self.state.pointer.take() {
+            pointer.release();
+        }
+        if let Some(keyboard) = self.state.keyboard.take() {
+            keyboard.release();
+        }
+        if let Some(dec) = self.state.toplevel_decoration.take() {
+            dec.destroy();
+        }
+        if let Some(toplevel) = self.state.xdg_toplevel.take() {
+            toplevel.destroy();
+        }
+        if let Some(xdg_surface) = self.state.xdg_surface.take() {
+            xdg_surface.destroy();
+        }
+        if let Some(surface) = self.state.surface.take() {
+            surface.destroy();
+        }
+        let _ = self.conn.flush();
     }
 }
 
@@ -270,7 +315,7 @@ impl WaylandWindow {
         if self.state.pointer_inside && self.state.cursor_visible {
             if let (Some(cm), Some(pointer)) = (&mut self.state.cursor_manager, &self.state.pointer)
             {
-                cm.apply_cursor(self.state.pointer_serial, icon, pointer);
+                cm.apply_cursor(self.state.pointer_enter_serial, icon, pointer);
                 let _ = self.conn.flush();
             }
         }
@@ -286,12 +331,12 @@ impl WaylandWindow {
             {
                 if visible {
                     cm.apply_cursor(
-                        self.state.pointer_serial,
+                        self.state.pointer_enter_serial,
                         self.state.current_cursor,
                         pointer,
                     );
                 } else {
-                    cm.hide_cursor(self.state.pointer_serial, pointer);
+                    cm.hide_cursor(self.state.pointer_enter_serial, pointer);
                 }
                 let _ = self.conn.flush();
             }
@@ -300,7 +345,7 @@ impl WaylandWindow {
 
     pub fn show_window_menu(&self, x: i32, y: i32) {
         if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
-            toplevel.show_window_menu(seat, self.state.pointer_serial, x, y);
+            toplevel.show_window_menu(seat, self.state.pointer_button_serial, x, y);
             let _ = self.conn.flush();
         }
     }
@@ -317,7 +362,7 @@ impl WaylandWindow {
                 WindowResizeEdge::BottomLeft => xdg_toplevel::ResizeEdge::BottomLeft,
                 WindowResizeEdge::BottomRight => xdg_toplevel::ResizeEdge::BottomRight,
             };
-            toplevel.resize(seat, self.state.pointer_serial, wayland_edge);
+            toplevel.resize(seat, self.state.pointer_button_serial, wayland_edge);
             let _ = self.conn.flush();
         }
     }
@@ -341,7 +386,7 @@ impl WaylandWindow {
 
     pub fn start_interactive_move(&self) {
         if let (Some(toplevel), Some(seat)) = (&self.state.xdg_toplevel, &self.state.seat) {
-            toplevel._move(seat, self.state.pointer_serial);
+            toplevel._move(seat, self.state.pointer_button_serial);
             let _ = self.conn.flush();
         }
     }
@@ -479,7 +524,9 @@ impl WaylandWindow {
             if let Some(rate) = self.state.repeat_rate_override {
                 cfg.rate = rate;
             }
-        } else if self.state.repeat_delay_override.is_some() || self.state.repeat_rate_override.is_some() {
+        } else if self.state.repeat_delay_override.is_some()
+            || self.state.repeat_rate_override.is_some()
+        {
             self.state.repeat_config = Some(KeyRepeatConfig {
                 rate: self.state.repeat_rate_override.unwrap_or(25),
                 delay: self.state.repeat_delay_override.unwrap_or(400),
@@ -496,10 +543,14 @@ impl WaylandWindow {
                     if let (Some(mgr), Some(device)) =
                         (&self.state.data_device_manager, &self.state.data_device)
                     {
+                        if let Some(old_source) = self.state.current_data_source.take() {
+                            old_source.destroy();
+                        }
                         let source = mgr.create_data_source(&self.qh, ());
                         source.offer("text/plain;charset=utf-8".to_string());
                         source.offer("text/plain".to_string());
                         source.offer("UTF8_STRING".to_string());
+                        source.offer("STRING".to_string());
                         device.set_selection(Some(&source), self.state.last_input_serial);
                         self.state.current_data_source = Some(source);
                     }
@@ -770,11 +821,20 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
             capabilities: wayland_client::WEnum::Value(caps),
         } = event
         {
-            if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
-                state.pointer = Some(seat.get_pointer(qh, ()));
+            if caps.contains(wl_seat::Capability::Pointer) {
+                if state.pointer.is_none() {
+                    state.pointer = Some(seat.get_pointer(qh, ()));
+                }
+            } else if let Some(pointer) = state.pointer.take() {
+                pointer.release();
             }
-            if caps.contains(wl_seat::Capability::Keyboard) && state.keyboard.is_none() {
-                state.keyboard = Some(seat.get_keyboard(qh, ()));
+
+            if caps.contains(wl_seat::Capability::Keyboard) {
+                if state.keyboard.is_none() {
+                    state.keyboard = Some(seat.get_keyboard(qh, ()));
+                }
+            } else if let Some(keyboard) = state.keyboard.take() {
+                keyboard.release();
             }
         }
     }
@@ -796,7 +856,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 surface_y,
                 ..
             } => {
-                state.pointer_serial = serial;
+                state.pointer_enter_serial = serial;
                 state.pointer_inside = true;
                 state.mouse_x = surface_x;
                 state.mouse_y = surface_y;
@@ -844,7 +904,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 state: btn_state,
                 ..
             } => {
-                state.pointer_serial = serial;
+                state.pointer_button_serial = serial;
                 state.last_input_serial = serial;
                 if let Some(PlatformEvent::CursorMoved { x, y }) = state.events.back_mut() {
                     *x = state.mouse_x;
@@ -913,8 +973,13 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_keyboard::Event::Keymap { fd, size, .. } => {
-                state.xkb_handler.update_keymap(&fd, size);
+            wl_keyboard::Event::Keymap { format, fd, size } => {
+                if matches!(
+                    format,
+                    wayland_client::WEnum::Value(wl_keyboard::KeymapFormat::XkbV1)
+                ) {
+                    state.xkb_handler.update_keymap(&fd, size);
+                }
             }
             wl_keyboard::Event::Enter { .. } => {
                 state.events.push_back(PlatformEvent::Focused(true));
@@ -1023,7 +1088,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
                         rate: effective_rate,
                         delay: effective_delay,
                     });
-                } else if state.repeat_rate_override.is_some() || state.repeat_delay_override.is_some() {
+                } else if state.repeat_rate_override.is_some()
+                    || state.repeat_delay_override.is_some()
+                {
                     state.repeat_config = Some(KeyRepeatConfig {
                         rate: state.repeat_rate_override.unwrap_or(25),
                         delay: state.repeat_delay_override.unwrap_or(400),
@@ -1097,24 +1164,77 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandState {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_data_device::Event::Selection { id } => {
-                if let Ok(mut lock) = state.active_offer.write() {
-                    *lock = id.clone();
+            wl_data_device::Event::DataOffer { id } => {
+                if let Some(old) = state.pending_offer.take() {
+                    if state.current_selection_offer.as_ref() != Some(&old)
+                        && state.current_dnd_offer.as_ref() != Some(&old)
+                    {
+                        old.destroy();
+                    }
                 }
-                if let Ok(mut lock) = state.active_mime_types.write() {
-                    lock.clear();
+                state.pending_offer = Some(id);
+                state.pending_mime_types.clear();
+            }
+            wl_data_device::Event::Selection { id } => {
+                if let Some(old_offer) = state.current_selection_offer.take() {
+                    old_offer.destroy();
+                }
+                if let Some(ref sel_id) = id {
+                    if state.pending_offer.as_ref() == Some(sel_id) {
+                        state.pending_offer = None;
+                        if let Ok(mut lock) = state.active_mime_types.write() {
+                            *lock = std::mem::take(&mut state.pending_mime_types);
+                        }
+                    }
+                    if let Ok(mut lock) = state.active_offer.write() {
+                        *lock = Some(sel_id.clone());
+                    }
+                } else {
+                    if let Ok(mut lock) = state.active_offer.write() {
+                        *lock = None;
+                    }
+                    if let Ok(mut lock) = state.active_mime_types.write() {
+                        lock.clear();
+                    }
                 }
                 state.current_selection_offer = id;
+            }
+            wl_data_device::Event::Enter { serial, id, .. } => {
+                if let Some(old_dnd) = state.current_dnd_offer.take() {
+                    old_dnd.destroy();
+                }
+                if let Some(dnd_offer) = id {
+                    dnd_offer.accept(serial, None);
+                    if state.pending_offer.as_ref() == Some(&dnd_offer) {
+                        state.pending_offer = None;
+                        state.pending_mime_types.clear();
+                    }
+                    state.current_dnd_offer = Some(dnd_offer);
+                }
+            }
+            wl_data_device::Event::Leave => {
+                if let Some(old_dnd) = state.current_dnd_offer.take() {
+                    old_dnd.destroy();
+                }
+            }
+            wl_data_device::Event::Drop => {
+                if let Some(old_dnd) = state.current_dnd_offer.take() {
+                    old_dnd.destroy();
+                }
             }
             _ => {}
         }
     }
+
+    wayland_client::event_created_child!(WaylandState, wl_data_device::WlDataDevice, [
+        0 => (wl_data_offer::WlDataOffer, ()),
+    ]);
 }
 
 impl Dispatch<wl_data_source::WlDataSource, ()> for WaylandState {
     fn event(
         state: &mut Self,
-        _: &wl_data_source::WlDataSource,
+        source: &wl_data_source::WlDataSource,
         event: wl_data_source::Event,
         _: &(),
         _: &Connection,
@@ -1122,12 +1242,16 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for WaylandState {
     ) {
         match event {
             wl_data_source::Event::Send { mime_type: _, fd } => {
-                let text = state.clipboard_text.read().unwrap().clone();
-                let mut file = std::fs::File::from(fd);
-                let _ = file.write_all(text.as_bytes());
+                if let Ok(text) = state.clipboard_text.read() {
+                    let mut file = std::fs::File::from(fd);
+                    let _ = file.write_all(text.as_bytes());
+                }
             }
             wl_data_source::Event::Cancelled => {
-                state.current_data_source = None;
+                if state.current_data_source.as_ref() == Some(source) {
+                    state.current_data_source = None;
+                }
+                source.destroy();
             }
             _ => {}
         }
@@ -1137,15 +1261,19 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for WaylandState {
 impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandState {
     fn event(
         state: &mut Self,
-        _: &wl_data_offer::WlDataOffer,
+        offer: &wl_data_offer::WlDataOffer,
         event: wl_data_offer::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         if let wl_data_offer::Event::Offer { mime_type } = event {
-            if let Ok(mut lock) = state.active_mime_types.write() {
-                lock.push(mime_type);
+            if state.pending_offer.as_ref() == Some(offer) {
+                state.pending_mime_types.push(mime_type);
+            } else if state.current_selection_offer.as_ref() == Some(offer) {
+                if let Ok(mut lock) = state.active_mime_types.write() {
+                    lock.push(mime_type);
+                }
             }
         }
     }

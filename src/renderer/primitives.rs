@@ -1743,7 +1743,8 @@ mod tests {
             // and within the continuous anti-aliased horizontal extent [px - x_extend, px + cell_w + x_extend)
             let stroke_w = (cell_w / 10).max(1) as f32 * 1.5;
             let radius = stroke_w / 2.0;
-            let x_extend = ((radius + 0.5) * (cell_w as f32).hypot(cell_h as f32) / (cell_h as f32)).ceil() as u32;
+            let x_extend = ((radius + 0.5) * (cell_w as f32).hypot(cell_h as f32) / (cell_h as f32))
+                .ceil() as u32;
             for y in 0..fb.height {
                 for x in 0..fb.width {
                     let pixel = fb.pixels[(y as usize) * fb.stride + (x as usize)];
@@ -2123,7 +2124,8 @@ mod tests {
                         assert!(
                             x <= max_valid_x,
                             "┓ jutting out to the right: x={} > {}",
-                            x, max_valid_x
+                            x,
+                            max_valid_x
                         );
                     }
                 }
@@ -2138,7 +2140,8 @@ mod tests {
                         assert!(
                             y <= max_valid_y,
                             "┗ jutting out to the bottom: y={} > {}",
-                            y, max_valid_y
+                            y,
+                            max_valid_y
                         );
                     }
                 }
@@ -2153,12 +2156,14 @@ mod tests {
                         assert!(
                             x <= max_valid_x,
                             "┛ jutting out to the right: x={} > {}",
-                            x, max_valid_x
+                            x,
+                            max_valid_x
                         );
                         assert!(
                             y <= max_valid_y,
                             "┛ jutting out to the bottom: y={} > {}",
-                            y, max_valid_y
+                            y,
+                            max_valid_y
                         );
                     }
                 }
@@ -2170,7 +2175,12 @@ mod tests {
             for y in 0..ch {
                 for x in 0..cw {
                     if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
-                        assert!(x <= max_valid_x, "┫ jutting out to the right: x={} > {}", x, max_valid_x);
+                        assert!(
+                            x <= max_valid_x,
+                            "┫ jutting out to the right: x={} > {}",
+                            x,
+                            max_valid_x
+                        );
                     }
                 }
             }
@@ -2181,7 +2191,12 @@ mod tests {
             for y in 0..ch {
                 for x in 0..cw {
                     if fb.pixels[(y as usize) * fb.stride + (x as usize)] != 0 {
-                        assert!(y <= max_valid_y, "┻ jutting out to the bottom: y={} > {}", y, max_valid_y);
+                        assert!(
+                            y <= max_valid_y,
+                            "┻ jutting out to the bottom: y={} > {}",
+                            y,
+                            max_valid_y
+                        );
                     }
                 }
             }
@@ -2225,7 +2240,15 @@ mod tests {
 
             assert!(try_render_primitive('┗', 0, ch * 2, cw, ch, fg, &mut fb));
             assert!(try_render_primitive('━', cw, ch * 2, cw, ch, fg, &mut fb));
-            assert!(try_render_primitive('┛', cw * 2, ch * 2, cw, ch, fg, &mut fb));
+            assert!(try_render_primitive(
+                '┛',
+                cw * 2,
+                ch * 2,
+                cw,
+                ch,
+                fg,
+                &mut fb
+            ));
 
             // Verify entire bounding box: no pixels outside expected edges
             for y in 0..(ch * 3) {
@@ -2234,22 +2257,30 @@ mod tests {
                         assert!(
                             x >= expected_left_edge,
                             "Pixel jutting out to left at ({}, {}), min allowed is {}",
-                            x, y, expected_left_edge
+                            x,
+                            y,
+                            expected_left_edge
                         );
                         assert!(
                             x <= expected_right_edge,
                             "Pixel jutting out to right at ({}, {}), max allowed is {}",
-                            x, y, expected_right_edge
+                            x,
+                            y,
+                            expected_right_edge
                         );
                         assert!(
                             y >= expected_top_edge,
                             "Pixel jutting out to top at ({}, {}), min allowed is {}",
-                            x, y, expected_top_edge
+                            x,
+                            y,
+                            expected_top_edge
                         );
                         assert!(
                             y <= expected_bottom_edge,
                             "Pixel jutting out to bottom at ({}, {}), max allowed is {}",
-                            x, y, expected_bottom_edge
+                            x,
+                            y,
+                            expected_bottom_edge
                         );
                     }
                 }
@@ -2266,7 +2297,9 @@ mod tests {
                     rightmost,
                     Some(expected_right_edge),
                     "Right edge at row {} should be flush at {}, but got {:?}",
-                    y, expected_right_edge, rightmost
+                    y,
+                    expected_right_edge,
+                    rightmost
                 );
             }
 
@@ -2281,7 +2314,9 @@ mod tests {
                     bottommost,
                     Some(expected_bottom_edge),
                     "Bottom edge at col {} should be flush at {}, but got {:?}",
-                    x, expected_bottom_edge, bottommost
+                    x,
+                    expected_bottom_edge,
+                    bottommost
                 );
             }
         }

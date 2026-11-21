@@ -796,8 +796,12 @@ impl CpuRenderer {
             return 0;
         }
         let mut h: u64 = separators.len() as u64;
-        h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(active_color as u64);
-        h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(inactive_color as u64);
+        h = h
+            .wrapping_mul(0x9e3779b97f4a7c15)
+            .wrapping_add(active_color as u64);
+        h = h
+            .wrapping_mul(0x517cc1b727220a95)
+            .wrapping_add(inactive_color as u64);
 
         for sep in separators {
             h = h.wrapping_mul(0x9e3779b97f4a7c15);
@@ -807,14 +811,26 @@ impl CpuRenderer {
                 | ((sep.is_dragging as u64) << 3)
                 | (((sep.rect.direction == SplitDirection::Vertical) as u64) << 4);
 
-            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.x.to_bits() as u64);
-            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.y.to_bits() as u64);
-            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.width.to_bits() as u64);
-            h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(sep.rect.height.to_bits() as u64);
+            h = h
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(sep.rect.x.to_bits() as u64);
+            h = h
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(sep.rect.y.to_bits() as u64);
+            h = h
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(sep.rect.width.to_bits() as u64);
+            h = h
+                .wrapping_mul(0x517cc1b727220a95)
+                .wrapping_add(sep.rect.height.to_bits() as u64);
 
             if let Some((start, end)) = sep.active_segment {
-                h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(start.to_bits() as u64);
-                h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(end.to_bits() as u64);
+                h = h
+                    .wrapping_mul(0x9e3779b97f4a7c15)
+                    .wrapping_add(start.to_bits() as u64);
+                h = h
+                    .wrapping_mul(0x517cc1b727220a95)
+                    .wrapping_add(end.to_bits() as u64);
             }
         }
         h
@@ -1433,20 +1449,35 @@ impl CpuRenderer {
 
                         let top_h = seg_start.saturating_sub(sep_y0);
                         if top_h > 0 {
-                            self.framebuffer
-                                .fill_span(sep_x0, sep_y0, sep_w, top_h, inactive_color);
+                            self.framebuffer.fill_span(
+                                sep_x0,
+                                sep_y0,
+                                sep_w,
+                                top_h,
+                                inactive_color,
+                            );
                         }
 
                         let active_h = seg_end.saturating_sub(seg_start);
                         if active_h > 0 {
-                            self.framebuffer
-                                .fill_span(sep_x0, seg_start, sep_w, active_h, active_color);
+                            self.framebuffer.fill_span(
+                                sep_x0,
+                                seg_start,
+                                sep_w,
+                                active_h,
+                                active_color,
+                            );
                         }
 
                         let bot_h = sep_y1.saturating_sub(seg_end);
                         if bot_h > 0 {
-                            self.framebuffer
-                                .fill_span(sep_x0, seg_end, sep_w, bot_h, inactive_color);
+                            self.framebuffer.fill_span(
+                                sep_x0,
+                                seg_end,
+                                sep_w,
+                                bot_h,
+                                inactive_color,
+                            );
                         }
                     }
                     SplitDirection::Horizontal => {
@@ -1455,20 +1486,35 @@ impl CpuRenderer {
 
                         let left_w = seg_start.saturating_sub(sep_x0);
                         if left_w > 0 {
-                            self.framebuffer
-                                .fill_span(sep_x0, sep_y0, left_w, sep_h, inactive_color);
+                            self.framebuffer.fill_span(
+                                sep_x0,
+                                sep_y0,
+                                left_w,
+                                sep_h,
+                                inactive_color,
+                            );
                         }
 
                         let active_w = seg_end.saturating_sub(seg_start);
                         if active_w > 0 {
-                            self.framebuffer
-                                .fill_span(seg_start, sep_y0, active_w, sep_h, active_color);
+                            self.framebuffer.fill_span(
+                                seg_start,
+                                sep_y0,
+                                active_w,
+                                sep_h,
+                                active_color,
+                            );
                         }
 
                         let right_w = sep_x1.saturating_sub(seg_end);
                         if right_w > 0 {
-                            self.framebuffer
-                                .fill_span(seg_end, sep_y0, right_w, sep_h, inactive_color);
+                            self.framebuffer.fill_span(
+                                seg_end,
+                                sep_y0,
+                                right_w,
+                                sep_h,
+                                inactive_color,
+                            );
                         }
                     }
                 }
@@ -2245,15 +2291,15 @@ impl CpuRenderer {
         let new_tab_bar_hash = Self::compute_tab_bar_hash(tab_bar_info);
         let tab_bar_dirty = new_tab_bar_hash != self.prev_tab_bar_hash;
 
-        let new_separators_hash = Self::compute_separators_hash(
-            separators,
-            active_color,
-            inactive_color,
-        );
+        let new_separators_hash =
+            Self::compute_separators_hash(separators, active_color, inactive_color);
         let separators_dirty = new_separators_hash != self.prev_separators_hash;
 
-        let force_redraw =
-            self.damage.full_redraw || any_pane_damage || blink_changed || tab_bar_dirty || separators_dirty;
+        let force_redraw = self.damage.full_redraw
+            || any_pane_damage
+            || blink_changed
+            || tab_bar_dirty
+            || separators_dirty;
 
         if !force_redraw && !self.damage.has_damage() {
             if let Some(buf) = target_buffer {
@@ -2296,11 +2342,7 @@ impl CpuRenderer {
 
         // 7. Render Separators
         if !separators.is_empty() {
-            self.render_separators(
-                separators,
-                active_color,
-                inactive_color,
-            );
+            self.render_separators(separators, active_color, inactive_color);
             if separators_dirty || self.damage.full_redraw {
                 for sep in separators {
                     let y0 = sep.rect.y.round() as u32;

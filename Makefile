@@ -27,11 +27,11 @@ DURATION ?=
 WORKLOAD ?=
 ARGS ?=
 
-.PHONY: all build release optimized-release run run-release run-optimized-release check test clean update lint \
-	build-velox release-velox optimized-release-velox build-config release-config optimized-release-config run-config run-config-release \
-	bootstrap update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-optimized-release ram-release \
-	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-optimized-release cpu-debug cpu-compare cpu-benchmark \
-	palette generate-icons install install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
+.PHONY: all build release run run-release check test clean update lint \
+	build-velox release-velox build-config release-config run-config run-config-release \
+	bootstrap update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-release \
+	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-debug cpu-compare cpu-benchmark \
+	palette generate-icons install install-deb install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
 
 # Default target
 all: build
@@ -52,12 +52,6 @@ build:
 release:
 	cargo build --release
 
-# Alias for backward compatibility
-optimized-release: release
-	@mkdir -p target/optimized-release
-	@cp -f target/release/velox target/optimized-release/velox
-	@if [ -f target/release/velox-config ]; then cp -f target/release/velox-config target/optimized-release/velox-config; fi
-
 # Build only the Velox terminal in debug mode
 build-velox:
 	cargo build --bin velox
@@ -65,11 +59,6 @@ build-velox:
 # Build only the Velox terminal in release mode
 release-velox:
 	cargo build --release --bin velox
-
-# Build only the Velox terminal in release mode and stage into target/optimized-release
-optimized-release-velox: release-velox
-	@mkdir -p target/optimized-release
-	@cp -f target/release/velox target/optimized-release/velox
 
 # Build only the velox-config CLI tool in debug mode
 build-config:
@@ -79,11 +68,6 @@ build-config:
 release-config:
 	cargo build --release --bin velox-config
 
-# Build only the velox-config CLI tool in release mode and stage into target/optimized-release
-optimized-release-config: release-config
-	@mkdir -p target/optimized-release
-	@cp -f target/release/velox-config target/optimized-release/velox-config
-
 # Run the project (debug mode)
 run:
 	cargo run --bin velox
@@ -91,9 +75,6 @@ run:
 # Run the project in release mode
 run-release:
 	cargo run --release --bin velox
-
-# Alias for backward compatibility
-run-optimized-release: run-release
 
 # Run velox-config in debug mode
 run-config:
@@ -209,9 +190,6 @@ ram: ram-usage
 ram-release:
 	python3 scripts/measure_ram.py --profile release $(ARGS)
 
-# Alias for backward compatibility
-ram-optimized-release: ram-release
-
 # Measure RAM usage in debug mode
 ram-debug:
 	python3 scripts/measure_ram.py --profile debug $(ARGS)
@@ -235,9 +213,6 @@ cpu-benchmark: test-single-cpu
 # Measure single-core CPU usage in release mode
 cpu-release:
 	python3 scripts/measure_cpu.py --profile release --core $(CORE) $(ARGS)
-
-# Alias for backward compatibility
-cpu-optimized-release: cpu-release
 
 # Measure single-core CPU usage in debug mode
 cpu-debug:
@@ -285,6 +260,10 @@ banner-update: update-banner
 deb:
 	bash scripts/packaging/debian/build-deb.sh
 
+# Install latest Debian / Ubuntu (.deb) package from dist/
+install-deb:
+	bash scripts/autoinstdist/install_apt.sh
+
 # Package for Arch Linux (.pkg.tar.zst)
 arch-pkg:
 	bash scripts/packaging/arch/build-arch.sh
@@ -301,13 +280,10 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "bootstrap" "Install dev tools, libraries, compilers, and packaging utilities"
 	@printf "  \033[36m%-25s\033[0m %s\n" "build" "Build all binaries in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build all binaries in release mode (fat LTO, codegen-units=1, stripped)"
-	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release" "Build and stage all release binaries in target/optimized-release"
 	@printf "  \033[36m%-25s\033[0m %s\n" "build-velox" "Build only Velox terminal in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "release-velox" "Build only Velox terminal in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release-velox" "Build and stage only Velox terminal in target/optimized-release"
 	@printf "  \033[36m%-25s\033[0m %s\n" "build-config" "Build only velox-config CLI in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "release-config" "Build only velox-config CLI in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "optimized-release-config" "Build and stage only velox-config in target/optimized-release"
 	@printf "  \033[36m%-25s\033[0m %s\n" "generate-icons" "Generate multi-resolution icon assets"
 	@printf "  \033[36m%-25s\033[0m %s\n" "clean" "Remove target/ and dist/ artifacts"
 	@printf "\n\033[1;32mRunning:\033[0m\n"
@@ -326,6 +302,7 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "rpm" "Build Fedora / RHEL RPM package in dist/ (*.rpm)"
 	@printf "\n\033[1;32mInstallation & Desktop:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install" "Install binary, desktop file, icons, and completions (PREFIX=/usr/local)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "install-deb" "Install latest built .deb package from dist/ via APT"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-desktop" "Install .desktop launcher entry"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-icons" "Install hicolor icons for all supported resolutions"
 	@printf "  \033[36m%-25s\033[0m %s\n" "install-completions" "Install Bash, Zsh, and Fish shell completions"

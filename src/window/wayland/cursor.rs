@@ -113,6 +113,8 @@ impl WaylandCursorManager {
     }
 
     pub fn hide_cursor(&mut self, serial: u32, pointer: &wl_pointer::WlPointer) {
+        self.cursor_surface.attach(None, 0, 0);
+        self.cursor_surface.commit();
         pointer.set_cursor(serial, None, 0, 0);
     }
 }

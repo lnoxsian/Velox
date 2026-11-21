@@ -1417,11 +1417,11 @@ fn test_software_renderer_colorblocks_and_block_coalescing() {
     let blue_fg = Color { r: 0, g: 0, b: 255 };
     let default_bg = Color { r: 0, g: 0, b: 0 };
 
-    for col in 0..4 {
-        grid.cells[col] = Cell::new('█', red_fg, default_bg, CellFlags::empty());
+    for cell in grid.cells.iter_mut().take(4) {
+        *cell = Cell::new('█', red_fg, default_bg, CellFlags::empty());
     }
-    for col in 4..8 {
-        grid.cells[col] = Cell::new('█', blue_fg, default_bg, CellFlags::empty());
+    for cell in grid.cells.iter_mut().take(8).skip(4) {
+        *cell = Cell::new('█', blue_fg, default_bg, CellFlags::empty());
     }
 
     // Fill row 1 with coalesced upper half blocks '▀'

@@ -1947,8 +1947,16 @@ fn test_split_separator_damage_and_focus_switching() {
     };
 
     let mut target_buf = vec![0u32; 800 * 600];
-    let active_color = Color { r: 50, g: 150, b: 250 };
-    let inactive_color = Color { r: 80, g: 80, b: 80 };
+    let active_color = Color {
+        r: 50,
+        g: 150,
+        b: 250,
+    };
+    let inactive_color = Color {
+        r: 80,
+        g: 80,
+        b: 80,
+    };
     let active_u32 = velox::renderer::color::PackedColor::from_color(active_color).to_u32();
     let inactive_u32 = velox::renderer::color::PackedColor::from_color(inactive_color).to_u32();
 
@@ -1999,7 +2007,11 @@ fn test_split_separator_damage_and_focus_switching() {
         Some(active_color),
     );
     assert!(dmg1.is_some(), "Frame 1 must damage");
-    assert_eq!(target_buf[300 * 800 + 400], active_u32, "Separator must be active color");
+    assert_eq!(
+        target_buf[300 * 800 + 400],
+        active_u32,
+        "Separator must be active color"
+    );
 
     // Clear damage
     p1.terminal.active_grid_mut().clear_damage();
@@ -2082,12 +2094,28 @@ fn test_split_separator_damage_and_focus_switching() {
         dmg3.is_some(),
         "Separator active segment change must trigger damage"
     );
-    assert_eq!(target_buf[150 * 800 + 400], active_u32, "Top segment must be active color");
-    assert_eq!(target_buf[450 * 800 + 400], inactive_u32, "Bottom segment must be inactive color");
+    assert_eq!(
+        target_buf[150 * 800 + 400],
+        active_u32,
+        "Top segment must be active color"
+    );
+    assert_eq!(
+        target_buf[450 * 800 + 400],
+        inactive_u32,
+        "Bottom segment must be inactive color"
+    );
 
     // Verify no gap at boundary (y = 299, 300) across all separator columns (398..402)
     for x in 398..402 {
-        assert_eq!(target_buf[299 * 800 + x], active_u32, "Row 299 must be active with no gap");
-        assert_eq!(target_buf[300 * 800 + x], inactive_u32, "Row 300 must be inactive with no gap");
+        assert_eq!(
+            target_buf[299 * 800 + x],
+            active_u32,
+            "Row 299 must be active with no gap"
+        );
+        assert_eq!(
+            target_buf[300 * 800 + x],
+            inactive_u32,
+            "Row 300 must be inactive with no gap"
+        );
     }
 }

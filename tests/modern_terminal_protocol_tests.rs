@@ -535,8 +535,7 @@ fn test_detected_urls_and_osc8_have_no_automatic_underline() {
     );
 
     // Verify NO cells in row 0 have automatic underline flags
-    for col in 0..80 {
-        let cell = &grid.cells[col];
+    for (col, cell) in grid.cells.iter().enumerate().take(80) {
         assert!(
             !cell.flags.intersects(
                 CellFlags::UNDERLINE | CellFlags::DOUBLE_UNDERLINE | CellFlags::CURLY_UNDERLINE

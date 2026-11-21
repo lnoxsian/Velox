@@ -109,7 +109,10 @@ fn test_damage_map_large_selection_clamping_efficiency() {
 
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn create_test_pty_pipe() -> (std::sync::Arc<velox::pty::master::PtyMaster>, std::os::fd::OwnedFd) {
+fn create_test_pty_pipe() -> (
+    std::sync::Arc<velox::pty::master::PtyMaster>,
+    std::os::fd::OwnedFd,
+) {
     let mut fds = [0; 2];
     unsafe {
         assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);

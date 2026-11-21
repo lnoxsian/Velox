@@ -493,22 +493,24 @@ fn test_devanagari_combining_characters_rasterization_and_rendering() {
     }
 }
 
-
 #[test]
 fn test_nerd_font_sizes_are_consistent_across_fonts() {
     let db = get_system_font_db();
 
     // 1. Verify aliases for DejaVu Nerd Font resolve correctly
-    let (_font_arc1, _, name1) = velox::font::resolved::resolve_regular_font(db, "DejaVuSansM Nerd Font")
-        .expect("Resolve DejaVuSansM Nerd Font");
+    let (_font_arc1, _, name1) =
+        velox::font::resolved::resolve_regular_font(db, "DejaVuSansM Nerd Font")
+            .expect("Resolve DejaVuSansM Nerd Font");
     assert_eq!(name1, "DejaVuSansM Nerd Font");
 
-    let (_font_arc2, _, name2) = velox::font::resolved::resolve_regular_font(db, "DejaVuSansMono Nerd Font")
-        .expect("Resolve DejaVuSansMono Nerd Font alias");
+    let (_font_arc2, _, name2) =
+        velox::font::resolved::resolve_regular_font(db, "DejaVuSansMono Nerd Font")
+            .expect("Resolve DejaVuSansMono Nerd Font alias");
     assert_eq!(name2, "DejaVuSansM Nerd Font");
 
-    let (_font_arc3, _, name3) = velox::font::resolved::resolve_regular_font(db, "DejaVu Sans Mono Nerd Font")
-        .expect("Resolve DejaVu Sans Mono Nerd Font alias");
+    let (_font_arc3, _, name3) =
+        velox::font::resolved::resolve_regular_font(db, "DejaVu Sans Mono Nerd Font")
+            .expect("Resolve DejaVu Sans Mono Nerd Font alias");
     assert_eq!(name3, "DejaVuSansM Nerd Font");
 
     let fonts = [
@@ -536,9 +538,9 @@ fn test_nerd_font_sizes_are_consistent_across_fonts() {
 
         for &icon in &test_icons {
             let key = GlyphKey::new(icon, false, false, false);
-            let gref = cache
-                .get_or_rasterize(key)
-                .unwrap_or_else(|| panic!("Rasterize icon U+{:04X} in font {}", icon as u32, font_name));
+            let gref = cache.get_or_rasterize(key).unwrap_or_else(|| {
+                panic!("Rasterize icon U+{:04X} in font {}", icon as u32, font_name)
+            });
 
             let mask = cache.atlas.get_alpha(&gref);
             let w = gref.width as usize;
@@ -555,13 +557,21 @@ fn test_nerd_font_sizes_are_consistent_across_fonts() {
                     }
                 }
             }
-            let bbox_h = if count > 0 { max_y.saturating_sub(min_y) + 1 } else { 0 };
+            let bbox_h = if count > 0 {
+                max_y.saturating_sub(min_y) + 1
+            } else {
+                0
+            };
 
             // Nerd font icons must be prominent and consistent (at least 12px for size 16, never tiny like 8px)
             assert!(
                 bbox_h >= 12,
                 "Icon U+{:04X} in font '{}' is too small: bbox_h={}, active_px={}, cell_height={}",
-                icon as u32, font_name, bbox_h, count, cache.cell_height
+                icon as u32,
+                font_name,
+                bbox_h,
+                count,
+                cache.cell_height
             );
         }
     }
@@ -594,7 +604,11 @@ fn test_nerd_font_scale_multiplier_controls_glyph_size() {
                 }
             }
         }
-        if count > 0 { max_y.saturating_sub(min_y) + 1 } else { 0 }
+        if count > 0 {
+            max_y.saturating_sub(min_y) + 1
+        } else {
+            0
+        }
     };
 
     // 1. Default scale (1.0)
@@ -628,13 +642,15 @@ fn test_nerd_font_scale_multiplier_controls_glyph_size() {
 
     // 4. Invalid scale clamping / defaulting
     cache.set_nerd_font_scale(50.0);
-    assert_eq!(cache.nerd_font_scale, 1.0, "Out-of-range scale must default to 1.0");
+    assert_eq!(
+        cache.nerd_font_scale, 1.0,
+        "Out-of-range scale must default to 1.0"
+    );
 
     // 5. CpuRenderer set_nerd_font_scale integration
     let theme = velox::theme::theme::Theme::default();
-    let mut renderer = velox::renderer::CpuRenderer::new(
-        font_name, 16.0, 1.0, &theme, 800, 600, true, 1.0,
-    );
+    let mut renderer =
+        velox::renderer::CpuRenderer::new(font_name, 16.0, 1.0, &theme, 800, 600, true, 1.0);
     renderer.set_nerd_font_scale(1.15);
     assert_eq!(renderer.glyph_cache.nerd_font_scale, 1.15);
 }

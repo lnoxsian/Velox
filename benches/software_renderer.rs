@@ -695,7 +695,7 @@ fn main() {
     let start = Instant::now();
     for _ in 0..csd_iters {
         renderer.render_csd_title_bar(
-            "Velox Terminal - /home/lnoxsian/projects/velox",
+            "Velox Terminal - ~/projects/velox",
             38,
             true,
             false,

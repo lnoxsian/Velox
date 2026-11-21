@@ -270,7 +270,8 @@ fn test_spawn_process_synchronous_exec_error() {
     );
     let err_str = res.unwrap_err().to_string();
     assert!(
-        err_str.contains("exec failed with errno 2") || err_str.contains("No such file or directory"),
+        err_str.contains("exec failed with errno 2")
+            || err_str.contains("No such file or directory"),
         "Error message must report exact exec failure errno, got: {}",
         err_str
     );
@@ -278,17 +279,15 @@ fn test_spawn_process_synchronous_exec_error() {
 
 #[test]
 fn test_spawn_process_invalid_working_directory_fallback() {
-    let cmd = vec![
-        "/bin/sh".to_string(),
-        "-c".to_string(),
-        "pwd".to_string(),
-    ];
+    let cmd = vec!["/bin/sh".to_string(), "-c".to_string(), "pwd".to_string()];
     let pty = spawn_terminal_pty(
         "/bin/sh",
         Some(&cmd),
         Some("/nonexistent_directory_for_velox_test_xyz"),
     )
-    .expect("spawn_terminal_pty must gracefully fall back to $HOME when requested directory is invalid");
+    .expect(
+        "spawn_terminal_pty must gracefully fall back to $HOME when requested directory is invalid",
+    );
 
     let mut output = String::new();
     let mut buf = [0u8; 512];

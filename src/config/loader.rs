@@ -57,6 +57,12 @@ pub fn config_path() -> Option<PathBuf> {
             return Some(p);
         }
     }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        let xdg_path = PathBuf::from(&xdg).join("velox").join("config.toml");
+        if xdg_path.exists() {
+            return Some(xdg_path);
+        }
+    }
     if let Ok(h) = std::env::var("HOME") {
         let global_path = PathBuf::from(&h)
             .join(".config")
@@ -74,12 +80,17 @@ pub fn config_path() -> Option<PathBuf> {
     if local_velox.exists() {
         return Some(local_velox);
     }
-    std::env::var("HOME").ok().map(|h| {
-        PathBuf::from(h)
-            .join(".config")
-            .join("velox")
-            .join("config.toml")
-    })
+    std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(|xdg| PathBuf::from(xdg).join("velox").join("config.toml"))
+        .or_else(|| {
+            std::env::var("HOME").ok().map(|h| {
+                PathBuf::from(h)
+                    .join(".config")
+                    .join("velox")
+                    .join("config.toml")
+            })
+        })
 }
 
 fn byte_to_line_col(s: &str, byte_idx: usize) -> (usize, usize) {

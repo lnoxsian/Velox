@@ -263,8 +263,7 @@ impl WindowState {
                             // guarantees natural, symmetric swap thresholds regardless of click offset.
                             let dragged_center_x =
                                 (self.mouse_x as f32) - dragging.offset_in_tab + (tab_w * 0.5);
-                            let target_slot =
-                                (dragged_center_x / tab_w).floor() as isize;
+                            let target_slot = (dragged_center_x / tab_w).floor() as isize;
                             let target_index =
                                 target_slot.clamp(0, (tab_count - 1) as isize) as usize;
 
@@ -276,7 +275,10 @@ impl WindowState {
                     }
                 }
 
-                if self.tab_bar.set_hover(Some(dragging.current_index), None, false) {
+                if self
+                    .tab_bar
+                    .set_hover(Some(dragging.current_index), None, false)
+                {
                     self.tab_bar_dirty = true;
                     self.needs_redraw = true;
                 }

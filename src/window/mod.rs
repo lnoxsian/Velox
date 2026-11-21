@@ -193,7 +193,12 @@ impl PlatformWindow {
     }
 
     #[inline]
-    pub fn present_frame(&mut self, src_pixels: &[u32], src_stride: usize, damage: Option<DamageRect>) {
+    pub fn present_frame(
+        &mut self,
+        src_pixels: &[u32],
+        src_stride: usize,
+        damage: Option<DamageRect>,
+    ) {
         match self {
             Self::X11(w) => w.present_frame(src_pixels, src_stride, damage),
             Self::Wayland(w) => w.present_frame(src_pixels, src_stride, damage),

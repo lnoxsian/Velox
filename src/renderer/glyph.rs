@@ -723,8 +723,8 @@ impl GlyphCache {
                         let ph = bounds.height();
                         let pw = bounds.width();
                         if ph > 0.0 && pw > 0.0 {
-                            let base_target_h = (font_scale * 0.90)
-                                .min(self.cell_height as f32 * 0.85);
+                            let base_target_h =
+                                (font_scale * 0.90).min(self.cell_height as f32 * 0.85);
                             let target_h = (base_target_h * self.nerd_font_scale)
                                 .min(self.cell_height as f32)
                                 .round()
@@ -732,7 +732,7 @@ impl GlyphCache {
                             let max_w = base_target_width as f32 * 2.0;
                             let sh = target_h / ph;
                             let sw = max_w / pw;
-                            let fit = sh.min(sw).min(3.0).max(0.05);
+                            let fit = sh.min(sw).clamp(0.05, 3.0);
                             scale = PxScale::from(font_scale * fit);
                         } else {
                             scale = PxScale::from(font_scale);

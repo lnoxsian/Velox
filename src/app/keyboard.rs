@@ -904,11 +904,8 @@ mod tests {
         assert_eq!(read_pty_output(&read_end), &[127]);
 
         // Alt + Backspace writes ESC DEL
-        let handled = ws.handle_keyboard_input(
-            &Key::Named(NamedKey::Backspace),
-            None,
-            ModifiersState::ALT,
-        );
+        let handled =
+            ws.handle_keyboard_input(&Key::Named(NamedKey::Backspace), None, ModifiersState::ALT);
         assert!(handled);
         assert_eq!(read_pty_output(&read_end), &[27, 127]);
     }

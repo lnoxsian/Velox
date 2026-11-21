@@ -1757,8 +1757,7 @@ impl App {
         {
             let working_dir = opts
                 .working_directory
-                .or_else(|| config.working_directory())
-                .or_else(|| std::env::var("HOME").ok());
+                .or_else(|| config.working_directory());
             self.create_window(working_dir, opts.command, opts.title, Some(opts.hold))?;
         }
 
@@ -1951,22 +1950,49 @@ impl App {
                     // If the deadline is within 250µs, don't sleep in the kernel - do an immediate poll
                     // to prevent kernel timer slack overshooting and causing micro-stutter.
                     if diff < std::time::Duration::from_micros(250) {
-                        (libc::timespec { tv_sec: 0, tv_nsec: 0 }, true)
+                        (
+                            libc::timespec {
+                                tv_sec: 0,
+                                tv_nsec: 0,
+                            },
+                            true,
+                        )
                     } else {
-                        (libc::timespec {
-                            tv_sec: diff.as_secs() as libc::time_t,
-                            tv_nsec: diff.subsec_nanos() as libc::c_long,
-                        }, true)
+                        (
+                            libc::timespec {
+                                tv_sec: diff.as_secs() as libc::time_t,
+                                tv_nsec: diff.subsec_nanos() as libc::c_long,
+                            },
+                            true,
+                        )
                     }
                 } else {
-                    (libc::timespec { tv_sec: 0, tv_nsec: 0 }, true)
+                    (
+                        libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        },
+                        true,
+                    )
                 }
             }
             None => {
                 if has_dirty_windows {
-                    (libc::timespec { tv_sec: 0, tv_nsec: 0 }, true)
+                    (
+                        libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        },
+                        true,
+                    )
                 } else {
-                    (libc::timespec { tv_sec: 0, tv_nsec: 0 }, false)
+                    (
+                        libc::timespec {
+                            tv_sec: 0,
+                            tv_nsec: 0,
+                        },
+                        false,
+                    )
                 }
             }
         }
@@ -2131,8 +2157,8 @@ impl App {
                 }
 
                 let cursor_blink_active = ws.is_cursor_blink_active();
-                let is_typing_blink = now.duration_since(ws.last_key_instant)
-                    < std::time::Duration::from_millis(500);
+                let is_typing_blink =
+                    now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
 
                 if is_typing_blink {
                     // While actively typing, freeze cursor blink to solid ON so the cursor
@@ -2476,7 +2502,8 @@ mod tests {
 
         // Rapidly create and exit 5 windows in succession
         for wid in 1..=5 {
-            let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+            let mut ws =
+                WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
             ws.window_id = wid;
             let tab_id = ws.tabs[0].id;
             let pane_id = ws.tabs[0].active_pane_id;
@@ -2504,7 +2531,9 @@ mod tests {
         let now = std::time::Instant::now();
 
         // 1. Deadline in the past -> timeout is 0, has_timeout is true
-        let past = now.checked_sub(std::time::Duration::from_millis(10)).unwrap();
+        let past = now
+            .checked_sub(std::time::Duration::from_millis(10))
+            .unwrap();
         let (ts, has_timeout) = App::compute_ppoll_timeout(Some(past), false);
         assert!(has_timeout);
         assert_eq!(ts.tv_sec, 0);
@@ -2546,7 +2575,8 @@ mod tests {
         // User typed 100ms ago (<500ms threshold)
         ws.last_key_instant = now - std::time::Duration::from_millis(100);
 
-        let is_typing_blink = now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
+        let is_typing_blink =
+            now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
         assert!(is_typing_blink);
 
         // While typing is active, cursor is forced to solid ON
@@ -2559,7 +2589,8 @@ mod tests {
 
         // When typing has ceased (> 500ms ago), blinking resumes
         ws.last_key_instant = now - std::time::Duration::from_millis(600);
-        let is_typing_blink_after = now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
+        let is_typing_blink_after =
+            now.duration_since(ws.last_key_instant) < std::time::Duration::from_millis(500);
         assert!(!is_typing_blink_after);
     }
 

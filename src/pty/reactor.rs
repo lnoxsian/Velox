@@ -1042,6 +1042,9 @@ mod tests {
         let proxy = EventLoopProxy::new(sender, -1);
         let reactor = PtyReactor::new(proxy).expect("PtyReactor::new failed");
         let handle = reactor.handle();
-        assert!(!handle.has_buffered_writes(), "Initially no buffered writes");
+        assert!(
+            !handle.has_buffered_writes(),
+            "Initially no buffered writes"
+        );
     }
 }

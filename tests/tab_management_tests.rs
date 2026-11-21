@@ -755,10 +755,10 @@ fn test_close_tab_before_active_index_shifts_active_index() {
 }
 
 #[test]
-fn test_spawn_process_defaults_to_home_dir() {
+fn test_spawn_process_defaults_to_current_dir() {
     let pty = Arc::new(spawn_process("/bin/sh", None, None).unwrap());
-    if let Ok(home) = std::env::var("HOME") {
-        let expected = std::path::Path::new(&home);
+    if let Ok(current_dir) = std::env::current_dir() {
+        let expected = current_dir;
         let mut matched = false;
         for _ in 0..50 {
             if let Some(ref cwd) = pty.get_foreground_process_cwd()
@@ -771,7 +771,7 @@ fn test_spawn_process_defaults_to_home_dir() {
         }
         assert!(
             matched,
-            "When working_directory is None, spawn_process must default to $HOME"
+            "When working_directory is None, spawn_process must inherit current working directory"
         );
     }
 }
@@ -813,7 +813,10 @@ fn test_split_pane_inherits_parent_pane_cwd() {
     );
 }
 
-fn create_test_pty_pipe() -> (std::sync::Arc<velox::pty::master::PtyMaster>, std::os::fd::OwnedFd) {
+fn create_test_pty_pipe() -> (
+    std::sync::Arc<velox::pty::master::PtyMaster>,
+    std::os::fd::OwnedFd,
+) {
     let mut fds = [0; 2];
     unsafe {
         assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
@@ -872,7 +875,9 @@ fn test_tab_mouse_drag_and_reorder() {
     );
 
     assert!(ws.is_mouse_down);
-    let dragging = ws.dragging_tab.expect("dragging_tab should be set on left click");
+    let dragging = ws
+        .dragging_tab
+        .expect("dragging_tab should be set on left click");
     assert_eq!(dragging.current_index, 0);
     assert_eq!(dragging.start_x, 50.0);
     assert_eq!(dragging.offset_in_tab, 50.0);
@@ -935,7 +940,10 @@ fn test_tab_mouse_drag_and_reorder() {
     let mut curr_x = 600.0f64;
     while curr_x >= 100.0 {
         curr_x -= 5.0;
-        ws.handle_cursor_moved((curr_x, 10.0), velox::window::event::ModifiersState::empty());
+        ws.handle_cursor_moved(
+            (curr_x, 10.0),
+            velox::window::event::ModifiersState::empty(),
+        );
     }
 
     // Tab 2 has smoothly moved from index 2 to index 0

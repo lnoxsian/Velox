@@ -38,17 +38,21 @@ impl WaylandClipboardProvider {
 
     fn read_from_offer(&self) -> Option<String> {
         let offer = self.active_offer.read().ok()?.clone()?;
-        let mimes = self.active_mime_types.read().ok()?.clone();
-
-        let chosen_mime = mimes
-            .iter()
-            .find(|m| {
-                *m == "text/plain;charset=utf-8" || *m == "text/plain" || *m == "UTF8_STRING"
-            })?
-            .clone();
+        let chosen_mime = {
+            let lock = self.active_mime_types.read().ok()?;
+            lock.iter()
+                .find(|m| {
+                    m.eq_ignore_ascii_case("text/plain;charset=utf-8")
+                        || m.eq_ignore_ascii_case("text/plain")
+                        || m.eq_ignore_ascii_case("utf8_string")
+                        || m.eq_ignore_ascii_case("string")
+                        || m.eq_ignore_ascii_case("text")
+                })?
+                .clone()
+        };
 
         let mut fds = [0i32; 2];
-        let res = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        let res = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
         if res != 0 {
             return None;
         }
@@ -76,19 +80,32 @@ impl WaylandClipboardProvider {
                 timeout_ms.saturating_sub(start.elapsed().as_millis() as u64) as libc::c_int;
             let ret = unsafe { libc::poll(&mut pollfd, 1, remaining.max(1)) };
             if ret > 0 && (pollfd.revents & (libc::POLLIN | libc::POLLHUP)) != 0 {
-                let mut buf = [0u8; 4096];
-                let bytes_read = unsafe {
-                    libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-                };
-                if bytes_read > 0 {
-                    data.extend_from_slice(&buf[..bytes_read as usize]);
-                } else {
-                    // EOF reached
+                let mut buf = [0u8; 8192];
+                let mut eof = false;
+                loop {
+                    let bytes_read = unsafe {
+                        libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+                    };
+                    if bytes_read > 0 {
+                        data.extend_from_slice(&buf[..bytes_read as usize]);
+                    } else if bytes_read == 0 {
+                        eof = true;
+                        break;
+                    } else {
+                        let err = std::io::Error::last_os_error();
+                        if err.kind() == std::io::ErrorKind::WouldBlock {
+                            break;
+                        } else if err.kind() == std::io::ErrorKind::Interrupted {
+                            continue;
+                        } else {
+                            eof = true;
+                            break;
+                        }
+                    }
+                }
+                if eof {
                     break;
                 }
-            } else if ret == 0 {
-                // Timeout
-                break;
             } else {
                 break;
             }
@@ -106,11 +123,12 @@ impl WaylandClipboardProvider {
 
 impl ClipboardProvider for WaylandClipboardProvider {
     fn copy(&self, text: &str) {
+        let owned = text.to_string();
         if let Ok(mut lock) = self.clipboard_text.write() {
-            *lock = text.to_string();
+            *lock = owned.clone();
         }
         if let Ok(mut queue) = self.copy_pending_requests.lock() {
-            queue.push_back(text.to_string());
+            queue.push_back(owned);
         }
         let _ = self.conn.flush();
     }

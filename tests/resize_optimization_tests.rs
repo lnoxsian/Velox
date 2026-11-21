@@ -517,4 +517,3 @@ fn test_horizontal_narrowing_grid_integrity() {
         .collect();
     assert_eq!(restored_row.trim_end(), original_text);
 }
-

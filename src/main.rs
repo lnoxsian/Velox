@@ -61,7 +61,12 @@ fn main() {
         let cwd = cli_opts
             .working_directory
             .clone()
-            .or_else(|| config.working_directory());
+            .or_else(|| config.working_directory())
+            .or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned())
+            });
         let ipc_msg = ipc::IpcMessage::CreateWindow {
             working_directory: cwd,
             command: cli_opts.command.clone(),

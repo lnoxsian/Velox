@@ -1446,17 +1446,26 @@ mod tests {
                         let idx = (keycode - win.min_keycode) as usize * win.keysyms_per_keycode;
                         if idx < keymap.len() && (keymap[idx] == 0xff08 || keymap[idx] == 0x08) {
                             let (key_plain, _) = win.lookup_key(keycode, 0u16.into());
-                            assert_eq!(key_plain, Some(Key::Named(crate::window::NamedKey::Backspace)));
+                            assert_eq!(
+                                key_plain,
+                                Some(Key::Named(crate::window::NamedKey::Backspace))
+                            );
 
                             let (key_shift, _) =
                                 win.lookup_key(keycode, ModMask::SHIFT.bits().into());
-                            assert_eq!(key_shift, Some(Key::Named(crate::window::NamedKey::Backspace)));
+                            assert_eq!(
+                                key_shift,
+                                Some(Key::Named(crate::window::NamedKey::Backspace))
+                            );
 
                             let (key_shift_lock, _) = win.lookup_key(
                                 keycode,
                                 (ModMask::SHIFT.bits() | ModMask::LOCK.bits()).into(),
                             );
-                            assert_eq!(key_shift_lock, Some(Key::Named(crate::window::NamedKey::Backspace)));
+                            assert_eq!(
+                                key_shift_lock,
+                                Some(Key::Named(crate::window::NamedKey::Backspace))
+                            );
                             break;
                         }
                     }

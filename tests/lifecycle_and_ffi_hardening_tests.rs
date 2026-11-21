@@ -296,11 +296,7 @@ fn test_spawn_process_terminal_execution() {
 fn test_immediate_shell_exit_terminates_without_hang() {
     let pty = spawn_process(
         "/bin/sh",
-        Some(&[
-            "sh".to_string(),
-            "-c".to_string(),
-            "exit 0".to_string(),
-        ]),
+        Some(&["sh".to_string(), "-c".to_string(), "exit 0".to_string()]),
         None,
     )
     .expect("Spawn process with immediate exit");

@@ -66,8 +66,7 @@ pub fn build_terminal_env_cstrings() -> (Vec<CString>, Vec<*const libc::c_char>)
             env_cstrings.push(cs);
         }
     }
-    let mut envp_ptrs: Vec<*const libc::c_char> =
-        env_cstrings.iter().map(|s| s.as_ptr()).collect();
+    let mut envp_ptrs: Vec<*const libc::c_char> = env_cstrings.iter().map(|s| s.as_ptr()).collect();
     envp_ptrs.push(std::ptr::null());
     (env_cstrings, envp_ptrs)
 }
@@ -152,13 +151,13 @@ pub fn spawn_process_with_size(
         }
         (prog_cs, argv)
     } else {
-        let prog =
-            resolve_executable_in_path(shell_path).unwrap_or_else(|| shell_path.to_string());
+        let prog = resolve_executable_in_path(shell_path).unwrap_or_else(|| shell_path.to_string());
         let prog_cs = CString::new(prog.as_bytes()).map_err(|e| PtyError::Fork(e.to_string()))?;
         let argv = vec![prog_cs.clone()];
         (prog_cs, argv)
     };
-    let mut argv_ptrs: Vec<*const libc::c_char> = argv_cstrings.iter().map(|s| s.as_ptr()).collect();
+    let mut argv_ptrs: Vec<*const libc::c_char> =
+        argv_cstrings.iter().map(|s| s.as_ptr()).collect();
     argv_ptrs.push(std::ptr::null());
 
     // 2. Pre-build environment CStrings in parent before fork
@@ -168,7 +167,6 @@ pub fn spawn_process_with_size(
     let c_dir = working_directory
         .filter(|d| std::path::Path::new(d).is_dir())
         .and_then(|d| CString::new(d.as_bytes()).ok());
-    let home_cstring = std::env::var("HOME").ok().and_then(|h| CString::new(h.as_bytes()).ok());
 
     // 4. Create PTY with initial geometry if requested
     let pty = if let Some((cols, rows)) = initial_size {
@@ -254,13 +252,7 @@ pub fn spawn_process_with_size(
                 libc::sigprocmask(libc::SIG_SETMASK, &empty_mask, std::ptr::null_mut());
 
                 if let Some(ref dir) = c_dir {
-                    if libc::chdir(dir.as_ptr()) != 0 {
-                        if let Some(ref home) = home_cstring {
-                            let _ = libc::chdir(home.as_ptr());
-                        }
-                    }
-                } else if let Some(ref home) = home_cstring {
-                    let _ = libc::chdir(home.as_ptr());
+                    let _ = libc::chdir(dir.as_ptr());
                 }
 
                 // Preserve err_write_fd on descriptor 3 with FD_CLOEXEC
@@ -285,7 +277,11 @@ pub fn spawn_process_with_size(
                     }
                 }
 
-                libc::execve(prog_cstring.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+                libc::execve(
+                    prog_cstring.as_ptr(),
+                    argv_ptrs.as_ptr(),
+                    envp_ptrs.as_ptr(),
+                );
 
                 // If execve returned, write exact errno to sync pipe and exit
                 let err = libc::__errno_location().read();
@@ -413,8 +409,8 @@ pub fn resolve_executable_shell(shell_path: &str) -> String {
 
 /// Spawns a terminal shell process with layered fallbacks:
 /// 1. Resolved executable shell + requested working directory
-/// 2. Resolved executable shell + $HOME directory
-/// 3. Standard /bin/sh + $HOME directory
+/// 2. Resolved executable shell + inherited working directory
+/// 3. Standard /bin/sh + inherited working directory
 pub fn spawn_terminal_pty(
     shell_path: &str,
     command: Option<&[String]>,
@@ -425,8 +421,8 @@ pub fn spawn_terminal_pty(
 
 /// Spawns a terminal shell process with initial window size and layered fallbacks:
 /// 1. Resolved executable shell + validated working directory
-/// 2. Resolved executable shell + $HOME directory
-/// 3. Standard /bin/sh + $HOME directory
+/// 2. Resolved executable shell + inherited working directory
+/// 3. Standard /bin/sh + inherited working directory
 pub fn spawn_terminal_pty_with_size(
     shell_path: &str,
     command: Option<&[String]>,
@@ -434,22 +430,11 @@ pub fn spawn_terminal_pty_with_size(
     initial_size: Option<(u16, u16)>,
 ) -> Result<PtyMaster, PtyError> {
     let resolved_shell = resolve_executable_shell(shell_path);
-    let home = std::env::var("HOME").ok();
-    let effective_dir = if let Some(dir) = working_directory {
-        if std::path::Path::new(dir).is_dir() {
-            Some(dir)
-        } else {
-            home.as_deref().filter(|h| std::path::Path::new(h).is_dir())
-        }
-    } else {
-        home.as_deref().filter(|h| std::path::Path::new(h).is_dir())
-    };
+    let effective_dir = working_directory.filter(|dir| std::path::Path::new(dir).is_dir());
 
     spawn_process_with_size(&resolved_shell, command, effective_dir, initial_size)
-        .or_else(|_| {
-            spawn_process_with_size(&resolved_shell, command, home.as_deref(), initial_size)
-        })
-        .or_else(|_| spawn_process_with_size("/bin/sh", command, home.as_deref(), initial_size))
+        .or_else(|_| spawn_process_with_size(&resolved_shell, command, None, initial_size))
+        .or_else(|_| spawn_process_with_size("/bin/sh", command, None, initial_size))
 }
 
 #[cfg(test)]
