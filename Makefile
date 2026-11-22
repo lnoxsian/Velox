@@ -60,13 +60,13 @@ build-velox:
 release-velox:
 	cargo build --release --bin velox
 
-# Build only the velox-config CLI tool in debug mode
+# Build only the veloxcfg CLI tool in debug mode
 build-config:
-	cargo build --bin velox-config
+	cargo build --bin veloxcfg
 
-# Build only the velox-config CLI tool in release mode
+# Build only the veloxcfg CLI tool in release mode
 release-config:
-	cargo build --release --bin velox-config
+	cargo build --release --bin veloxcfg
 
 # Run the project (debug mode)
 run:
@@ -76,13 +76,13 @@ run:
 run-release:
 	cargo run --release --bin velox
 
-# Run velox-config in debug mode
+# Run veloxcfg in debug mode
 run-config:
-	cargo run --bin velox-config
+	cargo run --bin veloxcfg
 
-# Run velox-config in release mode
+# Run veloxcfg in release mode
 run-config-release:
-	cargo run --release --bin velox-config
+	cargo run --release --bin veloxcfg
 
 # Check the project for compilation errors
 check:
@@ -149,12 +149,12 @@ install-completions:
 install: release install-desktop install-icons install-completions
 	install -d $(BINDIR)
 	install -m 755 target/release/velox $(BINDIR)/velox
-	if [ -f "target/release/velox-config" ]; then install -m 755 target/release/velox-config $(BINDIR)/velox-config; fi
+	if [ -f "target/release/veloxcfg" ]; then install -m 755 target/release/veloxcfg $(BINDIR)/veloxcfg; fi
 
 # Uninstall Velox binary, desktop entry, icons, and shell completions
 uninstall:
 	rm -f $(BINDIR)/velox
-	rm -f $(BINDIR)/velox-config
+	rm -f $(BINDIR)/veloxcfg
 	rm -f $(APPDIR)/io.github.lnoxsian.Velox.desktop
 	@for size in $(ICON_SIZES); do \
 		rm -f $(ICONDIR)/$$size/apps/io.github.lnoxsian.Velox.png; \
@@ -282,15 +282,15 @@ list:
 	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build all binaries in release mode (fat LTO, codegen-units=1, stripped)"
 	@printf "  \033[36m%-25s\033[0m %s\n" "build-velox" "Build only Velox terminal in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "release-velox" "Build only Velox terminal in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "build-config" "Build only velox-config CLI in debug mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "release-config" "Build only velox-config CLI in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "build-config" "Build only veloxcfg CLI in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release-config" "Build only veloxcfg CLI in release mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "generate-icons" "Generate multi-resolution icon assets"
 	@printf "  \033[36m%-25s\033[0m %s\n" "clean" "Remove target/ and dist/ artifacts"
 	@printf "\n\033[1;32mRunning:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "run" "Run Velox in debug mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "run-release" "Run Velox in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "run-config" "Run velox-config in debug mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "run-config-release" "Run velox-config in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "run-config" "Run veloxcfg in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "run-config-release" "Run veloxcfg in release mode"
 	@printf "\n\033[1;32mTesting & Quality:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "check" "Type-check code without compiling binary"
 	@printf "  \033[36m%-25s\033[0m %s\n" "test" "Run full test suite (unit + integration tests)"

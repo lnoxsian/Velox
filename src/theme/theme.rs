@@ -205,113 +205,7 @@ fn parse_cursor_color_setting(raw: &str) -> Option<(CursorColorConfig, Option<Co
     }
 }
 
-const BUILTIN_THEMES: &[(&str, &str)] = &[
-    (
-        "ayu-dark",
-        include_str!("../../assets/velox_terminal_themes/ayu-dark.toml"),
-    ),
-    (
-        "ayu-light",
-        include_str!("../../assets/velox_terminal_themes/ayu-light.toml"),
-    ),
-    (
-        "catppuccin-frappe",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-frappe.toml"),
-    ),
-    (
-        "catppuccin-latte",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-latte.toml"),
-    ),
-    (
-        "catppuccin-macchiato",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-macchiato.toml"),
-    ),
-    (
-        "catppuccin-mocha",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-mocha.toml"),
-    ),
-    (
-        "github-dark",
-        include_str!("../../assets/velox_terminal_themes/github-dark.toml"),
-    ),
-    (
-        "github-light",
-        include_str!("../../assets/velox_terminal_themes/github-light.toml"),
-    ),
-    (
-        "gruvbox-dark",
-        include_str!("../../assets/velox_terminal_themes/gruvbox-dark.toml"),
-    ),
-    (
-        "gruvbox-light",
-        include_str!("../../assets/velox_terminal_themes/gruvbox-light.toml"),
-    ),
-    (
-        "rose-pine",
-        include_str!("../../assets/velox_terminal_themes/rose-pine.toml"),
-    ),
-    (
-        "rose-pine-dawn",
-        include_str!("../../assets/velox_terminal_themes/rose-pine-dawn.toml"),
-    ),
-    (
-        "rose-pine-moon",
-        include_str!("../../assets/velox_terminal_themes/rose-pine-moon.toml"),
-    ),
-    (
-        "solarized-dark",
-        include_str!("../../assets/velox_terminal_themes/solarized-dark.toml"),
-    ),
-    (
-        "solarized-light",
-        include_str!("../../assets/velox_terminal_themes/solarized-light.toml"),
-    ),
-];
-
-#[derive(serde::Deserialize)]
-struct PresetThemeFile {
-    colors: Option<crate::config::config::ConfigColors>,
-}
-
-fn normalize_theme_name(name: &str) -> String {
-    name.trim()
-        .to_ascii_lowercase()
-        .replace([' ', '_'], "-")
-}
-
 impl Theme {
-    pub fn load_preset(name: &str) -> Option<Self> {
-        let norm = normalize_theme_name(name);
-        for &(theme_key, toml_str) in BUILTIN_THEMES {
-            if theme_key == norm {
-                if let Ok(file) = toml::from_str::<PresetThemeFile>(toml_str) {
-                    if let Some(colors) = file.colors {
-                        return Some(Self::from_colors(&colors));
-                    }
-                }
-            }
-        }
-
-        if let Ok(home) = std::env::var("HOME") {
-            let user_theme = std::path::PathBuf::from(home)
-                .join(".config")
-                .join("velox")
-                .join("themes")
-                .join(format!("{}.toml", norm));
-            if user_theme.exists() {
-                if let Ok(content) = std::fs::read_to_string(&user_theme) {
-                    if let Ok(file) = toml::from_str::<PresetThemeFile>(&content) {
-                        if let Some(colors) = file.colors {
-                            return Some(Self::from_colors(&colors));
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
     pub fn from_colors(colors: &crate::config::config::ConfigColors) -> Self {
         let mut theme = Self::new();
         if let Some(ref fg) = colors.default_fg
@@ -355,11 +249,7 @@ impl Theme {
     }
 
     pub fn from_config(config: &crate::config::config::Config) -> Self {
-        let mut theme = if let Some(theme_name) = config.colorscheme() {
-            Self::load_preset(theme_name).unwrap_or_else(Self::new)
-        } else {
-            Self::new()
-        };
+        let mut theme = Self::new();
         if let Some(fg) = config.default_fg()
             && let Some(c) = crate::config::config::parse_hex_color(fg)
         {

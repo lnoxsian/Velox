@@ -31,8 +31,8 @@ name = "velox"
 path = "src/main.rs"
 
 [[bin]]
-name = "velox-config"
-path = "src/bin/velox-config.rs"
+name = "veloxcfg"
+path = "src/bin/veloxcfg.rs"
 
 [[bench]]
 name = "software_renderer"

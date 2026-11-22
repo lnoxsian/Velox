@@ -1,18 +1,18 @@
-# Velox CLI Configurator (`velox-config`) Plan & Specification
+# Velox CLI Configurator (`veloxcfg`) Plan & Specification
 
-This document defines the architectural specification, user interaction flow, and implementation plan for `velox-config`—a dedicated helper CLI program packaged with Velox to configure the terminal via an interactive terminal menu and generate/update `~/.config/velox/config.toml`.
+This document defines the architectural specification, user interaction flow, and implementation plan for `veloxcfg`—a dedicated helper CLI program packaged with Velox to configure the terminal via an interactive terminal menu and generate/update `~/.config/velox/config.toml`.
 
 ---
 
 ## 1. Executive Summary & Goals
 
 ### 1.1 Purpose
-While Velox supports full customization through its TOML configuration file, manual TOML editing requires users to know valid keys, types, valid hex formats, and color palettes. `velox-config` provides a guided, interactive menu-driven interface to adjust terminal settings with immediate feedback (live color swatches, incremental steppers, filterable font lists, and preset pickers).
+While Velox supports full customization through its TOML configuration file, manual TOML editing requires users to know valid keys, types, valid hex formats, and color palettes. `veloxcfg` provides a guided, interactive menu-driven interface to adjust terminal settings with immediate feedback (live color swatches, incremental steppers, filterable font lists, and preset pickers).
 
 ### 1.2 Core Requirements
-- **Integrated Packaging:** Ships as a secondary binary (`velox-config`) within the main Velox repository.
+- **Integrated Packaging:** Ships as a secondary binary (`veloxcfg`) within the main Velox repository.
 - **Zero Duplication:** Reuses Velox's existing `Config`, `FontConfig`, `WindowConfig`, `ConfigColors`, `TabsConfig`, and `PanesConfig` types directly from `velox::config`.
-- **Inline Interactive Terminal Experience:** Employs clean interactive arrow-key menus (`inquire`) directly in the normal terminal stream without capturing or clearing the entire terminal screen.
+- **Inline Interactive Terminal Experience:** Employs clean interactive arrow-key menus directly in the normal terminal stream without capturing or clearing the entire terminal screen.
 - **Direct Hex Color Workflow:** Gives users full control to input hex codes for all 16 ANSI colors and foreground/background colors, with preset themes available as a fallback.
 - **Live Visual Validation:** Displays 24-bit TrueColor ANSI swatches next to hex inputs and offers steppers for numeric bounds.
 - **Safe Persistence:** Loads existing user configuration if present, and creates an automatic backup (`config.toml.bak`) before saving updates.
@@ -21,7 +21,7 @@ While Velox supports full customization through its TOML configuration file, man
 
 ## 2. Project Architecture & Workspace Layout
 
-`velox-config` is defined as a secondary binary in `Cargo.toml`:
+`veloxcfg` is defined as a secondary binary in `Cargo.toml`:
 
 ```toml
 # Cargo.toml
@@ -30,15 +30,15 @@ name = "velox"
 path = "src/main.rs"
 
 [[bin]]
-name = "velox-config"
-path = "src/bin/velox-config.rs"
+name = "veloxcfg"
+path = "src/bin/veloxcfg.rs"
 ```
 
 ### Module Dependencies
-Because `velox-config.rs` is part of the `velox` crate workspace, it directly imports:
+Because `veloxcfg.rs` is part of the `velox` crate workspace, it directly imports:
 - `velox::config::{Config, FontConfig, WindowConfig, ConfigColors, TabsConfig, PanesConfig, TabBarVisibility}`
 - `velox::config::loader::config_path`
-- Built-in theme presets embedded from `assets/velox_terminal_themes/*.toml`
+- Built-in theme presets embedded directly into `veloxcfg` from `assets/velox_terminal_themes/*.toml`
 
 ### Third-Party Crates Required
 - **None!** (Uses 0 additional crates; built entirely with the Rust standard library and Velox's existing `nix` dependency).
@@ -49,7 +49,7 @@ Because `velox-config.rs` is part of the `velox` crate workspace, it directly im
 
 ```mermaid
 flowchart TD
-    A([Start velox-config]) --> B[Load ~/.config/velox/config.toml]
+    A([Start veloxcfg]) --> B[Load ~/.config/velox/config.toml]
     B -->|Found| C[Parse into Config struct]
     B -->|Not Found| D[Initialize Config::default]
     C --> E{Main Menu Loop}
@@ -202,7 +202,7 @@ Before writing modified settings:
 
 ### 6.1 Function Decomposition
 ```rust
-// src/bin/velox-config.rs
+// src/bin/veloxcfg.rs
 
 fn main() -> Result<(), Box<dyn std::error::Error>>;
 
@@ -233,7 +233,7 @@ fn save_config_file(config: &Config) -> std::io::Result<()>;
 
 - [ ] **Phase 1: Binary & Dependency Configuration**
   - Add `inquire` to `Cargo.toml`.
-  - Register `[[bin]] name = "velox-config" path = "src/bin/velox-config.rs"`.
+  - Register `[[bin]] name = "veloxcfg" path = "src/bin/veloxcfg.rs"`.
 - [ ] **Phase 2: Core Primitives & State Management**
   - Implement hex validator with TrueColor ANSI preview.
   - Implement generic stepper and toggle helpers.
@@ -244,5 +244,5 @@ fn save_config_file(config: &Config) -> std::io::Result<()>;
   - Implement Window, Cursor, Tabs, and Panes.
   - Implement General & Shell settings.
 - [ ] **Phase 4: Verification & Polishing**
-  - Verify round-trip parsing (`velox-config` output read by `velox`).
+  - Verify round-trip parsing (`veloxcfg` output read by `velox`).
   - Verify terminal output formatting and clean exit behaviors.

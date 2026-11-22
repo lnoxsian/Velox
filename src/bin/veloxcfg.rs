@@ -7,69 +7,124 @@ use velox::config::config::{Config, ConfigColors, TabBarVisibility};
 use velox::config::defaults::default_config;
 use velox::config::loader::{config_path, load_from_str};
 
-// Built-in theme presets embedded directly into the binary
-const THEMES: &[(&str, &str)] = &[
-    (
-        "Ayu Dark",
-        include_str!("../../assets/velox_terminal_themes/ayu-dark.toml"),
-    ),
-    (
-        "Ayu Light",
-        include_str!("../../assets/velox_terminal_themes/ayu-light.toml"),
-    ),
-    (
-        "Catppuccin Mocha",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-mocha.toml"),
-    ),
-    (
-        "Catppuccin Macchiato",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-macchiato.toml"),
-    ),
-    (
-        "Catppuccin Frappe",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-frappe.toml"),
-    ),
-    (
-        "Catppuccin Latte",
-        include_str!("../../assets/velox_terminal_themes/catppuccin-latte.toml"),
-    ),
-    (
-        "Gruvbox Dark",
-        include_str!("../../assets/velox_terminal_themes/gruvbox-dark.toml"),
-    ),
-    (
-        "Gruvbox Light",
-        include_str!("../../assets/velox_terminal_themes/gruvbox-light.toml"),
-    ),
-    (
-        "Rose Pine",
-        include_str!("../../assets/velox_terminal_themes/rose-pine.toml"),
-    ),
-    (
-        "Rose Pine Moon",
-        include_str!("../../assets/velox_terminal_themes/rose-pine-moon.toml"),
-    ),
-    (
-        "Rose Pine Dawn",
-        include_str!("../../assets/velox_terminal_themes/rose-pine-dawn.toml"),
-    ),
-    (
-        "Solarized Dark",
-        include_str!("../../assets/velox_terminal_themes/solarized-dark.toml"),
-    ),
-    (
-        "Solarized Light",
-        include_str!("../../assets/velox_terminal_themes/solarized-light.toml"),
-    ),
-    (
-        "GitHub Dark",
-        include_str!("../../assets/velox_terminal_themes/github-dark.toml"),
-    ),
-    (
-        "GitHub Light",
-        include_str!("../../assets/velox_terminal_themes/github-light.toml"),
-    ),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ThemePreset {
+    id: &'static str,
+    name: &'static str,
+    toml: &'static str,
+}
+
+// Built-in theme presets embedded directly into veloxcfg
+const PRESET_THEMES: &[ThemePreset] = &[
+    ThemePreset {
+        id: "ayu-dark",
+        name: "Ayu Dark",
+        toml: include_str!("../../assets/velox_terminal_themes/ayu-dark.toml"),
+    },
+    ThemePreset {
+        id: "ayu-light",
+        name: "Ayu Light",
+        toml: include_str!("../../assets/velox_terminal_themes/ayu-light.toml"),
+    },
+    ThemePreset {
+        id: "catppuccin-frappe",
+        name: "Catppuccin Frappe",
+        toml: include_str!("../../assets/velox_terminal_themes/catppuccin-frappe.toml"),
+    },
+    ThemePreset {
+        id: "catppuccin-latte",
+        name: "Catppuccin Latte",
+        toml: include_str!("../../assets/velox_terminal_themes/catppuccin-latte.toml"),
+    },
+    ThemePreset {
+        id: "catppuccin-macchiato",
+        name: "Catppuccin Macchiato",
+        toml: include_str!("../../assets/velox_terminal_themes/catppuccin-macchiato.toml"),
+    },
+    ThemePreset {
+        id: "catppuccin-mocha",
+        name: "Catppuccin Mocha",
+        toml: include_str!("../../assets/velox_terminal_themes/catppuccin-mocha.toml"),
+    },
+    ThemePreset {
+        id: "github-dark",
+        name: "GitHub Dark",
+        toml: include_str!("../../assets/velox_terminal_themes/github-dark.toml"),
+    },
+    ThemePreset {
+        id: "github-light",
+        name: "GitHub Light",
+        toml: include_str!("../../assets/velox_terminal_themes/github-light.toml"),
+    },
+    ThemePreset {
+        id: "gruvbox-dark",
+        name: "Gruvbox Dark",
+        toml: include_str!("../../assets/velox_terminal_themes/gruvbox-dark.toml"),
+    },
+    ThemePreset {
+        id: "gruvbox-light",
+        name: "Gruvbox Light",
+        toml: include_str!("../../assets/velox_terminal_themes/gruvbox-light.toml"),
+    },
+    ThemePreset {
+        id: "rose-pine",
+        name: "Rose Pine",
+        toml: include_str!("../../assets/velox_terminal_themes/rose-pine.toml"),
+    },
+    ThemePreset {
+        id: "rose-pine-dawn",
+        name: "Rose Pine Dawn",
+        toml: include_str!("../../assets/velox_terminal_themes/rose-pine-dawn.toml"),
+    },
+    ThemePreset {
+        id: "rose-pine-moon",
+        name: "Rose Pine Moon",
+        toml: include_str!("../../assets/velox_terminal_themes/rose-pine-moon.toml"),
+    },
+    ThemePreset {
+        id: "solarized-dark",
+        name: "Solarized Dark",
+        toml: include_str!("../../assets/velox_terminal_themes/solarized-dark.toml"),
+    },
+    ThemePreset {
+        id: "solarized-light",
+        name: "Solarized Light",
+        toml: include_str!("../../assets/velox_terminal_themes/solarized-light.toml"),
+    },
+    ThemePreset {
+        id: "dracula",
+        name: "Dracula",
+        toml: include_str!("../../assets/velox_terminal_themes/dracula.toml"),
+    },
+    ThemePreset {
+        id: "dracula-light",
+        name: "Dracula Light",
+        toml: include_str!("../../assets/velox_terminal_themes/dracula-light.toml"),
+    },
 ];
+
+fn parse_preset_colors(toml_str: &str) -> Option<ConfigColors> {
+    #[derive(serde::Deserialize)]
+    struct PresetThemeFile {
+        colors: Option<ConfigColors>,
+    }
+
+    if let Ok(file) = toml::from_str::<PresetThemeFile>(toml_str) {
+        if let Some(colors) = file.colors {
+            return Some(colors);
+        }
+    }
+
+    if let Ok(table) = toml::from_str::<toml::Table>(toml_str) {
+        if let Some(col_table) = table.get("colors") {
+            if let Ok(colors) = col_table.clone().try_into::<ConfigColors>() {
+                return Some(colors);
+            }
+        }
+    }
+
+    None
+}
 
 // ============================================================================
 // Terminal Raw Mode & Keyboard Input Engine (0 external crates)
@@ -545,7 +600,7 @@ fn is_wayland_session() -> bool {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\x1b[1;36m===================================================\x1b[0m");
-    println!("\x1b[1;36m       Velox Terminal Configuration Utility        \x1b[0m");
+    println!("\x1b[1;36m       Velox Terminal Configuration Utility (veloxcfg) \x1b[0m");
     println!("\x1b[1;36m===================================================\x1b[0m");
 
     let (mut config, loaded_from_disk) = load_initial_config();
@@ -677,15 +732,13 @@ fn menu_colors(config: &mut Config) -> Result<(), Box<dyn std::error::Error>> {
         } else if sel == 1 {
             // Load preset theme
             let mut theme_options: Vec<String> =
-                THEMES.iter().map(|(n, _)| n.to_string()).collect();
+                PRESET_THEMES.iter().map(|t| t.name.to_string()).collect();
             theme_options.push("<- Cancel".to_string());
             let theme_sel = select_menu("Choose a Theme Preset to load:", &theme_options, 0);
-            if theme_sel < THEMES.len() {
-                let (_name, toml_str) = THEMES[theme_sel];
-                if let Ok(table) = toml::from_str::<toml::Table>(toml_str)
-                    && let Some(col_table) = table.get("colors")
-                    && let Ok(loaded_colors) = col_table.clone().try_into::<ConfigColors>()
-                {
+            if theme_sel < PRESET_THEMES.len() {
+                let preset = &PRESET_THEMES[theme_sel];
+                if let Some(mut loaded_colors) = parse_preset_colors(preset.toml) {
+                    loaded_colors.theme = Some(preset.id.to_string());
                     *colors = loaded_colors;
                 }
             }
@@ -1528,5 +1581,21 @@ mod tests {
         assert_eq!(cfg.nerd_font_scale(), None);
         cfg.font.nerd_font_scale = Some(1.25);
         assert_eq!(cfg.nerd_font_scale(), Some(1.25));
+    }
+
+    #[test]
+    fn test_veloxcfg_embedded_theme_presets() {
+        assert_eq!(PRESET_THEMES.len(), 17);
+        for preset in PRESET_THEMES {
+            let colors = parse_preset_colors(preset.toml);
+            assert!(
+                colors.is_some(),
+                "Embedded preset '{}' failed to parse",
+                preset.name
+            );
+            let colors = colors.unwrap();
+            assert!(colors.default_fg.is_some());
+            assert!(colors.default_bg.is_some());
+        }
     }
 }

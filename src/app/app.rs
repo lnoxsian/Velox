@@ -3231,11 +3231,13 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_config_reload_preset_colorscheme() {
+    fn test_apply_config_reload_colors() {
         let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
 
         let toml_str = r##"
-            theme = "catppuccin-mocha"
+            [colors]
+            default_bg = "#1e1e2e"
+            default_fg = "#cdd6f4"
         "##;
         let (new_cfg, diags) = crate::config::loader::load_from_str(toml_str);
         assert!(diags.is_empty());
