@@ -1569,7 +1569,7 @@ fn test_software_renderer_csd_title_bar() {
     let close_cy = 19;
     let close_center_pixel = renderer.framebuffer.pixels[close_cy * 400 + close_cx];
     assert!(
-        close_center_pixel == 0x00E01B24 || close_center_pixel == 0x00FFFFFF,
+        close_center_pixel == 0xFFE01B24 || close_center_pixel == 0xFFFFFFFF,
         "Hovered close button must show GTK red pill or white cross glyph"
     );
 
@@ -1732,7 +1732,7 @@ fn test_csd_gtk_window_buttons_and_restore_icon() {
     // Square outline has a border at y0 = 14, x in 442..=450
     let border_px = renderer.framebuffer.pixels[14 * 500 + max_cx];
     assert_eq!(
-        border_px, 0x00FFFFFF,
+        border_px, 0xFFFFFFFF,
         "Maximize button outline must be white when hovered"
     );
     // Center of square (446, 19) is hollow and has highlight background
@@ -1796,7 +1796,7 @@ fn test_csd_theme_customization_and_light_dark_modes() {
     let max_cx = 500 - 22 - 32;
     let max_border_px = renderer.framebuffer.pixels[14 * 500 + max_cx];
     assert_eq!(
-        max_border_px, 0x00000000,
+        max_border_px, 0xFF000000,
         "Maximize button outline must be black in light mode"
     );
 

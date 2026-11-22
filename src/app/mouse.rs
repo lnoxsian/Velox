@@ -1169,6 +1169,10 @@ impl WindowState {
                             crate::window::csd::CsdButtonType::Minimize => {
                                 self.window.minimize();
                             }
+                            crate::window::csd::CsdButtonType::Menu => {
+                                self.window
+                                    .show_window_menu(self.mouse_x as i32, self.mouse_y as i32);
+                            }
                         }
                     }
                 }

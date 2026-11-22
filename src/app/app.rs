@@ -1633,25 +1633,31 @@ impl WindowState {
         }
 
         if csd_height > 0 {
+            let is_max = self.window.is_maximized();
             let csd_redrawn = self.renderer.render_csd_title_bar(
                 &self.current_title,
                 csd_height,
                 self.is_focused,
-                self.window.is_maximized(),
+                is_max,
                 self.hovered_csd_button,
                 self.pressed_csd_button,
                 &self.csd_button_layout,
                 &self.csd_palette,
             );
             if csd_redrawn {
-                self.renderer
-                    .render_csd_window_borders(self.csd_palette.border);
                 final_damage = Some(crate::window::DamageRect {
                     x: 0,
                     y: 0,
                     width: self.renderer.viewport_width,
                     height: self.renderer.viewport_height,
                 });
+            }
+
+            // Continuously maintain 1px window border for unmaximized windows so pane damage
+            // (e.g. typing at shell prompt or scrolling) never cuts out or makes borders transparent.
+            if !is_max {
+                let border_color = 0xFF000000 | (self.csd_palette.border & 0x00FFFFFF);
+                self.renderer.render_csd_window_borders(border_color);
             }
         }
 
@@ -1681,6 +1687,34 @@ impl WindowState {
                 pane.terminal.active_grid_mut().clear_damage();
             }
         }
+    }
+
+    /// Checks if the desktop theme (dark/light mode) or button layout changed,
+    /// updating `csd_palette` and marking damage for an immediate redraw if so.
+    pub fn update_csd_theme_if_changed(&mut self) -> bool {
+        let new_palette = crate::window::csd::CsdPalette::resolve(
+            self.config.decorations_config().as_ref(),
+            &self.renderer.palette,
+        );
+        let new_layout = crate::window::csd::CsdButtonLayout::detect_system();
+
+        let mut changed = false;
+        if self.csd_palette != new_palette {
+            self.csd_palette = new_palette;
+            changed = true;
+        }
+        if self.csd_button_layout != new_layout {
+            self.csd_button_layout = new_layout;
+            changed = true;
+        }
+
+        if changed {
+            self.renderer.prev_csd_hash = 0;
+            self.renderer.damage.mark_all();
+            self.needs_redraw = true;
+        }
+
+        changed
     }
 }
 
@@ -2284,6 +2318,8 @@ impl App {
                                 ws.cursor_blink_on = true;
                                 ws.release_memory();
                             } else {
+                                crate::window::csd::CsdPalette::invalidate_system_cache();
+                                ws.update_csd_theme_if_changed();
                                 ws.mark_interaction();
                             }
                             let active_pane = ws.active_pane();
@@ -2381,6 +2417,12 @@ impl App {
             let mut min_next_wake: Option<std::time::Instant> = None;
 
             for ws in self.windows.values_mut() {
+                if ws.window.csd_title_bar_height() > 0 {
+                    ws.update_csd_theme_if_changed();
+                    let theme_wake = now + std::time::Duration::from_millis(500);
+                    min_next_wake = Some(min_next_wake.map_or(theme_wake, |t| t.min(theme_wake)));
+                }
+
                 let mut should_prune = false;
                 for tab in &mut ws.tabs {
                     if now.duration_since(tab.last_activity) >= std::time::Duration::from_secs(60)
@@ -2848,5 +2890,37 @@ mod tests {
             last_frame_instant = stalled_now;
         }
         assert_eq!(last_frame_instant, stalled_now);
+    }
+
+    #[test]
+    fn test_update_csd_theme_if_changed() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        ws.renderer.prev_csd_hash = 12345;
+        ws.renderer.damage.clear();
+        ws.needs_redraw = false;
+
+        // Force a palette change by altering current palette
+        ws.csd_palette = crate::window::csd::CsdPalette::light();
+        // Set env to dark
+        unsafe { std::env::set_var("VELOX_CSD_THEME", "dark") };
+        crate::window::csd::CsdPalette::invalidate_system_cache();
+
+        let changed = ws.update_csd_theme_if_changed();
+        assert!(changed);
+        assert_eq!(ws.csd_palette, crate::window::csd::CsdPalette::dark());
+        assert_eq!(ws.renderer.prev_csd_hash, 0);
+        assert!(ws.renderer.damage.full_redraw);
+        assert!(ws.needs_redraw);
+
+        // When nothing changes, returns false and doesn't re-mark damage
+        ws.renderer.damage.clear();
+        ws.needs_redraw = false;
+        let changed_again = ws.update_csd_theme_if_changed();
+        assert!(!changed_again);
+        assert!(!ws.needs_redraw);
+
+        // Clean up env
+        unsafe { std::env::remove_var("VELOX_CSD_THEME") };
+        crate::window::csd::CsdPalette::invalidate_system_cache();
     }
 }

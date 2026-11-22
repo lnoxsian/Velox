@@ -924,8 +924,8 @@ impl CpuRenderer {
         hovered_button.hash(&mut hasher);
         pressed_button.hash(&mut hasher);
         self.viewport_width.hash(&mut hasher);
-        csd_palette.bg.hash(&mut hasher);
-        csd_palette.border.hash(&mut hasher);
+        button_layout.hash(&mut hasher);
+        csd_palette.hash(&mut hasher);
         let new_hash = hasher.finish();
 
         if !self.damage.full_redraw && self.prev_csd_hash == new_hash {
@@ -1045,7 +1045,7 @@ impl CpuRenderer {
     }
 
     pub fn render_csd_window_borders(&mut self, border_color: u32) {
-        if self.csd_height == 0 || border_color == self.palette.default_bg {
+        if self.csd_height == 0 {
             return;
         }
         let w = self.viewport_width;
@@ -1053,13 +1053,14 @@ impl CpuRenderer {
         if w < 2 || h < 2 {
             return;
         }
+        let color = 0xFF000000 | (border_color & 0x00FFFFFF);
         // Left border
         self.framebuffer.fill_span(
             0,
             self.csd_height,
             1,
             h.saturating_sub(self.csd_height),
-            border_color,
+            color,
         );
         // Right border
         self.framebuffer.fill_span(
@@ -1067,11 +1068,11 @@ impl CpuRenderer {
             self.csd_height,
             1,
             h.saturating_sub(self.csd_height),
-            border_color,
+            color,
         );
         // Bottom border
         self.framebuffer
-            .fill_span(0, h.saturating_sub(1), w, 1, border_color);
+            .fill_span(0, h.saturating_sub(1), w, 1, color);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1104,7 +1105,7 @@ impl CpuRenderer {
                         csd_palette.close_hover_bg
                     }
                 }
-                CsdButtonType::Maximize | CsdButtonType::Minimize => {
+                CsdButtonType::Maximize | CsdButtonType::Minimize | CsdButtonType::Menu => {
                     let alpha = if is_pressed {
                         if csd_palette.is_light { 45 } else { 65 }
                     } else {
@@ -1159,9 +1160,9 @@ impl CpuRenderer {
                 CsdButtonType::Close => csd_palette.close_hover_fg,
                 _ => {
                     if csd_palette.is_light {
-                        0x00000000
+                        0xFF000000
                     } else {
-                        0x00FFFFFF
+                        0xFFFFFFFF
                     }
                 }
             }
@@ -1255,6 +1256,25 @@ impl CpuRenderer {
                     for y in fy0..=fy1 {
                         put_pixel(fx0, y, icon_fg);
                         put_pixel(fx1, y, icon_fg);
+                    }
+                }
+            }
+            CsdButtonType::Menu => {
+                // GNOME / GTK Action Menu: 3 horizontal bars (hamburger / window action menu)
+                // 10px wide by 2px tall each, separated by 2px vertical spacing
+                for y in (cy - 4)..=(cy - 3) {
+                    for x in (cx - 5)..=(cx + 4) {
+                        put_pixel(x, y, icon_fg);
+                    }
+                }
+                for y in (cy - 1)..=cy {
+                    for x in (cx - 5)..=(cx + 4) {
+                        put_pixel(x, y, icon_fg);
+                    }
+                }
+                for y in (cy + 2)..=(cy + 3) {
+                    for x in (cx - 5)..=(cx + 4) {
+                        put_pixel(x, y, icon_fg);
                     }
                 }
             }
@@ -2532,6 +2552,7 @@ impl CpuRenderer {
             min_damaged_y = 0;
             max_damaged_y = self.viewport_height;
             self.framebuffer.clear(self.palette.default_bg);
+            self.prev_csd_hash = 0;
         }
 
         // 5. Pre-ensure glyph caches exist for all panes
@@ -2597,5 +2618,110 @@ impl CpuRenderer {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_render_csd_window_borders_restores_prompt_line_edges() {
+        let theme = Theme::default();
+        let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 100, 100, true, 1.0);
+        renderer.csd_height = 30;
+        let border_color = 0xFF1B1B1B;
+
+        // Simulate prompt line dirty row filling across entire width (x: 0..100 at y = 50) with transparent/terminal bg
+        let prompt_row_y = 50;
+        let default_pane_bg = 0x80222222; // semi-transparent background
+        renderer.framebuffer.fill_span(0, prompt_row_y, 100, 15, default_pane_bg);
+
+        // Before restoring borders, column 0 and column 99 have default_pane_bg
+        assert_eq!(renderer.framebuffer.pixels[prompt_row_y as usize * 100], default_pane_bg);
+        assert_eq!(renderer.framebuffer.pixels[prompt_row_y as usize * 100 + 99], default_pane_bg);
+
+        // Render CSD window borders
+        renderer.render_csd_window_borders(border_color);
+
+        // Both edges must now be restored to the opaque border color
+        assert_eq!(renderer.framebuffer.pixels[prompt_row_y as usize * 100], border_color);
+        assert_eq!(renderer.framebuffer.pixels[prompt_row_y as usize * 100 + 99], border_color);
+    }
+
+    #[test]
+    fn test_render_splits_full_damage_invalidates_csd_hash_to_prevent_disappearance() {
+        let theme = Theme::default();
+        let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 100, 100, true, 1.0);
+        let layout = crate::window::csd::CsdButtonLayout::default();
+        let palette = crate::window::csd::CsdPalette::dark();
+
+        // 1. Initial CSD render
+        let redrawn1 = renderer.render_csd_title_bar(
+            "Velox", 30, true, false, None, None, &layout, &palette,
+        );
+        assert!(redrawn1);
+        assert_ne!(renderer.prev_csd_hash, 0);
+
+        // 2. Mark full damage (e.g. window focus change / resize / dim update)
+        renderer.damage.mark_all();
+        assert!(renderer.damage.full_redraw);
+
+        // 3. render_splits clears the framebuffer
+        let grid = crate::screen::grid::Grid::new(
+            10,
+            10,
+            crate::screen::cell::Color {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            crate::screen::cell::Color { r: 0, g: 0, b: 0 },
+            10,
+            false,
+        );
+        let pane_rect = crate::app::split::PaneRect {
+            pane_id: 1,
+            x: 0.0,
+            y: 30.0,
+            width: 100.0,
+            height: 70.0,
+            padding_x: 0.0,
+            padding_y: 0.0,
+            cols: 10,
+            rows: 10,
+            cell_width: 8.0,
+            cell_height: 16.0,
+        };
+        let pane_data = CpuPaneRenderData {
+            pane_id: 1,
+            rect: pane_rect,
+            cells: &grid.cells,
+            grid: &grid,
+            font_size: 14.0,
+            theme: &theme,
+            bold_is_bright: true,
+            cursor_visible: false,
+            cursor_shape: crate::screen::cursor::CursorShape::Block,
+            display_cursor_x: 0,
+            is_active: true,
+        };
+
+        renderer.render_splits(&[pane_data], &[], 1.0, 0.0, true, None, None, None, None);
+
+        // Because full damage cleared the framebuffer, prev_csd_hash must have been reset to 0
+        assert_eq!(
+            renderer.prev_csd_hash, 0,
+            "prev_csd_hash must be reset on full damage"
+        );
+
+        // 4. Calling render_csd_title_bar with the exact same title/buttons MUST redraw
+        let redrawn2 = renderer.render_csd_title_bar(
+            "Velox", 30, true, false, None, None, &layout, &palette,
+        );
+        assert!(
+            redrawn2,
+            "CSD title bar must be redrawn so it never disappears after full damage"
+        );
     }
 }

@@ -3,20 +3,25 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CsdButtonType {
     Minimize,
     Maximize,
     Close,
+    Menu,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CsdButtonLayout {
     pub left: Vec<CsdButtonType>,
     pub right: Vec<CsdButtonType>,
 }
+
+static CACHED_PALETTE: std::sync::Mutex<Option<(CsdPalette, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+static CACHED_LAYOUT: std::sync::Mutex<Option<(CsdButtonLayout, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CsdButtonRect {
@@ -64,6 +69,7 @@ impl CsdButtonLayout {
                     "close" => Some(CsdButtonType::Close),
                     "maximize" => Some(CsdButtonType::Maximize),
                     "minimize" => Some(CsdButtonType::Minimize),
+                    "menu" | "appmenu" => Some(CsdButtonType::Menu),
                     _ => None,
                 })
                 .collect()
@@ -79,7 +85,7 @@ impl CsdButtonLayout {
         }
     }
 
-    /// Query the system desktop settings for GTK button layout.
+    /// Query the system desktop settings for GTK button layout (cached with 1000ms TTL).
     /// Checks `VELOX_BUTTON_LAYOUT` env var, then queries desktop gsettings
     /// (Cinnamon first if under Cinnamon desktop, otherwise GNOME).
     pub fn detect_system() -> Self {
@@ -90,12 +96,30 @@ impl CsdButtonLayout {
             }
         }
 
+        let now = std::time::Instant::now();
+        if let Ok(guard) = CACHED_LAYOUT.lock() {
+            if let Some((ref cached, timestamp)) = *guard {
+                if now.duration_since(timestamp) < std::time::Duration::from_millis(1000) {
+                    return cached.clone();
+                }
+            }
+        }
+
+        let fresh = Self::detect_system_uncached();
+        if let Ok(mut guard) = CACHED_LAYOUT.lock() {
+            *guard = Some((fresh.clone(), now));
+        }
+        fresh
+    }
+
+    /// Performs fresh, uncached detection of the system button layout.
+    pub fn detect_system_uncached() -> Self {
         let is_cinnamon = std::env::var("XDG_CURRENT_DESKTOP")
             .map(|d| d.to_lowercase().contains("cinnamon"))
             .unwrap_or(false);
 
         let query_gnome = || {
-            Command::new("gsettings")
+            let from_gsettings = Command::new("gsettings")
                 .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
                 .output()
                 .ok()
@@ -104,6 +128,26 @@ impl CsdButtonLayout {
                         let s = String::from_utf8_lossy(&out.stdout);
                         if s.contains(':') {
                             return Some(Self::parse(&s));
+                        }
+                    }
+                    None
+                });
+
+            if from_gsettings.is_some() {
+                return from_gsettings;
+            }
+
+            // Fallback for minimal VM / container environments where gsettings daemon isn't responsive
+            Command::new("dconf")
+                .args(["read", "/org/gnome/desktop/wm/preferences/button-layout"])
+                .output()
+                .ok()
+                .and_then(|out| {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout);
+                        let trimmed = s.trim().trim_matches('\'').trim_matches('"');
+                        if trimmed.contains(':') {
+                            return Some(Self::parse(trimmed));
                         }
                     }
                     None
@@ -306,6 +350,8 @@ pub fn detect_resize_edge(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsdThemeMode {
     Auto,
+    Adwaita,
+    Breeze,
     Light,
     Dark,
     Terminal,
@@ -317,6 +363,8 @@ impl CsdThemeMode {
             "light" => Self::Light,
             "dark" => Self::Dark,
             "terminal" => Self::Terminal,
+            "adwaita" => Self::Adwaita,
+            "breeze" => Self::Breeze,
             _ => Self::Auto,
         }
     }
@@ -324,7 +372,7 @@ impl CsdThemeMode {
 
 /// Dynamic CSD color palette supporting GNOME/Cinnamon Light & Dark modes,
 /// terminal palette blending, and custom config overrides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CsdPalette {
     pub is_light: bool,
     pub bg: u32,
@@ -356,11 +404,11 @@ impl CsdPalette {
             inactive_bg: 0xFF202020,
             inactive_fg: 0xFF808080,
             border: 0xFF1B1B1B,
-            button_hover_bg: 0x00FFFFFF,
-            button_pressed_bg: 0x00FFFFFF,
-            close_hover_bg: 0x00E01B24,
-            close_pressed_bg: 0x00B2161E,
-            close_hover_fg: 0x00FFFFFF,
+            button_hover_bg: 0xFFFFFFFF,
+            button_pressed_bg: 0xFFFFFFFF,
+            close_hover_bg: 0xFFE01B24,
+            close_pressed_bg: 0xFFB2161E,
+            close_hover_fg: 0xFFFFFFFF,
             close_fg: 0xFFFFFFFF,
         }
     }
@@ -374,11 +422,11 @@ impl CsdPalette {
             inactive_bg: 0xFFF6F6F6,
             inactive_fg: 0xFF8F9193,
             border: 0xFFD1D1D1,
-            button_hover_bg: 0x00000000,
-            button_pressed_bg: 0x00000000,
-            close_hover_bg: 0x00E01B24,
-            close_pressed_bg: 0x00B2161E,
-            close_hover_fg: 0x00FFFFFF,
+            button_hover_bg: 0xFF000000,
+            button_pressed_bg: 0xFF000000,
+            close_hover_bg: 0xFFE01B24,
+            close_pressed_bg: 0xFFB2161E,
+            close_hover_fg: 0xFFFFFFFF,
             close_fg: 0xFF2E3436,
         }
     }
@@ -407,41 +455,136 @@ impl CsdPalette {
             border: palette.default_bg,
             button_hover_bg: palette.tab_accent,
             button_pressed_bg: palette.tab_accent,
-            close_hover_bg: 0x00E01B24,
-            close_pressed_bg: 0x00B2161E,
-            close_hover_fg: 0x00FFFFFF,
+            close_hover_bg: 0xFFE01B24,
+            close_pressed_bg: 0xFFB2161E,
+            close_hover_fg: 0xFFFFFFFF,
             close_fg: red_color,
         }
     }
 
-    /// Query the desktop settings for active GTK theme and CSS colors (cached for performance),
-    /// falling back to Adwaita dark/light when custom theme CSS is unavailable.
+    /// Native KDE Breeze Dark palette
+    pub fn breeze_dark() -> Self {
+        Self {
+            is_light: false,
+            bg: 0xFF2A2E32,
+            fg: 0xFFFCFCFC,
+            inactive_bg: 0xFF232629,
+            inactive_fg: 0xFFA0A0A0,
+            border: 0xFF1D2023,
+            button_hover_bg: 0xFF3DAEE9,
+            button_pressed_bg: 0xFF1D99F3,
+            close_hover_bg: 0xFFE93A3A,
+            close_pressed_bg: 0xFFC02020,
+            close_hover_fg: 0xFFFFFFFF,
+            close_fg: 0xFFFCFCFC,
+        }
+    }
+
+    /// Native KDE Breeze Light palette
+    pub fn breeze_light() -> Self {
+        Self {
+            is_light: true,
+            bg: 0xFFEFF0F1,
+            fg: 0xFF232629,
+            inactive_bg: 0xFFE3E5E7,
+            inactive_fg: 0xFF7F8C8D,
+            border: 0xFFBCBEBF,
+            button_hover_bg: 0xFF3DAEE9,
+            button_pressed_bg: 0xFF1D99F3,
+            close_hover_bg: 0xFFE93A3A,
+            close_pressed_bg: 0xFFC02020,
+            close_hover_fg: 0xFFFFFFFF,
+            close_fg: 0xFF232629,
+        }
+    }
+
+    /// Query the desktop settings for active GTK/desktop theme (cached with 500ms expiry
+    /// for instant, zero-cost dynamic light/dark mode auto-switching).
     pub fn detect_system() -> Self {
         if let Ok(val) = std::env::var("VELOX_CSD_THEME") {
             match val.trim().to_lowercase().as_str() {
                 "light" => return Self::light(),
                 "dark" => return Self::dark(),
+                "adwaita" => return if detect_is_dark() { Self::dark() } else { Self::light() },
+                "breeze" => return if detect_is_dark() { Self::breeze_dark() } else { Self::breeze_light() },
                 _ => {}
             }
         }
 
-        static CACHED: OnceLock<CsdPalette> = OnceLock::new();
-        *CACHED.get_or_init(Self::detect_system_uncached)
-    }
-
-    /// Performs fresh, uncached detection of the active GTK theme and CSS colors.
-    pub fn detect_system_uncached() -> Self {
-        let is_dark = detect_is_dark();
-
-        // 1. Try detecting installed GTK theme and parsing its CSS colors
-        if let Some(palette) =
-            detect_gtk_theme_name().and_then(|t| load_gtk_theme_palette(&t, is_dark))
-        {
-            return palette;
+        let now = std::time::Instant::now();
+        if let Ok(guard) = CACHED_PALETTE.lock() {
+            if let Some((cached, timestamp)) = *guard {
+                if now.duration_since(timestamp) < std::time::Duration::from_millis(500) {
+                    return cached;
+                }
+            }
         }
 
-        // 2. Fallback to native Adwaita Dark / Light
-        if is_dark { Self::dark() } else { Self::light() }
+        let fresh = Self::detect_system_uncached();
+        if let Ok(mut guard) = CACHED_PALETTE.lock() {
+            *guard = Some((fresh, now));
+        }
+        fresh
+    }
+
+    /// Invalidates the system palette and button layout caches to force immediate detection on next frame.
+    pub fn invalidate_system_cache() {
+        if let Ok(mut guard) = CACHED_PALETTE.lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = CACHED_LAYOUT.lock() {
+            *guard = None;
+        }
+    }
+
+    /// Performs fresh, uncached detection of the active desktop theme and CSS colors.
+    pub fn detect_system_uncached() -> Self {
+        let is_dark = detect_is_dark();
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_lowercase();
+
+        // 1. Explicit GTK_THEME environment variable override
+        if let Ok(gtk_theme) = std::env::var("GTK_THEME") {
+            let name = gtk_theme.split(':').next().unwrap_or(&gtk_theme).trim();
+            if !name.is_empty() {
+                if let Some(palette) = load_gtk_theme_palette(name, is_dark) {
+                    return palette;
+                }
+            }
+        }
+
+        // 2. Desktop Environment specific palettes
+        if desktop.contains("kde") || desktop.contains("plasma") {
+            // KDE Plasma: Native Breeze Dark / Light
+            if is_dark {
+                Self::breeze_dark()
+            } else {
+                Self::breeze_light()
+            }
+        } else if desktop.contains("cinnamon")
+            || desktop.contains("mate")
+            || desktop.contains("xfce")
+        {
+            // Traditional GTK desktops that theme via installed GTK CSS themes (e.g. Mint-Y, Arc, etc.)
+            if let Some(palette) =
+                detect_gtk_theme_name().and_then(|t| load_gtk_theme_palette(&t, is_dark))
+            {
+                palette
+            } else if is_dark {
+                Self::dark()
+            } else {
+                Self::light()
+            }
+        } else {
+            // GNOME (including Ubuntu GNOME, Pop!_OS, etc.) or default fallback:
+            // Native Adwaita Dark / Light
+            if is_dark {
+                Self::dark()
+            } else {
+                Self::light()
+            }
+        }
     }
 
     /// Resolve effective palette based on config and system theme
@@ -458,6 +601,20 @@ impl CsdPalette {
 
         let mut palette = match mode {
             CsdThemeMode::Auto => Self::detect_system(),
+            CsdThemeMode::Adwaita => {
+                if detect_is_dark() {
+                    Self::dark()
+                } else {
+                    Self::light()
+                }
+            }
+            CsdThemeMode::Breeze => {
+                if detect_is_dark() {
+                    Self::breeze_dark()
+                } else {
+                    Self::breeze_light()
+                }
+            }
             CsdThemeMode::Light => Self::light(),
             CsdThemeMode::Dark => Self::dark(),
             CsdThemeMode::Terminal => Self::terminal(terminal_palette),
@@ -474,14 +631,14 @@ impl CsdPalette {
                 let lum = 0.299 * (c.r as f32) + 0.587 * (c.g as f32) + 0.114 * (c.b as f32);
                 palette.is_light = lum > 128.0;
                 palette.button_hover_bg = if palette.is_light {
-                    0x00000000
+                    0xFF000000
                 } else {
-                    0x00FFFFFF
+                    0xFFFFFFFF
                 };
                 palette.button_pressed_bg = if palette.is_light {
-                    0x00000000
+                    0xFF000000
                 } else {
-                    0x00FFFFFF
+                    0xFFFFFFFF
                 };
             }
             if let Some(c) = cfg
@@ -548,8 +705,33 @@ pub fn detect_gtk_theme_name() -> Option<String> {
         .unwrap_or(false);
 
     let query_gsettings = |schema: &str| -> Option<String> {
-        Command::new("gsettings")
+        let from_gsettings = Command::new("gsettings")
             .args(["get", schema, "gtk-theme"])
+            .output()
+            .ok()
+            .and_then(|out| {
+                if out.status.success() {
+                    let s = String::from_utf8_lossy(&out.stdout);
+                    let trimmed = s.trim().trim_matches('\'').trim_matches('"');
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+                None
+            });
+
+        if from_gsettings.is_some() {
+            return from_gsettings;
+        }
+
+        // dconf fallback
+        let dconf_path = if schema.contains("cinnamon") {
+            "/org/cinnamon/desktop/interface/gtk-theme"
+        } else {
+            "/org/gnome/desktop/interface/gtk-theme"
+        };
+        Command::new("dconf")
+            .args(["read", dconf_path])
             .output()
             .ok()
             .and_then(|out| {
@@ -607,40 +789,105 @@ pub fn detect_gtk_theme_name() -> Option<String> {
 /// Detects whether the user prefers a dark color scheme.
 pub fn detect_is_dark() -> bool {
     // 1. Check GTK_THEME env
-    if std::env::var("GTK_THEME").is_ok_and(|val| val.to_lowercase().contains("dark")) {
-        return true;
+    if let Ok(val) = std::env::var("GTK_THEME") {
+        let lower = val.to_lowercase();
+        if lower.contains("dark") {
+            return true;
+        } else if lower.contains("light") {
+            return false;
+        }
     }
 
-    // 2. Check org.gnome.desktop.interface color-scheme
-    let query_color_scheme = || {
-        Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
-            .output()
-            .ok()
-            .and_then(|out| {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout).to_lowercase();
-                    if s.contains("prefer-dark") {
-                        return Some(true);
-                    } else if s.contains("prefer-light") {
-                        return Some(false);
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
+
+    // 2. If KDE / Plasma, check ~/.config/kdeglobals first
+    if desktop.contains("kde") || desktop.contains("plasma") {
+        if let Ok(home) = std::env::var("HOME") {
+            let kdeglobals = PathBuf::from(home).join(".config/kdeglobals");
+            if let Ok(content) = fs::read_to_string(kdeglobals) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if let Some((_, val)) = trimmed.split_once("ColorScheme=") {
+                        let v = val.trim().to_lowercase();
+                        if v.contains("dark") {
+                            return true;
+                        } else if v.contains("light") {
+                            return false;
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    // 3. Query org.gnome.desktop.interface color-scheme (modern GNOME 42+ & FreeDesktop portal standard)
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum ColorSchemePref {
+        PreferDark,
+        PreferLight,
+        Default,
+    }
+
+    let query_color_scheme = || -> Option<ColorSchemePref> {
+        let parse_out = |raw: &str| -> Option<ColorSchemePref> {
+            let s = raw.to_lowercase();
+            if s.contains("prefer-dark") {
+                Some(ColorSchemePref::PreferDark)
+            } else if s.contains("prefer-light") {
+                Some(ColorSchemePref::PreferLight)
+            } else if s.contains("default") {
+                Some(ColorSchemePref::Default)
+            } else {
                 None
-            })
+            }
+        };
+
+        if let Ok(out) = Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+        {
+            if out.status.success() {
+                if let Some(pref) = parse_out(&String::from_utf8_lossy(&out.stdout)) {
+                    return Some(pref);
+                }
+            }
+        }
+
+        // Fallback for minimal VM / container environments where gsettings daemon isn't responsive
+        if let Ok(out) = Command::new("dconf")
+            .args(["read", "/org/gnome/desktop/interface/color-scheme"])
+            .output()
+        {
+            if out.status.success() {
+                if let Some(pref) = parse_out(&String::from_utf8_lossy(&out.stdout)) {
+                    return Some(pref);
+                }
+            }
+        }
+
+        None
     };
 
-    if let Some(is_dark) = query_color_scheme() {
-        return is_dark;
+    let scheme_res = query_color_scheme();
+    match scheme_res {
+        Some(ColorSchemePref::PreferDark) => return true,
+        Some(ColorSchemePref::PreferLight) => return false,
+        _ => {}
     }
 
-    // 3. Check if detected theme name contains "dark"
-    if detect_gtk_theme_name().is_some_and(|theme_name| theme_name.to_lowercase().contains("dark"))
-    {
-        return true;
+    // 4. Check if detected theme name contains "dark" or "light"
+    if let Some(theme_name) = detect_gtk_theme_name() {
+        let lower = theme_name.to_lowercase();
+        if lower.contains("dark") {
+            return true;
+        } else if lower.contains("light") {
+            return false;
+        }
     }
 
-    // 4. Check settings.ini for gtk-application-prefer-dark-theme = 1
+    // 5. Check ~/.config/gtk-4.0/settings.ini or gtk-3.0/settings.ini for gtk-application-prefer-dark-theme
     if let Ok(home) = std::env::var("HOME") {
         for sub in &["gtk-4.0/settings.ini", "gtk-3.0/settings.ini"] {
             let path = PathBuf::from(&home).join(".config").join(sub);
@@ -661,6 +908,12 @@ pub fn detect_is_dark() -> bool {
                 }
             }
         }
+    }
+
+    // 6. If color-scheme was explicitly 'default' (and none of the theme names specified dark),
+    // GNOME's default appearance is light.
+    if scheme_res == Some(ColorSchemePref::Default) {
+        return false;
     }
 
     true // default dark for terminal emulator
@@ -1052,13 +1305,14 @@ pub fn load_gtk_theme_palette(theme_name: &str, is_dark: bool) -> Option<CsdPale
     let is_light = lum > 128.0;
 
     let fg = final_fg.unwrap_or(if is_light { 0xFF2E3436 } else { 0xFFFFFFFF });
-    let border = final_border.unwrap_or_else(|| {
+    let raw_border = final_border.unwrap_or_else(|| {
         if is_light {
             adjust_brightness(bg, 0.90)
         } else {
             adjust_brightness(bg, 0.80)
         }
     });
+    let border = 0xFF000000 | (raw_border & 0x00FFFFFF);
 
     let inactive_bg = final_inactive_bg.unwrap_or_else(|| {
         if is_light {
@@ -1077,11 +1331,11 @@ pub fn load_gtk_theme_palette(theme_name: &str, is_dark: bool) -> Option<CsdPale
         inactive_bg,
         inactive_fg,
         border,
-        button_hover_bg: if is_light { 0x00000000 } else { 0x00FFFFFF },
-        button_pressed_bg: if is_light { 0x00000000 } else { 0x00FFFFFF },
-        close_hover_bg: 0x00E01B24,
-        close_pressed_bg: 0x00B2161E,
-        close_hover_fg: 0x00FFFFFF,
+        button_hover_bg: if is_light { 0xFF000000 } else { 0xFFFFFFFF },
+        button_pressed_bg: if is_light { 0xFF000000 } else { 0xFFFFFFFF },
+        close_hover_bg: 0xFFE01B24,
+        close_pressed_bg: 0xFFB2161E,
+        close_hover_fg: 0xFFFFFFFF,
         close_fg: if is_light { 0xFF2E3436 } else { 0xFFFFFFFF },
     })
 }
@@ -1117,6 +1371,25 @@ mod tests {
         let layout3 = CsdButtonLayout::parse("':close'");
         assert_eq!(layout3.left, vec![]);
         assert_eq!(layout3.right, vec![CsdButtonType::Close]);
+
+        let layout_gnome_default = CsdButtonLayout::parse("'appmenu:close'");
+        assert_eq!(layout_gnome_default.left, vec![CsdButtonType::Menu]);
+        assert_eq!(layout_gnome_default.right, vec![CsdButtonType::Close]);
+
+        let layout_gnome_full = CsdButtonLayout::parse("'appmenu:minimize,maximize,close'");
+        assert_eq!(layout_gnome_full.left, vec![CsdButtonType::Menu]);
+        assert_eq!(
+            layout_gnome_full.right,
+            vec![
+                CsdButtonType::Minimize,
+                CsdButtonType::Maximize,
+                CsdButtonType::Close
+            ]
+        );
+
+        let layout_menu_keyword = CsdButtonLayout::parse("'menu:close'");
+        assert_eq!(layout_menu_keyword.left, vec![CsdButtonType::Menu]);
+        assert_eq!(layout_menu_keyword.right, vec![CsdButtonType::Close]);
     }
 
     #[test]
@@ -1205,6 +1478,8 @@ mod tests {
         assert_eq!(CsdThemeMode::parse("light"), CsdThemeMode::Light);
         assert_eq!(CsdThemeMode::parse("dark"), CsdThemeMode::Dark);
         assert_eq!(CsdThemeMode::parse("terminal"), CsdThemeMode::Terminal);
+        assert_eq!(CsdThemeMode::parse("adwaita"), CsdThemeMode::Adwaita);
+        assert_eq!(CsdThemeMode::parse("breeze"), CsdThemeMode::Breeze);
         assert_eq!(CsdThemeMode::parse("anything_else"), CsdThemeMode::Auto);
     }
 
@@ -1290,5 +1565,49 @@ mod tests {
         assert_eq!(darker, 0xFF404040);
         let brighter = adjust_brightness(color, 1.5);
         assert_eq!(brighter, 0xFFC0C0C0);
+    }
+
+    #[test]
+    fn test_csd_palette_alpha_integrity() {
+        let palettes = [
+            CsdPalette::dark(),
+            CsdPalette::light(),
+            CsdPalette::breeze_dark(),
+            CsdPalette::breeze_light(),
+        ];
+        for p in palettes {
+            assert_eq!(p.bg >> 24, 0xFF, "bg must be fully opaque");
+            assert_eq!(p.fg >> 24, 0xFF, "fg must be fully opaque");
+            assert_eq!(p.border >> 24, 0xFF, "border must be fully opaque");
+            assert_eq!(p.button_hover_bg >> 24, 0xFF, "button_hover_bg must have 0xFF alpha");
+            assert_eq!(p.button_pressed_bg >> 24, 0xFF, "button_pressed_bg must have 0xFF alpha");
+            assert_eq!(p.close_hover_bg >> 24, 0xFF, "close_hover_bg must have 0xFF alpha");
+            assert_eq!(p.close_pressed_bg >> 24, 0xFF, "close_pressed_bg must have 0xFF alpha");
+            assert_eq!(p.close_hover_fg >> 24, 0xFF, "close_hover_fg must have 0xFF alpha");
+            assert_eq!(p.close_fg >> 24, 0xFF, "close_fg must have 0xFF alpha");
+        }
+    }
+
+    #[test]
+    fn test_csd_cache_invalidation() {
+        CsdPalette::invalidate_system_cache();
+        assert!(CACHED_PALETTE.lock().unwrap().is_none());
+        assert!(CACHED_LAYOUT.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_csd_menu_button_hit_test() {
+        let layout = CsdButtonLayout::parse("'appmenu:close'");
+        let width = 800;
+        let height = 38;
+
+        // Left button slot (x = 20, y = 19) should hit Menu
+        assert_eq!(layout.hit_test(20.0, 19.0, width, height), Some(CsdButtonType::Menu));
+
+        // Right button slot (x = 790, y = 19) should hit Close
+        assert_eq!(layout.hit_test(790.0, 19.0, width, height), Some(CsdButtonType::Close));
+
+        // Center should hit None
+        assert_eq!(layout.hit_test(400.0, 19.0, width, height), None);
     }
 }

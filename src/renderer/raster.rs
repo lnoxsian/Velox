@@ -27,7 +27,11 @@ pub fn blend_alpha(dst: u32, src: u32, alpha: u8) -> u32 {
     // Isolate Alpha channel
     let dst_a = (dst >> 24) & 0xFF;
     let src_a = (src >> 24) & 0xFF;
-    let res_a = ((src_a * a + dst_a * inv_a) >> 8) & 0xFF;
+    let res_a = if dst_a == 255 && src_a == 255 {
+        255
+    } else {
+        ((src_a * a + dst_a * inv_a + 128) >> 8).min(255)
+    };
 
     (res_a << 24) | res_rb | res_g
 }
@@ -324,6 +328,16 @@ mod tests {
         assert!((127..=128).contains(&r));
         assert!((127..=128).contains(&g));
         assert!((127..=128).contains(&b));
+    }
+
+    #[test]
+    fn test_blend_alpha_preserves_full_opacity() {
+        let dst = 0xFF2E2E2E;
+        let src = 0xFFFFFFFF;
+        for alpha in [1, 25, 38, 45, 65, 128, 200, 254] {
+            let blended = blend_alpha(dst, src, alpha);
+            assert_eq!(blended >> 24, 0xFF, "blended alpha must remain 0xFF for alpha={alpha}");
+        }
     }
 
     #[test]
