@@ -30,6 +30,7 @@ pub fn default_config() -> Config {
             opacity: Some(1.0),
             window_dim: Some(0.0),
             working_directory: None,
+            live_config_reload: Some(true),
             hide_mouse_on_typing: Some(true),
             csd_theme: None,
             decorations: None,
@@ -44,6 +45,7 @@ pub fn default_config() -> Config {
         },
 
         colors: Some(ConfigColors {
+            theme: None,
             default_fg: Some("#d4d4d4".to_string()),
             default_bg: Some("#181818".to_string()),
             black: Some("#000000".to_string()),

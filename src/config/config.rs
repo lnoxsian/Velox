@@ -76,6 +76,8 @@ pub struct WindowConfig {
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
+    pub live_config_reload: Option<bool>,
+    #[serde(default)]
     pub hide_mouse_on_typing: Option<bool>,
     #[serde(default)]
     pub csd_theme: Option<String>,
@@ -103,6 +105,8 @@ pub struct WindowDecorationsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ConfigColors {
+    #[serde(default, alias = "colorscheme", alias = "color_scheme")]
+    pub theme: Option<String>,
     #[serde(default)]
     pub default_fg: Option<String>,
     #[serde(default)]
@@ -301,6 +305,8 @@ pub struct Config {
     pub panes: PanesConfig,
     #[serde(default)]
     pub colors: Option<ConfigColors>,
+    #[serde(default, alias = "colorscheme", alias = "color_scheme")]
+    pub theme: Option<String>,
 
     #[serde(default)]
     pub shell: Option<String>,
@@ -310,6 +316,8 @@ pub struct Config {
     pub single_instance: Option<bool>,
     #[serde(default)]
     pub working_directory: Option<String>,
+    #[serde(default)]
+    pub live_config_reload: Option<bool>,
 
     // Top-level fallback fields for legacy flat TOML files
     #[serde(
@@ -609,6 +617,15 @@ impl Config {
             .or(self.hide_mouse_on_typing_legacy)
     }
 
+    pub fn live_config_reload(&self) -> bool {
+        if std::env::var("VELOX_NO_RELOAD").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")) {
+            return false;
+        }
+        self.live_config_reload
+            .or(self.window.live_config_reload)
+            .unwrap_or(true)
+    }
+
     pub fn show_tab_bar(&self) -> TabBarVisibility {
         self.tabs.show_tab_bar
     }
@@ -637,6 +654,12 @@ impl Config {
             .font_size
             .or(self.tab_font_size_legacy)
             .unwrap_or_else(|| self.font_size())
+    }
+
+    pub fn colorscheme(&self) -> Option<&str> {
+        self.theme
+            .as_deref()
+            .or_else(|| self.colors.as_ref().and_then(|c| c.theme.as_deref()))
     }
 
     pub fn default_fg(&self) -> Option<&str> {

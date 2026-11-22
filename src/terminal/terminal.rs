@@ -249,6 +249,112 @@ impl Terminal {
         Self::with_config(width, height, &config)
     }
 
+    /// Hot-reloads active terminal theme, remapping grid cells, scrollback buffers,
+    /// cursor shapes, and pen colors to prevent stale theme persistence.
+    pub fn apply_theme_reload(
+        &mut self,
+        new_theme: &Theme,
+        new_config: &crate::config::config::Config,
+    ) {
+        let old_theme = self.theme.clone();
+        self.theme = new_theme.clone();
+
+        self.bold_is_bright = new_config.bold_is_bright().unwrap_or(true);
+        self.scroll_on_output = new_config.scroll_on_output().unwrap_or(true);
+        self.scroll_on_keystroke = new_config.scroll_on_keystroke().unwrap_or(true);
+
+        if let Some(shape_str) = new_config.cursor_shape() {
+            let shape = match shape_str.to_lowercase().as_str() {
+                "hollow_block" | "hollowblock" | "hollow" => {
+                    crate::screen::cursor::CursorShape::HollowBlock
+                }
+                "beam" | "i" | "ibar" | "bar" => crate::screen::cursor::CursorShape::Beam,
+                "underline" => crate::screen::cursor::CursorShape::Underline,
+                _ => crate::screen::cursor::CursorShape::Block,
+            };
+            self.configured_cursor_shape = shape;
+            self.grid.cursor.shape = shape;
+            self.alt_grid.cursor.shape = shape;
+        }
+
+        let old_fg = old_theme.default_fg;
+        let old_bg = old_theme.default_bg;
+        let new_fg = self.theme.default_fg;
+        let new_bg = self.theme.default_bg;
+
+        // 1. Remap current active pen colors
+        if self.current_fg == old_fg {
+            self.current_fg = new_fg;
+        } else {
+            for i in 0..16 {
+                if self.current_fg == old_theme.ansi_colors[i] {
+                    self.current_fg = self.theme.ansi_colors[i];
+                    break;
+                }
+            }
+        }
+
+        if self.current_bg == old_bg {
+            self.current_bg = new_bg;
+        } else {
+            for i in 0..16 {
+                if self.current_bg == old_theme.ansi_colors[i] {
+                    self.current_bg = self.theme.ansi_colors[i];
+                    break;
+                }
+            }
+        }
+
+        // 2. Remap grid default colors
+        self.grid.default_fg = new_fg;
+        self.grid.default_bg = new_bg;
+        self.alt_grid.default_fg = new_fg;
+        self.alt_grid.default_bg = new_bg;
+
+        // 3. Remap grid cells
+        Self::remap_cells(&mut self.grid.cells, &old_theme, &self.theme);
+        Self::remap_cells(&mut self.alt_grid.cells, &old_theme, &self.theme);
+
+        // 4. Remap scrollback
+        self.grid.scrollback.remap_colors(&old_theme, &self.theme);
+        self.alt_grid.scrollback.remap_colors(&old_theme, &self.theme);
+
+        // 5. Mark full damage
+        self.grid.damage.mark_all();
+        self.alt_grid.damage.mark_all();
+    }
+
+    fn remap_cells(cells: &mut [crate::screen::cell::Cell], old_theme: &Theme, new_theme: &Theme) {
+        let old_fg = old_theme.default_fg;
+        let old_bg = old_theme.default_bg;
+        let new_fg = new_theme.default_fg;
+        let new_bg = new_theme.default_bg;
+
+        for cell in cells {
+            if cell.foreground == old_fg {
+                cell.foreground = new_fg;
+            } else {
+                for i in 0..16 {
+                    if cell.foreground == old_theme.ansi_colors[i] {
+                        cell.foreground = new_theme.ansi_colors[i];
+                        break;
+                    }
+                }
+            }
+
+            if cell.background == old_bg {
+                cell.background = new_bg;
+            } else {
+                for i in 0..16 {
+                    if cell.background == old_theme.ansi_colors[i] {
+                        cell.background = new_theme.ansi_colors[i];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     pub fn mark_semantic_zone(&mut self, zone: SemanticZone, exit_code: Option<i32>) {
         self.semantic_zone = zone;
         let cursor = self.active_grid().cursor;

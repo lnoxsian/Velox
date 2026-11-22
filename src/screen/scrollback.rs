@@ -806,6 +806,45 @@ impl Scrollback {
         }
     }
 
+    /// Remaps colors of hot resident rows when a live theme reload occurs.
+    pub fn remap_colors(
+        &mut self,
+        old_theme: &crate::theme::theme::Theme,
+        new_theme: &crate::theme::theme::Theme,
+    ) {
+        self.default_bg = Some(new_theme.default_bg);
+        let old_fg = old_theme.default_fg;
+        let old_bg = old_theme.default_bg;
+        let new_fg = new_theme.default_fg;
+        let new_bg = new_theme.default_bg;
+
+        for row in &mut self.hot_rows {
+            for cell in &mut row.cells {
+                if cell.foreground == old_fg {
+                    cell.foreground = new_fg;
+                } else {
+                    for i in 0..16 {
+                        if cell.foreground == old_theme.ansi_colors[i] {
+                            cell.foreground = new_theme.ansi_colors[i];
+                            break;
+                        }
+                    }
+                }
+
+                if cell.background == old_bg {
+                    cell.background = new_bg;
+                } else {
+                    for i in 0..16 {
+                        if cell.background == old_theme.ansi_colors[i] {
+                            cell.background = new_theme.ansi_colors[i];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Mutable access to the underlying storage instance.
     pub fn storage_mut(&mut self) -> Option<&mut ScrollbackStorage> {
         self.storage.as_mut()

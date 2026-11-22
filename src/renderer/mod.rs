@@ -114,6 +114,7 @@ pub struct CpuRenderer {
     prev_cursor_color: Option<crate::screen::cell::Color>,
     prev_cursor_text_color: Option<crate::screen::cell::Color>,
     prev_tab_accent_color: Option<crate::screen::cell::Color>,
+    pub prev_tab_accent: crate::screen::cell::Color,
     bold_is_bright: bool,
     pub default_font_size: f32,
     pub default_cell_height: f32,
@@ -303,6 +304,7 @@ impl CpuRenderer {
             prev_cursor_color: theme.cursor_color,
             prev_cursor_text_color: theme.cursor_text_color,
             prev_tab_accent_color: theme.tab_accent_color,
+            prev_tab_accent: theme.resolve_tab_accent_color(),
             bold_is_bright,
             default_font_size: font_size,
             default_cell_height,
@@ -486,6 +488,70 @@ impl CpuRenderer {
         crate::diagnostics::ResizeStats::record_pane_state_clear();
         self.pane_states.clear();
         self.last_target_ptr = 0;
+    }
+
+    /// Dynamically hot-replaces the font family, font size, line height, and tab font size,
+    /// rebuilding glyph caches and marking all viewport rows damaged.
+    pub fn update_font(
+        &mut self,
+        font_family: &str,
+        font_size: f32,
+        font_scale_multiplier: f32,
+        line_height: f32,
+        tab_font_size: f32,
+    ) -> Result<(), crate::font::resolved::FontError> {
+        let font_size = font_size.max(1.0);
+        let glyph_cache = crate::renderer::glyph::GlyphCache::try_from_font_family_with_line_height(
+            font_family,
+            font_size,
+            font_scale_multiplier,
+            line_height,
+        )?;
+        self.tab_glyph_cache = glyph_cache.create_tab_cache(tab_font_size);
+        self.glyph_cache = glyph_cache;
+        self.default_font_size = font_size;
+        self.default_cell_height = self.glyph_cache.cell_height as f32;
+        self.pane_glyph_caches.clear();
+        self.pane_states.clear();
+        let rows = (self.viewport_height / self.glyph_cache.cell_height.max(1)).max(1) as usize;
+        self.damage.resize(rows);
+        self.damage.mark_all();
+        self.last_target_ptr = 0;
+        Ok(())
+    }
+
+    /// Hot-replaces the color palette and invalidates render caches for an immediate redraw.
+    pub fn update_palette(&mut self, palette: PrecomputedPalette) {
+        self.palette = palette;
+        self.prev_dim = -1.0;
+        self.prev_tab_bar_hash = 0;
+        self.prev_separators_hash = 0;
+        self.prev_csd_hash = 0;
+        self.pane_states.clear();
+        self.last_target_ptr = 0;
+        self.damage.mark_all();
+    }
+
+    /// Hot-replaces the active theme and precomputed palette, refreshing internal theme tracking
+    /// and invalidating all render and pane caches.
+    pub fn update_theme_and_palette(&mut self, theme: &Theme, opacity: f32) {
+        self.palette = PrecomputedPalette::new(theme, opacity);
+        self.prev_theme_fg = theme.default_fg;
+        self.prev_theme_bg = theme.default_bg;
+        self.prev_ansi_colors = theme.ansi_colors;
+        self.prev_cursor_color = theme.cursor_color;
+        self.prev_cursor_text_color = theme.cursor_text_color;
+        self.prev_tab_accent_color = theme.tab_accent_color;
+        self.prev_tab_accent = theme.resolve_tab_accent_color();
+        self.opacity = opacity;
+        self.prev_opacity = opacity;
+        self.prev_dim = 0.0;
+        self.prev_tab_bar_hash = 0;
+        self.prev_separators_hash = 0;
+        self.prev_csd_hash = 0;
+        self.pane_states.clear();
+        self.last_target_ptr = 0;
+        self.damage.mark_all();
     }
 
     /// Full memory cleanup: compacts glyph atlas, unloads fallback fonts, and shrinks scratch buffers.
@@ -692,12 +758,14 @@ impl CpuRenderer {
     }
 
     fn sync_theme_and_palette(&mut self, theme: &Theme, opacity: f32, effective_dim: f32) {
+        let tab_accent = theme.resolve_tab_accent_color();
         if theme.default_fg != self.prev_theme_fg
             || theme.default_bg != self.prev_theme_bg
             || theme.ansi_colors != self.prev_ansi_colors
             || theme.cursor_color != self.prev_cursor_color
             || theme.cursor_text_color != self.prev_cursor_text_color
             || theme.tab_accent_color != self.prev_tab_accent_color
+            || tab_accent != self.prev_tab_accent
             || (opacity - self.prev_opacity).abs() > f32::EPSILON
             || (effective_dim - self.prev_dim).abs() > f32::EPSILON
         {
@@ -708,6 +776,7 @@ impl CpuRenderer {
             self.prev_cursor_color = theme.cursor_color;
             self.prev_cursor_text_color = theme.cursor_text_color;
             self.prev_tab_accent_color = theme.tab_accent_color;
+            self.prev_tab_accent = tab_accent;
             self.opacity = opacity;
             self.prev_opacity = opacity;
             self.prev_dim = effective_dim;
@@ -772,10 +841,16 @@ impl CpuRenderer {
         false
     }
 
-    fn compute_tab_bar_hash(tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>) -> u64 {
+    fn compute_tab_bar_hash(
+        tab_bar_info: Option<&crate::app::tab::TabBarRenderInfo>,
+        tab_accent: u32,
+        tab_bar_bg: u32,
+    ) -> u64 {
         tab_bar_info
             .map(|tb| {
                 let mut h: u64 = tb.tabs.len() as u64;
+                h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(tab_accent as u64);
+                h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(tab_bar_bg as u64);
                 for t in &tb.tabs {
                     h = h.wrapping_mul(0x9e3779b97f4a7c15);
                     h ^= t.is_active as u64
@@ -2520,7 +2595,11 @@ impl CpuRenderer {
             .unwrap_or(self.palette.ansi_colors[8]);
 
         // 4. Tab bar & Separators dirty check
-        let new_tab_bar_hash = Self::compute_tab_bar_hash(tab_bar_info);
+        let new_tab_bar_hash = Self::compute_tab_bar_hash(
+            tab_bar_info,
+            self.palette.tab_accent,
+            self.palette.tab_bar_bg,
+        );
         let tab_bar_dirty = new_tab_bar_hash != self.prev_tab_bar_hash;
 
         let new_separators_hash =

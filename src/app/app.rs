@@ -1716,6 +1716,143 @@ impl WindowState {
 
         changed
     }
+
+    /// Hot-applies an updated configuration across this window, reloading theme palettes,
+    /// typography metrics, tab bar styles, CSD window decorations, and resizing pane grids
+    /// without interrupting active child processes or PTY sessions.
+    pub fn apply_config_reload(
+        &mut self,
+        new_config: &Config,
+        diagnostics: &[crate::config::loader::ConfigDiagnostic],
+    ) {
+        // 1. Diagnostics Banner: update or clear
+        self.banner = if let Some(diag) = diagnostics.first() {
+            Some(AlertBanner {
+                severity: diag.severity,
+                message: format!("{diag}"),
+                dismiss_hovered: false,
+            })
+        } else {
+            None
+        };
+
+        // 2. Palette & Themes
+        let new_theme = crate::theme::theme::Theme::from_config(new_config);
+        self.renderer.update_theme_and_palette(&new_theme, new_config.opacity());
+        self.opacity = new_config.opacity();
+        self.window_dim = new_config.window_dim();
+
+        // Update all terminal panes across all tabs
+        for tab in &mut self.tabs {
+            for pane in tab.tree.panes_mut() {
+                pane.terminal.apply_theme_reload(&new_theme, new_config);
+            }
+        }
+
+        // 3. CSD Window Decorations
+        crate::window::csd::CsdPalette::invalidate_system_cache();
+        self.csd_palette = crate::window::csd::CsdPalette::resolve(
+            new_config.decorations_config().as_ref(),
+            &self.renderer.palette,
+        );
+        self.csd_button_layout = crate::window::csd::CsdButtonLayout::detect_system();
+        self.renderer.prev_csd_hash = 0;
+
+        // 4. Font, Typography, Padding & Terminal Grid Sizing
+        let font_family_changed = self.config.font_family() != new_config.font_family();
+        let font_size_changed = (self.config.font_size() - new_config.font_size()).abs() > 0.01;
+        let line_height_changed = (self.config.line_height().unwrap_or(1.0)
+            - new_config.line_height().unwrap_or(1.0))
+        .abs()
+            > 0.01;
+        let font_scale_changed = (self.config.font_scale_multiplier().unwrap_or(1.0)
+            - new_config.font_scale_multiplier().unwrap_or(1.0))
+        .abs()
+            > 0.01;
+        let nerd_scale_changed = (self.config.nerd_font_scale().unwrap_or(1.0)
+            - new_config.nerd_font_scale().unwrap_or(1.0))
+        .abs()
+            > 0.01;
+        let padding_changed = (self.padding_x - new_config.pane_padding_x().unwrap_or(8.0)).abs() > 0.01
+            || (self.padding_y - new_config.pane_padding_y().unwrap_or(4.0)).abs() > 0.01;
+
+        if font_family_changed || font_size_changed || line_height_changed || font_scale_changed {
+            let font_family = new_config.font_family();
+            let font_size = new_config.font_size();
+            let font_scale = new_config.font_scale_multiplier().unwrap_or(1.0);
+            let line_height = new_config.line_height().unwrap_or(1.0);
+            let tab_font_size = new_config.tab_font_size();
+
+            if let Err(e) = self.renderer.update_font(
+                font_family,
+                font_size,
+                font_scale,
+                line_height,
+                tab_font_size,
+            ) {
+                log::warn!("Live reload font update error: {}", e);
+            }
+
+            self.default_font_size = font_size;
+            self.current_font_size = font_size;
+            self.base_cell_width = self.renderer.glyph_cache.cell_width;
+            self.base_cell_height = self.renderer.glyph_cache.cell_height;
+
+            for tab in &mut self.tabs {
+                tab.font_size = font_size;
+                for pane in tab.tree.panes_mut() {
+                    pane.font_size = font_size;
+                }
+            }
+        }
+
+        if nerd_scale_changed {
+            self.renderer
+                .set_nerd_font_scale(new_config.nerd_font_scale().unwrap_or(1.0));
+        }
+
+        self.padding_x = new_config.pane_padding_x().unwrap_or(8.0);
+        self.padding_y = new_config.pane_padding_y().unwrap_or(4.0);
+
+        // 5. Tab Bar Configuration
+        self.tab_bar = TabBar::from_config(new_config);
+        self.tab_bar_dirty = true;
+        self.tab_bar_render_cache = None;
+
+        // 6. Pane Separators & Mouse/Keyboard Preferences
+        self.separator_size = new_config.pane_separator_size();
+        self.min_cols = new_config.pane_minimum_columns();
+        self.min_rows = new_config.pane_minimum_rows();
+        self.separator_color = new_config.pane_separator_color().map(String::from);
+        self.active_separator_color = new_config.pane_active_separator_color().map(String::from);
+        self.scroll_multiplier = new_config.scroll_multiplier().unwrap_or(1.0);
+        self.cursor_blink_enabled = new_config.cursor_blink().unwrap_or(true);
+        self.hide_mouse_on_typing = new_config.hide_mouse_on_typing().unwrap_or(true);
+
+        if new_config.repeat_delay().is_some() || new_config.repeat_rate().is_some() {
+            self.window.set_key_repeat(new_config.repeat_delay(), new_config.repeat_rate());
+        }
+
+        // 7. If font or padding changed, recalculate dimensions across all tabs and panes
+        if font_family_changed
+            || font_size_changed
+            || line_height_changed
+            || font_scale_changed
+            || padding_changed
+        {
+            let num_tabs = self.tabs.len();
+            for idx in 0..num_tabs {
+                self.sync_tab_panes_dimensions(idx);
+            }
+        }
+
+        // 8. Commit updated config and request full damage redraw
+        self.config = new_config.clone();
+        self.renderer.damage.mark_all();
+        self.content_dirty = true;
+        self.needs_redraw = true;
+        self.window.request_redraw();
+    }
 }
 
 pub struct App {
@@ -1732,6 +1869,7 @@ pub struct App {
     pub(crate) pty_reactor: Option<crate::pty::PtyReactor>,
     pub(crate) config: Config,
     pub(crate) config_diagnostics: Vec<crate::config::loader::ConfigDiagnostic>,
+    pub(crate) config_watcher: Option<crate::config::watcher::ConfigWatcher>,
 }
 
 impl Drop for App {
@@ -1764,6 +1902,12 @@ impl App {
         let daemon_mode = options.daemon;
         let single_instance_mode = options.single_instance;
 
+        let config_watcher = if config.live_config_reload() {
+            crate::config::watcher::ConfigWatcher::new()
+        } else {
+            None
+        };
+
         Ok(Self {
             event_loop_proxy: proxy,
             event_receiver: receiver,
@@ -1778,6 +1922,7 @@ impl App {
             pty_reactor: Some(pty_reactor),
             config,
             config_diagnostics: diagnostics,
+            config_watcher,
         })
     }
 
@@ -2209,6 +2354,24 @@ impl App {
         }
     }
 
+    /// Reloads the configuration file from disk with diagnostics, diffing against the active
+    /// config and hot-applying changes across all open windows without interrupting child processes.
+    pub fn reload_config(&mut self) {
+        let (new_config, diagnostics, _) = crate::config::loader::load_with_diagnostics();
+
+        if self.config == new_config && self.config_diagnostics == diagnostics {
+            return;
+        }
+
+        log::info!("Reloading configuration due to file change");
+        self.config = new_config.clone();
+        self.config_diagnostics = diagnostics;
+
+        for ws in self.windows.values_mut() {
+            ws.apply_config_reload(&new_config, &self.config_diagnostics);
+        }
+    }
+
     #[inline]
     pub(crate) fn compute_ppoll_timeout(
         min_next_wake: Option<std::time::Instant>,
@@ -2575,6 +2738,18 @@ impl App {
                     revents: 0,
                 });
             }
+            let config_watcher_fd = self
+                .config_watcher
+                .as_ref()
+                .map(|w| w.as_raw_fd())
+                .unwrap_or(-1);
+            if config_watcher_fd >= 0 {
+                poll_fds.push(libc::pollfd {
+                    fd: config_watcher_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
             for ws in self.windows.values() {
                 poll_fds.push(libc::pollfd {
                     fd: ws.window.as_raw_fd(),
@@ -2620,6 +2795,18 @@ impl App {
                 self.event_loop_proxy
                     .wake_pending
                     .store(false, std::sync::atomic::Ordering::Release);
+            }
+
+            if config_watcher_fd >= 0 {
+                if let Some(entry) = poll_fds.iter().find(|p| p.fd == config_watcher_fd) {
+                    if (entry.revents & libc::POLLIN) != 0 {
+                        if let Some(ref mut watcher) = self.config_watcher {
+                            if watcher.check_events() {
+                                self.reload_config();
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -2697,6 +2884,7 @@ mod tests {
             pty_reactor: None,
             config: Config::default(),
             config_diagnostics: Vec::new(),
+            config_watcher: None,
         };
 
         let ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
@@ -2738,6 +2926,7 @@ mod tests {
             pty_reactor: None,
             config: Config::default(),
             config_diagnostics: Vec::new(),
+            config_watcher: None,
         };
 
         let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
@@ -2778,6 +2967,7 @@ mod tests {
             pty_reactor: None,
             config: Config::default(),
             config_diagnostics: Vec::new(),
+            config_watcher: None,
         };
 
         // Rapidly create and exit 5 windows in succession
@@ -2922,5 +3112,221 @@ mod tests {
         // Clean up env
         unsafe { std::env::remove_var("VELOX_CSD_THEME") };
         crate::window::csd::CsdPalette::invalidate_system_cache();
+    }
+
+    #[test]
+    fn test_apply_config_reload_palette_and_opacity() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        ws.renderer.damage.clear();
+        ws.needs_redraw = false;
+
+        let toml_str = r##"
+            [window]
+            opacity = 0.85
+            window_dim = 0.25
+
+            [colors]
+            default_bg = "#112233"
+            default_fg = "#eeffaa"
+        "##;
+        let (new_cfg, diags) = crate::config::loader::load_from_str(toml_str);
+        assert!(diags.is_empty());
+
+        ws.apply_config_reload(&new_cfg, &diags);
+
+        assert_eq!(ws.opacity, 0.85);
+        assert_eq!(ws.window_dim, 0.25);
+        assert_eq!(
+            ws.renderer.palette.raw_default_bg,
+            crate::screen::cell::Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
+        assert_eq!(
+            ws.renderer.palette.raw_default_fg,
+            crate::screen::cell::Color {
+                r: 0xEE,
+                g: 0xFF,
+                b: 0xAA
+            }
+        );
+        assert_eq!(ws.renderer.palette.default_bg >> 24, 217); // (0.85 * 255).round()
+        assert!(ws.renderer.damage.full_redraw);
+        assert!(ws.needs_redraw);
+        assert!(ws.content_dirty);
+
+        // Verify active pane terminal theme was updated (no new tab or window needed)
+        assert_eq!(
+            ws.active_pane().terminal.theme.default_bg,
+            crate::screen::cell::Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
+        assert_eq!(
+            ws.active_pane().terminal.grid.default_bg,
+            crate::screen::cell::Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
+
+        // Verify draw() retains the updated theme and does not revert to old Monokai
+        ws.draw();
+        assert_eq!(
+            ws.renderer.palette.raw_default_bg,
+            crate::screen::cell::Color {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
+    }
+
+    #[test]
+    fn test_apply_config_reload_bar_accent_and_split_accent() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+
+        let toml_str = r##"
+            [tabs]
+            tab_accent_color = "#ff5500"
+
+            [panes]
+            separator_color = "#334455"
+            active_separator_color = "#00ffcc"
+        "##;
+        let (new_cfg, diags) = crate::config::loader::load_from_str(toml_str);
+        assert!(diags.is_empty());
+
+        ws.apply_config_reload(&new_cfg, &diags);
+
+        // 1. Bar accent (tab_accent)
+        assert_eq!(
+            ws.active_pane().terminal.theme.resolve_tab_accent_color(),
+            crate::screen::cell::Color {
+                r: 0xFF,
+                g: 0x55,
+                b: 0x00
+            }
+        );
+        assert_eq!(
+            ws.renderer.palette.tab_accent & 0x00FFFFFF,
+            0x00FF5500
+        );
+
+        // 2. Split accent & separator color
+        assert_eq!(ws.separator_color.as_deref(), Some("#334455"));
+        assert_eq!(ws.active_separator_color.as_deref(), Some("#00ffcc"));
+
+        // Verify draw() preserves tab accent and executes without reverting
+        ws.draw();
+        assert_eq!(
+            ws.renderer.palette.tab_accent & 0x00FFFFFF,
+            0x00FF5500
+        );
+    }
+
+    #[test]
+    fn test_apply_config_reload_preset_colorscheme() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+
+        let toml_str = r##"
+            theme = "catppuccin-mocha"
+        "##;
+        let (new_cfg, diags) = crate::config::loader::load_from_str(toml_str);
+        assert!(diags.is_empty());
+
+        ws.apply_config_reload(&new_cfg, &diags);
+
+        // Catppuccin Mocha default_bg is #1e1e2e, default_fg is #cdd6f4
+        assert_eq!(
+            ws.renderer.palette.raw_default_bg,
+            crate::screen::cell::Color {
+                r: 0x1E,
+                g: 0x1E,
+                b: 0x2E
+            }
+        );
+        assert_eq!(
+            ws.active_pane().terminal.theme.default_bg,
+            crate::screen::cell::Color {
+                r: 0x1E,
+                g: 0x1E,
+                b: 0x2E
+            }
+        );
+        assert_eq!(
+            ws.active_pane().terminal.grid.default_bg,
+            crate::screen::cell::Color {
+                r: 0x1E,
+                g: 0x1E,
+                b: 0x2E
+            }
+        );
+
+        ws.draw();
+        assert_eq!(
+            ws.renderer.palette.raw_default_bg,
+            crate::screen::cell::Color {
+                r: 0x1E,
+                g: 0x1E,
+                b: 0x2E
+            }
+        );
+    }
+
+    #[test]
+    fn test_apply_config_reload_diagnostics_banner() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        assert!(ws.banner.is_none());
+
+        // 1. Reload with diagnostic error
+        let diag = crate::config::loader::ConfigDiagnostic {
+            severity: crate::config::loader::DiagnosticSeverity::Error,
+            message: "invalid syntax test".to_string(),
+            line: Some(5),
+            col: Some(10),
+        };
+        let cfg = Config::default();
+        ws.apply_config_reload(&cfg, &[diag]);
+
+        assert!(ws.banner.is_some());
+        assert!(ws.banner.as_ref().unwrap().message.contains("invalid syntax test"));
+
+        // 2. Subsequent reload without diagnostics clears banner
+        ws.apply_config_reload(&cfg, &[]);
+        assert!(ws.banner.is_none(), "Valid config must dismiss diagnostic banner");
+    }
+
+    #[test]
+    fn test_apply_config_reload_font_and_padding_resizes_panes() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        let orig_cw = ws.base_cell_width;
+
+        let toml_str = r#"
+            [font]
+            font_size = 20.0
+
+            [panes]
+            padding_x = 16.0
+            padding_y = 12.0
+        "#;
+        let (new_cfg, diags) = crate::config::loader::load_from_str(toml_str);
+        assert!(diags.is_empty());
+
+        ws.apply_config_reload(&new_cfg, &diags);
+
+        assert_eq!(ws.default_font_size, 20.0);
+        assert_eq!(ws.current_font_size, 20.0);
+        assert_eq!(ws.padding_x, 16.0);
+        assert_eq!(ws.padding_y, 12.0);
+        // Cell width at font size 20 should be strictly larger than cell width at font size 14
+        assert!(ws.base_cell_width > orig_cw);
+        assert!(ws.renderer.damage.full_redraw);
+        assert!(ws.needs_redraw);
     }
 }
