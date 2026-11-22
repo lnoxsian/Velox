@@ -127,6 +127,8 @@ pub struct CpuRenderer {
     last_target_ptr: usize,
     pub csd_height: u32,
     pub prev_csd_hash: u64,
+    pub active_search_matches: Vec<crate::screen::search::SearchMatch>,
+    pub active_search_index: Option<usize>,
     pub scratch_resolved: Vec<ResolvedCell>,
     pub stats: RenderStats,
 }
@@ -314,6 +316,8 @@ impl CpuRenderer {
             last_target_ptr: 0,
             csd_height: 0,
             prev_csd_hash: 0,
+            active_search_matches: Vec::new(),
+            active_search_index: None,
             scratch_resolved: Vec::new(),
             stats: RenderStats::default(),
         })
@@ -1365,27 +1369,43 @@ impl CpuRenderer {
         if height == 0 {
             return;
         }
-        let bg_color = self.palette.default_fg;
-        let text_color = PackedColor::from_color(self.palette.raw_default_bg).to_u32();
-        let border_color = text_color;
+        let bg_color = self.palette.default_bg;
+        let text_color = self.palette.default_fg;
+        let border_color = match banner.severity {
+            crate::config::loader::DiagnosticSeverity::Error => self.palette.ansi_colors[9],
+            crate::config::loader::DiagnosticSeverity::Warning => self.palette.ansi_colors[11],
+        };
         let w = self.viewport_width;
 
         // 1. Fill background span
         self.framebuffer.fill_span(0, y_offset, w, height, bg_color);
 
-        // 2. Render bottom border line
+        // 2. Render rectangular borders matching find window style (top, bottom, left, right)
         self.framebuffer
-            .fill_span(0, y_offset + height.saturating_sub(1), w, 1, border_color);
+            .draw_rect_border(0, y_offset, w, height, border_color);
 
-        // 3. Render message text
+        // 3. Render message text and dismiss indicator
         let tab_cw = self.tab_glyph_cache.cell_width;
         let tab_ch = self.tab_glyph_cache.cell_height;
         let char_baseline_y = y_offset + (height.saturating_sub(tab_ch)) / 2;
 
-        let close_space = 28u32;
-        let max_text_w = (w.saturating_sub(16 + close_space)) as f32;
-        let max_chars = (max_text_w / (tab_cw.max(1) as f32)).floor() as usize;
+        let hint_str = "[Esc]";
+        let hint_w = (hint_str.chars().count() as u32) * tab_cw;
+        let hint_x = w.saturating_sub(hint_w + 10);
+        let hint_color = if banner.dismiss_hovered {
+            self.palette.default_fg
+        } else {
+            self.palette.tab_inactive_fg
+        };
+
+        for (i, ch) in hint_str.chars().enumerate() {
+            let px = hint_x + (i as u32) * tab_cw;
+            self.blit_tab_char(ch, px, char_baseline_y, hint_color);
+        }
+
         let text_start_x = 10u32;
+        let max_text_w = (hint_x.saturating_sub(text_start_x + 8)) as f32;
+        let max_chars = (max_text_w / (tab_cw.max(1) as f32)).floor() as usize;
 
         self.blit_truncated_text(
             &banner.message,
@@ -1395,28 +1415,170 @@ impl CpuRenderer {
             tab_cw,
             text_color,
         );
+    }
 
-        // 4. Render dismiss button [×] on the right side
-        let btn_w = 20u32;
-        let btn_x = w.saturating_sub(btn_w + 6);
-        let btn_y = y_offset + (height.saturating_sub(btn_w)) / 2;
+    #[inline]
+    pub fn set_search_matches(
+        &mut self,
+        matches: &[crate::screen::search::SearchMatch],
+        active_index: Option<usize>,
+    ) {
+        // Fast-path: avoid re-allocating / re-copying matches if slice content is identical
+        if self.active_search_index == active_index
+            && self.active_search_matches.len() == matches.len()
+            && self.active_search_matches.as_slice() == matches
+        {
+            return;
+        }
+        self.active_search_matches.clear();
+        self.active_search_matches.extend_from_slice(matches);
+        self.active_search_index = active_index;
+    }
 
-        if banner.dismiss_hovered {
-            let fg = self.palette.raw_default_fg;
-            let bg = self.palette.raw_default_bg;
-            let blend = |c1: u8, c2: u8| -> u8 { ((c1 as u16 * 85 + c2 as u16 * 15) / 100) as u8 };
-            let hover_bg = PackedColor::from_color(crate::screen::cell::Color {
-                r: blend(fg.r, bg.r),
-                g: blend(fg.g, bg.g),
-                b: blend(fg.b, bg.b),
-            })
-            .to_u32();
-            self.framebuffer
-                .fill_span(btn_x, btn_y, btn_w, btn_w, hover_bg);
+    #[inline]
+    pub fn clear_search_matches(&mut self) {
+        self.active_search_matches.clear();
+        self.active_search_index = None;
+    }
+
+    pub fn render_search_overlay(
+        &mut self,
+        search: &crate::screen::search::SearchState,
+        pane_rect: &crate::app::split::PaneRect,
+        banner_h: u32,
+    ) -> Option<crate::window::DamageRect> {
+        if !search.is_open {
+            return None;
         }
 
-        let cross_x = btn_x + (btn_w.saturating_sub(tab_cw)) / 2;
-        self.blit_tab_char('×', cross_x, char_baseline_y, text_color);
+        let tab_cw = self.tab_glyph_cache.cell_width.max(1);
+        let tab_ch = self.tab_glyph_cache.cell_height.max(1);
+
+        let padding_h = 10u32;
+        let padding_v = 4u32;
+        let box_h = (tab_ch + padding_v * 2).max(24);
+
+        let pane_x = pane_rect.x.max(0.0) as u32;
+        let pane_w = pane_rect.width.max(1.0) as u32;
+
+        let box_w = pane_w;
+        if box_w < 100 {
+            return None;
+        }
+
+        let box_x = pane_x;
+        let box_y = self
+            .viewport_height
+            .saturating_sub(banner_h)
+            .saturating_sub(box_h);
+
+        let bg_color = self.palette.default_bg;
+        let text_color = self.palette.default_fg;
+        let error_color = self.palette.ansi_colors[9];
+        let border_color = if search.matches.is_empty() && !search.query.is_empty() {
+            error_color
+        } else if self.palette.tab_accent != self.palette.default_bg {
+            self.palette.tab_accent
+        } else {
+            self.palette.tab_inactive_fg
+        };
+        let label_color = self.palette.tab_inactive_fg;
+        let count_color = if search.matches.is_empty() && !search.query.is_empty() {
+            error_color
+        } else {
+            self.palette.tab_inactive_fg
+        };
+        let cursor_color = if self.palette.tab_accent != self.palette.default_bg {
+            self.palette.tab_accent
+        } else {
+            self.palette.default_fg
+        };
+
+        // 1. Fill background span
+        self.framebuffer
+            .fill_span(box_x, box_y, box_w, box_h, bg_color);
+
+        // 2. Borders
+        self.framebuffer
+            .draw_rect_border(box_x, box_y, box_w, box_h, border_color);
+
+        let char_baseline_y = box_y + (box_h.saturating_sub(tab_ch)) / 2;
+        let mut cur_x = box_x + padding_h;
+
+        // 3. Label "Find: "
+        for ch in "Find: ".chars() {
+            self.blit_tab_char(ch, cur_x, char_baseline_y, label_color);
+            cur_x += tab_cw;
+        }
+
+        // 4. Status indicator on the right side (zero-allocation stack buffer)
+        let mut status_buf = [0u8; 32];
+        let status_str = if search.query.is_empty() {
+            "[Esc]"
+        } else if search.matches.is_empty() {
+            "0/0 [Esc]"
+        } else {
+            use std::io::Write;
+            let active = search.active_match_index.map(|i| i + 1).unwrap_or(0);
+            let mut slice = &mut status_buf[..];
+            let _ = write!(slice, "{}/{} [Esc]", active, search.matches.len());
+            let len = 32 - slice.len();
+            std::str::from_utf8(&status_buf[..len]).unwrap_or("[Esc]")
+        };
+
+        let status_w = (status_str.chars().count() as u32) * tab_cw;
+        let status_x = (box_x + box_w).saturating_sub(status_w + padding_h);
+
+        // 5. Query text
+        let query_avail_w = status_x.saturating_sub(cur_x + 4);
+        let max_query_chars = (query_avail_w / tab_cw) as usize;
+
+        let total_chars = search.query.chars().count();
+        let window_start = if total_chars <= max_query_chars {
+            0
+        } else if search.cursor_pos >= max_query_chars {
+            search
+                .cursor_pos
+                .saturating_sub(max_query_chars.saturating_sub(1))
+        } else {
+            0
+        };
+
+        for (idx, ch) in search
+            .query
+            .chars()
+            .skip(window_start)
+            .take(max_query_chars)
+            .enumerate()
+        {
+            let px = cur_x + (idx as u32) * tab_cw;
+            self.blit_tab_char(ch, px, char_baseline_y, text_color);
+        }
+
+        // 6. Query editing cursor
+        if search.cursor_pos >= window_start {
+            let rel_cursor = search.cursor_pos - window_start;
+            if rel_cursor <= max_query_chars {
+                let cursor_px = cur_x + (rel_cursor as u32) * tab_cw;
+                if cursor_px < status_x {
+                    self.framebuffer
+                        .fill_span(cursor_px, char_baseline_y, 2, tab_ch, cursor_color);
+                }
+            }
+        }
+
+        // 7. Status counter
+        for (i, ch) in status_str.chars().enumerate() {
+            let px = status_x + (i as u32) * tab_cw;
+            self.blit_tab_char(ch, px, char_baseline_y, count_color);
+        }
+
+        Some(crate::window::DamageRect {
+            x: box_x,
+            y: box_y,
+            width: box_w,
+            height: box_h,
+        })
     }
 
     fn render_separators(
@@ -1597,6 +1759,7 @@ impl CpuRenderer {
             && grid.damage.scrolled_lines == 1
             && grid.scroll_offset == 0
             && !grid.selection.active
+            && self.active_search_matches.is_empty()
             && !pane_layout_changed
             && opacity >= 0.999
             && (state.last_dim - pane_effective_dim).abs() <= 0.001
@@ -1819,7 +1982,41 @@ impl CpuRenderer {
                     && row_info.is_active_grid_row
                     && row_info.grid_y == grid.cursor.y;
 
-                if !row_info.is_row_in_selection && !is_cursor_row {
+                let row_matches: smallvec::SmallVec<[(usize, usize, usize); 8]> = if pane.is_active
+                    && !self.active_search_matches.is_empty()
+                {
+                    match self
+                        .active_search_matches
+                        .binary_search_by_key(&row_info.abs_row, |m| m.abs_row)
+                    {
+                        Ok(found_idx) => {
+                            let mut start = found_idx;
+                            while start > 0
+                                && self.active_search_matches[start - 1].abs_row == row_info.abs_row
+                            {
+                                start -= 1;
+                            }
+                            let mut end = found_idx + 1;
+                            while end < self.active_search_matches.len()
+                                && self.active_search_matches[end].abs_row == row_info.abs_row
+                            {
+                                end += 1;
+                            }
+                            self.active_search_matches[start..end]
+                                .iter()
+                                .enumerate()
+                                .map(|(i, m)| (start + i, m.start_col, m.end_col))
+                                .collect()
+                        }
+                        Err(_) => smallvec::SmallVec::new(),
+                    }
+                } else {
+                    smallvec::SmallVec::new()
+                };
+
+                let has_search_matches = !row_matches.is_empty();
+
+                if !row_info.is_row_in_selection && !is_cursor_row && !has_search_matches {
                     let all_spaces = row_cells.iter().all(|c| {
                         c.character == ' '
                             && c.background == pane.theme.default_bg
@@ -1863,6 +2060,21 @@ impl CpuRenderer {
                         pane.theme,
                         default_pane_bg,
                     );
+
+                    if !is_selected && !row_matches.is_empty() {
+                        for &(match_idx, start_col, end_col) in &row_matches {
+                            if col >= start_col && col < end_col {
+                                if self.active_search_index == Some(match_idx) {
+                                    bg = PackedColor::from_rgb(255, 140, 0).to_u32();
+                                    fg = PackedColor::from_rgb(0, 0, 0).to_u32();
+                                } else {
+                                    bg = PackedColor::from_rgb(230, 190, 40).to_u32();
+                                    fg = PackedColor::from_rgb(0, 0, 0).to_u32();
+                                }
+                                break;
+                            }
+                        }
+                    }
 
                     let is_cursor = is_cursor_row && col == pane.display_cursor_x;
                     let is_block_cursor = is_cursor

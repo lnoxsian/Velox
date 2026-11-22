@@ -5,4 +5,7 @@ pub mod grid;
 pub mod reflow;
 pub mod scroll;
 pub mod scrollback;
+pub mod search;
 pub mod selection;
+
+pub use search::{SearchMatch, SearchState};

@@ -225,6 +225,7 @@ pub struct WindowState {
     pub hovered_csd_button: Option<crate::window::csd::CsdButtonType>,
     pub pressed_csd_button: Option<crate::window::csd::CsdButtonType>,
     pub resize_state: ResizeState,
+    pub search: crate::screen::search::SearchState,
 }
 
 impl Drop for WindowState {
@@ -327,6 +328,7 @@ impl WindowState {
                 last_rows: rows,
                 ..Default::default()
             },
+            search: crate::screen::search::SearchState::new(),
         }
     }
 
@@ -416,6 +418,178 @@ impl WindowState {
     #[inline(always)]
     pub fn active_pane_mut(&mut self) -> &mut Pane {
         self.active_tab_mut().active_pane_mut()
+    }
+
+    #[inline]
+    pub fn mark_search_damage(&mut self, extra_abs_rows: &[usize]) {
+        let cell_h = self.base_cell_height.max(1) as usize;
+        let matches = &self.search.matches;
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            if let Some(pane) = tab.tree.find_pane_mut(tab.active_pane_id) {
+                let grid = pane.terminal.active_grid_mut();
+                let grid_h = grid.height;
+                let history_len = grid.scrollback.len();
+                let scroll_offset = grid.scroll_offset;
+
+                // O(visible): locate matches visible in the current viewport via binary search
+                let vis_start_abs = history_len.saturating_sub(scroll_offset);
+                let vis_end_abs = (history_len + grid_h).saturating_sub(scroll_offset);
+
+                let start_idx = matches.partition_point(|m| m.abs_row < vis_start_abs);
+                let end_idx = matches.partition_point(|m| m.abs_row < vis_end_abs);
+
+                let mut last_marked_row = None;
+                for m in &matches[start_idx..end_idx] {
+                    let abs_y = m.abs_row + scroll_offset;
+                    if abs_y >= history_len {
+                        let display_row = abs_y - history_len;
+                        if display_row < grid_h && last_marked_row != Some(display_row) {
+                            grid.damage.mark_dirty(display_row);
+                            last_marked_row = Some(display_row);
+                        }
+                    }
+                }
+                for &abs_row in extra_abs_rows {
+                    let abs_y = abs_row + scroll_offset;
+                    if abs_y >= history_len {
+                        let display_row = abs_y - history_len;
+                        if display_row < grid_h {
+                            grid.damage.mark_dirty(display_row);
+                        }
+                    }
+                }
+                if grid_h > 0 {
+                    let overlay_rows = (32 / cell_h).max(1) + 1;
+                    for r in grid_h.saturating_sub(overlay_rows)..grid_h {
+                        grid.damage.mark_dirty(r);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Auto-scrolls the active pane viewport to center or reveal the active search match.
+    pub fn jump_to_search_match(&mut self) {
+        if let Some(idx) = self.search.active_match_index {
+            if let Some(m) = self.search.matches.get(idx) {
+                let match_abs_row = m.abs_row;
+                if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+                    if let Some(pane) = tab.tree.find_pane_mut(tab.active_pane_id) {
+                        let grid = pane.terminal.active_grid_mut();
+                        let history_len = grid.scrollback.len();
+                        let grid_h = grid.height;
+
+                        if match_abs_row >= history_len {
+                            if grid.scroll_offset != 0 {
+                                grid.scroll_offset = 0;
+                                grid.damage.mark_all();
+                                self.content_dirty = true;
+                            }
+                        } else {
+                            let is_visible = if match_abs_row + grid.scroll_offset >= history_len {
+                                let display_row =
+                                    (match_abs_row + grid.scroll_offset) - history_len;
+                                display_row < grid_h
+                            } else {
+                                false
+                            };
+
+                            if !is_visible {
+                                let half_h = grid_h / 2;
+                                let target_offset = (history_len.saturating_sub(match_abs_row)
+                                    + half_h)
+                                    .clamp(0, history_len);
+                                if grid.scroll_offset != target_offset {
+                                    grid.scroll_offset = target_offset;
+                                    grid.damage.mark_all();
+                                    self.content_dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Advances or retreats the active search match and scrolls the viewport if needed.
+    #[inline]
+    pub fn navigate_search_match(&mut self, backwards: bool) {
+        let dirty = if backwards {
+            self.search.prev_match()
+        } else {
+            self.search.next_match()
+        };
+        if let Some((old_abs_r, new_abs_r)) = dirty {
+            self.jump_to_search_match();
+            self.mark_search_damage(&[old_abs_r, new_abs_r]);
+        }
+        self.needs_redraw = true;
+    }
+
+    #[inline]
+    pub fn recompute_search_matches(&mut self) {
+        if let Some(tab) = self.tabs.get(self.active_tab_index) {
+            if let Some(pane) = tab.tree.find_pane(tab.active_pane_id) {
+                let grid = pane.terminal.active_grid();
+                self.search.recompute_matches(grid);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn close_search(&mut self) {
+        if !self.search.is_open {
+            return;
+        }
+        self.mark_search_damage(&[]);
+        self.search.close();
+        if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+            if let Some(pane) = tab.tree.find_pane_mut(tab.active_pane_id) {
+                pane.terminal.active_grid_mut().damage.mark_all();
+            }
+        }
+        self.content_dirty = true;
+        self.needs_redraw = true;
+    }
+
+    #[inline]
+    pub fn search_overlay_rect_with_panes(
+        &self,
+        pane_rects: &[PaneRect],
+    ) -> Option<(f64, f64, f64, f64)> {
+        if !self.search.is_open || self.tabs.is_empty() || pane_rects.is_empty() {
+            return None;
+        }
+        let active_pane_id = self.active_pane().id;
+        let active_rect = pane_rects
+            .iter()
+            .find(|r| r.pane_id == active_pane_id)
+            .copied()
+            .or_else(|| pane_rects.first().copied())?;
+
+        let pane_x = active_rect.x.max(0.0) as f64;
+        let pane_w = active_rect.width.max(1.0) as f64;
+
+        let box_w = pane_w;
+        if box_w < 100.0 {
+            return None;
+        }
+        let box_h = self.search_height() as f64;
+        let banner_h = self.banner_height() as f64;
+        let win_h = self.window.height() as f64;
+        let box_x = pane_x;
+        let box_y = (win_h - banner_h - box_h).max(0.0);
+
+        Some((box_x, box_y, box_w, box_h))
+    }
+
+    pub fn search_overlay_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        if !self.search.is_open || self.tabs.is_empty() {
+            return None;
+        }
+        let (pane_rects, _) = self.recalculate_panes_layout(self.active_tab_index);
+        self.search_overlay_rect_with_panes(&pane_rects)
     }
 
     pub fn write_to_pane(&self, pane_id: u64, data: Vec<u8>) {
@@ -536,6 +710,15 @@ impl WindowState {
         if self.banner.is_some() { 26.0 } else { 0.0 }
     }
 
+    #[inline(always)]
+    pub fn search_height(&self) -> f32 {
+        if self.search.is_open {
+            (self.renderer.tab_glyph_cache.cell_height.max(1) + 8).max(24) as f32
+        } else {
+            0.0
+        }
+    }
+
     pub fn recalculate_panes_layout(
         &self,
         tab_index: usize,
@@ -546,10 +729,12 @@ impl WindowState {
         let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let banner_h = self.banner_height();
+        let search_h = self.search_height();
+        let bottom_bars_h = banner_h + search_h;
         let total_x = 0.0;
-        let total_y = csd_h + tab_bar_h + banner_h;
+        let total_y = csd_h + tab_bar_h;
         let total_w = (width as f32).max(10.0);
-        let total_h = (height as f32 - csd_h - tab_bar_h - banner_h).max(10.0);
+        let total_h = (height as f32 - csd_h - tab_bar_h - bottom_bars_h).max(10.0);
 
         if let Some(tab) = self.tabs.get(tab_index) {
             tab.tree.calculate_layout(
@@ -612,9 +797,11 @@ impl WindowState {
         let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let banner_h = self.banner_height();
+        let search_h = self.search_height();
+        let bottom_bars_h = banner_h + search_h;
         let avail_w = (width as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h =
-            (height as f32 - csd_h - tab_bar_h - banner_h - self.padding_y * 2.0).max(10.0);
+            (height as f32 - csd_h - tab_bar_h - bottom_bars_h - self.padding_y * 2.0).max(10.0);
         let cols = ((avail_w as u32) / self.cell_width().max(1)).max(1);
         let rows = ((avail_h as u32) / self.cell_height().max(1)).max(1);
         (cols, rows)
@@ -622,6 +809,7 @@ impl WindowState {
 
     pub fn resize_active_tab(&mut self) {
         self.sync_active_tab_layout();
+        self.search.invalidate_matches();
         self.needs_redraw = true;
         self.content_dirty = true;
     }
@@ -635,7 +823,8 @@ impl WindowState {
         let csd_h = self.window.csd_title_bar_height() as f32;
         let tab_bar_h = self.tab_bar_height();
         let banner_h = self.banner_height();
-        let total_h = (size.height as f32 - csd_h - tab_bar_h - banner_h).max(10.0);
+        let search_h = self.search_height();
+        let total_h = (size.height as f32 - csd_h - tab_bar_h - banner_h - search_h).max(10.0);
 
         let pane_h = if let Some(tab) = self.tabs.get(self.active_tab_index) {
             tab.tree
@@ -784,12 +973,14 @@ impl WindowState {
 
         let csd_h = self.window.csd_title_bar_height() as f32;
         let banner_h = self.banner_height();
+        let search_h = self.search_height();
         let avail_w =
             (self.window.inner_size().width.max(1) as f32 - self.padding_x * 2.0).max(10.0);
         let avail_h = (self.window.inner_size().height.max(1) as f32
             - csd_h
             - self.tab_bar_height()
             - banner_h
+            - search_h
             - self.padding_y * 2.0)
             .max(10.0);
         let cols = ((avail_w as u32) / self.base_cell_width.max(1)).max(1);
@@ -881,6 +1072,7 @@ impl WindowState {
             let tab = self.active_tab_mut();
             tab.set_active_pane(target_id);
             tab.clear_unfocused_selections();
+            self.search.invalidate_for_pane_switch(target_id);
             self.sync_active_pane_font_size();
             self.needs_redraw = true;
             self.content_dirty = true;
@@ -899,8 +1091,10 @@ impl WindowState {
             && let Some(pos) = pane_ids.iter().position(|&id| id == tab.active_pane_id)
         {
             let next_pos = (pos + 1) % pane_ids.len();
-            tab.set_active_pane(pane_ids[next_pos]);
+            let next_id = pane_ids[next_pos];
+            tab.set_active_pane(next_id);
             tab.clear_unfocused_selections();
+            self.search.invalidate_for_pane_switch(next_id);
             self.sync_active_pane_font_size();
             self.needs_redraw = true;
             self.content_dirty = true;
@@ -917,8 +1111,10 @@ impl WindowState {
             && let Some(pos) = pane_ids.iter().position(|&id| id == tab.active_pane_id)
         {
             let prev_pos = (pos + pane_ids.len() - 1) % pane_ids.len();
-            tab.set_active_pane(pane_ids[prev_pos]);
+            let prev_id = pane_ids[prev_pos];
+            tab.set_active_pane(prev_id);
             tab.clear_unfocused_selections();
+            self.search.invalidate_for_pane_switch(prev_id);
             self.sync_active_pane_font_size();
             self.needs_redraw = true;
             self.content_dirty = true;
@@ -1084,6 +1280,8 @@ impl WindowState {
                 self.set_renderer_font_size(active_pane_font_size);
             }
             self.sync_tab_panes_dimensions(index);
+            let new_active_id = self.active_pane().id;
+            self.search.invalidate_for_pane_switch(new_active_id);
             self.window.set_title(&self.tabs[index].current_title);
             self.current_title = self.tabs[index].current_title.clone();
             self.tab_bar_dirty = true;
@@ -1298,7 +1496,7 @@ impl WindowState {
         self.update_tab_bar_cache_if_dirty();
 
         // 4. Compute layouts & active pane
-        let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+        let (mut pane_rects, mut sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
 
         // Ensure all pane terminals are synchronized with the computed layout before rendering.
         // If split ratio or window dimensions changed without a layout sync, sync now so that
@@ -1320,6 +1518,11 @@ impl WindowState {
         }
         if needs_layout_sync {
             self.sync_active_tab_layout();
+            self.search.matches_dirty = true;
+            let (new_pane_rects, new_sep_rects) =
+                self.recalculate_panes_layout(self.active_tab_index);
+            pane_rects = new_pane_rects;
+            sep_rects = new_sep_rects;
         }
 
         let active_tab = &self.tabs[self.active_tab_index];
@@ -1382,6 +1585,20 @@ impl WindowState {
         let csd_height = self.window.csd_title_bar_height();
         self.renderer.csd_height = csd_height;
 
+        if self.search.is_open {
+            if self.search.matches_dirty {
+                if let Some(tab) = self.tabs.get(self.active_tab_index) {
+                    if let Some(pane) = tab.tree.find_pane(tab.active_pane_id) {
+                        self.search.recompute_matches(pane.terminal.active_grid());
+                    }
+                }
+            }
+            self.renderer
+                .set_search_matches(&self.search.matches, self.search.active_match_index);
+        } else {
+            self.renderer.clear_search_matches();
+        }
+
         // 6. Render & Present
         let damage_rect = self.renderer.render_splits(
             &cpu_pane_render_datas,
@@ -1396,6 +1613,24 @@ impl WindowState {
         );
 
         let mut final_damage = damage_rect;
+
+        if self.search.is_open && !pane_rects.is_empty() {
+            let active_rect = pane_rects
+                .iter()
+                .find(|r| r.pane_id == active_pane_id)
+                .copied()
+                .unwrap_or(pane_rects[0]);
+            let banner_h = self.banner_height() as u32;
+            if let Some(search_damage) =
+                self.renderer
+                    .render_search_overlay(&self.search, &active_rect, banner_h)
+            {
+                final_damage = Some(match final_damage {
+                    Some(dmg) => dmg.union(search_damage),
+                    None => search_damage,
+                });
+            }
+        }
 
         if csd_height > 0 {
             let csd_redrawn = self.renderer.render_csd_title_bar(
@@ -1421,18 +1656,17 @@ impl WindowState {
         }
 
         if let Some(ref banner) = self.banner {
-            let tab_bar_h = if is_tab_bar_visible {
-                self.tab_bar_height()
-            } else {
-                0.0
-            };
-            let banner_y = csd_height + tab_bar_h as u32;
+            let banner_y = self.renderer.viewport_height.saturating_sub(26);
             self.renderer.render_alert_banner(banner, banner_y, 26);
-            final_damage = Some(crate::window::DamageRect {
+            let banner_damage = crate::window::DamageRect {
                 x: 0,
-                y: 0,
+                y: banner_y,
                 width: self.renderer.viewport_width,
-                height: self.renderer.viewport_height,
+                height: 26,
+            };
+            final_damage = Some(match final_damage {
+                Some(dmg) => dmg.union(banner_damage),
+                None => banner_damage,
             });
         }
 
@@ -1721,6 +1955,7 @@ impl App {
                 last_rows: rows as usize,
                 ..Default::default()
             },
+            search: crate::screen::search::SearchState::new(),
         };
 
         window_state.window.set_opacity(window_state.opacity);
@@ -1870,6 +2105,9 @@ impl App {
                         let _ = ws.pty_reactor.write(window_id, tab_id, pane_id, unwritten);
                     }
                     if ws.tabs.get(ws.active_tab_index).map(|t| t.id) == Some(tab_id) {
+                        if ws.active_pane().id == pane_id {
+                            ws.search.invalidate_matches();
+                        }
                         ws.needs_redraw = true;
                         ws.content_dirty = true;
                     }

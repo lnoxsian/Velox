@@ -479,24 +479,41 @@ impl WindowState {
         }
 
         let banner_h = self.banner_height() as f64;
-        if banner_h > 0.0
-            && self.mouse_y >= csd_h + tab_bar_h
-            && self.mouse_y < csd_h + tab_bar_h + banner_h
-        {
+        let win_h = self.window.height() as f64;
+        if banner_h > 0.0 && self.mouse_y >= win_h - banner_h {
             let win_w = self.window.width() as f64;
-            let is_close_hover = self.mouse_x >= win_w - 30.0;
+            let is_close_hover = self.mouse_x >= win_w - 45.0;
             if let Some(ref mut b) = self.banner {
                 if b.dismiss_hovered != is_close_hover {
                     b.dismiss_hovered = is_close_hover;
                     self.needs_redraw = true;
                 }
             }
-            self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
+            if is_close_hover {
+                self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
+            }
             return;
         } else if let Some(ref mut b) = self.banner {
             if b.dismiss_hovered {
                 b.dismiss_hovered = false;
                 self.needs_redraw = true;
+            }
+        }
+
+        if let Some((box_x, box_y, box_w, box_h)) = self.search_overlay_rect_with_panes(&pane_rects)
+        {
+            if self.mouse_x >= box_x
+                && self.mouse_x < box_x + box_w
+                && self.mouse_y >= box_y
+                && self.mouse_y < box_y + box_h
+            {
+                let is_close_hover = self.mouse_x >= (box_x + box_w - 45.0);
+                if is_close_hover {
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
+                } else {
+                    self.set_cursor_cached(crate::window::event::CursorIcon::Text);
+                }
+                return;
             }
         }
 
@@ -670,9 +687,15 @@ impl WindowState {
             }
 
             let banner_h = self.banner_height() as f64;
-            if banner_h > 0.0
-                && self.mouse_y >= csd_h + tab_bar_h
-                && self.mouse_y < csd_h + tab_bar_h + banner_h
+            let win_h = self.window.height() as f64;
+            if banner_h > 0.0 && self.mouse_y >= win_h - banner_h {
+                return false;
+            }
+
+            let search_h = self.search_height() as f64;
+            if search_h > 0.0
+                && self.mouse_y >= (win_h - banner_h - search_h).max(0.0)
+                && self.mouse_y < win_h - banner_h
             {
                 return false;
             }
@@ -893,11 +916,15 @@ impl WindowState {
                 return;
             }
 
+            if self.tabs.is_empty() {
+                return;
+            }
+
+            let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
+
             let banner_h = self.banner_height() as f64;
-            if banner_h > 0.0
-                && self.mouse_y >= csd_h + tab_bar_h
-                && self.mouse_y < csd_h + tab_bar_h + banner_h
-            {
+            let win_h = self.window.height() as f64;
+            if banner_h > 0.0 && self.mouse_y >= win_h - banner_h {
                 if button == MouseButton::Left {
                     self.banner = None;
                     self.sync_active_tab_layout();
@@ -907,13 +934,22 @@ impl WindowState {
                 return;
             }
 
-            if self.tabs.is_empty() {
-                return;
+            if let Some((box_x, box_y, box_w, box_h)) =
+                self.search_overlay_rect_with_panes(&pane_rects)
+            {
+                if self.mouse_x >= box_x
+                    && self.mouse_x < box_x + box_w
+                    && self.mouse_y >= box_y
+                    && self.mouse_y < box_y + box_h
+                {
+                    if button == MouseButton::Left && self.mouse_x >= (box_x + box_w - 45.0) {
+                        self.close_search();
+                    }
+                    return;
+                }
             }
 
             // ── 2. Separator Clicks & Drag Initiation ────────────────────────
-            let (pane_rects, sep_rects) = self.recalculate_panes_layout(self.active_tab_index);
-
             if button == MouseButton::Left {
                 for sep in &sep_rects {
                     if sep.contains(self.mouse_x as f32, self.mouse_y as f32) {

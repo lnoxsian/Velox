@@ -18,11 +18,106 @@ impl WindowState {
             modifiers
         );
 
-        // Escape dismisses any active alert banner
+        // ── 0.5 In-Terminal Search Overlay Keyboard Handling ──────────────────
+        if self.search.is_open {
+            if let Key::Named(NamedKey::Escape) = logical_key {
+                self.close_search();
+                return false;
+            }
+
+            if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                self.navigate_search_match(modifiers.shift_key());
+                return false;
+            }
+
+            if modifiers.control_key() && !modifiers.alt_key() {
+                if let Key::Character(s) = logical_key {
+                    if s.eq_ignore_ascii_case("f") {
+                        self.navigate_search_match(modifiers.shift_key());
+                        return false;
+                    }
+                }
+            }
+
+            match logical_key {
+                Key::Named(NamedKey::ArrowLeft) => {
+                    self.search.move_cursor_left();
+                    self.needs_redraw = true;
+                    return false;
+                }
+                Key::Named(NamedKey::ArrowRight) => {
+                    self.search.move_cursor_right();
+                    self.needs_redraw = true;
+                    return false;
+                }
+                Key::Named(NamedKey::Home) => {
+                    self.search.move_cursor_home();
+                    self.needs_redraw = true;
+                    return false;
+                }
+                Key::Named(NamedKey::End) => {
+                    self.search.move_cursor_end();
+                    self.needs_redraw = true;
+                    return false;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.mark_search_damage(&[]);
+                    self.search.backspace();
+                    self.recompute_search_matches();
+                    self.jump_to_search_match();
+                    self.mark_search_damage(&[]);
+                    self.needs_redraw = true;
+                    return false;
+                }
+                Key::Named(NamedKey::Delete) => {
+                    self.mark_search_damage(&[]);
+                    self.search.delete();
+                    self.recompute_search_matches();
+                    self.jump_to_search_match();
+                    self.mark_search_damage(&[]);
+                    self.needs_redraw = true;
+                    return false;
+                }
+                _ => {}
+            }
+
+            if !modifiers.control_key() && !modifiers.alt_key() {
+                let chars: Option<smallvec::SmallVec<[char; 4]>> = if let Some(t) = text {
+                    if !t.is_empty() {
+                        Some(t.chars().collect())
+                    } else {
+                        None
+                    }
+                } else if let Key::Character(s) = logical_key {
+                    Some(s.chars().collect())
+                } else if let Key::Named(NamedKey::Space) = logical_key {
+                    Some(smallvec::smallvec![' '])
+                } else {
+                    None
+                };
+
+                if let Some(chs) = chars {
+                    self.mark_search_damage(&[]);
+                    for ch in chs {
+                        self.search.insert_char(ch);
+                    }
+                    self.recompute_search_matches();
+                    self.jump_to_search_match();
+                    self.mark_search_damage(&[]);
+                    self.needs_redraw = true;
+                    return false;
+                }
+            }
+
+            return false;
+        }
+
+        // Escape dismisses any active alert banner (when search overlay is not open)
         if let Key::Named(NamedKey::Escape) = logical_key {
             if self.banner.is_some() {
                 self.banner = None;
                 self.sync_active_tab_layout();
+                self.renderer.damage.mark_all();
                 self.content_dirty = true;
                 self.needs_redraw = true;
                 return true;
@@ -348,6 +443,25 @@ impl WindowState {
 
                 if let Key::Character(s) = logical_key {
                     match s.as_str() {
+                        "f" | "F" => {
+                            let active_pane_id = self.active_pane().id;
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab_index) {
+                                if let Some(pane) = tab.tree.find_pane_mut(tab.active_pane_id) {
+                                    let active_grid = pane.terminal.active_grid_mut();
+                                    if active_grid.scroll_offset > 0 {
+                                        active_grid.scroll_offset = 0;
+                                        active_grid.damage.mark_all();
+                                    }
+                                }
+                            }
+                            self.search.open(active_pane_id);
+                            self.recompute_search_matches();
+                            self.jump_to_search_match();
+                            self.mark_search_damage(&[]);
+                            self.needs_redraw = true;
+                            log::debug!("Velox shortcut: open search (Ctrl+F)");
+                            return false;
+                        }
                         "-" => {
                             let active_size = self.active_pane().font_size;
                             let new_size = active_size - 1.0;
@@ -932,5 +1046,112 @@ mod tests {
         );
         assert!(handled2);
         assert_eq!(read_pty_output(&read_end), b"b");
+    }
+
+    #[test]
+    fn test_ctrl_f_opens_search_and_is_not_sent_to_pty() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        assert!(!ws.search.is_open);
+
+        // Press Ctrl+F
+        let handled = ws.handle_keyboard_input(
+            &Key::Character("f".to_string()),
+            None,
+            ModifiersState::CONTROL,
+        );
+        assert!(!handled, "Ctrl+F must be consumed and not handled by PTY");
+        assert_eq!(
+            read_pty_output(&read_end),
+            b"",
+            "No bytes should be written to PTY on Ctrl+F"
+        );
+        assert!(ws.search.is_open, "Search state must be open after Ctrl+F");
+    }
+
+    #[test]
+    fn test_search_input_typing_navigation_and_escape() {
+        let (pty, read_end) = create_test_pty_pipe();
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // Put some text into active pane grid
+        {
+            let grid = ws.active_pane_mut().terminal.active_grid_mut();
+            for (i, c) in "hello test world test".chars().enumerate() {
+                grid.cells[i].character = c;
+            }
+        }
+
+        // Open search with Ctrl+F
+        ws.handle_keyboard_input(
+            &Key::Character("f".to_string()),
+            None,
+            ModifiersState::CONTROL,
+        );
+        assert!(ws.search.is_open);
+
+        // Type 't', 'e', 's', 't'
+        for ch in ['t', 'e', 's', 't'] {
+            let handled = ws.handle_keyboard_input(
+                &Key::Character(ch.to_string()),
+                Some(&ch.to_string()),
+                ModifiersState::empty(),
+            );
+            assert!(!handled);
+        }
+        assert_eq!(
+            read_pty_output(&read_end),
+            b"",
+            "Typed search query must not leak to PTY"
+        );
+        assert_eq!(ws.search.query, "test");
+        assert_eq!(ws.search.matches.len(), 2);
+        assert_eq!(ws.search.active_match_index, Some(0));
+
+        // Enter advances to next match
+        ws.handle_keyboard_input(&Key::Named(NamedKey::Enter), None, ModifiersState::empty());
+        assert_eq!(ws.search.active_match_index, Some(1));
+
+        // Shift+Enter goes back to previous match
+        ws.handle_keyboard_input(&Key::Named(NamedKey::Enter), None, ModifiersState::SHIFT);
+        assert_eq!(ws.search.active_match_index, Some(0));
+
+        // Backspace deletes a character and updates matches
+        ws.handle_keyboard_input(
+            &Key::Named(NamedKey::Backspace),
+            None,
+            ModifiersState::empty(),
+        );
+        assert_eq!(ws.search.query, "tes");
+        assert_eq!(ws.search.matches.len(), 2);
+
+        // Escape closes search and clears match highlights while retaining query
+        let handled =
+            ws.handle_keyboard_input(&Key::Named(NamedKey::Escape), None, ModifiersState::empty());
+        assert!(!handled);
+        assert_eq!(
+            read_pty_output(&read_end),
+            b"",
+            "Escape must not leak to PTY when closing search"
+        );
+        assert!(!ws.search.is_open, "Search must be closed on Escape");
+        assert!(
+            ws.search.matches.is_empty(),
+            "Matches must be cleared on Escape"
+        );
+        assert_eq!(
+            ws.search.query, "tes",
+            "Query must be retained for next Ctrl+F"
+        );
+
+        // Subsequent Ctrl+F re-opens and restores matches
+        ws.handle_keyboard_input(
+            &Key::Character("f".to_string()),
+            None,
+            ModifiersState::CONTROL,
+        );
+        assert!(ws.search.is_open);
+        assert_eq!(ws.search.matches.len(), 2);
     }
 }

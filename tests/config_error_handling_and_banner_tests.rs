@@ -168,9 +168,7 @@ fn test_alert_banner_dismiss_via_mouse_click() {
         dismiss_hovered: false,
     });
 
-    let csd_h = ws.window.csd_title_bar_height() as f64;
-    let tab_bar_h = ws.tab_bar_height() as f64;
-    let banner_click_y = csd_h + tab_bar_h + 10.0;
+    let banner_click_y = ws.window.height() as f64 - 10.0;
 
     // Set mouse position and send left click on banner
     ws.mouse_x = ws.window.width() as f64 - 15.0;
@@ -260,7 +258,7 @@ bright_red = "#fb4934"
 }
 
 #[test]
-fn test_alert_banner_renders_with_foreground_as_background() {
+fn test_alert_banner_renders_with_terminal_background_color() {
     let pty = Arc::new(PtyMaster::dummy());
     let mut ws = WindowState::create_test_window_state(pty, 80, 24);
 
@@ -272,14 +270,38 @@ fn test_alert_banner_renders_with_foreground_as_background() {
 
     ws.draw();
 
-    let csd_h = ws.window.csd_title_bar_height() as usize;
-    let banner_y = csd_h;
-    let expected_banner_bg = ws.renderer.palette.default_fg;
+    let banner_y = ws.renderer.viewport_height as usize - 26;
+    let expected_banner_bg = ws.renderer.palette.default_bg;
+    let expected_border = ws.renderer.palette.ansi_colors[11];
+    let w = ws.renderer.viewport_width as usize;
 
     let stride = ws.renderer.framebuffer.stride;
     let sample_pixel = ws.renderer.framebuffer.pixels[(banner_y + 1) * stride + 1];
     assert_eq!(
         sample_pixel, expected_banner_bg,
-        "Banner background must use foreground color (inverted style)"
+        "Banner background must use terminal background color consistent with find window"
+    );
+
+    // Verify full rectangular border (top, bottom, left, right)
+    let top_border_pixel = ws.renderer.framebuffer.pixels[banner_y * stride + 10];
+    let bottom_border_pixel = ws.renderer.framebuffer.pixels[(banner_y + 25) * stride + 10];
+    let left_border_pixel = ws.renderer.framebuffer.pixels[(banner_y + 10) * stride];
+    let right_border_pixel = ws.renderer.framebuffer.pixels[(banner_y + 10) * stride + (w - 1)];
+
+    assert_eq!(
+        top_border_pixel, expected_border,
+        "Top border must match severity color"
+    );
+    assert_eq!(
+        bottom_border_pixel, expected_border,
+        "Bottom border must match severity color"
+    );
+    assert_eq!(
+        left_border_pixel, expected_border,
+        "Left border must match severity color"
+    );
+    assert_eq!(
+        right_border_pixel, expected_border,
+        "Right border must match severity color"
     );
 }

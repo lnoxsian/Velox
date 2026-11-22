@@ -72,6 +72,22 @@ impl Framebuffer {
         &mut self.pixels
     }
 
+    /// Draws a 1-pixel rectangular border outline around `(x, y, w, h)`.
+    #[inline]
+    pub fn draw_rect_border(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        self.fill_span(x, y, w, 1, color);
+        if h > 1 {
+            self.fill_span(x, y + h.saturating_sub(1), w, 1, color);
+        }
+        self.fill_span(x, y, 1, h, color);
+        if w > 1 {
+            self.fill_span(x + w.saturating_sub(1), y, 1, h, color);
+        }
+    }
+
     /// Fill a contiguous rectangular span across one or more horizontal rows.
     #[inline(always)]
     pub fn fill_span(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) {
