@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use wayland_client::QueueHandle;
 use wayland_client::protocol::{wl_compositor, wl_pointer, wl_shm, wl_surface};
 
@@ -127,48 +126,9 @@ pub struct CursorImageData {
     pub pixels: Vec<u32>,
 }
 
+#[inline]
 fn detect_cursor_theme_and_size() -> (String, u32) {
-    let mut theme = std::env::var("XCURSOR_THEME").ok();
-    let mut size = std::env::var("XCURSOR_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok());
-
-    if theme.is_none() || size.is_none() {
-        // Query GNOME or Cinnamon gsettings
-        if let Ok(out) = Command::new("gsettings")
-            .args(["get", "org.gnome.desktop.interface", "cursor-theme"])
-            .output()
-        {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout);
-                let cleaned = s.trim().trim_matches('\'').trim_matches('"');
-                if !cleaned.is_empty() && theme.is_none() {
-                    theme = Some(cleaned.to_string());
-                }
-            }
-        }
-
-        if size.is_none() {
-            if let Ok(out) = Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "cursor-size"])
-                .output()
-            {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout);
-                    if let Ok(sz) = s.trim().parse::<u32>() {
-                        if sz > 0 {
-                            size = Some(sz);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (
-        theme.unwrap_or_else(|| "default".to_string()),
-        size.unwrap_or(24),
-    )
+    crate::window::desktop::detect_cursor_theme_and_size()
 }
 
 fn find_cursor_file(theme: &str, aliases: &[&str]) -> Option<PathBuf> {

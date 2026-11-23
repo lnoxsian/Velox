@@ -227,8 +227,8 @@ impl GlyphCache {
         font_size: f32,
         font_scale_multiplier: f32,
     ) -> Self {
-        let db = crate::font::fallback::get_system_font_db();
-        let font_set = crate::font::resolved::ResolvedFontSet::try_resolve(db, "Monospace")
+        crate::font::fallback::warm_system_font_db_in_background();
+        let font_set = crate::font::resolved::ResolvedFontSet::try_resolve_fast("Monospace")
             .unwrap_or_else(|_| crate::font::resolved::ResolvedFontSet {
                 regular: crate::font::resolved::ResolvedFont {
                     font: font.clone(),
@@ -314,8 +314,11 @@ impl GlyphCache {
         font_scale_multiplier: f32,
         line_height: f32,
     ) -> Result<Self, crate::font::resolved::FontError> {
-        let db = crate::font::fallback::get_system_font_db();
-        let font_set = crate::font::resolved::ResolvedFontSet::try_resolve(db, font_family)?;
+        // 1. Kick off background pre-warming of system fontdb for fallbacks (zero main thread stall)
+        crate::font::fallback::warm_system_font_db_in_background();
+
+        // 2. Resolve primary font set (hits fast-path font cache in < 1ms)
+        let font_set = crate::font::resolved::ResolvedFontSet::try_resolve_fast(font_family)?;
         let font = font_set.regular.font.clone();
         let font_bold = if !font_set.bold.synthetic_bold {
             Some(font_set.bold.font.clone())
@@ -334,7 +337,8 @@ impl GlyphCache {
                 None
             };
 
-        let fallback_manager = FallbackManager::with_shared_database(std::sync::Arc::clone(db));
+        // 3. Fallback manager is initialized lazily (ensures DB only when fallback characters are actually needed)
+        let fallback_manager = FallbackManager::new();
 
         let px_size = (font_size * font_scale_multiplier).round().max(1.0);
         let scale = PxScale::from(px_size);

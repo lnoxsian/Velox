@@ -248,9 +248,7 @@ pub fn load_with_diagnostics() -> (Config, Vec<ConfigDiagnostic>, Option<PathBuf
     };
 
     if !path.exists() {
-        let default_cfg = default_config();
-        let _ = save(&default_cfg);
-        return (default_cfg, Vec::new(), Some(path));
+        return (default_config(), Vec::new(), Some(path));
     }
 
     match fs::read_to_string(&path) {

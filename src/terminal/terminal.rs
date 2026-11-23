@@ -277,51 +277,54 @@ impl Terminal {
             self.alt_grid.cursor.shape = shape;
         }
 
-        let old_fg = old_theme.default_fg;
-        let old_bg = old_theme.default_bg;
-        let new_fg = self.theme.default_fg;
-        let new_bg = self.theme.default_bg;
+        let theme_colors_changed = old_theme != self.theme;
+        if theme_colors_changed {
+            let old_fg = old_theme.default_fg;
+            let old_bg = old_theme.default_bg;
+            let new_fg = self.theme.default_fg;
+            let new_bg = self.theme.default_bg;
 
-        // 1. Remap current active pen colors
-        if self.current_fg == old_fg {
-            self.current_fg = new_fg;
-        } else {
-            for i in 0..16 {
-                if self.current_fg == old_theme.ansi_colors[i] {
-                    self.current_fg = self.theme.ansi_colors[i];
-                    break;
+            // 1. Remap current active pen colors
+            if self.current_fg == old_fg {
+                self.current_fg = new_fg;
+            } else {
+                for i in 0..16 {
+                    if self.current_fg == old_theme.ansi_colors[i] {
+                        self.current_fg = self.theme.ansi_colors[i];
+                        break;
+                    }
                 }
             }
-        }
 
-        if self.current_bg == old_bg {
-            self.current_bg = new_bg;
-        } else {
-            for i in 0..16 {
-                if self.current_bg == old_theme.ansi_colors[i] {
-                    self.current_bg = self.theme.ansi_colors[i];
-                    break;
+            if self.current_bg == old_bg {
+                self.current_bg = new_bg;
+            } else {
+                for i in 0..16 {
+                    if self.current_bg == old_theme.ansi_colors[i] {
+                        self.current_bg = self.theme.ansi_colors[i];
+                        break;
+                    }
                 }
             }
+
+            // 2. Remap grid default colors
+            self.grid.default_fg = new_fg;
+            self.grid.default_bg = new_bg;
+            self.alt_grid.default_fg = new_fg;
+            self.alt_grid.default_bg = new_bg;
+
+            // 3. Remap grid cells
+            Self::remap_cells(&mut self.grid.cells, &old_theme, &self.theme);
+            Self::remap_cells(&mut self.alt_grid.cells, &old_theme, &self.theme);
+
+            // 4. Remap scrollback
+            self.grid.scrollback.remap_colors(&old_theme, &self.theme);
+            self.alt_grid.scrollback.remap_colors(&old_theme, &self.theme);
+
+            // 5. Mark full damage
+            self.grid.damage.mark_all();
+            self.alt_grid.damage.mark_all();
         }
-
-        // 2. Remap grid default colors
-        self.grid.default_fg = new_fg;
-        self.grid.default_bg = new_bg;
-        self.alt_grid.default_fg = new_fg;
-        self.alt_grid.default_bg = new_bg;
-
-        // 3. Remap grid cells
-        Self::remap_cells(&mut self.grid.cells, &old_theme, &self.theme);
-        Self::remap_cells(&mut self.alt_grid.cells, &old_theme, &self.theme);
-
-        // 4. Remap scrollback
-        self.grid.scrollback.remap_colors(&old_theme, &self.theme);
-        self.alt_grid.scrollback.remap_colors(&old_theme, &self.theme);
-
-        // 5. Mark full damage
-        self.grid.damage.mark_all();
-        self.alt_grid.damage.mark_all();
     }
 
     fn remap_cells(cells: &mut [crate::screen::cell::Cell], old_theme: &Theme, new_theme: &Theme) {

@@ -1,4 +1,5 @@
 pub mod csd;
+pub mod desktop;
 pub mod event;
 pub mod wayland;
 pub mod x11;

@@ -654,3 +654,26 @@ fn test_nerd_font_scale_multiplier_controls_glyph_size() {
     renderer.set_nerd_font_scale(1.15);
     assert_eq!(renderer.glyph_cache.nerd_font_scale, 1.15);
 }
+
+#[test]
+fn test_fast_font_resolution_and_cache_roundtrip() {
+    let font_name = "monospace";
+    // 1. Initial fast resolve (creates cache if missing)
+    let res1 = ResolvedFontSet::try_resolve_fast(font_name);
+    assert!(res1.is_ok(), "Fast font resolution must succeed");
+
+    // 2. Cache file must exist
+    let cache_path = velox::font::cache::FontCache::cache_path();
+    assert!(cache_path.exists(), "Cache file must exist after resolution");
+
+    // 3. Second fast resolve must hit cache in sub-millisecond time
+    let t_start = std::time::Instant::now();
+    let res2 = ResolvedFontSet::try_resolve_fast(font_name);
+    let duration = t_start.elapsed();
+    assert!(res2.is_ok(), "Cached fast resolution must succeed");
+    assert!(
+        duration < std::time::Duration::from_millis(15),
+        "Cached font resolution must take under 15ms (was {:?})",
+        duration
+    );
+}

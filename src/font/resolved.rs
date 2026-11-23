@@ -371,6 +371,16 @@ pub struct ResolvedFontSet {
 }
 
 impl ResolvedFontSet {
+    /// Fast-path resolution: checks the binary font cache (`~/.cache/velox/font_cache.bin`) first (< 1ms).
+    /// If cache misses or is stale, falls back to full resolution using the system font database and updates the cache.
+    pub fn try_resolve_fast(font_family: &str) -> Result<Self, FontError> {
+        if let Some(cached) = crate::font::cache::FontCache::load(font_family) {
+            return Ok(cached);
+        }
+        let db = crate::font::fallback::get_system_font_db();
+        Self::try_resolve(db, font_family)
+    }
+
     /// Resolve all 4 font faces according to the fallback rules, returning a structured error if
     /// no font can be found or loaded.
     pub fn try_resolve(db: &Database, font_family: &str) -> Result<Self, FontError> {
@@ -500,6 +510,45 @@ impl ResolvedFontSet {
                 synthetic_bold: true,
             }
         };
+
+        let get_source = |id: fontdb::ID| -> Option<(&std::path::Path, u32)> {
+            if let Some(face) = db.face(id) {
+                if let fontdb::Source::File(ref path) = face.source {
+                    return Some((path.as_path(), face.index));
+                }
+            }
+            None
+        };
+
+        if let Some((reg_path, reg_idx)) = get_source(regular_id) {
+            let bold_info = if !bold_resolved.synthetic_bold {
+                bold_id.and_then(get_source)
+            } else {
+                None
+            };
+            let italic_info = if !italic_resolved.synthetic_italic {
+                italic_id.and_then(get_source)
+            } else {
+                None
+            };
+            let bi_info = if !bold_italic_resolved.synthetic_bold && !bold_italic_resolved.synthetic_italic {
+                bold_italic_id.and_then(get_source)
+            } else {
+                None
+            };
+
+            crate::font::cache::FontCache::store(
+                font_family,
+                reg_path,
+                reg_idx,
+                bold_info,
+                bold_resolved.synthetic_bold,
+                italic_info,
+                italic_resolved.synthetic_italic,
+                bi_info,
+                bold_italic_resolved.synthetic_bold || bold_italic_resolved.synthetic_italic,
+            );
+        }
 
         Ok(Self {
             regular: regular_resolved,

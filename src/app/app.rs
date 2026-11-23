@@ -1726,37 +1726,55 @@ impl WindowState {
         diagnostics: &[crate::config::loader::ConfigDiagnostic],
     ) {
         // 1. Diagnostics Banner: update or clear
-        self.banner = if let Some(diag) = diagnostics.first() {
-            Some(AlertBanner {
-                severity: diag.severity,
-                message: format!("{diag}"),
-                dismiss_hovered: false,
-            })
-        } else {
-            None
+        let banner_changed = match (&self.banner, diagnostics.first()) {
+            (None, None) => false,
+            (Some(b), Some(d)) => b.severity != d.severity || b.message != format!("{d}"),
+            _ => true,
         };
+        if banner_changed {
+            self.banner = if let Some(diag) = diagnostics.first() {
+                Some(AlertBanner {
+                    severity: diag.severity,
+                    message: format!("{diag}"),
+                    dismiss_hovered: false,
+                })
+            } else {
+                None
+            };
+        }
 
-        // 2. Palette & Themes
-        let new_theme = crate::theme::theme::Theme::from_config(new_config);
-        self.renderer.update_theme_and_palette(&new_theme, new_config.opacity());
-        self.opacity = new_config.opacity();
-        self.window_dim = new_config.window_dim();
+        // 2. Palette & Themes: only update if colors, theme, opacity, or dimming changed
+        let colors_changed = self.config.colors != new_config.colors
+            || self.config.theme != new_config.theme
+            || self.config.window.cursor_color != new_config.window.cursor_color
+            || self.config.window.cursor_text_color != new_config.window.cursor_text_color
+            || self.config.tabs.tab_accent_color != new_config.tabs.tab_accent_color
+            || (self.config.opacity() - new_config.opacity()).abs() > 0.001
+            || (self.config.window_dim() - new_config.window_dim()).abs() > 0.001;
 
-        // Update all terminal panes across all tabs
-        for tab in &mut self.tabs {
-            for pane in tab.tree.panes_mut() {
-                pane.terminal.apply_theme_reload(&new_theme, new_config);
+        if colors_changed {
+            let new_theme = crate::theme::theme::Theme::from_config(new_config);
+            self.renderer.update_theme_and_palette(&new_theme, new_config.opacity());
+            self.opacity = new_config.opacity();
+            self.window_dim = new_config.window_dim();
+
+            // Update all terminal panes across all tabs
+            for tab in &mut self.tabs {
+                for pane in tab.tree.panes_mut() {
+                    pane.terminal.apply_theme_reload(&new_theme, new_config);
+                }
             }
         }
 
-        // 3. CSD Window Decorations
-        crate::window::csd::CsdPalette::invalidate_system_cache();
-        self.csd_palette = crate::window::csd::CsdPalette::resolve(
-            new_config.decorations_config().as_ref(),
-            &self.renderer.palette,
-        );
-        self.csd_button_layout = crate::window::csd::CsdButtonLayout::detect_system();
-        self.renderer.prev_csd_hash = 0;
+        // 3. CSD Window Decorations: only update if decorations config or palette changed
+        let decorations_changed = self.config.decorations_config() != new_config.decorations_config();
+        if decorations_changed || colors_changed {
+            self.csd_palette = crate::window::csd::CsdPalette::resolve(
+                new_config.decorations_config().as_ref(),
+                &self.renderer.palette,
+            );
+            self.renderer.prev_csd_hash = 0;
+        }
 
         // 4. Font, Typography, Padding & Terminal Grid Sizing
         let font_family_changed = self.config.font_family() != new_config.font_family();
@@ -1815,16 +1833,22 @@ impl WindowState {
         self.padding_y = new_config.pane_padding_y().unwrap_or(4.0);
 
         // 5. Tab Bar Configuration
-        self.tab_bar = TabBar::from_config(new_config);
-        self.tab_bar_dirty = true;
-        self.tab_bar_render_cache = None;
+        let tabs_changed = self.config.tabs != new_config.tabs;
+        if tabs_changed {
+            self.tab_bar = TabBar::from_config(new_config);
+            self.tab_bar_dirty = true;
+            self.tab_bar_render_cache = None;
+        }
 
-        // 6. Pane Separators & Mouse/Keyboard Preferences
-        self.separator_size = new_config.pane_separator_size();
-        self.min_cols = new_config.pane_minimum_columns();
-        self.min_rows = new_config.pane_minimum_rows();
-        self.separator_color = new_config.pane_separator_color().map(String::from);
-        self.active_separator_color = new_config.pane_active_separator_color().map(String::from);
+        // 6. Pane Separators & Preferences
+        let panes_changed = self.config.panes != new_config.panes;
+        if panes_changed {
+            self.separator_size = new_config.pane_separator_size();
+            self.min_cols = new_config.pane_minimum_columns();
+            self.min_rows = new_config.pane_minimum_rows();
+            self.separator_color = new_config.pane_separator_color().map(String::from);
+            self.active_separator_color = new_config.pane_active_separator_color().map(String::from);
+        }
         self.scroll_multiplier = new_config.scroll_multiplier().unwrap_or(1.0);
         self.cursor_blink_enabled = new_config.cursor_blink().unwrap_or(true);
         self.hide_mouse_on_typing = new_config.hide_mouse_on_typing().unwrap_or(true);
@@ -1846,12 +1870,26 @@ impl WindowState {
             }
         }
 
-        // 8. Commit updated config and request full damage redraw
+        // 8. Commit updated config and request redraw only if visual properties changed
+        let needs_redraw = banner_changed
+            || colors_changed
+            || font_family_changed
+            || font_size_changed
+            || line_height_changed
+            || font_scale_changed
+            || nerd_scale_changed
+            || padding_changed
+            || tabs_changed
+            || panes_changed
+            || self.config.cursor_shape() != new_config.cursor_shape();
+
         self.config = new_config.clone();
-        self.renderer.damage.mark_all();
-        self.content_dirty = true;
-        self.needs_redraw = true;
-        self.window.request_redraw();
+        if needs_redraw {
+            self.renderer.damage.mark_all();
+            self.content_dirty = true;
+            self.needs_redraw = true;
+            self.window.request_redraw();
+        }
     }
 }
 
@@ -2364,6 +2402,18 @@ impl App {
         }
 
         log::info!("Reloading configuration due to file change");
+
+        // Dynamically enable or disable watcher if live_config_reload changed
+        if new_config.live_config_reload() != self.config.live_config_reload() {
+            if new_config.live_config_reload() {
+                log::info!("Enabling dynamic live config watcher");
+                self.config_watcher = crate::config::watcher::ConfigWatcher::new();
+            } else {
+                log::info!("Disabling dynamic live config watcher");
+                self.config_watcher = None;
+            }
+        }
+
         self.config = new_config.clone();
         self.config_diagnostics = diagnostics;
 
@@ -2688,6 +2738,13 @@ impl App {
                 }
             }
 
+            // Include config watcher debouncing deadline in ppoll timeout calculation
+            if let Some(ref watcher) = self.config_watcher {
+                if let Some(wake_time) = watcher.next_wake_time() {
+                    min_next_wake = Some(min_next_wake.map_or(wake_time, |t| t.min(wake_time)));
+                }
+            }
+
             let (timeout_ts, has_timeout) = Self::compute_ppoll_timeout(
                 min_next_wake,
                 self.windows.values().any(|w| w.needs_redraw),
@@ -2797,16 +2854,27 @@ impl App {
                     .store(false, std::sync::atomic::Ordering::Release);
             }
 
+            let mut triggered_config_reload = false;
             if config_watcher_fd >= 0 {
                 if let Some(entry) = poll_fds.iter().find(|p| p.fd == config_watcher_fd) {
                     if (entry.revents & libc::POLLIN) != 0 {
                         if let Some(ref mut watcher) = self.config_watcher {
                             if watcher.check_events() {
-                                self.reload_config();
+                                triggered_config_reload = true;
                             }
                         }
                     }
                 }
+            }
+            if !triggered_config_reload {
+                if let Some(ref mut watcher) = self.config_watcher {
+                    if watcher.poll_pending_reload() {
+                        triggered_config_reload = true;
+                    }
+                }
+            }
+            if triggered_config_reload {
+                self.reload_config();
             }
         }
         Ok(())

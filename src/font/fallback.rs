@@ -25,6 +25,20 @@ pub fn get_system_font_db() -> &'static Arc<Database> {
     })
 }
 
+/// Pre-warms the system font database on an asynchronous background worker thread.
+/// Allows the terminal window to open instantly using the cached primary font while
+/// fallback fonts (emojis, CJK, symbols) index in parallel.
+pub fn warm_system_font_db_in_background() {
+    if SYSTEM_FONT_DB.get().is_some() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("velox-fontdb-loader".into())
+        .spawn(|| {
+            let _ = get_system_font_db();
+        });
+}
+
 pub struct FallbackFont {
     pub font: FontArc,
     pub storage: Arc<FontStorage>,
