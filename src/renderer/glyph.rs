@@ -716,7 +716,7 @@ impl GlyphCache {
                     } else {
                         scale = PxScale::from(font_scale);
                     }
-                } else if is_nerd_or_pua {
+                } else if is_nerd_or_pua || key.wide {
                     let probe_scale = PxScale::from(font_scale);
                     let probe_glyph = char_glyph_id.with_scale(probe_scale);
                     if let Some(outlined) = char_font.outline_glyph(probe_glyph) {
@@ -724,13 +724,23 @@ impl GlyphCache {
                         let ph = bounds.height();
                         let pw = bounds.width();
                         if ph > 0.0 && pw > 0.0 {
-                            let base_target_h =
-                                (font_scale * 0.90).min(self.cell_height as f32 * 0.85);
-                            let target_h = (base_target_h * self.nerd_font_scale)
-                                .min(self.cell_height as f32)
-                                .round()
-                                .max(1.0);
-                            let max_w = base_target_width as f32 * 2.0;
+                            let max_w = if key.wide {
+                                base_target_width as f32 * 0.95
+                            } else {
+                                base_target_width as f32 * 2.0
+                            };
+                            let target_h = if key.wide {
+                                (self.cell_height as f32 * 0.90 * self.nerd_font_scale)
+                                    .min(self.cell_height as f32)
+                                    .max(1.0)
+                            } else {
+                                let base_target_h =
+                                    (font_scale * 0.90).min(self.cell_height as f32 * 0.85);
+                                (base_target_h * self.nerd_font_scale)
+                                    .min(self.cell_height as f32)
+                                    .round()
+                                    .max(1.0)
+                            };
                             let sh = target_h / ph;
                             let sw = max_w / pw;
                             let fit = sh.min(sw).clamp(0.05, 3.0);
@@ -776,7 +786,7 @@ impl GlyphCache {
                 let scaled_font = char_font.as_scaled(scale);
                 font_adv = scaled_font.h_advance(char_glyph_id);
 
-                let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box && !is_braille;
+                let should_shear = is_synthetic_italic && !is_nerd_or_pua && !key.wide && !is_pw_sep && !is_box && !is_braille;
                 let outlined_opt = crate::font::resolved::get_or_create_outlined_glyph(
                     char_font,
                     char_glyph_id,
@@ -835,7 +845,7 @@ impl GlyphCache {
             has_outline = true;
         }
 
-        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box && !is_braille {
+        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !key.wide && !is_pw_sep && !is_box && !is_braille {
             (self.baseline_y * crate::font::resolved::SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
         } else {
             0
@@ -843,10 +853,15 @@ impl GlyphCache {
 
         let (x_offset, y_offset, pad_x) = if the_outlined.is_none() {
             (0.0, 0.0, 0.0)
-        } else if is_nerd_or_pua && !is_pw_sep {
-            let xo = (glyph_w.ceil().max(base_target_width as f32) - glyph_w) / 2.0;
+        } else if (is_nerd_or_pua || key.wide) && !is_pw_sep {
+            let target_box_w = if key.wide {
+                base_target_width as f32
+            } else {
+                glyph_w.ceil().max(base_target_width as f32)
+            };
+            let xo = (target_box_w - glyph_w) / 2.0;
             let yo = (self.cell_height as f32 - glyph_h) / 2.0;
-            (xo, yo, 0.0)
+            (xo.max(0.0), yo.max(0.0), 0.0)
         } else if is_pw_sep {
             let xo = (base_target_width as f32 - glyph_w) / 2.0;
             let yo = (self.cell_height as f32 - glyph_h) / 2.0;
@@ -887,9 +902,9 @@ impl GlyphCache {
             max_needed_w = max_needed_w.max(cx + cm.width);
         }
 
-        let width_mult = if is_nerd_or_pua && !is_pw_sep && glyph_w > base_target_width as f32 {
-            ((glyph_w / base_target_width as f32).ceil() as u8).clamp(1, 2)
-        } else if key.wide {
+        let width_mult = if key.wide {
+            2
+        } else if is_nerd_or_pua && !is_pw_sep && glyph_w > (base_target_width as f32 * 1.05) {
             2
         } else {
             1
@@ -900,7 +915,9 @@ impl GlyphCache {
         } else {
             base_target_width
         };
-        let target_width = if key.wide || width_mult == 2 {
+        let target_width = if key.wide {
+            base_target_width
+        } else if width_mult == 2 {
             (needed_w + italic_bleed).min(base_target_width * 2)
         } else {
             base_target_width + italic_bleed

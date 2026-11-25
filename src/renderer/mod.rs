@@ -2598,6 +2598,15 @@ impl CpuRenderer {
                         ) {
                             if let Some(glyph_key) = res.glyph_key {
                                 if let Some(glyph_ref) = glyph_cache.get_or_rasterize(glyph_key) {
+                                    let g_clip_w = if is_wide
+                                        || (glyph_ref.width > cell_w as u16
+                                            && (col + 1 >= max_col
+                                                || row_cells[col + 1].character == ' '))
+                                    {
+                                        clip_w
+                                    } else {
+                                        cell_w.min(clip_w)
+                                    };
                                     if glyph_ref.is_color {
                                         let pixels = glyph_cache.atlas.get_color(&glyph_ref);
                                         if is_opaque {
@@ -2608,7 +2617,7 @@ impl CpuRenderer {
                                                 pixels,
                                                 glyph_ref.width,
                                                 glyph_ref.height,
-                                                clip_w,
+                                                g_clip_w,
                                                 clip_h,
                                             );
                                         } else {
@@ -2619,7 +2628,7 @@ impl CpuRenderer {
                                                 pixels,
                                                 glyph_ref.width,
                                                 glyph_ref.height,
-                                                clip_w,
+                                                g_clip_w,
                                                 clip_h,
                                             );
                                         }
@@ -2634,7 +2643,7 @@ impl CpuRenderer {
                                                 glyph_ref.width,
                                                 glyph_ref.height,
                                                 fg,
-                                                clip_w,
+                                                g_clip_w,
                                                 clip_h,
                                             );
                                         } else {
@@ -2646,7 +2655,7 @@ impl CpuRenderer {
                                                 glyph_ref.width,
                                                 glyph_ref.height,
                                                 fg,
-                                                clip_w,
+                                                g_clip_w,
                                                 clip_h,
                                             );
                                         }

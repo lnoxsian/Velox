@@ -848,3 +848,131 @@ fn test_zalgo_text_and_combining_marks_rendering_integrity() {
         }
     }
 }
+
+#[test]
+fn test_star_and_monochrome_symbols_classification_and_centering() {
+    use velox::font::loader::{is_emoji, is_monochrome_symbol, is_nerd_font_or_pua};
+
+    // 1. Classification: Monochrome stars and symbols are NOT emojis, but ARE nerd font / symbols
+    assert!(is_monochrome_symbol('★')); // U+2605 Black Star
+    assert!(is_monochrome_symbol('☆')); // U+2606 White Star
+    assert!(is_monochrome_symbol('✓')); // U+2713 Check Mark
+    assert!(is_monochrome_symbol('✗')); // U+2717 Ballot X
+
+    assert!(!is_emoji('★'));
+    assert!(!is_emoji('☆'));
+    assert!(is_nerd_font_or_pua('★'));
+    assert!(is_nerd_font_or_pua('☆'));
+    assert!(is_nerd_font_or_pua('\u{f005}')); // Nerd Font star
+
+    // True emojis must still be classified as emoji
+    assert!(is_emoji('\u{2728}')); // ✨ Sparkles
+    assert!(is_emoji('\u{26a0}')); // ⚠️ Warning
+    assert!(is_emoji('\u{2b50}')); // ⭐ White Medium Star
+
+    // 2. Wide Symbol / Star Centering (Prevent half-empty 2-cell rendering)
+    let mut cache = match GlyphCache::try_from_font_family("Ubuntu", 16.0, 1.0) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let wide_key = GlyphKey::new('★', false, false, true);
+    if let Some(gref) = cache.get_or_rasterize(wide_key) {
+        assert_eq!(
+            gref.width,
+            (cache.cell_width * 2) as u16,
+            "Wide star glyph buffer must span the full 2 cells ({} px)",
+            cache.cell_width * 2
+        );
+        let mask = cache.atlas.get_alpha(&gref);
+        let w = gref.width as usize;
+        let h = gref.height as usize;
+        let cw = cache.cell_width as usize;
+
+        let mut left_pixels = 0;
+        let mut right_pixels = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if mask[y * w + x] > 0 {
+                    if x < cw {
+                        left_pixels += 1;
+                    } else {
+                        right_pixels += 1;
+                    }
+                }
+            }
+        }
+
+        // When a wide star is rendered across 2 cells, BOTH the left cell and right cell must contain glyph ink!
+        assert!(
+            left_pixels > 0,
+            "First cell of wide star must contain rendered pixels"
+        );
+        assert!(
+            right_pixels > 0,
+            "Second cell of wide star must NOT be empty; it must contain rendered pixels"
+        );
+    }
+}
+
+#[test]
+fn test_symbol_overflow_rendering_space_vs_adjacent_text() {
+    let theme = velox::theme::theme::Theme::new();
+    let cache = match GlyphCache::try_from_font_family("Ubuntu", 14.0, 1.0) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let cell_w = cache.cell_width;
+    let cell_h = cache.cell_height;
+    let screen_w = 40 * cell_w;
+    let screen_h = 4 * cell_h;
+
+    let mut renderer = velox::renderer::CpuRenderer::new(
+        "Ubuntu", 14.0, 1.0, &theme, screen_w, screen_h, true, 1.0,
+    );
+
+    let default_fg = Color { r: 255, g: 255, b: 255 };
+    let default_bg = Color { r: 0, g: 0, b: 0 };
+
+    // Row 0: Star followed by space "★ " -> star expands cleanly across 2 cells without clipping
+    let mut grid = Grid::new(40, 4, default_fg, default_bg, 100, true);
+    grid.damage.mark_all();
+    grid.put_char('★', default_fg, default_bg, None, CellFlags::empty());
+    grid.put_char(' ', default_fg, default_bg, None, CellFlags::empty());
+
+    // Row 1: Star followed immediately by text "★A" -> star is clipped at cell boundary to avoid colliding with 'A'
+    grid.cursor.y = 1;
+    grid.cursor.x = 0;
+    grid.put_char('★', default_fg, default_bg, None, CellFlags::empty());
+    grid.put_char('A', default_fg, default_bg, None, CellFlags::empty());
+
+    let mut fb = vec![0u32; (screen_w * screen_h) as usize];
+    renderer.render_with_tab_bar(
+        &grid.cells,
+        &grid,
+        &theme,
+        0.0,
+        0.0,
+        true,
+        velox::screen::cursor::CursorShape::Block,
+        0,
+        true,
+        1.0,
+        0.0,
+        &mut fb,
+        None,
+    );
+
+    // Verify row 0: Row 0 has star followed by space, renders cleanly without panic
+    let row0_y = cell_h / 2;
+    let mut row0_drawn = 0;
+    for x in 0..(cell_w * 2) {
+        let p = fb[(row0_y * screen_w + x) as usize];
+        if (p & 0x00FFFFFF) != 0 {
+            row0_drawn += 1;
+        }
+    }
+    assert!(row0_drawn > 0, "Row 0 with star followed by space must render non-zero pixels");
+}
+

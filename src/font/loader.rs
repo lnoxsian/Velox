@@ -46,7 +46,22 @@ pub fn load_font_face(db: &fontdb::Database, query: &fontdb::Query) -> Option<Fo
     None
 }
 
+/// Returns true if `c` is a standard monochrome symbol that should not be treated as a color emoji
+/// (e.g., standard stars, checkmarks, musical notes).
+#[inline(always)]
+pub fn is_monochrome_symbol(c: char) -> bool {
+    matches!(c,
+        '\u{2605}' | '\u{2606}' | // Black Star, White Star
+        '\u{2713}' | '\u{2717}' | '\u{2715}' | // Check mark, ballot X, multiplication X
+        '\u{2669}'..='\u{266f}' | // Musical notes (♩, ♪, ♫, ♬, ♭, ♮, ♯)
+        '\u{2722}'..='\u{2727}' | '\u{2729}'..='\u{2732}' | '\u{2735}'..='\u{2743}' // Ornamental non-emoji stars
+    )
+}
+
 pub fn is_emoji(c: char) -> bool {
+    if is_monochrome_symbol(c) {
+        return false;
+    }
     matches!(c,
         '\u{1f300}'..='\u{1faff}' | // Misc Symbols & Pictographs, Emoticons, Transport, Supplemental, Extended-A
         '\u{1f1e6}'..='\u{1f1ff}' | // Regional indicator symbols (Flags)
