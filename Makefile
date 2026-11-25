@@ -27,8 +27,9 @@ DURATION ?=
 WORKLOAD ?=
 ARGS ?=
 
-.PHONY: all build release run run-release check test clean update lint \
-	build-velox release-velox build-config release-config run-config run-config-release \
+.PHONY: all build debug release build-all release-all cfg-debug cfg-release \
+	run run-release run-config run-config-release check test clean update lint \
+	build-velox release-velox build-config release-config \
 	bootstrap update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-release \
 	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-debug cpu-compare cpu-benchmark \
 	palette generate-icons install install-deb install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
@@ -44,29 +45,40 @@ bootstrap:
 generate-icons:
 	python3 scripts/generate_icons.py
 
-# Build the project (debug mode)
-build:
-	cargo build
-
-# Build the project in release mode (fat LTO, codegen-units=1, stripped)
-release:
-	cargo build --release
-
 # Build only the Velox terminal in debug mode
-build-velox:
+debug:
 	cargo build --bin velox
 
-# Build only the Velox terminal in release mode
-release-velox:
+# Build alias for debug
+build: debug
+
+# Build only the Velox terminal in release mode (fat LTO, codegen-units=1, stripped)
+release:
 	cargo build --release --bin velox
 
 # Build only the veloxcfg CLI tool in debug mode
-build-config:
+cfg-debug:
 	cargo build --bin veloxcfg
 
 # Build only the veloxcfg CLI tool in release mode
-release-config:
+cfg-release:
 	cargo build --release --bin veloxcfg
+
+# Backward-compatible aliases for Velox terminal builds
+build-velox: debug
+release-velox: release
+
+# Backward-compatible aliases for veloxcfg CLI builds
+build-config: cfg-debug
+release-config: cfg-release
+
+# Build both binaries (velox & veloxcfg) in debug mode
+build-all:
+	cargo build
+
+# Build both binaries (velox & veloxcfg) in release mode
+release-all:
+	cargo build --release
 
 # Run the project (debug mode)
 run:
@@ -278,12 +290,12 @@ list:
 	@printf "\033[1mUsage:\033[0m make \033[36m<target>\033[0m [\033[33mVARIABLE=value\033[0m...]\n\n"
 	@printf "\033[1;32mBuilding & Compilation:\033[0m\n"
 	@printf "  \033[36m%-25s\033[0m %s\n" "bootstrap" "Install dev tools, libraries, compilers, and packaging utilities"
-	@printf "  \033[36m%-25s\033[0m %s\n" "build" "Build all binaries in debug mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build all binaries in release mode (fat LTO, codegen-units=1, stripped)"
-	@printf "  \033[36m%-25s\033[0m %s\n" "build-velox" "Build only Velox terminal in debug mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "release-velox" "Build only Velox terminal in release mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "build-config" "Build only veloxcfg CLI in debug mode"
-	@printf "  \033[36m%-25s\033[0m %s\n" "release-config" "Build only veloxcfg CLI in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "build / debug" "Build only Velox terminal in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release" "Build only Velox terminal in release mode (fat LTO, stripped)"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cfg-debug" "Build only veloxcfg CLI in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "cfg-release" "Build only veloxcfg CLI in release mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "build-all" "Build both velox and veloxcfg binaries in debug mode"
+	@printf "  \033[36m%-25s\033[0m %s\n" "release-all" "Build both velox and veloxcfg binaries in release mode"
 	@printf "  \033[36m%-25s\033[0m %s\n" "generate-icons" "Generate multi-resolution icon assets"
 	@printf "  \033[36m%-25s\033[0m %s\n" "clean" "Remove target/ and dist/ artifacts"
 	@printf "\n\033[1;32mRunning:\033[0m\n"

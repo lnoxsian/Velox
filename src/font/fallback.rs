@@ -210,6 +210,7 @@ impl FallbackManager {
 
     /// Completely unload all resident fallback fonts, release memory mappings, and clear caches.
     pub fn unload_all(&mut self) {
+        self.db = None;
         self.fallbacks.clear();
         self.fallbacks.shrink_to_fit();
         self.resident_bytes = 0;
@@ -471,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_emoji_vs_nerd_font_classification() {
-        use crate::font::loader::{is_emoji, is_nerd_font_or_pua};
+        use crate::font::loader::{is_braille, is_emoji, is_nerd_font_or_pua};
 
         // Unicode emoji codepoints
         assert!(is_emoji('\u{1f4e6}')); // 📦 Package
@@ -499,6 +500,15 @@ mod tests {
         assert!(!is_emoji('\u{e702}'));
         assert!(!is_emoji('\u{f07b}'));
         assert!(!is_emoji('\u{f113}'));
+
+        // Braille patterns must NOT be classified as Nerd Font PUA
+        assert!(is_braille('⠁'));
+        assert!(is_braille('⠃'));
+        assert!(is_braille('⣿'));
+        assert!(!is_nerd_font_or_pua('⠁'));
+        assert!(!is_nerd_font_or_pua('⠃'));
+        assert!(!is_nerd_font_or_pua('⣿'));
+        assert!(!is_braille('\u{e702}'));
     }
 
     #[test]

@@ -140,6 +140,14 @@ impl Chunk {
         }
     }
 
+    /// Creates a zero-capacity chunk without upfront heap allocation.
+    pub fn empty() -> Self {
+        Self {
+            cells: Vec::new(),
+            rows: Vec::new(),
+        }
+    }
+
     pub fn push_row(&mut self, cells: &[Cell], wrapped: bool) {
         let Ok(start) = u32::try_from(self.cells.len()) else {
             return;
@@ -350,11 +358,11 @@ impl ScrollbackStorage {
             id,
             file: RefCell::new(file),
             chunks: Vec::new(),
-            pending_chunk: Chunk::new(),
-            local_cache: RefCell::new(Vec::with_capacity(CHUNK_CACHE_CAPACITY)),
+            pending_chunk: Chunk::empty(),
+            local_cache: RefCell::new(Vec::new()),
             tick_counter: RefCell::new(0),
-            serialize_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
-            read_buf: RefCell::new(Vec::with_capacity(128 * 1024)),
+            serialize_buf: RefCell::new(Vec::new()),
+            read_buf: RefCell::new(Vec::new()),
             total_disk_lines: 0,
             state: PersistenceState::Active,
             consecutive_failures: 0,
@@ -409,7 +417,7 @@ impl ScrollbackStorage {
         self.last_error.as_deref()
     }
 
-    pub fn trim_memory(&self) {
+    pub fn trim_memory(&mut self) {
         if let Ok(mut cache) = self.local_cache.try_borrow_mut() {
             cache.clear();
             cache.shrink_to_fit();
@@ -421,6 +429,10 @@ impl ScrollbackStorage {
         if let Ok(mut buf) = self.read_buf.try_borrow_mut() {
             buf.clear();
             buf.shrink_to_fit();
+        }
+        if self.pending_chunk.is_empty() {
+            self.pending_chunk.cells.shrink_to_fit();
+            self.pending_chunk.rows.shrink_to_fit();
         }
     }
 
@@ -526,9 +538,9 @@ impl ScrollbackStorage {
         }
 
         drop(file);
-        // Release serialization buffer if it grew abnormally large
-        if serialize_buf.capacity() > 1024 * 1024 {
-            *serialize_buf = Vec::with_capacity(128 * 1024);
+        // Release serialization buffer if it grew past 256 KiB
+        if serialize_buf.capacity() > 256 * 1024 {
+            *serialize_buf = Vec::new();
         }
         drop(serialize_buf);
 
@@ -729,9 +741,9 @@ impl ScrollbackStorage {
             access_tick: tick,
         });
 
-        // Release read buffer if it grew abnormally large
-        if read_buf.capacity() > 1024 * 1024 {
-            *read_buf = Vec::with_capacity(128 * 1024);
+        // Release read buffer if it grew past 256 KiB
+        if read_buf.capacity() > 256 * 1024 {
+            *read_buf = Vec::new();
         }
 
         Some(result)
@@ -870,6 +882,11 @@ impl Scrollback {
         if let Some(storage) = self.storage.as_mut() {
             storage.trim_memory();
         }
+        for row in &mut self.hot_rows {
+            if row.cells.capacity() > row.cells.len() + 32 {
+                row.cells.shrink_to_fit();
+            }
+        }
         self.hot_rows.shrink_to_fit();
     }
 
@@ -923,6 +940,9 @@ impl Scrollback {
                 // Recycle the popped row's allocation instead of dropping and reallocating
                 oldest.cells.clear();
                 oldest.cells.extend_from_slice(target_cells);
+                if oldest.cells.capacity() > target_cells.len().max(80) * 2 {
+                    oldest.cells.shrink_to_fit();
+                }
                 oldest.wrapped = wrapped;
                 self.hot_rows.push_back(oldest);
             } else {
@@ -944,6 +964,9 @@ impl Scrollback {
             {
                 reused.cells.clear();
                 reused.cells.extend_from_slice(target_cells);
+                if reused.cells.capacity() > target_cells.len().max(80) * 2 {
+                    reused.cells.shrink_to_fit();
+                }
                 reused.wrapped = wrapped;
                 self.hot_rows.push_back(reused);
                 return;
@@ -1053,6 +1076,7 @@ impl Scrollback {
 
     pub fn clear(&mut self) {
         self.hot_rows.clear();
+        self.hot_rows.shrink_to_fit();
         if self.infinite {
             if self.persistence_state == PersistenceState::Disabled || self.storage.is_none() {
                 if let Some(new_storage) = ScrollbackStorage::new() {
@@ -1062,8 +1086,11 @@ impl Scrollback {
                 }
             } else if let Some(storage) = self.storage.as_mut() {
                 storage.pending_chunk.clear();
+                storage.pending_chunk.cells.shrink_to_fit();
+                storage.pending_chunk.rows.shrink_to_fit();
                 storage.chunks.clear();
                 storage.local_cache.borrow_mut().clear();
+                storage.trim_memory();
                 if let Ok(mut global_cache) = get_global_scrollback_cache().lock() {
                     global_cache.invalidate_storage(storage.id);
                 }
@@ -1077,7 +1104,10 @@ impl Scrollback {
             }
         } else if let Some(storage) = self.storage.as_mut() {
             storage.pending_chunk.clear();
+            storage.pending_chunk.cells.shrink_to_fit();
+            storage.pending_chunk.rows.shrink_to_fit();
             storage.chunks.clear();
+            storage.trim_memory();
             storage.total_disk_lines = 0;
         }
     }

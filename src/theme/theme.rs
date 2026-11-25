@@ -319,18 +319,7 @@ impl Theme {
                     theme.tab_accent_color = theme.cursor_color;
                 }
                 _ => {
-                    let ansi_idx = match trimmed.as_str() {
-                        "black" => Some(0),
-                        "red" => Some(1),
-                        "green" => Some(2),
-                        "yellow" => Some(3),
-                        "blue" => Some(4),
-                        "magenta" | "purple" => Some(5),
-                        "cyan" => Some(6),
-                        "white" => Some(7),
-                        _ => None,
-                    };
-                    if let Some(idx) = ansi_idx {
+                    if let Some(idx) = crate::config::config::parse_ansi_color_index(&trimmed) {
                         theme.tab_accent_color_mode = TabAccentColorConfig::Ansi(idx);
                         theme.tab_accent_color = Some(theme.ansi_colors[idx]);
                     } else if let Some(c) = crate::config::config::parse_hex_color(tac) {
@@ -383,27 +372,8 @@ impl Theme {
                 .cursor_color
                 .or(self.initial_cursor_color)
                 .or(Some(self.default_fg)),
-            "black" => Some(self.ansi_colors[0]),
-            "red" => Some(self.ansi_colors[1]),
-            "green" => Some(self.ansi_colors[2]),
-            "yellow" => Some(self.ansi_colors[3]),
-            "blue" => Some(self.ansi_colors[4]),
-            "magenta" | "purple" => Some(self.ansi_colors[5]),
-            "cyan" => Some(self.ansi_colors[6]),
-            "white" => Some(self.ansi_colors[7]),
-            "bright_black" | "gray" | "grey" => Some(self.ansi_colors[8]),
-            "bright_red" => Some(self.ansi_colors[9]),
-            "bright_green" => Some(self.ansi_colors[10]),
-            "bright_yellow" => Some(self.ansi_colors[11]),
-            "bright_blue" => Some(self.ansi_colors[12]),
-            "bright_magenta" | "bright_purple" => Some(self.ansi_colors[13]),
-            "bright_cyan" => Some(self.ansi_colors[14]),
-            "bright_white" => Some(self.ansi_colors[15]),
             _ => {
-                if let Some(idx_str) = s.strip_prefix("ansi_").or_else(|| s.strip_prefix("ansi"))
-                    && let Ok(idx) = idx_str.parse::<usize>()
-                    && idx < 16
-                {
+                if let Some(idx) = crate::config::config::parse_ansi_color_index(&s) {
                     return Some(self.ansi_colors[idx]);
                 }
                 crate::config::config::parse_hex_color(&s)
@@ -857,6 +827,24 @@ mod tests {
                 r: 255,
                 g: 85,
                 b: 0
+            }
+        );
+
+        let toml_bright = r##"
+            [colors]
+            bright_magenta = "#d670d6"
+            [tabs]
+            tab_accent_color = "bright_purple"
+        "##;
+        let cfg_bright: Config = toml::from_str(toml_bright).unwrap();
+        let th_bright = Theme::from_config(&cfg_bright);
+        assert_eq!(th_bright.tab_accent_color_mode, TabAccentColorConfig::Ansi(13));
+        assert_eq!(
+            th_bright.resolve_tab_accent_color(),
+            Color {
+                r: 214,
+                g: 112,
+                b: 214
             }
         );
     }

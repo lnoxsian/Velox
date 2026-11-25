@@ -184,7 +184,7 @@ impl Terminal {
         grid.cursor.shape = initial_shape;
         grid.saved_cursor.shape = initial_shape;
 
-        let mut alt_grid = Grid::new(width, height, default_fg, default_bg, 0, false);
+        let mut alt_grid = Grid::new_dormant(width, height, default_fg, default_bg);
         alt_grid.cursor.shape = initial_shape;
         alt_grid.saved_cursor.shape = initial_shape;
 
@@ -374,7 +374,7 @@ impl Terminal {
         }
     }
 
-    /// Releases excessive heap capacities across outgoing buffers, ANSI parser, and scrollback.
+    /// Releases excessive heap capacities across outgoing buffers, ANSI parser, scrollback, and inactive alternate grid.
     pub fn release_memory(&mut self) {
         if self.outgoing.capacity() > 1024 {
             self.outgoing.shrink_to_fit();
@@ -382,6 +382,16 @@ impl Terminal {
         self.parser.shrink_buffers();
         self.grid.scrollback.trim_memory();
         self.alt_grid.scrollback.trim_memory();
+        if !self.is_alt_screen {
+            self.alt_grid.release_backing();
+        }
+    }
+
+    /// Releases the alternate screen grid backing memory when not currently in alternate screen mode.
+    pub fn release_alt_grid(&mut self) {
+        if !self.is_alt_screen {
+            self.alt_grid.release_backing();
+        }
     }
 
     pub fn set_synchronized_output(&mut self, enabled: bool) {
@@ -809,6 +819,13 @@ impl Terminal {
     pub fn set_alt_screen(&mut self, active: bool) {
         if self.is_alt_screen != active {
             if active {
+                self.alt_grid.ensure_allocated();
+                if self.alt_grid.width != self.grid.width
+                    || self.alt_grid.height != self.grid.height
+                {
+                    self.alt_grid
+                        .resize(self.grid.width as u32, self.grid.height as u32);
+                }
                 self.main_kitty_keyboard_flags = self.kitty_keyboard_flags;
                 self.alt_kitty_keyboard_flags = 0;
                 self.alt_kitty_keyboard_stack.clear();
@@ -863,8 +880,12 @@ impl Terminal {
         }
 
         if alternate_changed {
-            crate::diagnostics::ResizeStats::record_alternate_grid_reflow();
-            self.alt_grid.resize(new_w as u32, new_h as u32);
+            if !self.is_alt_screen && self.alt_grid.is_dormant() {
+                self.alt_grid.resize_dormant(new_w, new_h);
+            } else {
+                crate::diagnostics::ResizeStats::record_alternate_grid_reflow();
+                self.alt_grid.resize(new_w as u32, new_h as u32);
+            }
         }
     }
 }

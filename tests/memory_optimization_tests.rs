@@ -310,3 +310,44 @@ fn test_emoji_renders_color_even_when_outline_font_loaded_first() {
         );
     }
 }
+
+#[test]
+fn test_lazy_alt_grid_allocation_and_release() {
+    let mut term = velox::terminal::terminal::Terminal::new(120, 40);
+    // Primary mode: alt_grid starts dormant with 0 heap cells
+    assert!(!term.is_alt_screen);
+    assert!(term.alt_grid.is_dormant());
+    assert_eq!(term.alt_grid.cells.capacity(), 0);
+    assert_eq!(term.alt_grid.row_wrapped.capacity(), 0);
+
+    // Resizing while on primary screen keeps alt_grid dormant
+    term.resize(160, 50);
+    assert!(term.alt_grid.is_dormant());
+    assert_eq!(term.alt_grid.width, 160);
+    assert_eq!(term.alt_grid.height, 50);
+
+    // Entering alternate screen allocates cells
+    term.feed(b"\x1b[?1049h");
+    assert!(term.is_alt_screen);
+    assert!(!term.alt_grid.is_dormant());
+    assert_eq!(term.alt_grid.cells.len(), 160 * 50);
+
+    // Exiting via CSI ? 1049 l releases backing memory
+    term.feed(b"\x1b[?1049l");
+    assert!(!term.is_alt_screen);
+    assert!(term.alt_grid.is_dormant());
+    assert_eq!(term.alt_grid.cells.capacity(), 0);
+}
+
+#[test]
+fn test_lazy_scrollback_storage_zero_eager_buffers() {
+    let sb = velox::screen::scrollback::Scrollback::new(2000, true);
+    assert_eq!(sb.resident_row_count(), 0);
+    assert_eq!(sb.chunk_count(), 0);
+}
+
+#[test]
+fn test_compact_glyph_ref_size() {
+    assert!(std::mem::size_of::<velox::renderer::atlas::GlyphRef>() <= 12);
+    assert!(std::mem::size_of::<Option<velox::renderer::atlas::GlyphRef>>() <= 12);
+}

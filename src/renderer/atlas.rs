@@ -4,8 +4,6 @@ pub struct GlyphRef {
     pub offset: u32,
     pub width: u16,
     pub height: u16,
-    pub bearing_x: i16,
-    pub bearing_y: i16,
     pub is_color: bool,
     pub width_mult: u8,
 }
@@ -85,8 +83,6 @@ impl GlyphAtlas {
         &mut self,
         width: u16,
         height: u16,
-        bearing_x: i16,
-        bearing_y: i16,
         width_mult: u8,
         data: &[u8],
     ) -> GlyphRef {
@@ -96,8 +92,6 @@ impl GlyphAtlas {
             offset,
             width,
             height,
-            bearing_x,
-            bearing_y,
             is_color: false,
             width_mult,
         }
@@ -108,8 +102,6 @@ impl GlyphAtlas {
         &mut self,
         width: u16,
         height: u16,
-        bearing_x: i16,
-        bearing_y: i16,
         width_mult: u8,
         data: &[u32],
     ) -> GlyphRef {
@@ -119,8 +111,6 @@ impl GlyphAtlas {
             offset,
             width,
             height,
-            bearing_x,
-            bearing_y,
             is_color: true,
             width_mult,
         }
@@ -149,11 +139,11 @@ mod tests {
     fn test_glyph_atlas_insertion_and_retrieval() {
         let mut atlas = GlyphAtlas::new();
         let mask = vec![0xFF, 0x80, 0x40, 0x00];
-        let g_ref = atlas.insert_alpha(2, 2, 0, 0, 1, &mask);
+        let g_ref = atlas.insert_alpha(2, 2, 1, &mask);
         assert_eq!(atlas.get_alpha(&g_ref), &mask[..]);
 
         let color_data = vec![0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF];
-        let color_ref = atlas.insert_color(2, 2, 0, 0, 1, &color_data);
+        let color_ref = atlas.insert_color(2, 2, 1, &color_data);
         assert_eq!(atlas.get_color(&color_ref), &color_data[..]);
     }
 
@@ -165,8 +155,6 @@ mod tests {
         let _ = atlas.insert_alpha(
             1,
             (MAX_RETAINED_ALPHA_CAPACITY + 1024) as u16,
-            0,
-            0,
             1,
             &large_mask,
         );

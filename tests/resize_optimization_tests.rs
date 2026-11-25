@@ -355,13 +355,27 @@ fn test_9_blank_terminal_resize_invariants() {
         );
         assert_eq!(term.grid.row_wrapped.len(), term.grid.height);
 
-        // Verify alternate grid invariant
+        // Verify dormant alternate grid holds zero heap cells while on primary screen
+        assert!(term.alt_grid.is_dormant());
+        assert_eq!(term.alt_grid.width, term.grid.width);
+        assert_eq!(term.alt_grid.height, term.grid.height);
+    }
+
+    // Enter alternate screen and verify full alternate grid allocation and resize invariant
+    term.feed(b"\x1b[?1049h");
+    assert!(!term.alt_grid.is_dormant());
+    for (cols, rows) in test_dimensions {
+        term.resize(cols, rows);
         assert_eq!(
             term.alt_grid.cells.len(),
             term.alt_grid.width.saturating_mul(term.alt_grid.height)
         );
         assert_eq!(term.alt_grid.row_wrapped.len(), term.alt_grid.height);
     }
+
+    // Exit alternate screen via CSI ? 1049 l and verify backing is released
+    term.feed(b"\x1b[?1049l");
+    assert!(term.alt_grid.is_dormant());
 }
 
 #[test]

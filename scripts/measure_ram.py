@@ -204,12 +204,12 @@ def resolve_binary(args):
         profile_dir = "debug" if profile in ("debug", "dev") else profile
         bin_path = f"target/{profile_dir}/velox"
         if not os.path.exists(bin_path):
-            print(f"[!] Binary '{bin_path}' not found. Building with cargo build --release...")
             build_cmd = ["cargo", "build"]
             if profile == "release":
                 build_cmd.append("--release")
             elif profile != "debug" and profile != "dev":
                 build_cmd.extend(["--profile", profile])
+            print(f"[!] Binary '{bin_path}' not found. Building with {' '.join(build_cmd)}...")
             res = subprocess.run(build_cmd)
             if res.returncode != 0:
                 print(f"[X] Cargo build failed for profile '{profile}'.")
@@ -334,6 +334,7 @@ def main():
         last_rss = samples[-1]["rss_kb"]
         init_rss = initial_rss or samples[0]["rss_kb"]
         last_anon = samples[-1]["anon_kb"]
+        peak_anon = max(s["anon_kb"] for s in samples)
 
         print(f"  Duration Monitored  : {duration:.2f} seconds ({len(samples)} samples)")
         print(f"  Initial Startup RSS : {format_mb(init_rss)}")
@@ -341,7 +342,8 @@ def main():
         print(f"  Peak Physical (RSS) : {format_mb(peak_rss)}")
         if peak_pss > 0:
             print(f"  Peak Proportional   : {format_mb(peak_pss)} (PSS)")
-        print(f"  Anonymous / Heap    : {format_mb(last_anon)}")
+        print(f"  Peak Anonymous/Heap : {format_mb(peak_anon)}")
+        print(f"  Final Anonymous/Heap: {format_mb(last_anon)}")
         print(f"  Peak Virtual Memory : {format_mb(peak_vmsize)} (VmSize)")
         print(f"  Final Exit RSS      : {format_mb(last_rss)}")
     else:

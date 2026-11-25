@@ -677,3 +677,174 @@ fn test_fast_font_resolution_and_cache_roundtrip() {
         duration
     );
 }
+
+#[test]
+fn test_braille_patterns_not_scaled_by_nerd_font_scale_and_consistent_dot_size() {
+    let font_name = "DejaVuSansM Nerd Font";
+    let mut cache = match GlyphCache::try_from_font_family(font_name, 16.0, 1.0) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let get_bbox = |c: &GlyphCache, gr: &velox::renderer::atlas::GlyphRef| -> (usize, usize) {
+        let mask = c.atlas.get_alpha(gr);
+        let w = gr.width as usize;
+        let h = gr.height as usize;
+        let mut min_x = w;
+        let mut max_x = 0;
+        let mut min_y = h;
+        let mut max_y = 0;
+        let mut count = 0;
+        for y in 0..h {
+            for x in 0..w {
+                if mask[y * w + x] > 0 {
+                    count += 1;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        if count > 0 {
+            (
+                max_x.saturating_sub(min_x) + 1,
+                max_y.saturating_sub(min_y) + 1,
+            )
+        } else {
+            (0, 0)
+        }
+    };
+
+    let key_1dot = GlyphKey::new('⠁', false, false, false); // 1 dot (top-left)
+    let key_2dot = GlyphKey::new('⠃', false, false, false); // 2 dots vertically
+    let key_8dot = GlyphKey::new('⣿', false, false, false); // 8 dots (full 2x4 pattern)
+
+    // 1. Default scale (1.0)
+    let gref_1dot = cache.get_or_rasterize(key_1dot).expect("Rasterize 1-dot braille");
+    let (w_1dot, h_1dot) = get_bbox(&cache, &gref_1dot);
+
+    let gref_2dot = cache.get_or_rasterize(key_2dot).expect("Rasterize 2-dot braille");
+    let (_w_2dot, h_2dot) = get_bbox(&cache, &gref_2dot);
+
+    let gref_8dot = cache.get_or_rasterize(key_8dot).expect("Rasterize 8-dot braille");
+    let (_w_8dot, h_8dot) = get_bbox(&cache, &gref_8dot);
+
+    // Verify individual dot sizes are consistent and normal (not enlarged to fill full cell)
+    assert!(h_1dot > 0, "1-dot braille must produce visible pixels");
+    assert!(
+        h_1dot < h_2dot,
+        "1-dot height ({}) must be strictly smaller than 2-dot height ({})",
+        h_1dot,
+        h_2dot
+    );
+    assert!(
+        h_2dot < h_8dot,
+        "2-dot height ({}) must be strictly smaller than 8-dot height ({})",
+        h_2dot,
+        h_8dot
+    );
+    // In normal font metrics at 16pt, a single dot is ~2-4px, NOT a massive 12-16px circle taking the full cell
+    assert!(
+        h_1dot <= (cache.cell_height as usize / 3),
+        "Single dot height ({}) must not take up the full cell height ({})",
+        h_1dot,
+        cache.cell_height
+    );
+    assert!(
+        w_1dot <= (cache.cell_width as usize / 2),
+        "Single dot width ({}) must not take up the full cell width ({})",
+        w_1dot,
+        cache.cell_width
+    );
+
+    // 2. Setting nerd_font_scale must NOT alter braille glyph size
+    cache.set_nerd_font_scale(0.5);
+    let gref_1dot_small = cache.get_or_rasterize(key_1dot).expect("Rasterize 1-dot at nfs 0.5");
+    let (w_1dot_small, h_1dot_small) = get_bbox(&cache, &gref_1dot_small);
+    assert_eq!(
+        (w_1dot_small, h_1dot_small),
+        (w_1dot, h_1dot),
+        "Braille pattern must remain invariant when nerd_font_scale is 0.5"
+    );
+
+    cache.set_nerd_font_scale(2.0);
+    let gref_1dot_large = cache.get_or_rasterize(key_1dot).expect("Rasterize 1-dot at nfs 2.0");
+    let (w_1dot_large, h_1dot_large) = get_bbox(&cache, &gref_1dot_large);
+    assert_eq!(
+        (w_1dot_large, h_1dot_large),
+        (w_1dot, h_1dot),
+        "Braille pattern must remain invariant when nerd_font_scale is 2.0"
+    );
+}
+
+#[test]
+fn test_zalgo_text_and_combining_marks_rendering_integrity() {
+    let font_name = "DejaVuSansM Nerd Font";
+    let mut cache = match GlyphCache::try_from_font_family(font_name, 16.0, 1.0) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let default_fg = Color {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+    let default_bg = Color { r: 0, g: 0, b: 0 };
+
+    let zalgo_samples = [
+        "Z͑̄͆ͭ̒̅",
+        "Z̵a̶l̷g̴o̵",
+        "H̷̛́é̵̛ĺ̶̛ĺ̸̛ớ̶",
+        "ế", // Vietnamese dual-stacked accents
+        "ṣ", // Dot below
+    ];
+
+    for &sample in &zalgo_samples {
+        let mut grid = Grid::new(40, 2, default_fg, default_bg, 100, true);
+        for c in sample.chars() {
+            grid.put_char(c, default_fg, default_bg, None, CellFlags::empty());
+        }
+
+        // 1. Verify selection text retains full Unicode sequence faithfully
+        grid.selection.start_selection(0, 0);
+        grid.selection
+            .update_selection(grid.cursor.x.saturating_sub(1), 0);
+        let ext = grid.extract_selection_text();
+        assert_eq!(
+            ext, sample,
+            "Selection text must faithfully preserve full combining sequence"
+        );
+
+        // 2. Verify rasterized glyphs do not exceed single-cell width (prevent horizontal bleeding)
+        for cell in &grid.cells[0..grid.cursor.x] {
+            if cell.character != ' ' {
+                let key = GlyphKey::new(cell.character, false, false, false);
+                let gref = cache
+                    .get_or_rasterize(key)
+                    .unwrap_or_else(|| panic!("Rasterize failed for {:?}", cell.character));
+
+                assert!(
+                    gref.width <= cache.cell_width as u16,
+                    "Zalgo glyph width ({}) must not exceed cell width ({}) for {:?}",
+                    gref.width,
+                    cache.cell_width,
+                    sample
+                );
+
+                // 3. Verify glyph is not an all-black solid block (preserves legibility)
+                let mask = cache.atlas.get_alpha(&gref);
+                let total_pixels = mask.len();
+                let solid_pixels = mask.iter().filter(|&&a| a > 200).count();
+                assert!(
+                    solid_pixels < total_pixels * 3 / 4,
+                    "Zalgo glyph must not become a completely solid ink smudge: {}/{} solid for {:?}",
+                    solid_pixels,
+                    total_pixels,
+                    sample
+                );
+            }
+        }
+    }
+}

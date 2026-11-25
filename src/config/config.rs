@@ -843,24 +843,43 @@ impl Config {
         }
 
         // 4. Tab accent color
-        if let Some(tac) = self.tab_accent_color() {
-            let lower = tac.trim().to_ascii_lowercase();
-            let is_valid = match lower.as_str() {
-                "default" | "none" | "default_fg" | "fg" | "foreground" | "default_bg" | "bg"
-                | "background" | "cursor" | "cursor_color" | "black" | "red" | "green"
-                | "yellow" | "blue" | "magenta" | "purple" | "cyan" | "white" => true,
-                _ => parse_hex_color(tac).is_some(),
-            };
-            if !is_valid {
-                diags.push(ConfigDiagnostic {
-                    severity: DiagnosticSeverity::Warning,
-                    message: format!(
-                        "Invalid color '{tac}' for tab_accent_color (expected 'default', ANSI color name, or #RGB/#RRGGBB)"
-                    ),
-                    line: None,
-                    col: None,
-                });
-            }
+        if let Some(tac) = self.tab_accent_color()
+            && normalize_color_spec(tac, false).is_err()
+        {
+            diags.push(ConfigDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "Invalid color '{tac}' for tab_accent_color (expected 'default', theme/ANSI color name like 'blue'/'purple', or #RGB/#RRGGBB)"
+                ),
+                line: None,
+                col: None,
+            });
+        }
+
+        // 4b. Pane separator colors
+        if let Some(sep) = self.pane_separator_color()
+            && normalize_color_spec(sep, true).is_err()
+        {
+            diags.push(ConfigDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "Invalid color '{sep}' for panes.separator_color (expected 'default', theme/ANSI color name like 'blue'/'purple'/'tab_accent', or #RGB/#RRGGBB)"
+                ),
+                line: None,
+                col: None,
+            });
+        }
+        if let Some(asep) = self.pane_active_separator_color()
+            && normalize_color_spec(asep, true).is_err()
+        {
+            diags.push(ConfigDiagnostic {
+                severity: DiagnosticSeverity::Warning,
+                message: format!(
+                    "Invalid color '{asep}' for panes.active_separator_color (expected 'default', theme/ANSI color name like 'blue'/'purple'/'tab_accent', or #RGB/#RRGGBB)"
+                ),
+                line: None,
+                col: None,
+            });
         }
 
         // 5. Color palette validation
@@ -928,6 +947,78 @@ impl Config {
 
         diags
     }
+}
+
+/// Maps a theme/ANSI color name (0..15, including `purple`, `gray`/`grey`, and `ansi_0`..`ansi_15`)
+/// to its 16-color palette index.
+pub fn parse_ansi_color_index(spec: &str) -> Option<usize> {
+    let lower = spec.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "black" => Some(0),
+        "red" => Some(1),
+        "green" => Some(2),
+        "yellow" => Some(3),
+        "blue" => Some(4),
+        "magenta" | "purple" => Some(5),
+        "cyan" => Some(6),
+        "white" => Some(7),
+        "bright_black" | "gray" | "grey" => Some(8),
+        "bright_red" => Some(9),
+        "bright_green" => Some(10),
+        "bright_yellow" => Some(11),
+        "bright_blue" => Some(12),
+        "bright_magenta" | "bright_purple" => Some(13),
+        "bright_cyan" => Some(14),
+        "bright_white" => Some(15),
+        _ => {
+            let idx_str = lower
+                .strip_prefix("ansi_")
+                .or_else(|| lower.strip_prefix("ansi"))?;
+            let idx = idx_str.parse::<usize>().ok()?;
+            if idx < 16 { Some(idx) } else { None }
+        }
+    }
+}
+
+/// Error returned when a color specification string is neither a recognized theme color nor a hex color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidColorSpec;
+
+/// Validates and normalizes a user-supplied accent/separator color string.
+/// Accepts empty/`default`/`none` (`Ok(None)`), theme color references (`blue`, `purple`,
+/// `bright_blue`, `default_fg`, `cursor`, `ansi_4`, and optionally `tab_accent`), or `#RGB`/`#RRGGBB`/`#RRGGBBAA` hex.
+pub fn normalize_color_spec(
+    input: &str,
+    allow_tab_accent: bool,
+) -> Result<Option<String>, InvalidColorSpec> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "default" | "none" => return Ok(None),
+        "default_fg" | "fg" | "foreground" | "default_bg" | "bg" | "background" | "cursor"
+        | "cursor_color" => return Ok(Some(lower)),
+        "tab_accent" | "tab_bar" | "tab" | "accent" if allow_tab_accent => return Ok(Some(lower)),
+        _ => {}
+    }
+
+    if parse_ansi_color_index(&lower).is_some() {
+        return Ok(Some(lower));
+    }
+
+    if parse_hex_color(trimmed).is_some() {
+        let formatted = if trimmed.starts_with('#') {
+            trimmed.to_string()
+        } else {
+            format!("#{trimmed}")
+        };
+        return Ok(Some(formatted));
+    }
+
+    Err(InvalidColorSpec)
 }
 
 pub fn parse_hex_color(hex: &str) -> Option<Color> {
@@ -1334,5 +1425,55 @@ mod tests {
         let diags = cfg_invalid.validate();
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("Invalid nerd_font_scale"));
+    }
+
+    #[test]
+    fn test_normalize_color_spec_and_validation() {
+        // Theme color names for tab accent & split separators
+        assert_eq!(normalize_color_spec("blue", false), Ok(Some("blue".to_string())));
+        assert_eq!(normalize_color_spec("Purple", false), Ok(Some("purple".to_string())));
+        assert_eq!(normalize_color_spec("bright_purple", false), Ok(Some("bright_purple".to_string())));
+        assert_eq!(normalize_color_spec("gray", false), Ok(Some("gray".to_string())));
+        assert_eq!(normalize_color_spec("default_fg", false), Ok(Some("default_fg".to_string())));
+        assert_eq!(normalize_color_spec("cursor", false), Ok(Some("cursor".to_string())));
+        assert_eq!(normalize_color_spec("ansi_12", false), Ok(Some("ansi_12".to_string())));
+
+        // tab_accent keyword allowed for split separators, disallowed for tab_accent_color itself
+        assert_eq!(normalize_color_spec("tab_accent", true), Ok(Some("tab_accent".to_string())));
+        assert_eq!(normalize_color_spec("tab_accent", false), Err(InvalidColorSpec));
+
+        // Default/blank resets to None
+        assert_eq!(normalize_color_spec("", false), Ok(None));
+        assert_eq!(normalize_color_spec("default", false), Ok(None));
+        assert_eq!(normalize_color_spec("none", true), Ok(None));
+
+        // Hex formatting
+        assert_eq!(normalize_color_spec("1e1e2e", false), Ok(Some("#1e1e2e".to_string())));
+        assert_eq!(normalize_color_spec("#3b8eea", true), Ok(Some("#3b8eea".to_string())));
+
+        // Invalid values rejected
+        assert_eq!(normalize_color_spec("not_a_color", false), Err(InvalidColorSpec));
+        assert_eq!(normalize_color_spec("ansi_99", true), Err(InvalidColorSpec));
+
+        // Config validation accepts theme names for tabs and splits without warnings
+        let toml_valid = r##"
+            [tabs]
+            tab_accent_color = "purple"
+            [panes]
+            separator_color = "gray"
+            active_separator_color = "bright_blue"
+        "##;
+        let cfg: Config = toml::from_str(toml_valid).unwrap();
+        assert!(cfg.validate().is_empty());
+
+        let toml_invalid = r##"
+            [tabs]
+            tab_accent_color = "not_a_color"
+            [panes]
+            separator_color = "nope"
+            active_separator_color = "invalid_sep"
+        "##;
+        let cfg_bad: Config = toml::from_str(toml_invalid).unwrap();
+        assert_eq!(cfg_bad.validate().len(), 3);
     }
 }

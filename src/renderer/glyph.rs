@@ -1,6 +1,6 @@
 use super::atlas::{GlyphAtlas, GlyphRef};
 use crate::font::fallback::FallbackManager;
-use crate::font::loader::{is_nerd_font_or_pua, is_powerline};
+use crate::font::loader::{is_braille, is_nerd_font_or_pua, is_powerline};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use ahash::AHashMap;
 
@@ -227,7 +227,6 @@ impl GlyphCache {
         font_size: f32,
         font_scale_multiplier: f32,
     ) -> Self {
-        crate::font::fallback::warm_system_font_db_in_background();
         let font_set = crate::font::resolved::ResolvedFontSet::try_resolve_fast("Monospace")
             .unwrap_or_else(|_| crate::font::resolved::ResolvedFontSet {
                 regular: crate::font::resolved::ResolvedFont {
@@ -314,10 +313,7 @@ impl GlyphCache {
         font_scale_multiplier: f32,
         line_height: f32,
     ) -> Result<Self, crate::font::resolved::FontError> {
-        // 1. Kick off background pre-warming of system fontdb for fallbacks (zero main thread stall)
-        crate::font::fallback::warm_system_font_db_in_background();
-
-        // 2. Resolve primary font set (hits fast-path font cache in < 1ms)
+        // Resolve primary font set (hits fast-path font cache in < 1ms without loading system fontdb)
         let font_set = crate::font::resolved::ResolvedFontSet::try_resolve_fast(font_family)?;
         let font = font_set.regular.font.clone();
         let font_bold = if !font_set.bold.synthetic_bold {
@@ -666,6 +662,7 @@ impl GlyphCache {
         let is_pw_sep = is_powerline(base_codepoint);
         let is_nerd_or_pua = is_nerd_font_or_pua(base_codepoint);
         let is_box = crate::font::loader::is_box_drawing_or_pipe(base_codepoint);
+        let is_braille = is_braille(base_codepoint);
 
         let mut glyph_w = 0.0f32;
         let mut glyph_h = 0.0f32;
@@ -744,7 +741,9 @@ impl GlyphCache {
                     } else {
                         scale = PxScale::from(font_scale);
                     }
-                } else if !is_box {
+                } else if is_box || is_braille {
+                    scale = PxScale::from(font_scale);
+                } else {
                     let probe_scale = PxScale::from(font_scale);
                     let probe_glyph = char_glyph_id.with_scale(probe_scale);
                     if let Some(outlined) = char_font.outline_glyph(probe_glyph) {
@@ -772,14 +771,12 @@ impl GlyphCache {
                     } else {
                         scale = PxScale::from(font_scale);
                     }
-                } else {
-                    scale = PxScale::from(font_scale);
                 }
 
                 let scaled_font = char_font.as_scaled(scale);
                 font_adv = scaled_font.h_advance(char_glyph_id);
 
-                let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+                let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box && !is_braille;
                 let outlined_opt = crate::font::resolved::get_or_create_outlined_glyph(
                     char_font,
                     char_glyph_id,
@@ -803,7 +800,7 @@ impl GlyphCache {
             smallvec::SmallVec::new();
         if let Some(ref seq) = combining_seq {
             let comb_scale = PxScale::from(font_scale);
-            let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box;
+            let should_shear = is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box && !is_braille;
             for comb_ch in seq.chars().skip(1) {
                 let mut comb_font = &resolved_font.font;
                 let mut comb_glyph_id = comb_font.glyph_id(comb_ch);
@@ -838,7 +835,7 @@ impl GlyphCache {
             has_outline = true;
         }
 
-        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box {
+        let italic_bleed: u32 = if is_synthetic_italic && !is_nerd_or_pua && !is_pw_sep && !is_box && !is_braille {
             (self.baseline_y * crate::font::resolved::SYNTHETIC_ITALIC_SHEAR).ceil() as u32 + 2
         } else {
             0
@@ -856,6 +853,11 @@ impl GlyphCache {
             (xo, yo, 0.0)
         } else if is_box {
             (bounds_min_x, self.baseline_y + bounds_min_y, 0.0)
+        } else if is_braille {
+            let px = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
+            let xo = (px + bounds_min_x).max(0.0);
+            let yo = (self.baseline_y + bounds_min_y).max(0.0);
+            (xo, yo, px)
         } else {
             let px = ((base_target_width as f32 - font_adv) / 2.0).max(0.0);
             let xo = (px + bounds_min_x).max(0.0);
@@ -885,19 +887,23 @@ impl GlyphCache {
             max_needed_w = max_needed_w.max(cx + cm.width);
         }
 
-        let needed_w = if has_outline {
-            (max_needed_w.ceil() as u32).max(base_target_width)
-        } else {
-            base_target_width
-        };
-        let target_width = (needed_w + italic_bleed).min(base_target_width * 2);
-
         let width_mult = if is_nerd_or_pua && !is_pw_sep && glyph_w > base_target_width as f32 {
             ((glyph_w / base_target_width as f32).ceil() as u8).clamp(1, 2)
         } else if key.wide {
             2
         } else {
             1
+        };
+
+        let needed_w = if has_outline {
+            (max_needed_w.ceil() as u32).max(base_target_width)
+        } else {
+            base_target_width
+        };
+        let target_width = if key.wide || width_mult == 2 {
+            (needed_w + italic_bleed).min(base_target_width * 2)
+        } else {
+            base_target_width + italic_bleed
         };
 
         if let Some((w, h)) = color_extract {
@@ -924,8 +930,6 @@ impl GlyphCache {
                 offset: 0,
                 width: 0,
                 height: 0,
-                bearing_x: 0,
-                bearing_y: 0,
                 is_color: true,
                 width_mult,
             };
@@ -1024,8 +1028,6 @@ impl GlyphCache {
         self.atlas.insert_color(
             target_width as u16,
             self.cell_height as u16,
-            0,
-            0,
             width_mult,
             &self.scratch.color_pixels,
         )
@@ -1050,6 +1052,13 @@ impl GlyphCache {
         let cell_h = self.cell_height as i32;
         let tw = target_width as i32;
 
+        let (base_top, base_bottom) = if let Some(ref ol) = outlined {
+            let bh = ol.px_bounds().height();
+            (y_offset, y_offset + bh)
+        } else {
+            (self.baseline_y * 0.5, self.baseline_y)
+        };
+
         if let Some(outlined) = outlined {
             let alpha_slice = &mut self.scratch.alpha_pixels;
             outlined.draw(|gx, gy, alpha| {
@@ -1066,14 +1075,51 @@ impl GlyphCache {
             });
         }
 
+        let mut ceiling_y = base_top;
+        let mut floor_y = base_bottom.max(self.baseline_y);
+        let mut overlay_count = 0usize;
+
         for cm in combining_marks {
             let cx = if cm.is_negative_x {
                 (pad_x + eff_adv + cm.min_x).max(0.0)
             } else {
                 (pad_x + (eff_adv - cm.width) / 2.0).max(0.0)
             };
-            let cy = (self.baseline_y + cm.min_y)
-                .clamp(0.0, (self.cell_height as f32 - cm.height).max(0.0));
+            let cx = cx.clamp(0.0, (tw as f32 - cm.width).max(0.0));
+
+            let is_above = (cm.min_y + cm.height) <= 1.0 && cm.min_y < -2.0;
+            let is_below = cm.min_y >= -1.5 || (cm.min_y + cm.height) > 2.0;
+
+            let cy: f32;
+            if is_above {
+                if ceiling_y <= 0.0 {
+                    continue;
+                }
+                let natural_y = self.baseline_y + cm.min_y;
+                let desired_y = natural_y.min(ceiling_y - cm.height);
+                cy = desired_y.max(0.0);
+                ceiling_y = cy;
+            } else if is_below {
+                if floor_y >= cell_h as f32 {
+                    continue;
+                }
+                let natural_y = self.baseline_y + cm.min_y;
+                let desired_y = natural_y.max(floor_y);
+                let max_y = (cell_h as f32 - cm.height).max(0.0);
+                if desired_y > max_y && floor_y > base_bottom {
+                    continue;
+                }
+                cy = desired_y.min(max_y);
+                floor_y = (cy + cm.height).min(cell_h as f32);
+            } else {
+                if overlay_count >= 2 {
+                    continue;
+                }
+                overlay_count += 1;
+                cy = (self.baseline_y + cm.min_y)
+                    .clamp(0.0, (cell_h as f32 - cm.height).max(0.0));
+            }
+
             let alpha_slice = &mut self.scratch.alpha_pixels;
             cm.outlined.draw(|gx, gy, alpha| {
                 let px = (cx + gx as f32).round() as i32;
@@ -1092,8 +1138,6 @@ impl GlyphCache {
         self.atlas.insert_alpha(
             target_width as u16,
             self.cell_height as u16,
-            0,
-            0,
             width_mult,
             &self.scratch.alpha_pixels,
         )

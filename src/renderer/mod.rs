@@ -563,6 +563,11 @@ impl CpuRenderer {
         crate::diagnostics::ResizeStats::record_pane_state_clear();
         self.pane_states.clear();
         self.pane_states.shrink_to_fit();
+        self.scratch_resolved.clear();
+        self.scratch_resolved.shrink_to_fit();
+        if self.active_search_matches.is_empty() {
+            self.active_search_matches.shrink_to_fit();
+        }
         self.framebuffer.release_memory();
         self.prev_csd_hash = 0;
         self.last_target_ptr = 0;

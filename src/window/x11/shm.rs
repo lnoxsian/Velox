@@ -254,8 +254,12 @@ impl X11Framebuffer {
             return Ok(());
         }
 
-        // If existing SHM segment is large enough, retain it! Zero SysV calls, zero X11 roundtrips!
-        if self.has_shm && self.shm_seg.is_some() && layout.num_bytes <= self.shm_capacity_bytes {
+        // If existing SHM segment fits and isn't >2x oversized for the new dimensions, retain it.
+        if self.has_shm
+            && self.shm_seg.is_some()
+            && layout.num_bytes <= self.shm_capacity_bytes
+            && self.shm_capacity_bytes <= layout.alloc_bytes.saturating_mul(2)
+        {
             self.width = layout.width;
             self.height = layout.height;
             self.pixel_count = layout.pixel_count;

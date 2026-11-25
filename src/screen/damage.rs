@@ -54,6 +54,26 @@ impl DamageTracker {
         }
     }
 
+    /// Creates a zero-allocation dormant DamageTracker (used for inactive alternate screens).
+    pub fn new_empty() -> Self {
+        Self {
+            dirty_rows: Vec::new(),
+            dirty_indices: Vec::new(),
+            full_redraw: false,
+            row_damage: Vec::new(),
+            scrolled_lines: 0,
+        }
+    }
+
+    /// Releases all backing vector allocations back to the allocator.
+    pub fn release_memory(&mut self) {
+        self.full_redraw = false;
+        self.scrolled_lines = 0;
+        self.dirty_rows = Vec::new();
+        self.dirty_indices = Vec::new();
+        self.row_damage = Vec::new();
+    }
+
     pub fn resize(&mut self, rows: usize) {
         let r = rows.max(1);
         self.dirty_rows.resize(r, true);

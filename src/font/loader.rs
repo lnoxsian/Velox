@@ -75,14 +75,19 @@ pub fn is_emoji(c: char) -> bool {
     )
 }
 
+pub fn is_braille(c: char) -> bool {
+    matches!(c, '\u{2800}'..='\u{28ff}')
+}
+
 pub fn is_nerd_font_or_pua(c: char) -> bool {
     matches!(c,
         '\u{2300}'..='\u{24ff}' |   // Misc Technical, Control Pictures, OCR, Enclosed Alphanumerics
-        '\u{25a0}'..='\u{2bff}' |   // Geometric Shapes, Misc Symbols, Dingbats, Arrows (EXCLUDES 0x2500..=0x259F Box/Block)
+        '\u{25a0}'..='\u{27ff}' |   // Geometric Shapes, Misc Symbols, Dingbats, Arrows (EXCLUDES 0x2500..=0x259F Box/Block and 0x2800..=0x28FF Braille Patterns)
+        '\u{2900}'..='\u{2bff}' |   // Supplemental Arrows, Misc Math, Misc Symbols and Arrows
         '\u{e000}'..='\u{f8ff}' |   // Private Use Area (Nerd Fonts, Powerline, Devicons, FontAwesome, Octicons)
         '\u{f0000}'..='\u{ffffd}' | // Supplementary Private Use Area A
         '\u{100000}'..='\u{10fffd}' // Supplementary Private Use Area B
-    ) && !is_emoji(c)
+    ) && !is_emoji(c) && !is_braille(c)
 }
 
 pub fn is_powerline(c: char) -> bool {

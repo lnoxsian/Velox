@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write, stdout};
 use std::path::PathBuf;
-use velox::config::config::{Config, ConfigColors, TabBarVisibility};
+use velox::config::config::{
+    Config, ConfigColors, InvalidColorSpec, TabBarVisibility, normalize_color_spec,
+};
 use velox::config::defaults::default_config;
 use velox::config::loader::{config_path, load_from_str};
 
@@ -403,6 +405,29 @@ fn prompt_hex(prompt: &str, current: Option<&str>, allow_blank: bool) -> Option<
         println!(
             "\x1b[31m  [!] Invalid hex color! Please enter format #RRGGBB (e.g. #1e1e2e) or leave empty.\x1b[0m"
         );
+    }
+}
+
+fn prompt_color_spec(
+    prompt: &str,
+    current: Option<&str>,
+    allow_tab_accent: bool,
+) -> Option<String> {
+    loop {
+        let input = prompt_text(prompt, current);
+        match normalize_color_spec(&input, allow_tab_accent) {
+            Ok(val) => return val,
+            Err(InvalidColorSpec) => {
+                let extra = if allow_tab_accent {
+                    ", tab_accent"
+                } else {
+                    ""
+                };
+                println!(
+                    "\x1b[31m  [!] Invalid color! Enter a theme color (blue, purple, cyan, bright_blue, gray, default_fg, cursor{extra}), #RRGGBB hex, or blank for default.\x1b[0m"
+                );
+            }
+        }
     }
 }
 
@@ -1394,10 +1419,10 @@ fn menu_tabs_panes(config: &mut Config) -> Result<(), Box<dyn std::error::Error>
                     prompt_bool("Show '+' button to spawn new tabs?", t.show_new_tab_button);
             }
             5 => {
-                t.tab_accent_color = prompt_hex(
-                    "Tab accent color (hex or leave blank for default)",
+                t.tab_accent_color = prompt_color_spec(
+                    "Tab accent color (theme name e.g. blue/purple, #RRGGBB, or blank for default)",
                     t.tab_accent_color.as_deref(),
-                    true,
+                    false,
                 );
             }
             6 => {
@@ -1421,15 +1446,15 @@ fn menu_tabs_panes(config: &mut Config) -> Result<(), Box<dyn std::error::Error>
                     prompt_stepper_usize("Minimum rows per pane", p.minimum_rows, 1, 2, 40);
             }
             10 => {
-                p.separator_color = prompt_hex(
-                    "Inactive separator color (hex or blank)",
+                p.separator_color = prompt_color_spec(
+                    "Inactive separator color (theme name e.g. gray/blue/tab_accent, #RRGGBB, or blank)",
                     p.separator_color.as_deref(),
                     true,
                 );
             }
             11 => {
-                p.active_separator_color = prompt_hex(
-                    "Active separator color (hex or blank)",
+                p.active_separator_color = prompt_color_spec(
+                    "Active separator color (theme name e.g. blue/purple/tab_accent, #RRGGBB, or blank)",
                     p.active_separator_color.as_deref(),
                     true,
                 );
@@ -1597,5 +1622,17 @@ mod tests {
             assert!(colors.default_fg.is_some());
             assert!(colors.default_bg.is_some());
         }
+    }
+
+    #[test]
+    fn test_veloxcfg_color_spec_accepts_theme_values_and_hex() {
+        assert_eq!(normalize_color_spec("blue", false), Ok(Some("blue".to_string())));
+        assert_eq!(normalize_color_spec("purple", false), Ok(Some("purple".to_string())));
+        assert_eq!(normalize_color_spec("bright_purple", true), Ok(Some("bright_purple".to_string())));
+        assert_eq!(normalize_color_spec("tab_accent", true), Ok(Some("tab_accent".to_string())));
+        assert_eq!(normalize_color_spec("default_fg", true), Ok(Some("default_fg".to_string())));
+        assert_eq!(normalize_color_spec("#cba6f7", false), Ok(Some("#cba6f7".to_string())));
+        assert_eq!(normalize_color_spec("", false), Ok(None));
+        assert_eq!(normalize_color_spec("invalid_value", true), Err(InvalidColorSpec));
     }
 }

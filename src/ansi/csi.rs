@@ -407,6 +407,7 @@ pub fn handle_csi(
                                 active_grid.cursor.y = 0;
                             } else {
                                 terminal.set_alt_screen(false);
+                                terminal.release_alt_grid();
                                 terminal.restore_cursor();
                             }
                         }

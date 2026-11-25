@@ -341,6 +341,99 @@ impl Grid {
         }
     }
 
+    /// Creates a dormant Grid with zero heap backing for cells/damage until activated.
+    pub fn new_dormant(width: usize, height: usize, fg: Color, bg: Color) -> Self {
+        Self {
+            width,
+            height,
+            cells: Vec::new(),
+            row_wrapped: Vec::new(),
+            cursor: Cursor {
+                x: 0,
+                y: 0,
+                shape: crate::screen::cursor::CursorShape::Block,
+                visible: true,
+            },
+            saved_cursor: Cursor {
+                x: 0,
+                y: 0,
+                shape: crate::screen::cursor::CursorShape::Block,
+                visible: true,
+            },
+            saved_fg: fg,
+            saved_bg: bg,
+            saved_underline_color: None,
+            saved_flags: CellFlags::empty(),
+            saved_g0_charset: 0,
+            saved_g1_charset: 0,
+            saved_active_charset: 0,
+            damage: DamageTracker::new_empty(),
+            scrollback: {
+                let mut sb = Scrollback::new(0, false);
+                sb.default_bg = Some(bg);
+                sb
+            },
+            selection: Selection::new(),
+            default_fg: fg,
+            default_bg: bg,
+            scroll_region_top: 0,
+            scroll_region_bottom: height.saturating_sub(1),
+            scroll_offset: 0,
+            row_offset: 0,
+            hyperlinks: crate::hyperlink::osc8::HyperlinkStore::new(),
+            current_hyperlink: None,
+            tab_stops: TabStops::new(width),
+            auto_wrap: true,
+            insert_mode: false,
+            saved_origin_mode: false,
+            saved_auto_wrap: true,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_dormant(&self) -> bool {
+        self.cells.is_empty() && self.width > 0 && self.height > 0
+    }
+
+    /// Ensures the cell and damage backing storage is allocated to match `(self.width, self.height)`.
+    pub fn ensure_allocated(&mut self) {
+        let needed = self.width.saturating_mul(self.height);
+        if self.cells.len() == needed && self.row_wrapped.len() == self.height {
+            return;
+        }
+        let default_cell = Cell::new(' ', self.default_fg, self.default_bg, CellFlags::empty());
+        self.cells = vec![default_cell; needed];
+        self.row_wrapped = vec![false; self.height];
+        self.damage.resize(self.height);
+        self.row_offset = 0;
+        self.scroll_offset = 0;
+        self.scroll_region_top = 0;
+        self.scroll_region_bottom = self.height.saturating_sub(1);
+    }
+
+    /// Updates grid dimensions while keeping backing storage dormant (zero allocation).
+    pub fn resize_dormant(&mut self, new_w: usize, new_h: usize) {
+        self.width = new_w.max(1);
+        self.height = new_h.max(1);
+        self.scroll_region_top = 0;
+        self.scroll_region_bottom = self.height.saturating_sub(1);
+        self.tab_stops.resize(self.width);
+        self.cursor.x = self.cursor.x.min(self.width.saturating_sub(1));
+        self.cursor.y = self.cursor.y.min(self.height.saturating_sub(1));
+    }
+
+    /// Releases cell, row_wrapped, damage, and hyperlink backing memory back to the OS.
+    pub fn release_backing(&mut self) {
+        self.cells = Vec::new();
+        self.row_wrapped = Vec::new();
+        self.damage.release_memory();
+        self.selection.clear();
+        self.hyperlinks.clear();
+        self.current_hyperlink = None;
+        self.row_offset = 0;
+        self.scroll_offset = 0;
+    }
+
     #[inline(always)]
     pub fn physical_row(&self, y: usize) -> usize {
         if self.height == 0 {
