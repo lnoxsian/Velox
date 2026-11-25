@@ -32,6 +32,7 @@ pub fn default_config() -> Config {
             working_directory: None,
             live_config_reload: Some(true),
             hide_mouse_on_typing: Some(true),
+            confirm_on_exit: Some(true),
             csd_theme: None,
             decorations: None,
         },

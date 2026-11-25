@@ -205,6 +205,17 @@ fn send_mouse_report(
 }
 
 impl WindowState {
+    fn confirm_dialog_layout(&self) -> Option<crate::renderer::ConfirmDialogLayout> {
+        crate::renderer::ConfirmDialogLayout::compute(
+            self.window.width(),
+            self.window.height(),
+            self.renderer.tab_glyph_cache.cell_width,
+            self.renderer.tab_glyph_cache.cell_height,
+            self.window.csd_title_bar_height(),
+            self.banner_height() as u32,
+        )
+    }
+
     pub fn handle_cursor_moved(&mut self, position: (f64, f64), modifiers: ModifiersState) {
         self.mark_interaction();
         let position_changed = (position.0 - self.mouse_x).abs() > f64::EPSILON
@@ -433,6 +444,39 @@ impl WindowState {
         } else if self.hovered_csd_button.is_some() {
             self.hovered_csd_button = None;
             self.needs_redraw = true;
+        }
+
+        if self.confirm_exit_dialog.is_some() {
+            let (hover_yes, hover_no) = if let Some(l) = self.confirm_dialog_layout() {
+                (
+                    crate::renderer::ConfirmDialogLayout::rect_contains(
+                        l.yes_rect,
+                        self.mouse_x,
+                        self.mouse_y,
+                    ),
+                    crate::renderer::ConfirmDialogLayout::rect_contains(
+                        l.no_rect,
+                        self.mouse_x,
+                        self.mouse_y,
+                    ),
+                )
+            } else {
+                (false, false)
+            };
+
+            if let Some(ref mut dlg) = self.confirm_exit_dialog {
+                if dlg.hovered_yes != hover_yes || dlg.hovered_no != hover_no {
+                    dlg.hovered_yes = hover_yes;
+                    dlg.hovered_no = hover_no;
+                    self.needs_redraw = true;
+                }
+            }
+            if hover_yes || hover_no {
+                self.set_cursor_cached(crate::window::event::CursorIcon::Pointer);
+            } else {
+                self.set_cursor_cached(crate::window::event::CursorIcon::Default);
+            }
+            return;
         }
 
         let tab_bar_h = self.tab_bar_height() as f64;
@@ -674,6 +718,10 @@ impl WindowState {
                 return false;
             }
 
+            if self.confirm_exit_dialog.is_some() {
+                return false;
+            }
+
             let tab_bar_h = self.tab_bar_height() as f64;
 
             // Scroll over tab bar switches tabs
@@ -846,6 +894,35 @@ impl WindowState {
                     self.window.start_interactive_resize(edge);
                     return;
                 }
+            }
+
+            if self.confirm_exit_dialog.is_some() {
+                if button == MouseButton::Left {
+                    if let Some(layout) = self.confirm_dialog_layout() {
+                        if crate::renderer::ConfirmDialogLayout::rect_contains(
+                            layout.yes_rect,
+                            self.mouse_x,
+                            self.mouse_y,
+                        ) {
+                            self.confirm_window_close();
+                        } else if crate::renderer::ConfirmDialogLayout::rect_contains(
+                            layout.no_rect,
+                            self.mouse_x,
+                            self.mouse_y,
+                        ) || !crate::renderer::ConfirmDialogLayout::rect_contains(
+                            layout.box_rect,
+                            self.mouse_x,
+                            self.mouse_y,
+                        ) {
+                            self.dismiss_confirm_exit_dialog();
+                            self.set_cursor_cached(crate::window::event::CursorIcon::Default);
+                        }
+                    } else {
+                        self.dismiss_confirm_exit_dialog();
+                        self.set_cursor_cached(crate::window::event::CursorIcon::Default);
+                    }
+                }
+                return;
             }
 
             let tab_bar_h = self.tab_bar_height() as f64;
@@ -1197,6 +1274,11 @@ impl WindowState {
                     self.last_resize_instant = std::time::Instant::now();
                     self.renderer.damage.mark_all();
                 }
+                return;
+            }
+
+            if self.confirm_exit_dialog.is_some() {
+                self.mouse_down_pane_id = None;
                 return;
             }
 

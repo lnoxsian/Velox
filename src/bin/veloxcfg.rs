@@ -1100,6 +1100,14 @@ fn menu_window(config: &mut Config) -> Result<(), Box<dyn std::error::Error>> {
                     "OFF"
                 }
             ),
+            format!(
+                "Confirm Exit Running:  {}",
+                if w.confirm_on_exit.unwrap_or(true) {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+            ),
         ];
 
         if is_wayland {
@@ -1243,7 +1251,13 @@ fn menu_window(config: &mut Config) -> Result<(), Box<dyn std::error::Error>> {
                     w.hide_mouse_on_typing.unwrap_or(false),
                 ));
             }
-            14 if is_wayland => {
+            14 => {
+                w.confirm_on_exit = Some(prompt_bool(
+                    "Confirm before closing window when a program is running?",
+                    w.confirm_on_exit.unwrap_or(true),
+                ));
+            }
+            15 if is_wayland => {
                 let csd_opts = vec![
                     "Dark Preset".to_string(),
                     "Light Preset".to_string(),

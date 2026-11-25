@@ -17,6 +17,7 @@ pub struct Pane {
     pub last_cleanup: Instant,
     pub created_at: Instant,
     pub hold: bool,
+    pub has_exited: bool,
 }
 
 impl Pane {
@@ -40,6 +41,7 @@ impl Pane {
             last_cleanup: now,
             created_at: now,
             hold,
+            has_exited: false,
         }
     }
 
@@ -65,6 +67,7 @@ impl Pane {
             last_cleanup: now,
             created_at: now,
             hold,
+            has_exited: false,
         }
     }
 
@@ -82,7 +85,17 @@ impl Pane {
             last_cleanup: now,
             created_at: now,
             hold: false,
+            has_exited: false,
         }
+    }
+
+    /// Returns the name of any running non-shell program or child job in this pane,
+    /// or `None` if the pane is at an idle shell or has already exited.
+    pub fn running_program_name(&self, shell_path: &str) -> Option<String> {
+        if self.has_exited {
+            return None;
+        }
+        self.pty_master.running_program_name(shell_path)
     }
 
     /// Refresh foreground process / OSC title for this pane.

@@ -158,6 +158,14 @@ pub struct AlertBanner {
     pub dismiss_hovered: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmExitDialog {
+    pub summary: String,
+    pub selected_yes: bool,
+    pub hovered_yes: bool,
+    pub hovered_no: bool,
+}
+
 pub struct WindowState {
     pub window_id: WindowId,
     pub config: Config,
@@ -226,6 +234,8 @@ pub struct WindowState {
     pub pressed_csd_button: Option<crate::window::csd::CsdButtonType>,
     pub resize_state: ResizeState,
     pub search: crate::screen::search::SearchState,
+    pub confirm_exit_dialog: Option<ConfirmExitDialog>,
+    pub should_close: bool,
 }
 
 impl Drop for WindowState {
@@ -329,6 +339,8 @@ impl WindowState {
                 ..Default::default()
             },
             search: crate::screen::search::SearchState::new(),
+            confirm_exit_dialog: None,
+            should_close: false,
         }
     }
 
@@ -374,6 +386,96 @@ impl WindowState {
 
     pub fn prune_idle_fallbacks(&mut self, max_idle: std::time::Duration) -> usize {
         self.renderer.prune_idle_fallbacks(max_idle)
+    }
+
+    /// Collects up to 3 distinct running program names across all tabs and panes in this window.
+    /// Returns `None` if all panes are idle shells or have already exited.
+    pub fn running_processes_summary(&self) -> Option<String> {
+        let mut names: smallvec::SmallVec<[String; 4]> = smallvec::SmallVec::new();
+        let mut extra_count = 0usize;
+
+        for tab in &self.tabs {
+            for pane in tab.tree.panes() {
+                if let Some(name) = pane.running_program_name(&self.shell_path) {
+                    if !names.iter().any(|existing| existing == &name) {
+                        if names.len() < 3 {
+                            names.push(name);
+                        } else {
+                            extra_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if names.is_empty() {
+            return None;
+        }
+
+        let mut summary = names.join(", ");
+        if extra_count > 0 {
+            use std::fmt::Write;
+            let _ = write!(summary, " (+{} more)", extra_count);
+        }
+        Some(summary)
+    }
+
+    /// Evaluates whether the window can close immediately or needs user confirmation.
+    /// Returns `true` if the window should close immediately, `false` if confirmation dialog was opened.
+    pub fn request_window_close(&mut self) -> bool {
+        if !self.config.confirm_on_exit() {
+            self.should_close = true;
+            return true;
+        }
+
+        if self.confirm_exit_dialog.is_some() {
+            return false;
+        }
+
+        if let Some(summary) = self.running_processes_summary() {
+            self.confirm_exit_dialog = Some(ConfirmExitDialog {
+                summary,
+                selected_yes: false,
+                hovered_yes: false,
+                hovered_no: false,
+            });
+            self.needs_redraw = true;
+            false
+        } else {
+            self.should_close = true;
+            true
+        }
+    }
+
+    pub fn dismiss_confirm_exit_dialog(&mut self) {
+        if self.confirm_exit_dialog.take().is_some() {
+            self.renderer.damage.mark_all();
+            self.content_dirty = true;
+            self.tab_bar_dirty = true;
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn confirm_window_close(&mut self) {
+        self.confirm_exit_dialog = None;
+        self.should_close = true;
+    }
+
+    pub fn refresh_confirm_exit_dialog(&mut self) {
+        if self.confirm_exit_dialog.is_none() {
+            return;
+        }
+        match self.running_processes_summary() {
+            Some(summary) => {
+                if let Some(ref mut dlg) = self.confirm_exit_dialog
+                    && dlg.summary != summary
+                {
+                    dlg.summary = summary;
+                    self.needs_redraw = true;
+                }
+            }
+            None => self.dismiss_confirm_exit_dialog(),
+        }
     }
 
     #[inline(always)]
@@ -1676,6 +1778,19 @@ impl WindowState {
             });
         }
 
+        if let Some(ref dialog) = self.confirm_exit_dialog {
+            let banner_h = self.banner_height() as u32;
+            if let Some(dialog_damage) = self
+                .renderer
+                .render_confirm_exit_dialog(dialog, banner_h)
+            {
+                final_damage = Some(match final_damage {
+                    Some(dmg) => dmg.union(dialog_damage),
+                    None => dialog_damage,
+                });
+            }
+        }
+
         self.window.present_frame(
             self.renderer.framebuffer.as_slice(),
             self.renderer.viewport_width as usize,
@@ -2173,6 +2288,8 @@ impl App {
                 ..Default::default()
             },
             search: crate::screen::search::SearchState::new(),
+            confirm_exit_dialog: None,
+            should_close: false,
         };
 
         window_state.window.set_opacity(window_state.opacity);
@@ -2342,6 +2459,7 @@ impl App {
                 {
                     let tab = &mut ws.tabs[tab_idx];
                     if let Some(pane) = tab.tree.find_pane_mut(pane_id) {
+                        pane.has_exited = true;
                         if pane.hold {
                             let title = "[Process exited]";
                             pane.current_title = title.to_string();
@@ -2353,10 +2471,14 @@ impl App {
                             }
                             ws.tab_bar_dirty = true;
                             ws.needs_redraw = true;
+                            ws.refresh_confirm_exit_dialog();
                             return;
                         }
                     }
                     should_remove_window = ws.close_pane_in_tab(tab_id, pane_id);
+                    if !should_remove_window {
+                        ws.refresh_confirm_exit_dialog();
+                    }
                 }
                 if should_remove_window {
                     if let Some(ws) = self.windows.remove(&window_id) {
@@ -2506,8 +2628,10 @@ impl App {
                 while let Some(event) = ws.window.poll_event() {
                     match event {
                         PlatformEvent::CloseRequested => {
-                            closed_windows.push(window_id);
-                            break;
+                            if ws.request_window_close() {
+                                closed_windows.push(window_id);
+                                break;
+                            }
                         }
                         PlatformEvent::ModifiersChanged(mods) => {
                             let old_mods = self.modifiers;
@@ -2582,6 +2706,10 @@ impl App {
 
                 if pending_resize.is_some() {
                     ws.apply_pending_resize();
+                }
+
+                if ws.should_close && !closed_windows.contains(&window_id) {
+                    closed_windows.push(window_id);
                 }
             }
 
@@ -3398,5 +3526,113 @@ mod tests {
         assert!(ws.base_cell_width > orig_cw);
         assert!(ws.renderer.damage.full_redraw);
         assert!(ws.needs_redraw);
+    }
+
+    #[test]
+    fn test_request_window_close_idle_closes_immediately() {
+        let mut ws = WindowState::create_test_window_state(Arc::new(PtyMaster::dummy()), 80, 24);
+        assert!(ws.request_window_close());
+        assert!(ws.should_close);
+        assert!(ws.confirm_exit_dialog.is_none());
+    }
+
+    #[test]
+    fn test_confirm_exit_dialog_lifecycle_and_keyboard() {
+        use crate::window::event::{Key, ModifiersState, NamedKey};
+
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .expect("failed to spawn /bin/sleep");
+        let devnull = std::fs::File::open("/dev/null").expect("failed to open /dev/null");
+        let pty = Arc::new(PtyMaster::new(
+            std::os::fd::IntoRawFd::into_raw_fd(devnull),
+            Some(child.id()),
+        ));
+        for _ in 0..50 {
+            if pty.running_program_name("/bin/bash").as_deref() == Some("sleep") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut ws = WindowState::create_test_window_state(pty, 80, 24);
+
+        // Trigger CloseRequested logic
+        assert!(!ws.request_window_close());
+        assert!(!ws.should_close);
+        let dlg = ws
+            .confirm_exit_dialog
+            .as_ref()
+            .expect("confirm_exit_dialog should be open");
+        assert!(!dlg.selected_yes, "No must be selected by default");
+        assert!(dlg.summary.contains("sleep"), "summary was: {}", dlg.summary);
+
+        // Pressing Enter with [No] selected dismisses without closing
+        ws.handle_keyboard_input(&Key::Named(NamedKey::Enter), None, ModifiersState::default());
+        assert!(ws.confirm_exit_dialog.is_none());
+        assert!(!ws.should_close);
+
+        // Re-open and test repeated CloseRequested keeps prompt open
+        assert!(!ws.request_window_close());
+        assert!(!ws.request_window_close());
+        assert!(ws.confirm_exit_dialog.is_some());
+
+        // ArrowRight selects [Yes], Escape cancels
+        ws.handle_keyboard_input(
+            &Key::Named(NamedKey::ArrowRight),
+            None,
+            ModifiersState::default(),
+        );
+        assert!(ws.confirm_exit_dialog.as_ref().unwrap().selected_yes);
+        ws.handle_keyboard_input(
+            &Key::Named(NamedKey::Escape),
+            None,
+            ModifiersState::default(),
+        );
+        assert!(ws.confirm_exit_dialog.is_none());
+        assert!(!ws.should_close);
+
+        // Re-open and confirm with 'y'
+        assert!(!ws.request_window_close());
+        ws.handle_keyboard_input(
+            &Key::Character("y".into()),
+            Some("y"),
+            ModifiersState::default(),
+        );
+        assert!(ws.confirm_exit_dialog.is_none());
+        assert!(ws.should_close);
+
+        // Test config toggle confirm_on_exit = false bypasses prompt
+        ws.should_close = false;
+        ws.config.window.confirm_on_exit = Some(false);
+        assert!(ws.request_window_close());
+        assert!(ws.should_close);
+        assert!(ws.confirm_exit_dialog.is_none());
+
+        // Exited (--hold) pane must never trigger prompt even when enabled
+        ws.should_close = false;
+        ws.config.window.confirm_on_exit = Some(true);
+        let active_pane_id = ws.active_tab().active_pane_id;
+        ws.active_tab_mut()
+            .tree
+            .find_pane_mut(active_pane_id)
+            .unwrap()
+            .has_exited = true;
+        assert!(ws.request_window_close());
+        assert!(ws.should_close);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // Exited child + refresh_confirm_exit_dialog auto-dismisses open prompt
+        ws.should_close = false;
+        ws.confirm_exit_dialog = Some(ConfirmExitDialog {
+            summary: "sleep".to_string(),
+            selected_yes: false,
+            hovered_yes: false,
+            hovered_no: false,
+        });
+        ws.refresh_confirm_exit_dialog();
+        assert!(ws.confirm_exit_dialog.is_none());
     }
 }

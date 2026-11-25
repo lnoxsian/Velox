@@ -9,6 +9,70 @@ pub struct SeparatorRenderData {
     pub is_hovered: bool,
     pub is_dragging: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfirmDialogLayout {
+    pub box_rect: (u32, u32, u32, u32),
+    pub yes_rect: (u32, u32, u32, u32),
+    pub no_rect: (u32, u32, u32, u32),
+}
+
+impl ConfirmDialogLayout {
+    pub fn compute(
+        viewport_w: u32,
+        viewport_h: u32,
+        tab_cw: u32,
+        tab_ch: u32,
+        csd_height: u32,
+        banner_h: u32,
+    ) -> Option<Self> {
+        let cw = tab_cw.max(1);
+        let ch = tab_ch.max(1);
+        let padding_v = 4u32;
+        let box_h = (ch + padding_v * 2).max(26);
+        let avail_h = viewport_h
+            .saturating_sub(csd_height)
+            .saturating_sub(banner_h);
+        if viewport_w < 120 || avail_h < box_h {
+            return None;
+        }
+
+        let box_w = viewport_w;
+        let box_x = 0u32;
+        let box_y = viewport_h
+            .saturating_sub(banner_h)
+            .saturating_sub(box_h);
+
+        let right_pad = 10u32;
+        let use_compact = viewport_w < (cw * 28 + right_pad * 2);
+        let (yes_chars, gap_chars, no_chars) = if use_compact {
+            (3u32, 1u32, 3u32) // "[Y]"  "[N]"
+        } else {
+            (7u32, 2u32, 6u32) // "[Y] Yes"  "[N] No"
+        };
+        let yes_w = yes_chars * cw;
+        let no_w = no_chars * cw;
+        let gap = gap_chars * cw;
+
+        let no_x = box_w.saturating_sub(right_pad + no_w);
+        let yes_x = no_x.saturating_sub(gap + yes_w);
+
+        Some(Self {
+            box_rect: (box_x, box_y, box_w, box_h),
+            yes_rect: (yes_x, box_y, yes_w, box_h),
+            no_rect: (no_x, box_y, no_w, box_h),
+        })
+    }
+
+    #[inline(always)]
+    pub fn rect_contains(rect: (u32, u32, u32, u32), mx: f64, my: f64) -> bool {
+        let (rx, ry, rw, rh) = rect;
+        mx >= rx as f64
+            && mx < (rx + rw) as f64
+            && my >= ry as f64
+            && my < (ry + rh) as f64
+    }
+}
 pub mod atlas;
 pub mod backend;
 pub mod color;
@@ -1681,6 +1745,128 @@ impl CpuRenderer {
         })
     }
 
+    pub fn render_confirm_exit_dialog(
+        &mut self,
+        dialog: &crate::app::app::ConfirmExitDialog,
+        banner_h: u32,
+    ) -> Option<crate::window::DamageRect> {
+        let tab_cw = self.tab_glyph_cache.cell_width.max(1);
+        let tab_ch = self.tab_glyph_cache.cell_height.max(1);
+        let layout = ConfirmDialogLayout::compute(
+            self.viewport_width,
+            self.viewport_height,
+            tab_cw,
+            tab_ch,
+            self.csd_height,
+            banner_h,
+        )?;
+
+        let (bx, by, bw, bh) = layout.box_rect;
+        let bg_color = self.palette.default_bg;
+        let text_color = self.palette.default_fg;
+        let label_color = self.palette.tab_inactive_fg;
+        let border_color = if self.palette.tab_accent != self.palette.default_bg {
+            self.palette.tab_accent
+        } else {
+            self.palette.ansi_colors[11]
+        };
+
+        // 1. Bottom bar background & border matching Find bar and AlertBanner
+        self.framebuffer.fill_span(bx, by, bw, bh, bg_color);
+        self.framebuffer
+            .draw_rect_border(bx, by, bw, bh, border_color);
+
+        // 2. Prompt label + running process summary on the left
+        let padding_h = 10u32;
+        let char_baseline_y = by + (bh.saturating_sub(tab_ch)) / 2;
+        let mut cur_x = bx + padding_h;
+        let max_text_right = layout.yes_rect.0.saturating_sub(padding_h);
+        let total_avail_chars = (max_text_right.saturating_sub(cur_x) / tab_cw) as usize;
+
+        let prefix = "Quit? ";
+        let prefix_chars = prefix.chars().count();
+        if total_avail_chars > prefix_chars + 10 {
+            for ch in prefix.chars() {
+                self.blit_tab_char(ch, cur_x, char_baseline_y, label_color);
+                cur_x += tab_cw;
+            }
+
+            let mut msg_buf = [0u8; 160];
+            let msg_str = {
+                use std::io::Write;
+                let mut slice = &mut msg_buf[..];
+                let _ = write!(slice, "Running: {}", dialog.summary);
+                let written = 160 - slice.len();
+                std::str::from_utf8(&msg_buf[..written]).unwrap_or("Running process")
+            };
+            let remaining_chars = total_avail_chars.saturating_sub(prefix_chars);
+            self.blit_truncated_text(
+                msg_str,
+                cur_x,
+                char_baseline_y,
+                remaining_chars,
+                tab_cw,
+                text_color,
+            );
+        } else if total_avail_chars > prefix_chars {
+            for ch in prefix.chars() {
+                self.blit_tab_char(ch, cur_x, char_baseline_y, label_color);
+                cur_x += tab_cw;
+            }
+            let remaining_chars = total_avail_chars.saturating_sub(prefix_chars);
+            self.blit_truncated_text(
+                &dialog.summary,
+                cur_x,
+                char_baseline_y,
+                remaining_chars,
+                tab_cw,
+                text_color,
+            );
+        } else if total_avail_chars > 0 {
+            self.blit_truncated_text(
+                "Quit?",
+                cur_x,
+                char_baseline_y,
+                total_avail_chars,
+                tab_cw,
+                label_color,
+            );
+        }
+
+        // 3. Minimal text-only key actions on the right (no buttons)
+        let (yes_label, no_label) = if layout.yes_rect.2 >= tab_cw * 7 {
+            ("[Y] Yes", "[N] No")
+        } else {
+            ("[Y]", "[N]")
+        };
+        let yes_color = if dialog.selected_yes || dialog.hovered_yes {
+            self.palette.ansi_colors[9]
+        } else {
+            label_color
+        };
+        let no_color = if !dialog.selected_yes || dialog.hovered_no {
+            text_color
+        } else {
+            label_color
+        };
+
+        for (i, ch) in yes_label.chars().enumerate() {
+            let px = layout.yes_rect.0 + (i as u32) * tab_cw;
+            self.blit_tab_char(ch, px, char_baseline_y, yes_color);
+        }
+        for (i, ch) in no_label.chars().enumerate() {
+            let px = layout.no_rect.0 + (i as u32) * tab_cw;
+            self.blit_tab_char(ch, px, char_baseline_y, no_color);
+        }
+
+        Some(crate::window::DamageRect {
+            x: bx,
+            y: by,
+            width: bw,
+            height: bh,
+        })
+    }
+
     fn render_separators(
         &mut self,
         separators: &[SeparatorRenderData],
@@ -2807,5 +2993,52 @@ mod tests {
             redrawn2,
             "CSD title bar must be redrawn so it never disappears after full damage"
         );
+    }
+
+    #[test]
+    fn test_confirm_dialog_layout_and_render() {
+        assert!(ConfirmDialogLayout::compute(100, 100, 8, 16, 0, 0).is_none());
+
+        let layout = ConfirmDialogLayout::compute(800, 600, 8, 16, 30, 26)
+            .expect("800x600 viewport must fit confirm bottom bar");
+        let (bx, by, bw, bh) = layout.box_rect;
+        let (yx, yy, yw, yh) = layout.yes_rect;
+        let (nx, ny, nw, nh) = layout.no_rect;
+
+        assert_eq!(bx, 0);
+        assert_eq!(bw, 800);
+        assert_eq!(bh, 26);
+        assert_eq!(by, 600 - 26 - bh, "bar must sit directly above alert banner");
+        assert!(yx >= bx && yx + yw <= bx + bw);
+        assert!(nx >= bx && nx + nw <= bx + bw);
+        assert!(yy >= by && yy + yh <= by + bh);
+        assert!(ny >= by && ny + nh <= by + bh);
+        assert!(yx + yw < nx, "Yes and No buttons must not overlap");
+
+        let theme = Theme::default();
+        let mut renderer = CpuRenderer::new("monospace", 14.0, 1.0, &theme, 800, 600, true, 1.0);
+        let expected = ConfirmDialogLayout::compute(
+            800,
+            600,
+            renderer.tab_glyph_cache.cell_width,
+            renderer.tab_glyph_cache.cell_height,
+            renderer.csd_height,
+            0,
+        )
+        .expect("renderer tab glyph metrics must fit confirm bottom bar");
+        assert_eq!(expected.box_rect.1, 600 - expected.box_rect.3);
+        let dialog = crate::app::app::ConfirmExitDialog {
+            summary: "sleep (tab 1)".to_string(),
+            selected_yes: false,
+            hovered_yes: false,
+            hovered_no: false,
+        };
+        let dmg = renderer
+            .render_confirm_exit_dialog(&dialog, 0)
+            .expect("render_confirm_exit_dialog should return bottom bar damage rect");
+        assert_eq!(dmg.x, expected.box_rect.0);
+        assert_eq!(dmg.y, expected.box_rect.1);
+        assert_eq!(dmg.width, expected.box_rect.2);
+        assert_eq!(dmg.height, expected.box_rect.3);
     }
 }

@@ -18,6 +18,44 @@ impl WindowState {
             modifiers
         );
 
+        // ── 0. Confirm Exit Modal Keyboard Handling ───────────────────────────
+        if self.confirm_exit_dialog.is_some() {
+            let no_mods =
+                !modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
+            match logical_key {
+                Key::Character(s) if no_mods && s.eq_ignore_ascii_case("y") => {
+                    self.confirm_window_close();
+                }
+                Key::Character(s) if no_mods && s.eq_ignore_ascii_case("n") => {
+                    self.dismiss_confirm_exit_dialog();
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.dismiss_confirm_exit_dialog();
+                }
+                Key::Named(NamedKey::ArrowLeft)
+                | Key::Named(NamedKey::ArrowRight)
+                | Key::Named(NamedKey::Tab) => {
+                    if let Some(ref mut dlg) = self.confirm_exit_dialog {
+                        dlg.selected_yes = !dlg.selected_yes;
+                    }
+                    self.needs_redraw = true;
+                }
+                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                    let confirm_yes = self
+                        .confirm_exit_dialog
+                        .as_ref()
+                        .is_some_and(|d| d.selected_yes);
+                    if confirm_yes {
+                        self.confirm_window_close();
+                    } else {
+                        self.dismiss_confirm_exit_dialog();
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
+
         // ── 0.5 In-Terminal Search Overlay Keyboard Handling ──────────────────
         if self.search.is_open {
             if let Key::Named(NamedKey::Escape) = logical_key {

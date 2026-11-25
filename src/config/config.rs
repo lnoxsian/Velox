@@ -80,6 +80,8 @@ pub struct WindowConfig {
     #[serde(default)]
     pub hide_mouse_on_typing: Option<bool>,
     #[serde(default)]
+    pub confirm_on_exit: Option<bool>,
+    #[serde(default)]
     pub csd_theme: Option<String>,
     #[serde(default)]
     pub decorations: Option<WindowDecorationsConfig>,
@@ -615,6 +617,10 @@ impl Config {
         self.window
             .hide_mouse_on_typing
             .or(self.hide_mouse_on_typing_legacy)
+    }
+
+    pub fn confirm_on_exit(&self) -> bool {
+        self.window.confirm_on_exit.unwrap_or(true)
     }
 
     pub fn live_config_reload(&self) -> bool {
