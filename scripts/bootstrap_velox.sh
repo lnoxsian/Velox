@@ -2,9 +2,13 @@
 # ==============================================================================
 # Velox Terminal Emulator - Developer Environment Bootstrap Script
 # ==============================================================================
-# Installs and validates all development tools, compilers, system libraries,
-# Python dependencies, asset generators, profiling tools, and packaging utilities
-# needed to build, test, optimize, package, and install Velox.
+# Installs and validates all development tools, compilers, desktop integration
+# utilities, font packages, Python dependencies, asset generators, profiling tools,
+# and packaging utilities needed to build, test, optimize, package, and install Velox.
+#
+# Note: Velox is written in pure Rust and requires ZERO C graphics/windowing/keyboard
+# library runtime or development dependencies (pure-Rust X11 via x11rb, pure-Rust
+# Wayland via wayland-client, and pure-Rust keyboard mapping via kbvm).
 #
 # Supported Distributions:
 #   - Debian, Ubuntu, Linux Mint, Pop!_OS (apt)
@@ -43,11 +47,22 @@ DRY_RUN=0
 print_banner() {
     cat <<EOF
 ${CYAN}==============================================================================
-   __   __    _           _____                   _             _
-   \ \ / /___| | _____  _|_   _|__ _ __ _ __ ___ (_)_ __   __ _| |
-    \ V // _ \ |/ _ \ \/ / | |/ _ \ '__| '_ \` _ \| | '_ \ / _\` | |
-     \_/ \___/_|\___/_/\_\ |_|\___/_|  |_| |_| |_|_|_| |_|\__,_|_|
-
+                 
+                 ┌──────────────────────────────────────────┐
+                 | VELOX               VELOX                |
+                 | VELOX               VELOX                |
+                 | VELOX               VELOX                |
+                 |      VELOX     VELOX     VELOX           |
+                 |      VELOX     VELOX     VELOX           |
+                 |      VELOX     VELOX     VELOX           |
+                 |      VELOX     VELOX     VELOX           |
+                 |      VELOX     VELOX     VELOX           |
+                 |      VELOX     VELOX     VELOX           |
+                 |           VELOX               VELOXVELOX |
+                 |           VELOX               VELOXVELOX |
+                 |           VELOX               VELOXVELOX |
+                 └──────────────────────────────────────────┘
+             
                     Velox Development Environment Bootstrap
 ==============================================================================${NC}
 EOF
@@ -188,21 +203,18 @@ get_packages_for_manager() {
                 "gcc"
                 "binutils"
             )
-            GRAPHICS_PKGS=(
-                "libxkbcommon0"
-                "libxkbcommon-dev"
-                "wayland-protocols"
-                "libwayland-dev"
-                "libx11-dev"
-                "libxcb1-dev"
-                "libx11-xcb-dev"
-            )
             DESKTOP_PKGS=(
                 "desktop-file-utils"
                 "gtk-update-icon-cache"
                 "hicolor-icon-theme"
                 "shared-mime-info"
                 "xdg-utils"
+                "libglib2.0-bin"
+            )
+            FONT_PKGS=(
+                "fontconfig"
+                "fonts-dejavu-core"
+                "fonts-noto-color-emoji"
             )
             PYTHON_PKGS=(
                 "python3"
@@ -216,11 +228,10 @@ get_packages_for_manager() {
                 "util-linux"
                 "bc"
                 "procps"
-                "fonts-dejavu-core"
-                "fonts-noto-color-emoji"
             )
             PACKAGING_PKGS=(
                 "dpkg-dev"
+                "fakeroot"
                 "zstd"
                 "tar"
                 "xz-utils"
@@ -235,20 +246,18 @@ get_packages_for_manager() {
                 "pkgconf-pkg-config"
                 "binutils"
             )
-            GRAPHICS_PKGS=(
-                "libxkbcommon"
-                "libxkbcommon-devel"
-                "wayland-devel"
-                "wayland-protocols-devel"
-                "libX11-devel"
-                "libxcb-devel"
-            )
             DESKTOP_PKGS=(
                 "desktop-file-utils"
                 "gtk3"
                 "hicolor-icon-theme"
                 "shared-mime-info"
                 "xdg-utils"
+                "glib2"
+            )
+            FONT_PKGS=(
+                "fontconfig"
+                "dejavu-sans-mono-fonts"
+                "google-noto-color-emoji-fonts"
             )
             PYTHON_PKGS=(
                 "python3"
@@ -262,8 +271,6 @@ get_packages_for_manager() {
                 "util-linux"
                 "bc"
                 "procps-ng"
-                "dejavu-sans-mono-fonts"
-                "google-noto-color-emoji-fonts"
             )
             PACKAGING_PKGS=(
                 "rpm-build"
@@ -281,19 +288,18 @@ get_packages_for_manager() {
                 "gcc"
                 "binutils"
             )
-            GRAPHICS_PKGS=(
-                "libxkbcommon"
-                "wayland"
-                "wayland-protocols"
-                "libx11"
-                "libxcb"
-            )
             DESKTOP_PKGS=(
                 "desktop-file-utils"
                 "gtk-update-icon-cache"
                 "hicolor-icon-theme"
                 "shared-mime-info"
                 "xdg-utils"
+                "glib2"
+            )
+            FONT_PKGS=(
+                "fontconfig"
+                "ttf-dejavu"
+                "noto-fonts-emoji"
             )
             PYTHON_PKGS=(
                 "python"
@@ -307,8 +313,6 @@ get_packages_for_manager() {
                 "util-linux"
                 "bc"
                 "procps-ng"
-                "ttf-dejavu"
-                "noto-fonts-emoji"
             )
             PACKAGING_PKGS=(
                 "zstd"
@@ -325,19 +329,18 @@ get_packages_for_manager() {
                 "gcc"
                 "binutils"
             )
-            GRAPHICS_PKGS=(
-                "libxkbcommon-devel"
-                "libwayland-client-devel"
-                "wayland-protocols-devel"
-                "libX11-devel"
-                "libxcb-devel"
-            )
             DESKTOP_PKGS=(
                 "desktop-file-utils"
                 "gtk3-tools"
                 "hicolor-icon-theme"
                 "shared-mime-info"
                 "xdg-utils"
+                "glib2-tools"
+            )
+            FONT_PKGS=(
+                "fontconfig"
+                "dejavu-fonts"
+                "noto-coloremoji-fonts"
             )
             PYTHON_PKGS=(
                 "python3"
@@ -351,8 +354,6 @@ get_packages_for_manager() {
                 "util-linux"
                 "bc"
                 "procps"
-                "dejavu-fonts"
-                "noto-coloremoji-fonts"
             )
             PACKAGING_PKGS=(
                 "rpm-build"
@@ -364,8 +365,8 @@ get_packages_for_manager() {
 
         apk)
             CORE_PKGS=("build-base" "pkgconf" "make" "binutils")
-            GRAPHICS_PKGS=("libxkbcommon-dev" "wayland-dev" "wayland-protocols" "libx11-dev" "libxcb-dev")
-            DESKTOP_PKGS=("desktop-file-utils" "gtk-update-icon-cache" "hicolor-icon-theme" "shared-mime-info")
+            DESKTOP_PKGS=("desktop-file-utils" "gtk-update-icon-cache" "hicolor-icon-theme" "shared-mime-info" "xdg-utils" "glib")
+            FONT_PKGS=("fontconfig" "font-dejavu" "font-noto-emoji")
             PYTHON_PKGS=("python3" "py3-pip" "py3-pillow" "librsvg" "optipng")
             BENCH_PKGS=("util-linux" "bc" "procps")
             PACKAGING_PKGS=("zstd" "tar" "xz")
@@ -373,8 +374,8 @@ get_packages_for_manager() {
 
         xbps)
             CORE_PKGS=("base-devel" "pkg-config" "make" "binutils")
-            GRAPHICS_PKGS=("libxkbcommon-devel" "wayland-devel" "wayland-protocols" "libX11-devel" "libxcb-devel")
-            DESKTOP_PKGS=("desktop-file-utils" "gtk-update-icon-cache" "hicolor-icon-theme" "shared-mime-info")
+            DESKTOP_PKGS=("desktop-file-utils" "gtk-update-icon-cache" "hicolor-icon-theme" "shared-mime-info" "xdg-utils" "glib")
+            FONT_PKGS=("fontconfig" "dejavu-fonts" "noto-fonts-emoji")
             PYTHON_PKGS=("python3" "python3-pip" "python3-Pillow" "librsvg" "optipng")
             BENCH_PKGS=("util-linux" "bc" "procps-ng")
             PACKAGING_PKGS=("zstd" "tar" "xz")
@@ -382,8 +383,8 @@ get_packages_for_manager() {
 
         *)
             CORE_PKGS=()
-            GRAPHICS_PKGS=()
             DESKTOP_PKGS=()
+            FONT_PKGS=()
             PYTHON_PKGS=()
             BENCH_PKGS=()
             PACKAGING_PKGS=()
@@ -514,7 +515,7 @@ main() {
 
     get_packages_for_manager
 
-    local all_pkgs=("${CORE_PKGS[@]}" "${GRAPHICS_PKGS[@]}" "${DESKTOP_PKGS[@]}" "${PYTHON_PKGS[@]}" "${BENCH_PKGS[@]}" "${PACKAGING_PKGS[@]}")
+    local all_pkgs=("${CORE_PKGS[@]}" "${DESKTOP_PKGS[@]}" "${FONT_PKGS[@]}" "${PYTHON_PKGS[@]}" "${BENCH_PKGS[@]}" "${PACKAGING_PKGS[@]}")
     local missing_pkgs=()
 
     echo
@@ -577,10 +578,13 @@ main() {
         "gcc"
         "pkg-config"
         "python3"
+        "gsettings"
+        "xdg-open"
         "update-desktop-database"
         "gtk-update-icon-cache"
         "taskset"
         "dpkg-deb"
+        "fakeroot"
         "zstd"
     )
 

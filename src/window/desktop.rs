@@ -325,15 +325,116 @@ pub fn detect_gtk_theme_name() -> Option<String> {
     None
 }
 
-/// Fast, non-blocking detection of desktop cursor theme and size.
-/// Checks environment, flat GTK files, and icon index files in < 0.1ms before calling `gsettings`.
+/// Reads user-configured cursor theme from `~/.icons/default/index.theme` or `~/.local/share/icons/default/index.theme`.
+pub fn read_user_icon_default_theme() -> Option<String> {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = Path::new(&home);
+        let candidates = [
+            p.join(".icons/default/index.theme"),
+            p.join(".local/share/icons/default/index.theme"),
+        ];
+        for path in candidates {
+            if let Ok(content) = fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    let lower = trimmed.to_lowercase();
+                    if lower.starts_with("inherits=") {
+                        let name = trimmed[9..].trim().trim_matches('\'').trim_matches('"').trim();
+                        if !name.is_empty() {
+                            return Some(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Reads XFCE cursor configuration from `~/.config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml`.
+pub fn read_xfce_cursor_settings() -> (Option<String>, Option<u32>) {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = Path::new(&home).join(".config/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml");
+        if let Ok(content) = fs::read_to_string(p) {
+            let mut theme = None;
+            let mut size = None;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.contains("CursorThemeName") {
+                    if let Some(pos) = trimmed.find("value=\"") {
+                        let rest = &trimmed[pos + 7..];
+                        if let Some(end) = rest.find('"') {
+                            let val = rest[..end].trim();
+                            if !val.is_empty() && theme.is_none() {
+                                theme = Some(val.to_string());
+                            }
+                        }
+                    }
+                } else if trimmed.contains("CursorThemeSize") {
+                    if let Some(pos) = trimmed.find("value=\"") {
+                        let rest = &trimmed[pos + 7..];
+                        if let Some(end) = rest.find('"') {
+                            if let Ok(sz) = rest[..end].trim().parse::<u32>() {
+                                if sz > 0 && size.is_none() {
+                                    size = Some(sz);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return (theme, size);
+        }
+    }
+    (None, None)
+}
+
+/// Reads system default cursor theme from `/usr/share/icons/default/index.theme` or `/usr/local/share/icons/default/index.theme`.
+pub fn read_system_default_icon_theme() -> Option<String> {
+    let candidates = [
+        "/usr/share/icons/default/index.theme",
+        "/usr/local/share/icons/default/index.theme",
+    ];
+    for path in candidates {
+        if let Ok(content) = fs::read_to_string(path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                let lower = trimmed.to_lowercase();
+                if lower.starts_with("inherits=") {
+                    let name = trimmed[9..].trim().trim_matches('\'').trim_matches('"').trim();
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Fast, comprehensive detection of desktop cursor theme and size.
+/// Checks user environment, user desktop files, desktop settings via gsettings/xfconf/kcminput,
+/// environment variables, and system fallbacks in prioritized order to match the host desktop accurately.
 pub fn detect_cursor_theme_and_size() -> (String, u32) {
-    let mut theme = std::env::var("XCURSOR_THEME").ok().filter(|s| !s.trim().is_empty());
-    let mut size = std::env::var("XCURSOR_SIZE")
+    // 1. Explicit VELOX_CURSOR_THEME / VELOX_CURSOR_SIZE environment overrides
+    let mut theme = std::env::var("VELOX_CURSOR_THEME")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let mut size = std::env::var("VELOX_CURSOR_SIZE")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .filter(|&sz| sz > 0);
 
+    if theme.is_some() && size.is_some() {
+        return (theme.unwrap(), size.unwrap());
+    }
+
+    // 2. User-specific icon theme configuration (~/.icons/default/index.theme, ~/.local/share/icons/default/index.theme)
+    if theme.is_none() {
+        theme = read_user_icon_default_theme();
+    }
+
+    // 3. User GTK settings.ini check (~/.config/gtk-4.0/settings.ini, ~/.config/gtk-3.0/settings.ini)
     if theme.is_none() || size.is_none() {
         let gtk = read_gtk_settings();
         if theme.is_none() {
@@ -344,79 +445,120 @@ pub fn detect_cursor_theme_and_size() -> (String, u32) {
         }
     }
 
-    // Check KDE Plasma ~/.config/kcminputrc
+    // 4. Desktop environment flat configs (KDE Plasma, XFCE)
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .unwrap_or_default()
+        .to_lowercase();
+
     if theme.is_none() || size.is_none() {
-        if let Ok(home) = std::env::var("HOME") {
-            let kcminput = Path::new(&home).join(".config/kcminputrc");
-            if let Ok(content) = fs::read_to_string(kcminput) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if let Some((k, v)) = trimmed.split_once('=') {
-                        let k = k.trim();
-                        let v = v.trim();
-                        if k == "cursorTheme" && theme.is_none() && !v.is_empty() {
-                            theme = Some(v.to_string());
-                        } else if k == "cursorSize" && size.is_none() {
-                            if let Ok(sz) = v.parse::<u32>() {
-                                if sz > 0 {
-                                    size = Some(sz);
+        if desktop.contains("kde") || desktop.contains("plasma") {
+            if let Ok(home) = std::env::var("HOME") {
+                let kcminput = Path::new(&home).join(".config/kcminputrc");
+                if let Ok(content) = fs::read_to_string(kcminput) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if let Some((k, v)) = trimmed.split_once('=') {
+                            let k = k.trim();
+                            let v = v.trim();
+                            if k == "cursorTheme" && theme.is_none() && !v.is_empty() {
+                                theme = Some(v.to_string());
+                            } else if k == "cursorSize" && size.is_none() {
+                                if let Ok(sz) = v.parse::<u32>() {
+                                    if sz > 0 {
+                                        size = Some(sz);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
-    }
-
-    // Check /usr/share/icons/default/index.theme
-    if theme.is_none() {
-        if let Ok(content) = fs::read_to_string("/usr/share/icons/default/index.theme") {
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if let Some(inherits) = trimmed.strip_prefix("Inherits=") {
-                    let name = inherits.trim().trim_matches('"').trim_matches('\'');
-                    if !name.is_empty() {
-                        theme = Some(name.to_string());
-                        break;
-                    }
-                }
+        } else if desktop.contains("xfce") {
+            let (xfce_theme, xfce_size) = read_xfce_cursor_settings();
+            if theme.is_none() {
+                theme = xfce_theme;
+            }
+            if size.is_none() {
+                size = xfce_size;
             }
         }
     }
 
-    // Fallback to gsettings only if still missing
+    // 5. Desktop environment gsettings (Cinnamon, GNOME, MATE, etc.)
     if theme.is_none() || size.is_none() {
-        if theme.is_none() {
-            if let Ok(out) = Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "cursor-theme"])
-                .output()
-            {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout);
-                    let cleaned = s.trim().trim_matches('\'').trim_matches('"');
-                    if !cleaned.is_empty() {
-                        theme = Some(cleaned.to_string());
-                    }
-                }
-            }
-        }
+        let schemas = if desktop.contains("cinnamon") {
+            vec![
+                "org.cinnamon.desktop.interface",
+                "org.gnome.desktop.interface",
+            ]
+        } else if desktop.contains("mate") {
+            vec![
+                "org.mate.peripherals-mouse",
+                "org.gnome.desktop.interface",
+                "org.cinnamon.desktop.interface",
+            ]
+        } else {
+            vec![
+                "org.gnome.desktop.interface",
+                "org.cinnamon.desktop.interface",
+            ]
+        };
 
-        if size.is_none() {
-            if let Ok(out) = Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.interface", "cursor-size"])
-                .output()
-            {
-                if out.status.success() {
-                    let s = String::from_utf8_lossy(&out.stdout);
-                    if let Ok(sz) = s.trim().parse::<u32>() {
-                        if sz > 0 {
-                            size = Some(sz);
+        for schema in schemas {
+            if theme.is_none() {
+                if let Ok(out) = Command::new("gsettings")
+                    .args(["get", schema, "cursor-theme"])
+                    .output()
+                {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout);
+                        let cleaned = s.trim().trim_matches('\'').trim_matches('"').trim();
+                        if !cleaned.is_empty() {
+                            theme = Some(cleaned.to_string());
                         }
                     }
                 }
             }
+
+            if size.is_none() {
+                if let Ok(out) = Command::new("gsettings")
+                    .args(["get", schema, "cursor-size"])
+                    .output()
+                {
+                    if out.status.success() {
+                        let s = String::from_utf8_lossy(&out.stdout);
+                        if let Ok(sz) = s.trim().parse::<u32>() {
+                            if sz > 0 {
+                                size = Some(sz);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if theme.is_some() && size.is_some() {
+                break;
+            }
         }
+    }
+
+    // 6. Environment variables (XCURSOR_THEME, XCURSOR_SIZE)
+    if theme.is_none() {
+        theme = std::env::var("XCURSOR_THEME")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+    }
+    if size.is_none() {
+        size = std::env::var("XCURSOR_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|&sz| sz > 0);
+    }
+
+    // 7. System fallback (/usr/share/icons/default/index.theme)
+    if theme.is_none() {
+        theme = read_system_default_icon_theme();
     }
 
     (
@@ -458,5 +600,27 @@ gtk-decoration-layout = ':minimize,maximize,close'
             settings.decoration_layout.as_deref(),
             Some(":minimize,maximize,close")
         );
+    }
+
+    #[test]
+    fn test_detect_cursor_theme_override() {
+        unsafe {
+            std::env::set_var("VELOX_CURSOR_THEME", "TestCursorTheme");
+            std::env::set_var("VELOX_CURSOR_SIZE", "48");
+        }
+        let (theme, size) = detect_cursor_theme_and_size();
+        assert_eq!(theme, "TestCursorTheme");
+        assert_eq!(size, 48);
+        unsafe {
+            std::env::remove_var("VELOX_CURSOR_THEME");
+            std::env::remove_var("VELOX_CURSOR_SIZE");
+        }
+    }
+
+    #[test]
+    fn test_detect_cursor_theme_and_size_returns_valid() {
+        let (theme, size) = detect_cursor_theme_and_size();
+        assert!(!theme.is_empty());
+        assert!((12..=128).contains(&size));
     }
 }

@@ -19,12 +19,11 @@ pub struct ActiveKeyRepeat {
     pub interval: std::time::Duration,
 }
 
-/// State machine wrapping dynamic `xkbcommon` with an evdev fallback.
+/// State machine wrapping pure-Rust `kbvm` with an evdev fallback.
 pub struct XkbHandler {
-    lib: Option<xkbcommon_dl::XkbCommon>,
-    ctx: *mut xkbcommon_dl::xkb_context,
-    keymap: *mut xkbcommon_dl::xkb_keymap,
-    state: *mut xkbcommon_dl::xkb_state,
+    context: kbvm::xkb::Context,
+    lookup_table: Option<kbvm::lookup::LookupTable>,
+    components: kbvm::Components,
 }
 
 impl Default for XkbHandler {
@@ -35,44 +34,16 @@ impl Default for XkbHandler {
 
 impl XkbHandler {
     pub fn new() -> Self {
-        let (lib_opt, ctx) = match unsafe {
-            xkbcommon_dl::XkbCommon::open("libxkbcommon.so.0")
-                .or_else(|_| xkbcommon_dl::XkbCommon::open("libxkbcommon.so"))
-        } {
-            Ok(lib) => {
-                let ctx = unsafe {
-                    (lib.xkb_context_new)(xkbcommon_dl::xkb_context_flags::XKB_CONTEXT_NO_FLAGS)
-                };
-                if ctx.is_null() {
-                    log::warn!("Failed to create XKB context; using evdev fallback");
-                    (None, std::ptr::null_mut())
-                } else {
-                    (Some(lib), ctx)
-                }
-            }
-            Err(e) => {
-                log::warn!(
-                    "libxkbcommon.so not found (error: {:?}); using evdev fallback",
-                    e
-                );
-                (None, std::ptr::null_mut())
-            }
-        };
-
         Self {
-            lib: lib_opt,
-            ctx,
-            keymap: std::ptr::null_mut(),
-            state: std::ptr::null_mut(),
+            context: kbvm::xkb::Context::default(),
+            lookup_table: None,
+            components: kbvm::Components::default(),
         }
     }
 
-    /// Compile a new keymap from the compositor's shared memory fd.
+    /// Compile a new keymap from the compositor's shared memory fd using pure-Rust `kbvm`.
     pub fn update_keymap(&mut self, fd: &std::os::fd::OwnedFd, size: u32) {
-        let Some(lib) = &self.lib else {
-            return;
-        };
-        if self.ctx.is_null() || size == 0 {
+        if size == 0 {
             return;
         }
 
@@ -95,37 +66,19 @@ impl XkbHandler {
             size as usize
         };
 
-        let keymap = unsafe {
-            (lib.xkb_keymap_new_from_buffer)(
-                self.ctx,
-                mmap.as_ptr() as *const _,
-                len,
-                xkbcommon_dl::xkb_keymap_format::XKB_KEYMAP_FORMAT_TEXT_V1,
-                xkbcommon_dl::xkb_keymap_compile_flags::XKB_KEYMAP_COMPILE_NO_FLAGS,
-            )
-        };
-
-        if keymap.is_null() {
-            log::error!("xkb_keymap_new_from_buffer failed to compile keymap");
-            return;
+        match self.context.keymap_from_bytes(
+            kbvm::xkb::diagnostic::WriteToLog,
+            None,
+            &mmap[..len],
+        ) {
+            Ok(keymap) => {
+                let table = keymap.to_builder().build_lookup_table();
+                self.lookup_table = Some(table);
+            }
+            Err(e) => {
+                log::error!("kbvm failed to compile Wayland keymap: {}", e);
+            }
         }
-
-        let state = unsafe { (lib.xkb_state_new)(keymap) };
-        if state.is_null() {
-            log::error!("xkb_state_new failed to create state from keymap");
-            unsafe { (lib.xkb_keymap_unref)(keymap) };
-            return;
-        }
-
-        if !self.state.is_null() {
-            unsafe { (lib.xkb_state_unref)(self.state) };
-        }
-        if !self.keymap.is_null() {
-            unsafe { (lib.xkb_keymap_unref)(self.keymap) };
-        }
-
-        self.keymap = keymap;
-        self.state = state;
     }
 
     /// Update active modifier state masks from compositor's `Modifiers` event.
@@ -136,74 +89,25 @@ impl XkbHandler {
         mods_locked: u32,
         group: u32,
     ) -> ModifiersState {
-        let Some(lib) = &self.lib else {
-            let mask = mods_depressed | mods_latched | mods_locked;
-            let mut m = ModifiersState::empty();
-            if mask & 1 != 0 {
-                m |= ModifiersState::SHIFT;
-            }
-            if mask & 4 != 0 {
-                m |= ModifiersState::CONTROL;
-            }
-            if mask & 8 != 0 {
-                m |= ModifiersState::ALT;
-            }
-            if mask & 64 != 0 {
-                m |= ModifiersState::SUPER;
-            }
-            return m;
-        };
+        self.components.mods_pressed = kbvm::ModifierMask(mods_depressed);
+        self.components.mods_latched = kbvm::ModifierMask(mods_latched);
+        self.components.mods_locked = kbvm::ModifierMask(mods_locked);
+        self.components.group_locked = kbvm::GroupIndex(group);
+        self.components.update_effective();
 
-        if self.state.is_null() {
-            return ModifiersState::empty();
-        }
-
-        unsafe {
-            (lib.xkb_state_update_mask)(
-                self.state,
-                mods_depressed,
-                mods_latched,
-                mods_locked,
-                0,
-                0,
-                group,
-            );
-        }
-
+        let effective = self.components.mods;
         let mut m = ModifiersState::empty();
-        unsafe {
-            if (lib.xkb_state_mod_name_is_active)(
-                self.state,
-                xkbcommon_dl::XKB_MOD_NAME_SHIFT.as_ptr() as *const _,
-                xkbcommon_dl::xkb_state_component::XKB_STATE_MODS_EFFECTIVE,
-            ) == 1
-            {
-                m |= ModifiersState::SHIFT;
-            }
-            if (lib.xkb_state_mod_name_is_active)(
-                self.state,
-                xkbcommon_dl::XKB_MOD_NAME_CTRL.as_ptr() as *const _,
-                xkbcommon_dl::xkb_state_component::XKB_STATE_MODS_EFFECTIVE,
-            ) == 1
-            {
-                m |= ModifiersState::CONTROL;
-            }
-            if (lib.xkb_state_mod_name_is_active)(
-                self.state,
-                xkbcommon_dl::XKB_MOD_NAME_ALT.as_ptr() as *const _,
-                xkbcommon_dl::xkb_state_component::XKB_STATE_MODS_EFFECTIVE,
-            ) == 1
-            {
-                m |= ModifiersState::ALT;
-            }
-            if (lib.xkb_state_mod_name_is_active)(
-                self.state,
-                xkbcommon_dl::XKB_MOD_NAME_LOGO.as_ptr() as *const _,
-                xkbcommon_dl::xkb_state_component::XKB_STATE_MODS_EFFECTIVE,
-            ) == 1
-            {
-                m |= ModifiersState::SUPER;
-            }
+        if effective.contains(kbvm::ModifierMask::SHIFT) {
+            m |= ModifiersState::SHIFT;
+        }
+        if effective.contains(kbvm::ModifierMask::CONTROL) {
+            m |= ModifiersState::CONTROL;
+        }
+        if effective.contains(kbvm::ModifierMask::ALT) {
+            m |= ModifiersState::ALT;
+        }
+        if effective.contains(kbvm::ModifierMask::SUPER) {
+            m |= ModifiersState::SUPER;
         }
         m
     }
@@ -214,56 +118,46 @@ impl XkbHandler {
         scancode: u32,
         mut modifiers: ModifiersState,
     ) -> (Option<Key>, Option<String>, bool, ModifiersState) {
-        if let Some(lib) = &self.lib
-            && !self.state.is_null()
-            && !self.keymap.is_null()
-        {
-            let xkb_keycode = scancode + 8;
-            let sym = unsafe { (lib.xkb_state_key_get_one_sym)(self.state, xkb_keycode) };
-            let repeats = unsafe { (lib.xkb_keymap_key_repeats)(self.keymap, xkb_keycode) == 1 };
+        if let Some(table) = &self.lookup_table {
+            let keycode = kbvm::Keycode::from_evdev(scancode);
+            let lookup = table.lookup(self.components.group, self.components.mods, keycode);
+            let repeats = lookup.repeats();
 
-            let mut utf8_buf = [0u8; 64];
-            let len = unsafe {
-                (lib.xkb_state_key_get_utf8)(
-                    self.state,
-                    xkb_keycode,
-                    utf8_buf.as_mut_ptr() as *mut _,
-                    utf8_buf.len(),
-                )
-            };
-            let xkb_text = if len > 0 {
-                std::str::from_utf8(&utf8_buf[..len as usize])
-                    .ok()
-                    .map(|s| s.to_string())
-            } else {
-                None
-            };
+            let mut resolved_sym = None;
+            let mut resolved_char = None;
+            for prop in lookup {
+                resolved_sym = Some(prop.keysym());
+                resolved_char = prop.char();
+                break;
+            }
 
-            let (mut key, mut text) = xkb_keysym_to_key(sym);
-            if sym == 0xfe20 {
-                modifiers.insert(ModifiersState::SHIFT);
-            }
-            if text.is_none()
-                && xkb_text.is_some()
-                && !matches!(key, Some(Key::Named(NamedKey::Backspace)))
-            {
-                text = xkb_text;
-            }
-            if key.is_none()
-                && let Some(t) = &text
-            {
-                key = Some(Key::Character(t.clone()));
-            }
-            if let Some(ref k) = key {
-                match k {
-                    Key::Named(NamedKey::Shift) => modifiers.insert(ModifiersState::SHIFT),
-                    Key::Named(NamedKey::Control) => modifiers.insert(ModifiersState::CONTROL),
-                    Key::Named(NamedKey::Alt) => modifiers.insert(ModifiersState::ALT),
-                    Key::Named(NamedKey::Super) => modifiers.insert(ModifiersState::SUPER),
-                    _ => {}
+            if let Some(sym) = resolved_sym {
+                let (mut key, mut text) = xkb_keysym_to_key(sym.0);
+                if sym.0 == 0xfe20 {
+                    modifiers.insert(ModifiersState::SHIFT);
                 }
+                if text.is_none()
+                    && let Some(ch) = resolved_char
+                    && !matches!(key, Some(Key::Named(NamedKey::Backspace)))
+                {
+                    text = Some(ch.to_string());
+                }
+                if key.is_none()
+                    && let Some(t) = &text
+                {
+                    key = Some(Key::Character(t.clone()));
+                }
+                if let Some(ref k) = key {
+                    match k {
+                        Key::Named(NamedKey::Shift) => modifiers.insert(ModifiersState::SHIFT),
+                        Key::Named(NamedKey::Control) => modifiers.insert(ModifiersState::CONTROL),
+                        Key::Named(NamedKey::Alt) => modifiers.insert(ModifiersState::ALT),
+                        Key::Named(NamedKey::Super) => modifiers.insert(ModifiersState::SUPER),
+                        _ => {}
+                    }
+                }
+                return (key, text, repeats, modifiers);
             }
-            return (key, text, repeats, modifiers);
         }
 
         // Fallback to internal evdev scancode table
@@ -279,25 +173,6 @@ impl XkbHandler {
             }
         }
         (key, text, repeats, modifiers)
-    }
-}
-
-impl Drop for XkbHandler {
-    fn drop(&mut self) {
-        if let Some(lib) = &self.lib {
-            if !self.state.is_null() {
-                unsafe { (lib.xkb_state_unref)(self.state) };
-                self.state = std::ptr::null_mut();
-            }
-            if !self.keymap.is_null() {
-                unsafe { (lib.xkb_keymap_unref)(self.keymap) };
-                self.keymap = std::ptr::null_mut();
-            }
-            if !self.ctx.is_null() {
-                unsafe { (lib.xkb_context_unref)(self.ctx) };
-                self.ctx = std::ptr::null_mut();
-            }
-        }
     }
 }
 
@@ -726,5 +601,100 @@ mod tests {
         assert!(key.is_some());
         assert_eq!(text, Some("a".to_string()));
         assert!(repeats);
+    }
+
+    #[test]
+    fn test_kbvm_modifier_updates() {
+        let mut handler = XkbHandler::new();
+        assert_eq!(handler.components.mods, kbvm::ModifierMask::NONE);
+
+        // Shift = 1
+        let m = handler.update_modifiers(1, 0, 0, 0);
+        assert_eq!(m, ModifiersState::SHIFT);
+
+        // Control = 4
+        let m = handler.update_modifiers(4, 0, 0, 0);
+        assert_eq!(m, ModifiersState::CONTROL);
+
+        // Alt = 8
+        let m = handler.update_modifiers(8, 0, 0, 0);
+        assert_eq!(m, ModifiersState::ALT);
+
+        // Super = 64
+        let m = handler.update_modifiers(64, 0, 0, 0);
+        assert_eq!(m, ModifiersState::SUPER);
+
+        // Combined Shift + Control + Alt + Super
+        let m = handler.update_modifiers(1 | 4 | 8 | 64, 0, 0, 0);
+        assert!(m.contains(ModifiersState::SHIFT));
+        assert!(m.contains(ModifiersState::CONTROL));
+        assert!(m.contains(ModifiersState::ALT));
+        assert!(m.contains(ModifiersState::SUPER));
+    }
+
+    #[test]
+    fn test_kbvm_keymap_compilation_and_translation() {
+        let mut handler = XkbHandler::new();
+        const TEST_KEYMAP: &str = r#"
+xkb_keymap {
+    xkb_keycodes {
+        minimum = 8;
+        maximum = 255;
+        <AC01> = 38;
+        <AD01> = 24;
+    };
+    xkb_types {
+        type "ALPHABETIC" {
+            modifiers = Shift;
+            map[Shift] = Level2;
+            level_name[Level1] = "Base";
+            level_name[Level2] = "Caps";
+        };
+    };
+    xkb_compat {
+    };
+    xkb_symbols {
+        key <AC01> {
+            type = "ALPHABETIC",
+            symbols[Group1] = [ a, A ]
+        };
+        key <AD01> {
+            type = "ALPHABETIC",
+            symbols[Group1] = [ q, Q ]
+        };
+    };
+};
+"#;
+        let res = handler.context.keymap_from_bytes(
+            kbvm::xkb::diagnostic::WriteToLog,
+            None,
+            TEST_KEYMAP.as_bytes(),
+        );
+        assert!(res.is_ok(), "Failed to parse test keymap: {:?}", res.err());
+        let keymap = res.unwrap();
+        handler.lookup_table = Some(keymap.to_builder().build_lookup_table());
+
+        // AC01 keycode is 38 => evdev scancode is 38 - 8 = 30 ('a')
+        let (key, text, repeats, mods) = handler.translate_key(30, ModifiersState::empty());
+        assert_eq!(key, Some(Key::Character("a".to_string())));
+        assert_eq!(text, Some("a".to_string()));
+        assert!(repeats);
+        assert_eq!(mods, ModifiersState::empty());
+
+        // Update modifiers with Shift (bit 0 = 1)
+        let active_mods = handler.update_modifiers(1, 0, 0, 0);
+        assert!(active_mods.contains(ModifiersState::SHIFT));
+
+        // Now translate with Shift
+        let (key_shifted, text_shifted, repeats_shifted, _) = handler.translate_key(30, active_mods);
+        assert_eq!(key_shifted, Some(Key::Character("A".to_string())));
+        assert_eq!(text_shifted, Some("A".to_string()));
+        assert!(repeats_shifted);
+
+        // Reset modifiers and test AD01 (scancode 16 -> 'q')
+        let _ = handler.update_modifiers(0, 0, 0, 0);
+        let (key_q, text_q, _, _) = handler.translate_key(16, ModifiersState::empty());
+        assert_eq!(key_q, Some(Key::Character("q".to_string())));
+        assert_eq!(text_q, Some("q".to_string()));
     }
 }

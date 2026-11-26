@@ -129,14 +129,6 @@ fn create_blank_cursor(conn: &RustConnection, root: xproto::Window) -> Option<xp
     None
 }
 
-fn detect_desktop_cursor_theme() -> Option<String> {
-    Some(crate::window::desktop::detect_cursor_theme_and_size().0)
-}
-
-fn detect_desktop_cursor_size() -> Option<u32> {
-    Some(crate::window::desktop::detect_cursor_theme_and_size().1)
-}
-
 fn load_xcursor_or_fallback(
     conn: &RustConnection,
     handle: Option<&x11rb::cursor::Handle>,
@@ -223,20 +215,12 @@ impl X11Window {
                 (root_visual, 24u8, None)
             };
 
-        // Detect desktop cursor theme & size if not already set in environment
-        if std::env::var_os("XCURSOR_THEME").is_none() {
-            if let Some(theme) = detect_desktop_cursor_theme() {
-                unsafe {
-                    std::env::set_var("XCURSOR_THEME", &theme);
-                }
-            }
-        }
-        if std::env::var_os("XCURSOR_SIZE").is_none() {
-            if let Some(size) = detect_desktop_cursor_size() {
-                unsafe {
-                    std::env::set_var("XCURSOR_SIZE", size.to_string());
-                }
-            }
+        // Detect desktop cursor theme & size and synchronize XCURSOR_* environment variables
+        // so that x11rb::cursor::Handle loads the correct host theme and size.
+        let (desktop_theme, desktop_size) = crate::window::desktop::detect_cursor_theme_and_size();
+        unsafe {
+            std::env::set_var("XCURSOR_THEME", &desktop_theme);
+            std::env::set_var("XCURSOR_SIZE", desktop_size.to_string());
         }
 
         let db = x11rb::resource_manager::new_from_default(&conn).unwrap_or_default();
@@ -247,7 +231,7 @@ impl X11Window {
         let cursor_default = load_xcursor_or_fallback(
             &conn,
             cursor_handle.as_ref(),
-            &["left_ptr", "default", "arrow"],
+            &["left_ptr", "default", "arrow", "top_left_arrow"],
             68, // XC_left_ptr
         );
         let cursor_text = load_xcursor_or_fallback(
@@ -270,6 +254,7 @@ impl X11Window {
                 "sb_h_double_arrow",
                 "ew-resize",
                 "h_double_arrow",
+                "split_h",
             ],
             108, // XC_sb_h_double_arrow
         );
@@ -281,6 +266,7 @@ impl X11Window {
                 "sb_v_double_arrow",
                 "ns-resize",
                 "v_double_arrow",
+                "split_v",
             ],
             116, // XC_sb_v_double_arrow
         );
@@ -1396,13 +1382,35 @@ mod tests {
 
     #[test]
     fn test_desktop_cursor_theme_and_size_detection() {
-        let theme = detect_desktop_cursor_theme();
-        if let Some(theme) = theme {
-            assert!(!theme.is_empty());
+        let (theme, size) = crate::window::desktop::detect_cursor_theme_and_size();
+        assert!(!theme.is_empty());
+        assert!((12..=128).contains(&size));
+    }
+
+    #[test]
+    fn test_x11_cursor_loading_with_detected_theme() {
+        if std::env::var("DISPLAY").is_err() {
+            return;
         }
-        let size = detect_desktop_cursor_size();
-        if let Some(size) = size {
-            assert!((16..=128).contains(&size));
+        let (theme, size) = crate::window::desktop::detect_cursor_theme_and_size();
+        assert!(!theme.is_empty());
+        assert!(size > 0);
+        unsafe {
+            std::env::set_var("XCURSOR_THEME", &theme);
+            std::env::set_var("XCURSOR_SIZE", size.to_string());
+        }
+        let (conn, screen_num) = match RustConnection::connect(None) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let db = x11rb::resource_manager::new_from_default(&conn).unwrap_or_default();
+        let cookie = x11rb::cursor::Handle::new(&conn, screen_num, &db);
+        let handle = cookie.ok().and_then(|c| c.reply().ok());
+        if let Some(ref h) = handle {
+            for name in &["left_ptr", "default", "arrow", "xterm", "text", "ibeam", "pointer"] {
+                let res = h.load_cursor(&conn, name);
+                assert!(res.is_ok(), "Failed to load cursor '{}': {:?}", name, res.err());
+            }
         }
     }
 }

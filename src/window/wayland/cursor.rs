@@ -451,4 +451,14 @@ mod tests {
         assert!(parse_xcursor(b"invalid data", 24).is_none());
         assert!(parse_xcursor(b"Xcur\0\0\0\0", 24).is_none());
     }
+
+    #[test]
+    fn test_cursor_theme_loading_with_detected_theme() {
+        let (theme, size) = detect_cursor_theme_and_size();
+        assert!(!theme.is_empty());
+        assert!(size > 0);
+        // Ensure at least fallback cursor works even if host theme is missing
+        let fallback = create_fallback_cursor(CursorIcon::Default);
+        assert_eq!(fallback.width, 24);
+    }
 }
