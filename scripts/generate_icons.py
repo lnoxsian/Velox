@@ -155,7 +155,17 @@ def generate_icons(svg_file: Path, out_dir: Path, sizes: list[int]):
             ico_size_kb = ico_path.stat().st_size / 1024.0
             print(f"  [+] [PIL ICO] Generated combined icon set: {ico_path.name} [{ico_size_kb:.1f} KB]")
         except Exception as e:
-            print(f"  [WARNING] Could not generate ICO file: {e}")
+            print(f"  [ERROR] Could not generate ICO file: {e}", file=sys.stderr)
+
+    missing_sizes = [s for s in sizes if not (out_dir / f"icon_{s}x{s}.png").exists()]
+    if missing_sizes:
+        print(f"Error: Missing required generated icon(s) for sizes: {missing_sizes}", file=sys.stderr)
+        print("Please install python3-pil and librsvg2-bin or cairosvg.", file=sys.stderr)
+        sys.exit(1)
+
+    if not (out_dir / "velox_icon.ico").exists():
+        print("Error: Missing velox_icon.ico. Python Pillow is required to generate it.", file=sys.stderr)
+        sys.exit(1)
 
     print("Icon generation and optimization completed successfully!")
 

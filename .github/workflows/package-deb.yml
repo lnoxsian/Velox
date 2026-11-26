@@ -73,10 +73,33 @@ jobs:
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building Velox v${VERSION} for target ${{ matrix.target }}"
 
+      - name: Cache generated icons
+        id: icon-cache
+        uses: actions/cache@v4
+        with:
+          path: assets/generated_icons
+          key: velox-icons-${{ hashFiles('assets/icons/**', 'scripts/generate_icons.py') }}
+
+      - name: Install asset generation tools
+        if: steps.icon-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pil librsvg2-bin
+
+      - name: Generate icon assets
+        if: steps.icon-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 scripts/generate_icons.py
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies and target artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Install cross
         uses: taiki-e/install-action@v2
