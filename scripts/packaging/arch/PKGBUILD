@@ -1,6 +1,6 @@
 # Maintainer: lnoxsian <https://github.com/lnoxsian/Velox>
 pkgname=velox
-pkgver=0.2.9
+pkgver=0.3.9
 pkgrel=1
 pkgdesc="Fast, modern, lightweight terminal emulator for Linux"
 arch=('x86_64' 'aarch64')

@@ -3,6 +3,7 @@
 # Velox Arch Linux Packaging Script
 # Builds an Arch Linux package (.pkg.tar.zst) using makepkg (if available) or
 # directly generates a pacman-compatible package archive using tar and zstd.
+# Supports native builds, cross-compiled pre-built binaries, GNU & Musl targets.
 # ==============================================================================
 
 set -euo pipefail
@@ -14,6 +15,10 @@ PROFILE="release"
 NO_BUILD=0
 STANDALONE=0
 OUTPUT_DIR="${REPO_ROOT}/dist"
+BINARY_PATH=""
+ARCH_OVERRIDE=""
+VERSION_OVERRIDE=""
+LIBC="gnu"
 
 print_usage() {
     cat <<EOF
@@ -22,6 +27,10 @@ Usage: $(basename "$0") [OPTIONS]
 Builds an Arch Linux package (.pkg.tar.zst) for Velox.
 
 Options:
+    --binary <PATH>         Path to pre-compiled velox binary (skips cargo build)
+    --arch <ARCH>           Target Arch architecture (e.g., x86_64, aarch64, armv7h, i686)
+    --version <VERSION>     Package version override (default: read from VERSION file)
+    --libc <gnu|musl>       C library runtime flavor (default: gnu)
     --profile <PROFILE>     Cargo build profile ('release' or 'debug', default: release)
     --no-build              Skip compiling; package existing target binary immediately
     --standalone            Force standalone packaging (using tar/zstd without calling makepkg)
@@ -32,6 +41,24 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --binary)
+            BINARY_PATH="$2"
+            NO_BUILD=1
+            STANDALONE=1
+            shift 2
+            ;;
+        --arch)
+            ARCH_OVERRIDE="$2"
+            shift 2
+            ;;
+        --version)
+            VERSION_OVERRIDE="$2"
+            shift 2
+            ;;
+        --libc)
+            LIBC="$2"
+            shift 2
+            ;;
         --profile)
             PROFILE="$2"
             shift 2
@@ -63,7 +90,9 @@ done
 cd "${REPO_ROOT}"
 
 # Read version
-if [[ -f "VERSION" ]]; then
+if [[ -n "${VERSION_OVERRIDE}" ]]; then
+    VERSION="${VERSION_OVERRIDE}"
+elif [[ -f "VERSION" ]]; then
     VERSION="$(tr -d '\r\n' < VERSION)"
 elif [[ -f "Cargo.toml" ]]; then
     VERSION="$(grep -m1 '^version\s*=' Cargo.toml | cut -d '"' -f2)"
@@ -72,21 +101,30 @@ else
     exit 1
 fi
 
-ARCH="$(uname -m)"
+if [[ -z "${VERSION}" ]]; then
+    echo "Error: Version string is empty" >&2
+    exit 1
+fi
+
+if [[ -n "${ARCH_OVERRIDE}" ]]; then
+    ARCH="${ARCH_OVERRIDE}"
+else
+    ARCH="$(uname -m)"
+fi
 
 echo "=================================================="
-echo " Packaging Velox v${VERSION} for Arch Linux (${ARCH})"
+echo " Packaging Velox v${VERSION} for Arch Linux (${ARCH}, libc: ${LIBC})"
 echo " Profile:    ${PROFILE}"
 echo " Output Dir: ${OUTPUT_DIR}"
 echo "=================================================="
 
-# Update pkgver in PKGBUILD if it doesn't match
+# Update pkgver in PKGBUILD if present and native
 if [[ -f "${SCRIPT_DIR}/PKGBUILD" ]]; then
-    sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${SCRIPT_DIR}/PKGBUILD"
+    sed -i "s/^pkgver=.*/pkgver=${VERSION}/" "${SCRIPT_DIR}/PKGBUILD" 2>/dev/null || true
 fi
 
-# If makepkg is available and standalone mode is not forced, use makepkg
-if command -v makepkg >/dev/null 2>&1 && [[ "${STANDALONE}" -eq 0 ]]; then
+# If makepkg is available, standalone mode is not forced, and no custom binary/arch passed: use makepkg
+if command -v makepkg >/dev/null 2>&1 && [[ "${STANDALONE}" -eq 0 && -z "${BINARY_PATH}" && -z "${ARCH_OVERRIDE}" ]]; then
     echo "==> makepkg found on system. Building via makepkg..."
     cd "${SCRIPT_DIR}"
     makepkg -f -p PKGBUILD
@@ -98,11 +136,12 @@ fi
 
 echo "==> Building Arch package using standalone packager (tar + zstd)..."
 
-BINARY_PATH="${REPO_ROOT}/target/${PROFILE}/velox"
-
-if [[ "${NO_BUILD}" -eq 0 ]]; then
-    echo "==> Building Velox with profile '${PROFILE}'..."
-    cargo build --profile "${PROFILE}"
+if [[ -z "${BINARY_PATH}" ]]; then
+    BINARY_PATH="${REPO_ROOT}/target/${PROFILE}/velox"
+    if [[ "${NO_BUILD}" -eq 0 ]]; then
+        echo "==> Building Velox with profile '${PROFILE}'..."
+        cargo build --profile "${PROFILE}" --bins
+    fi
 fi
 
 if [[ ! -f "${BINARY_PATH}" ]]; then
@@ -131,10 +170,21 @@ mkdir -p "${PKG_DIR}/usr/share/bash-completion/completions"
 mkdir -p "${PKG_DIR}/usr/share/zsh/site-functions"
 mkdir -p "${PKG_DIR}/usr/share/fish/vendor_completions.d"
 
-# 1. Binary
+# 1. Install binaries
 install -m 755 "${BINARY_PATH}" "${PKG_DIR}/usr/bin/velox"
+
+BINARY_DIR="$(dirname "${BINARY_PATH}")"
+if [[ -f "${BINARY_DIR}/veloxcfg" ]]; then
+    install -m 755 "${BINARY_DIR}/veloxcfg" "${PKG_DIR}/usr/bin/veloxcfg"
+elif [[ -f "${REPO_ROOT}/target/${PROFILE}/veloxcfg" ]]; then
+    install -m 755 "${REPO_ROOT}/target/${PROFILE}/veloxcfg" "${PKG_DIR}/usr/bin/veloxcfg"
+fi
+
 if command -v strip >/dev/null 2>&1; then
     strip --strip-unneeded "${PKG_DIR}/usr/bin/velox" 2>/dev/null || true
+    if [[ -f "${PKG_DIR}/usr/bin/veloxcfg" ]]; then
+        strip --strip-unneeded "${PKG_DIR}/usr/bin/veloxcfg" 2>/dev/null || true
+    fi
 fi
 
 # 2. Desktop file
@@ -179,8 +229,9 @@ fi
 INSTALLED_BYTES="$(du -sb "${PKG_DIR}" | awk '{print $1}')"
 BUILD_DATE="$(date +%s)"
 
-# 5. Generate .PKGINFO
-cat <<EOF > "${PKG_DIR}/.PKGINFO"
+# 6. Generate .PKGINFO
+PKGINFO_FILE="${PKG_DIR}/.PKGINFO"
+cat <<EOF > "${PKGINFO_FILE}"
 pkgname = velox
 pkgbase = velox
 pkgver = ${VERSION}-1
@@ -191,8 +242,14 @@ packager = lnoxsian <https://github.com/lnoxsian/Velox>
 size = ${INSTALLED_BYTES}
 arch = ${ARCH}
 license = MIT
-depend = glibc
-depend = gcc-libs
+EOF
+
+if [[ "${LIBC}" != "musl" ]]; then
+    echo "depend = glibc" >> "${PKGINFO_FILE}"
+    echo "depend = gcc-libs" >> "${PKGINFO_FILE}"
+fi
+
+cat <<EOF >> "${PKGINFO_FILE}"
 optdepend = fontconfig: system font discovery
 optdepend = hicolor-icon-theme: proper desktop icon integration
 provides = velox
@@ -201,14 +258,23 @@ conflict = velox-bin
 EOF
 
 mkdir -p "${OUTPUT_DIR}"
-OUTPUT_PKG="${OUTPUT_DIR}/velox-${VERSION}-1-${ARCH}.pkg.tar.zst"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
+if [[ "${LIBC}" == "musl" ]]; then
+    OUTPUT_PKG="${OUTPUT_DIR}/velox-${VERSION}-1-${ARCH}-musl.pkg.tar.zst"
+else
+    OUTPUT_PKG="${OUTPUT_DIR}/velox-${VERSION}-1-${ARCH}.pkg.tar.zst"
+fi
 
 echo "==> Creating Arch package archive (.pkg.tar.zst)..."
 if command -v zstd >/dev/null 2>&1; then
     (cd "${PKG_DIR}" && tar -cf - .PKGINFO usr | zstd -T0 -19 -o "${OUTPUT_PKG}")
 else
     # Fallback to .xz if zstd is unavailable
-    OUTPUT_PKG="${OUTPUT_DIR}/velox-${VERSION}-1-${ARCH}.pkg.tar.xz"
+    if [[ "${LIBC}" == "musl" ]]; then
+        OUTPUT_PKG="${OUTPUT_DIR}/velox-${VERSION}-1-${ARCH}-musl.pkg.tar.xz"
+    else
+        OUTPUT_PKG="${OUTPUT_DIR}/velox-${VERSION}-1-${ARCH}.pkg.tar.xz"
+    fi
     (cd "${PKG_DIR}" && tar -cJf "${OUTPUT_PKG}" .PKGINFO usr)
 fi
 

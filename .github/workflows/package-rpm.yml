@@ -1,0 +1,109 @@
+name: Build Fedora RPM Packages (.rpm)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-rpm:
+    name: Build .rpm (${{ matrix.target_name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- AMD64 (x86_64) ---
+          - target: x86_64-unknown-linux-gnu
+            target_name: amd64-gnu
+            rpm_arch: x86_64
+            libc: gnu
+            artifact_name: velox-amd64-gnu-rpm
+          - target: x86_64-unknown-linux-musl
+            target_name: amd64-musl
+            rpm_arch: x86_64
+            libc: musl
+            artifact_name: velox-amd64-musl-rpm
+
+          # --- 32-bit (i686) ---
+          - target: i686-unknown-linux-gnu
+            target_name: i686-gnu
+            rpm_arch: i686
+            libc: gnu
+            artifact_name: velox-i686-gnu-rpm
+          - target: i686-unknown-linux-musl
+            target_name: i686-musl
+            rpm_arch: i686
+            libc: musl
+            artifact_name: velox-i686-musl-rpm
+
+          # --- ARM64 (aarch64) ---
+          - target: aarch64-unknown-linux-gnu
+            target_name: arm64-gnu
+            rpm_arch: aarch64
+            libc: gnu
+            artifact_name: velox-arm64-gnu-rpm
+          - target: aarch64-unknown-linux-musl
+            target_name: arm64-musl
+            rpm_arch: aarch64
+            libc: musl
+            artifact_name: velox-arm64-musl-rpm
+
+          # --- ARM32 (armv7 / armv7hl) ---
+          - target: armv7-unknown-linux-gnueabihf
+            target_name: arm32-gnu
+            rpm_arch: armv7hl
+            libc: gnu
+            artifact_name: velox-arm32-gnu-rpm
+          - target: armv7-unknown-linux-musleabihf
+            target_name: arm32-musl
+            rpm_arch: armv7hl
+            libc: musl
+            artifact_name: velox-arm32-musl-rpm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read package version from VERSION file
+        id: version
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building Velox v${VERSION} for target ${{ matrix.target }}"
+
+      - name: Install RPM build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build release binaries with cross
+        run: |
+          cross build --release --locked --target ${{ matrix.target }} --bins
+
+      - name: Build Fedora / RHEL (.rpm) package
+        run: |
+          bash scripts/packaging/fedora/build-rpm.sh \
+            --binary "target/${{ matrix.target }}/release/velox" \
+            --arch "${{ matrix.rpm_arch }}" \
+            --version "${{ steps.version.outputs.VERSION }}" \
+            --libc "${{ matrix.libc }}" \
+            --output-dir "dist"
+
+      - name: Upload RPM package artifact (Node 20 runtime)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*.rpm
+          if-no-files-found: error

@@ -1,0 +1,109 @@
+name: Build Arch Linux Packages (.pkg.tar.zst)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arch:
+    name: Build .pkg.tar.zst (${{ matrix.target_name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # --- AMD64 (x86_64) ---
+          - target: x86_64-unknown-linux-gnu
+            target_name: amd64-gnu
+            arch_arch: x86_64
+            libc: gnu
+            artifact_name: velox-amd64-gnu-arch
+          - target: x86_64-unknown-linux-musl
+            target_name: amd64-musl
+            arch_arch: x86_64
+            libc: musl
+            artifact_name: velox-amd64-musl-arch
+
+          # --- 32-bit (i686) ---
+          - target: i686-unknown-linux-gnu
+            target_name: i686-gnu
+            arch_arch: i686
+            libc: gnu
+            artifact_name: velox-i686-gnu-arch
+          - target: i686-unknown-linux-musl
+            target_name: i686-musl
+            arch_arch: i686
+            libc: musl
+            artifact_name: velox-i686-musl-arch
+
+          # --- ARM64 (aarch64) ---
+          - target: aarch64-unknown-linux-gnu
+            target_name: arm64-gnu
+            arch_arch: aarch64
+            libc: gnu
+            artifact_name: velox-arm64-gnu-arch
+          - target: aarch64-unknown-linux-musl
+            target_name: arm64-musl
+            arch_arch: aarch64
+            libc: musl
+            artifact_name: velox-arm64-musl-arch
+
+          # --- ARM32 (armv7 / armv7h) ---
+          - target: armv7-unknown-linux-gnueabihf
+            target_name: arm32-gnu
+            arch_arch: armv7h
+            libc: gnu
+            artifact_name: velox-arm32-gnu-arch
+          - target: armv7-unknown-linux-musleabihf
+            target_name: arm32-musl
+            arch_arch: armv7h
+            libc: musl
+            artifact_name: velox-arm32-musl-arch
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read package version from VERSION file
+        id: version
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building Velox v${VERSION} for target ${{ matrix.target }}"
+
+      - name: Install compression tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd tar
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build release binaries with cross
+        run: |
+          cross build --release --locked --target ${{ matrix.target }} --bins
+
+      - name: Build Arch Linux package (.pkg.tar.zst)
+        run: |
+          bash scripts/packaging/arch/build-arch.sh \
+            --binary "target/${{ matrix.target }}/release/velox" \
+            --arch "${{ matrix.arch_arch }}" \
+            --version "${{ steps.version.outputs.VERSION }}" \
+            --libc "${{ matrix.libc }}" \
+            --output-dir "dist"
+
+      - name: Upload Arch package artifact (Node 20 runtime)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*.pkg.tar.*
+          if-no-files-found: error

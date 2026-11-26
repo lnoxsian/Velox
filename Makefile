@@ -32,7 +32,7 @@ ARGS ?=
 	build-velox release-velox build-config release-config \
 	bootstrap update-version bump-version update-banner banner-update bench bench-grid bench-scrollback ram ram-usage ram-release \
 	ram-debug cpu cpu-usage single-cpu test-single-cpu bench-cpu cpu-release cpu-debug cpu-compare cpu-benchmark \
-	palette generate-icons install install-deb install-desktop install-icons install-completions uninstall deb rpm arch-pkg list help
+	palette generate-icons install install-deb install-rpm install-tarball install-desktop install-icons install-completions uninstall deb rpm arch-pkg tarball list help
 
 # Default target
 all: build
@@ -283,6 +283,18 @@ arch-pkg:
 # Package as Fedora / RHEL (.rpm) package
 rpm:
 	bash scripts/packaging/fedora/build-rpm.sh
+
+# Install latest Fedora / RHEL (.rpm) package from dist/
+install-rpm:
+	bash scripts/autoinstdist/install_rpm.sh
+
+# Package as standalone binary tarball (.tar.gz)
+tarball:
+	bash scripts/packaging/tarball/build-tarball.sh
+
+# Install latest standalone tarball (.tar.gz) from dist/
+install-tarball:
+	bash scripts/autoinstdist/install_tzg.sh
 
 # List all commands and available targets with descriptions
 list:

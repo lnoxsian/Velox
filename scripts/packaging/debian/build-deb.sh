@@ -2,6 +2,7 @@
 # ==============================================================================
 # Velox Debian (.deb) Packaging Script
 # Generates a standard Debian binary package (.deb) for Velox.
+# Supports native builds, cross-compiled pre-built binaries, GNU & Musl targets.
 # ==============================================================================
 
 set -euo pipefail
@@ -13,6 +14,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 PROFILE="release"
 NO_BUILD=0
 OUTPUT_DIR="${REPO_ROOT}/dist"
+BINARY_PATH=""
+ARCH_OVERRIDE=""
+VERSION_OVERRIDE=""
+LIBC="gnu"
 
 print_usage() {
     cat <<EOF
@@ -21,6 +26,10 @@ Usage: $(basename "$0") [OPTIONS]
 Builds a Debian binary package (.deb) for Velox.
 
 Options:
+    --binary <PATH>         Path to pre-compiled velox binary (skips cargo build)
+    --arch <ARCH>           Target Debian architecture (e.g., amd64, arm64, armhf, i386)
+    --version <VERSION>     Package version override (default: read from VERSION file)
+    --libc <gnu|musl>       C library runtime flavor (default: gnu)
     --profile <PROFILE>     Cargo build profile ('release' or 'debug', default: release)
     --no-build              Skip compiling; use existing target binary
     --output-dir <DIR>      Directory to write the .deb package (default: dist/)
@@ -31,6 +40,23 @@ EOF
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --binary)
+            BINARY_PATH="$2"
+            NO_BUILD=1
+            shift 2
+            ;;
+        --arch)
+            ARCH_OVERRIDE="$2"
+            shift 2
+            ;;
+        --version)
+            VERSION_OVERRIDE="$2"
+            shift 2
+            ;;
+        --libc)
+            LIBC="$2"
+            shift 2
+            ;;
         --profile)
             PROFILE="$2"
             shift 2
@@ -58,7 +84,9 @@ done
 cd "${REPO_ROOT}"
 
 # Read version
-if [[ -f "VERSION" ]]; then
+if [[ -n "${VERSION_OVERRIDE}" ]]; then
+    VERSION="${VERSION_OVERRIDE}"
+elif [[ -f "VERSION" ]]; then
     VERSION="$(tr -d '\r\n' < VERSION)"
 elif [[ -f "Cargo.toml" ]]; then
     VERSION="$(grep -m1 '^version\s*=' Cargo.toml | cut -d '"' -f2)"
@@ -73,35 +101,38 @@ if [[ -z "${VERSION}" ]]; then
 fi
 
 # Detect architecture
-if command -v dpkg >/dev/null 2>&1; then
+if [[ -n "${ARCH_OVERRIDE}" ]]; then
+    DEB_ARCH="${ARCH_OVERRIDE}"
+elif command -v dpkg >/dev/null 2>&1; then
     DEB_ARCH="$(dpkg --print-architecture)"
 else
     UNAME_M="$(uname -m)"
     case "${UNAME_M}" in
-        x86_64)  DEB_ARCH="amd64" ;;
-        aarch64) DEB_ARCH="arm64" ;;
-        armv7l)  DEB_ARCH="armhf" ;;
-        riscv64) DEB_ARCH="riscv64" ;;
-        *)       DEB_ARCH="${UNAME_M}" ;;
+        x86_64)          DEB_ARCH="amd64" ;;
+        aarch64|arm64)   DEB_ARCH="arm64" ;;
+        armv7*|armhf)    DEB_ARCH="armhf" ;;
+        i386|i686)       DEB_ARCH="i386" ;;
+        riscv64)         DEB_ARCH="riscv64" ;;
+        *)               DEB_ARCH="${UNAME_M}" ;;
     esac
 fi
 
 echo "=================================================="
-echo " Packaging Velox v${VERSION} for Debian (${DEB_ARCH})"
+echo " Packaging Velox v${VERSION} for Debian (${DEB_ARCH}, libc: ${LIBC})"
 echo " Profile:    ${PROFILE}"
 echo " Output Dir: ${OUTPUT_DIR}"
 echo "=================================================="
 
-BINARY_PATH="${REPO_ROOT}/target/${PROFILE}/velox"
-
-# Ensure binary is built
-if [[ "${NO_BUILD}" -eq 0 ]]; then
-    echo "==> Building Velox with profile '${PROFILE}'..."
-    cargo build --profile "${PROFILE}"
+# Ensure binary is built or located
+if [[ -z "${BINARY_PATH}" ]]; then
+    BINARY_PATH="${REPO_ROOT}/target/${PROFILE}/velox"
+    if [[ "${NO_BUILD}" -eq 0 ]]; then
+        echo "==> Building Velox with profile '${PROFILE}'..."
+        cargo build --profile "${PROFILE}" --bins
+    fi
 fi
 
 if [[ ! -f "${BINARY_PATH}" ]]; then
-    # Fallback check for target/release/velox if profile was release
     if [[ "${PROFILE}" == "release" && -f "${REPO_ROOT}/target/release/velox" ]]; then
         BINARY_PATH="${REPO_ROOT}/target/release/velox"
     else
@@ -134,11 +165,23 @@ FISH_COMP_DIR="${PKG_ROOT}/usr/share/fish/vendor_completions.d"
 mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}" "${DOC_DIR}" "${DEBIAN_DIR}" \
          "${BASH_COMP_DIR}" "${ZSH_COMP_DIR}" "${FISH_COMP_DIR}"
 
-# 1. Install binary
+# 1. Install binaries
 install -m 755 "${BINARY_PATH}" "${BIN_DIR}/velox"
-# Strip if not already stripped
+
+# Check if companion binary veloxcfg exists
+BINARY_DIR="$(dirname "${BINARY_PATH}")"
+if [[ -f "${BINARY_DIR}/veloxcfg" ]]; then
+    install -m 755 "${BINARY_DIR}/veloxcfg" "${BIN_DIR}/veloxcfg"
+elif [[ -f "${REPO_ROOT}/target/${PROFILE}/veloxcfg" ]]; then
+    install -m 755 "${REPO_ROOT}/target/${PROFILE}/veloxcfg" "${BIN_DIR}/veloxcfg"
+fi
+
+# Strip if host strip works on target binary (ignore error for cross binaries)
 if command -v strip >/dev/null 2>&1; then
     strip --strip-unneeded "${BIN_DIR}/velox" 2>/dev/null || true
+    if [[ -f "${BIN_DIR}/veloxcfg" ]]; then
+        strip --strip-unneeded "${BIN_DIR}/veloxcfg" 2>/dev/null || true
+    fi
 fi
 
 # 2. Install desktop file
@@ -210,7 +253,15 @@ chmod 644 "${DOC_DIR}/copyright"
 # Calculate Installed-Size in KB
 INSTALLED_SIZE="$(du -sk "${PKG_ROOT}/usr" | awk '{print $1}')"
 
-# 5. Create DEBIAN/control
+# Dependencies according to libc flavor
+if [[ "${LIBC}" == "musl" ]]; then
+    DEPENDS_LINE="Recommends: fontconfig, hicolor-icon-theme"
+else
+    DEPENDS_LINE="Depends: libc6 (>= 2.34), libgcc-s1 (>= 3.0)
+Recommends: fontconfig, hicolor-icon-theme"
+fi
+
+# 6. Create DEBIAN/control
 cat <<EOF > "${DEBIAN_DIR}/control"
 Package: velox
 Version: ${VERSION}
@@ -221,8 +272,7 @@ Essential: no
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: lnoxsian <https://github.com/lnoxsian/Velox>
 Homepage: https://github.com/lnoxsian/Velox
-Depends: libc6 (>= 2.34), libgcc-s1 (>= 3.0)
-Recommends: fontconfig, hicolor-icon-theme
+${DEPENDS_LINE}
 Description: Fast, modern, lightweight terminal emulator for Linux
  Velox is a high-performance native Linux terminal emulator written in
  pure Rust featuring a custom multi-threaded software renderer, sub-millisecond
@@ -231,7 +281,7 @@ Description: Fast, modern, lightweight terminal emulator for Linux
 EOF
 chmod 644 "${DEBIAN_DIR}/control"
 
-# 6. Create postinst and postrm hooks for icon & desktop cache updates
+# 7. Create postinst and postrm hooks for icon & desktop cache updates
 cat <<'EOF' > "${DEBIAN_DIR}/postinst"
 #!/bin/sh
 set -e
@@ -266,9 +316,17 @@ exit 0
 EOF
 chmod 755 "${DEBIAN_DIR}/postrm"
 
+chmod 755 "${PKG_ROOT}"
+chmod 755 "${DEBIAN_DIR}"
+
 # Build package
 mkdir -p "${OUTPUT_DIR}"
-OUTPUT_PKG="${OUTPUT_DIR}/velox_${VERSION}_${DEB_ARCH}.deb"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
+if [[ "${LIBC}" == "musl" ]]; then
+    OUTPUT_PKG="${OUTPUT_DIR}/velox_${VERSION}_${DEB_ARCH}-musl.deb"
+else
+    OUTPUT_PKG="${OUTPUT_DIR}/velox_${VERSION}_${DEB_ARCH}.deb"
+fi
 
 echo "==> Building .deb package with dpkg-deb..."
 if command -v fakeroot >/dev/null 2>&1; then
